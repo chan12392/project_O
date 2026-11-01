@@ -1,0 +1,3 @@
+#!/bin/sh
+# Refuses pushes that target main; main only moves through the test → main PR.
+exec node src/guard/scan.ts --pre-push

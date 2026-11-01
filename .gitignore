@@ -6,3 +6,6 @@ target/
 *.local
 .DS_Store
 Thumbs.db
+
+# Grafly's local graph cache — regenerable, not committed (run `grafly build`).
+/.grafly/
