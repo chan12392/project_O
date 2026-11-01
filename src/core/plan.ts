@@ -15,10 +15,16 @@ export const PLAN_FIELDS = ["title", "project", "cards"] as const;
 export interface Card {
   id: string;
   provider: ProviderId;
-  role: string;
   task: string;
+  /** A free label for people ("코딩", "검토"). It never selects or limits a model. */
+  role?: string;
   model?: string;
   effort?: string;
+}
+
+/** What screens and prompts call a card: its role label if it has one, else its id. */
+export function cardLabel(card: { id: string; role?: string }): string {
+  return card.role?.trim() || card.id;
 }
 
 export interface Plan {

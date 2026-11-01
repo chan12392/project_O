@@ -2,7 +2,24 @@
 
 여러 AI 코딩 에이전트와 구독 계정을 한 데스크톱 앱에서 실행하고(작업대), 돌고 있는 세션을 한 화면에서 관측하는(관제탑) 개인용 로컬 앱. 비유하면 Orca의 채팅 UI 버전.
 
-> 상태: O CLI(작업카드 분배)와 정책 자동 차단까지 동작. 채팅 UI·캐릭터 화면은 다음 단계.
+> 상태: O CLI(작업카드 분배)와 정책 자동 차단까지 동작. 화면은 Orca 디자인 시스템을 따른 브라우저 미리보기(실제 기록 재생)까지. 총괄 세션 연결과 Tauri 셸은 다음 단계.
+
+## 화면 (app/)
+
+```sh
+cd app
+npm install
+npm run dev        # http://localhost:1430 — 오늘 종단 시험 기록을 30초로 재생
+npm run check      # TypeScript
+```
+
+Orca(MIT)의 디자인 시스템을 그대로 따른다: 토큰은 `app/src/styles/orca-theme.css`(원본 복사, 고치지 말고 다시 추출), Geist 글꼴, Tailwind 4, lucide 아이콘. 출처와 라이선스는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+- 사이드바: 작업(run) 목록. 진행 중·끝남 묶음, 실행마다 카드별 에이전트 상태 줄.
+- 탭: 총괄 대화(작업 묶음 카드와 요청 입력) + 카드마다 한 탭(그 카드의 명령·파일·메시지 기록).
+- 상태줄: 오늘 카드 수와 동시 실행 수(정책 상한 대비), 한도 걸린 서비스.
+- 미리보기 입력창은 보내지 않는다고 그대로 알린다. URL로 상태를 볼 수 있다: `?state=loading|empty|error`, `?t=0.5`(재생 시작 지점), `?tab=design`(열 탭).
+- 이벤트 → 화면 상태 변환은 `src/core/snapshot.ts` 하나로 CLI(`o status`)와 공유한다.
 
 - 작업 규칙·브랜치 흐름·정책 차단: [AGENTS.md](AGENTS.md)
 - 설계 초안: [docs/DESIGN.md](docs/DESIGN.md)
@@ -41,5 +58,6 @@ npm link           # 선택: 어디서나 `o` 명령 사용
 | `o status [runId]` | 카드별 상태 |
 | `o events <runId> [--follow]` | 정규화 이벤트(JSONL) |
 | `o stop <runId>` | 중지 |
+| `o msg send / read / post` | 팀 대화: 카드끼리, 카드와 총괄(`lead`)이 메시지를 주고받음 |
 
 계획 형식과 총괄 에이전트 사용법은 [skills/o/SKILL.md](skills/o/SKILL.md). Claude Code에서 쓰려면 이 폴더를 `~/.claude/skills/o`로 복사하거나 링크한다.
