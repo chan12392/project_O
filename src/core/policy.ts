@@ -11,6 +11,7 @@ import { CODE_RULES, findHits } from "../guard/rules.ts";
 export const LIMITS = {
   maxCardsPerPlan: 8,
   maxTaskChars: 20_000,
+  maxMessageChars: 4_000,
   maxActiveTotal: 6,
   maxActivePerProvider: { claude: 3, codex: 3, agy: 2 } as Record<ProviderId, number>,
   maxCardsPerDay: 60,
@@ -126,7 +127,7 @@ function checkCard(raw: unknown, add: (rule: string, message: string, cardId?: s
   }
   if (!CARD_ID.test(id)) fail("plan-shape", "카드 id는 영문 소문자·숫자·하이픈 32자 이내입니다");
   if (!isProvider(raw.provider)) fail("unknown-provider", `provider는 ${PROVIDERS.join(", ")} 중 하나여야 합니다`);
-  if (typeof raw.role !== "string" || !raw.role.trim()) fail("plan-shape", "role이 필요합니다");
+  if (raw.role !== undefined && (typeof raw.role !== "string" || raw.role.length > 40)) fail("plan-shape", "role은 40자 이내의 글자여야 합니다(선택 항목)");
   if (typeof raw.task !== "string" || !raw.task.trim()) fail("plan-shape", "task가 필요합니다");
   else if (raw.task.length > LIMITS.maxTaskChars) fail("plan-size", `task는 ${LIMITS.maxTaskChars}자 이내입니다`);
   if (raw.model !== undefined && (typeof raw.model !== "string" || !MODEL.test(raw.model))) fail("plan-shape", "model 이름 형식이 올바르지 않습니다");
@@ -139,11 +140,23 @@ function checkCard(raw: unknown, add: (rule: string, message: string, cardId?: s
   return {
     id,
     provider: raw.provider as ProviderId,
-    role: (raw.role as string).trim(),
+    role: typeof raw.role === "string" && raw.role.trim() ? raw.role.trim() : undefined,
     task: raw.task as string,
     model: raw.model as string | undefined,
     effort: raw.effort as string | undefined,
   };
+}
+
+/** A team message passes the same credential, backend and bypass rules as a task. */
+export function checkMessage(text: string, parties: { from: string; to: string; known: string[] }): Violation[] {
+  const violations: Violation[] = [];
+  if (!text.trim()) violations.push({ rule: "msg-shape", message: "빈 메시지는 보낼 수 없습니다" });
+  if (text.length > LIMITS.maxMessageChars) violations.push({ rule: "msg-size", message: `메시지는 ${LIMITS.maxMessageChars}자 이내입니다` });
+  for (const party of [parties.from, parties.to]) {
+    if (!["lead", "all", ...parties.known].includes(party)) violations.push({ rule: "msg-party", message: `이 실행에 없는 상대입니다: ${party}` });
+  }
+  for (const hit of findHits(text, CODE_RULES)) violations.push({ rule: `msg-${hit.rule}`, message: hit.reason });
+  return violations;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

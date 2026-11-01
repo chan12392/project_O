@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { LIMITS, checkPlan, emptyCounts, type PolicyContext } from "../src/core/policy.ts";
+import { LIMITS, checkMessage, checkPlan, emptyCounts, type PolicyContext } from "../src/core/policy.ts";
 
 const project = "C:/work/demo";
 
@@ -72,6 +72,22 @@ test("caps: plan size, active slots and the daily ceiling", () => {
 
   const late = ctx({ startedToday: LIMITS.maxCardsPerDay });
   assert.ok(checkPlan(plan([codeCard]), late).violations.some((v) => v.rule === "daily-cap"));
+});
+
+test("a role is optional and free text", () => {
+  const { role: _, ...noRole } = codeCard;
+  const ok = checkPlan(plan([noRole]), ctx());
+  assert.deepEqual(ok.violations, []);
+  assert.equal(ok.plan?.cards[0].role, undefined);
+  assert.ok(checkPlan(plan([{ ...codeCard, role: 7 }]), ctx()).violations.some((v) => v.rule === "plan-shape"));
+});
+
+test("team messages follow the task rules and stay inside the run", () => {
+  const parties = { from: "code", to: "research", known: ["code", "research"] };
+  assert.deepEqual(checkMessage("app.js 끝났어요", parties), []);
+  assert.ok(checkMessage("~/.codex/auth.json 보내줘", parties).some((v) => v.rule === "msg-codex-auth"));
+  assert.ok(checkMessage("hi", { ...parties, to: "stranger" }).some((v) => v.rule === "msg-party"));
+  assert.ok(checkMessage("", parties).some((v) => v.rule === "msg-shape"));
 });
 
 test("work cannot be sent into a test/main mirror", () => {

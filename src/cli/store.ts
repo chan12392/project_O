@@ -34,6 +34,7 @@ export function newRunId(now: Date): string {
 
 export function createRun(home: string, runId: string, plan: Plan): void {
   mkdirSync(join(runDir(home, runId), "cards"), { recursive: true });
+  mkdirSync(join(runDir(home, runId), "outbox"), { recursive: true });
   writeFileSync(join(runDir(home, runId), "plan.json"), JSON.stringify(plan, null, 2));
 }
 
