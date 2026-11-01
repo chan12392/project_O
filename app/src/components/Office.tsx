@@ -1,10 +1,11 @@
-import { Pause, Play } from "lucide-react";
+import { CircleCheckBig, Pause, Play } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
 import { PROVIDER_SHORT, STATE_WORD, clip } from "../format.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
 import type { Speaker } from "./Avatar.tsx";
+import { lookFor, type Look } from "../characters.ts";
 import { Sprite, type Action } from "./Sprite.tsx";
 
 const REDUCED = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
@@ -37,6 +38,8 @@ const AISLE: Point[] = [
   { x: 61, y: 48 },
 ];
 const BOARD: Point = { x: 45, y: 33 };
+/** Where a resting lead has its coffee, apart from the lounge the finished agents use. */
+const REST: Point = { x: 88, y: 40 };
 
 /** Where a card's agent should be for its state. */
 function homeFor(card: CardView, index: number): { spot: Point; roam: Point[] } {
@@ -47,12 +50,13 @@ function homeFor(card: CardView, index: number): { spot: Point; roam: Point[] } 
 }
 
 /** The office: agents at their desks while they work, wandering otherwise, saying what they do. */
-export function Office({ run, selected, onSelect }: { run: RunView; selected?: string; onSelect: (id: string) => void }) {
+export function Office({ run, selected, leadResting, onSelect }: { run: RunView; selected?: string; leadResting?: boolean; onSelect: (id: string) => void }) {
+  const finished = run.cards.filter((c) => c.endedAt).length;
   const [held, setHeld] = useState(REDUCED);
   return (
     <div>
       <div className="flex items-center justify-between gap-3 px-5 pt-4">
-        <p className="text-xs text-muted-foreground">카드마다 한 사람. 일하면 자기 책상에, 끝나면 휴게 공간으로 갑니다.</p>
+        <p className="text-xs text-muted-foreground">카드마다 한 사람. 일하면 자기 책상에, 끝나면 휴게 공간으로 갑니다. 총괄은 할 일이 없으면 쉽니다.</p>
         <button
           type="button"
           onClick={() => setHeld((h) => !h)}
@@ -69,13 +73,39 @@ export function Office({ run, selected, onSelect }: { run: RunView; selected?: s
           className="relative mx-auto aspect-[3/2] w-full max-w-[960px] overflow-hidden rounded-xl border bg-amber-950/40"
         >
           <img src="/office/office.png" alt="" className="absolute inset-0 size-full object-cover [image-rendering:pixelated]" onError={(e) => (e.currentTarget.style.display = "none")} />
-          <Person speaker="lead" label="총괄" spot={BOARD} roam={[BOARD, AISLE[0]]} held={held} mood="lead" line={latestLine(run, "lead")} />
+          <Person
+            speaker="lead"
+            label={leadResting ? "총괄 · 쉬는 중" : "총괄"}
+            spot={leadResting ? REST : BOARD}
+            roam={leadResting ? [] : [BOARD, AISLE[0]]}
+            held={held}
+            mood={leadResting ? "rest" : "lead"}
+            line={leadResting ? undefined : latestLine(run, "lead")}
+          />
+          <div className="absolute top-2 right-2 z-[150] max-w-[45%] rounded-lg bg-black/55 px-2.5 py-1.5 text-white shadow-sm backdrop-blur-[2px]" role="status" aria-label={`완료 ${finished}/${run.cards.length}`}>
+            <p className="flex items-center gap-1.5 text-xs font-semibold tabular-nums">
+              <CircleCheckBig className="size-3.5 text-emerald-400" aria-hidden="true" />
+              완료 {finished}/{run.cards.length}
+            </p>
+            <ul className="mt-1 grid gap-0.5 text-3xs text-white/80">
+              {run.cards.map((card) => (
+                <li key={card.id} className="flex min-w-0 items-center gap-1.5">
+                  <AgentStateDot state={card.state} />
+                  <span className="truncate text-white">{card.label}</span>
+                  <span className="ml-auto shrink-0 pl-1">
+                    {PROVIDER_SHORT[card.provider]} {STATE_WORD[card.state]}
+                  </span>
+                </li>
+              ))}
+            </ul>
+          </div>
           {run.cards.map((card, i) => {
             const home = homeFor(card, i);
             return (
               <Person
                 key={card.id}
                 speaker={card.provider}
+                look={lookFor(card.id)}
                 label={card.label}
                 spot={home.spot}
                 roam={home.roam}
@@ -89,15 +119,6 @@ export function Office({ run, selected, onSelect }: { run: RunView; selected?: s
             );
           })}
         </div>
-        <ul className="mx-auto mt-3 flex max-w-[960px] flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
-          {run.cards.map((card) => (
-            <li key={card.id} className="flex items-center gap-1.5">
-              <AgentStateDot state={card.state} />
-              <span className="text-foreground">{card.label}</span>
-              {PROVIDER_SHORT[card.provider]} {STATE_WORD[card.state]}
-            </li>
-          ))}
-        </ul>
       </div>
     </div>
   );
@@ -113,7 +134,7 @@ function latestLine(run: RunView, party: string, card?: CardView): { key: string
 }
 
 /** What a person is up to, from their card's state: it picks the sheet row they play. */
-type Mood = "work" | "fail" | "wait" | "done" | "lead";
+type Mood = "work" | "fail" | "wait" | "done" | "lead" | "rest";
 
 function moodOf(card: CardView): Mood {
   if (card.state === "running") return "work";
@@ -124,6 +145,8 @@ function moodOf(card: CardView): Mood {
 
 interface PersonProps {
   speaker: Speaker;
+  /** A composed look; the lead keeps its own drawn sheets. */
+  look?: Look;
   label: string;
   spot: Point;
   roam: Point[];
@@ -140,7 +163,7 @@ const SHOW_LINE_MS = 6000;
 const WAVE_MS = 2400;
 const CHEER_MS = 3200;
 
-function Person({ speaker, label, spot, roam, held, mood, line, selected, onClick, nudge = 0 }: PersonProps) {
+function Person({ speaker, look, label, spot, roam, held, mood, line, selected, onClick, nudge = 0 }: PersonProps) {
   const [pos, setPos] = useState(spot);
   const [facingLeft, setFacingLeft] = useState(false);
   const [walking, setWalking] = useState(false);
@@ -214,11 +237,13 @@ function Person({ speaker, label, spot, roam, held, mood, line, selected, onClic
           ? "cheer"
           : waving
             ? "wave"
-            : mood === "wait"
-              ? "think"
-              : mood === "done" && sipping
-                ? "coffee"
-                : "idle";
+            : speaking && mood !== "wait"
+              ? "talk"
+              : mood === "wait"
+                ? "think"
+                : mood === "rest" || (mood === "done" && sipping)
+                  ? "coffee"
+                  : "idle";
   return (
     <div
       className="person absolute w-[10%] -translate-x-1/2 -translate-y-[94%]"
@@ -228,7 +253,10 @@ function Person({ speaker, label, spot, roam, held, mood, line, selected, onClic
       {speaking && line && (
         <p
           role="status"
-          className={`absolute bottom-full mb-1 w-max max-w-[13rem] rounded-xl border px-2.5 py-1.5 text-xs shadow-sm ${
+          className={`absolute w-max max-w-[13rem] rounded-xl border px-2.5 py-1.5 text-xs shadow-sm ${
+            // Under the completion box (top right) the bubble hangs below the person instead.
+            pos.x > 55 && pos.y < 50 ? "top-full mt-5" : "bottom-full mb-1"
+          } ${
             // Keep the bubble inside the room: anchor it to the side away from the nearer wall.
             pos.x < 30 ? "left-0" : pos.x > 70 ? "right-0" : "left-1/2 -translate-x-1/2"
           } ${
@@ -246,7 +274,7 @@ function Person({ speaker, label, spot, roam, held, mood, line, selected, onClic
         aria-pressed={onClick ? selected : undefined}
         className="block w-full rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default aria-pressed:ring-2 aria-pressed:ring-ring"
       >
-        <Sprite speaker={speaker} action={action} flip={action === "walk" && facingLeft} paused={held} />
+        <Sprite speaker={speaker} look={look} action={action} flip={action === "walk" && facingLeft} paused={held} />
       </button>
       <span className="pointer-events-none absolute top-full left-1/2 mt-0.5 -translate-x-1/2 rounded bg-black/60 px-1.5 text-3xs whitespace-nowrap text-white">{label}</span>
     </div>

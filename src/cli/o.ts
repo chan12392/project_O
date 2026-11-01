@@ -9,6 +9,7 @@ import { checkMessage, checkPlan, type Violation } from "../core/policy.ts";
 import { outboxPath } from "../core/providers.ts";
 import { snapshot } from "../core/snapshot.ts";
 import { runPlan } from "./runner.ts";
+import { readUsage, saveUsage } from "./usage.ts";
 import {
   activeMarkers,
   appendEvent,
@@ -35,6 +36,7 @@ const USAGE = `O CLI — 작업카드를 공식 에이전트 CLI에 병렬로 �
   o msg read [--all]         나에게 온 새 메시지 (--all: 전체 대화)
   o msg post                 카드의 outbox 파일(첫 줄 "to: <상대>")을 팀 대화로 보내기
                              카드 밖에서는 --run <runId> 와 --as <카드|lead> 로 지정
+  o usage [--json]           Codex·Antigravity 구독 한도를 각 CLI로 조회해 usage.json에 저장
 
 정책 위반이 하나라도 있으면 계획 전체를 실행하지 않고 종료 코드 2로 끝납니다.`;
 
@@ -55,6 +57,8 @@ async function main(argv: string[]): Promise<number> {
       return stop(required(rest[0]));
     case "msg":
       return message(rest);
+    case "usage":
+      return usage(rest.includes("--json"));
     case "_run":
       await runPlan(home, required(rest[0]), readPlan(home, required(rest[0])));
       return 0;
@@ -192,6 +196,21 @@ function message(args: string[]): number {
   }
   console.error(USAGE);
   return 1;
+}
+
+async function usage(json: boolean): Promise<number> {
+  const reading = await readUsage();
+  saveUsage(home, reading);
+  if (json) {
+    console.log(JSON.stringify(reading, null, 2));
+    return 0;
+  }
+  for (const w of reading.windows) {
+    const name = w.window === "five_hour" ? "5시간" : w.window === "seven_day" ? "주간" : w.window;
+    console.log(`${w.provider.padEnd(6)} ${(w.group ?? "").padEnd(22)} ${name.padEnd(4)} ${String(Math.round(w.used * 100)).padStart(3)}% 사용  ${w.resetsAt} 초기화`);
+  }
+  for (const u of reading.unavailable) console.log(`${u.provider.padEnd(6)} 조회 실패: ${u.reason}`);
+  return 0;
 }
 
 function readInput(path: string | undefined): unknown {

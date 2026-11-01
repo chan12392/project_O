@@ -1,15 +1,18 @@
 import { PanelRightOpen, SquareArrowOutUpRight } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { RunView } from "../../src/core/snapshot.ts";
 import { Composer } from "./components/Composer.tsx";
+import { LeadGate } from "./components/LeadGate.tsx";
 import { SidePanel } from "./components/SidePanel.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
 import { Thread } from "./components/Thread.tsx";
+import { WhoIsWorking } from "./components/WhoIsWorking.tsx";
 import { STATE_WORD } from "./format.ts";
 import { usePanelLayout, usePopoutChannel, type Selection } from "./panelLayout.ts";
-import { readParams, useDemoRuns, writeParam, type PanelView, type ScreenState } from "./useRun.ts";
+import { LEAD_WORD, projectsOf, useLeads, useProjectGroups, type Project } from "./projects.ts";
+import { USAGE_WINDOWS, readParams, useDemoRuns, writeParam, type PanelView, type ScreenState } from "./useRun.ts";
 
 const initial = readParams();
 
@@ -18,12 +21,13 @@ export function App() {
 }
 
 /** Selection shared by the main window and the pop-out, mirrored into the URL. */
-function useSelection(defaultRun: string | undefined) {
-  const [selection, setSelection] = useState<Selection>({ run: initial.run ?? defaultRun, view: initial.view, card: initial.card });
+function useSelection() {
+  const [selection, setSelection] = useState<Selection>({ project: initial.project, run: initial.run, view: initial.view, card: initial.card });
   /** Applies a change from this window or the other one, and mirrors it into this window's URL. */
   const update = (next: Partial<Selection>) =>
     setSelection((s) => {
       const merged = { ...s, ...next };
+      writeParam("project", merged.project);
       writeParam("run", merged.run);
       writeParam("view", merged.view);
       writeParam("card", merged.card);
@@ -32,24 +36,50 @@ function useSelection(defaultRun: string | undefined) {
   return { selection, update };
 }
 
+type Run = ReturnType<typeof useDemoRuns>["runs"][number];
+
+/**
+ * What the selection points at: a project (the run's, else the newest), and the
+ * run shown in its lead chat (the chosen one, else the project's newest).
+ */
+function resolve(runs: Run[], selection: Selection) {
+  const projects = projectsOf(runs.map((r) => r.view));
+  const chosen = runs.find((r) => r.view.runId === selection.run);
+  const project: Project | undefined = projects.find((p) => p.path === (selection.project ?? chosen?.view.project)) ?? projects[0];
+  const current = chosen && chosen.view.project === project?.path ? chosen : runs.find((r) => r.view.runId === project?.runs[0]?.runId);
+  return { projects, project, current };
+}
+
 /** Orca's window: run sidebar, then the lead chat and a chosen view side by side, status bar below. */
 function MainWindow() {
   const [state, setState] = useState<ScreenState>(initial.state);
   const { runs, replayingId, restart } = useDemoRuns(initial.run, initial.start);
-  const { selection, update } = useSelection(runs[0]?.view.runId);
+  const { selection, update } = useSelection();
   const layout = usePanelLayout(update);
   const askRef = useRef<HTMLTextAreaElement>(null);
+  const groups = useProjectGroups();
 
-  const current = state === "full" ? runs.find((r) => r.view.runId === selection.run) ?? runs[0] : undefined;
+  const resolved = useMemo(() => resolve(runs, selection), [runs, selection]);
+  const { projects, project } = resolved;
+  const leads = useLeads(projects);
+  const current = state === "full" ? resolved.current : undefined;
+  const lead = project ? leads.stateOf(project.path) : "ready";
   const announced = useAnnouncer(current?.view);
 
   const select = (next: Partial<Selection>) => {
     update(next);
     layout.broadcast({ ...selection, ...next });
   };
+  const projectOf = (run: string) => runs.find((r) => r.view.runId === run)?.view.project;
   const openCard = (run: string, card: string) => {
-    select({ run, card, view: "work" });
+    const path = projectOf(run);
+    select({ project: path, run, card, view: "work" });
+    if (path) leads.wake(path);
     if (!layout.popped) layout.setOpen(true);
+  };
+  const wake = (path: string) => {
+    if (path !== project?.path) select({ project: path, run: undefined, card: undefined });
+    leads.wake(path);
   };
   const compose = () => requestAnimationFrame(() => askRef.current?.focus());
   const retry = () => {
@@ -63,10 +93,18 @@ function MainWindow() {
       <div className="contents max-md:hidden">
         <Sidebar
           state={state}
-          runs={runs.map((r) => r.view)}
-          selected={current?.view.runId}
+          projects={projects}
+          groups={groups}
+          leadState={leads.stateOf}
+          project={project?.path}
+          run={current?.view.runId}
           card={selection.card}
-          onRun={(run) => select({ run, card: undefined })}
+          onProject={(path) => select({ project: path, run: undefined, card: undefined })}
+          onWake={wake}
+          onRun={(path, run) => {
+            select({ project: path, run, card: undefined });
+            leads.wake(path);
+          }}
           onCard={openCard}
           onCompose={compose}
         />
@@ -74,9 +112,11 @@ function MainWindow() {
       <main ref={layout.container} className="flex min-h-0 min-w-0 max-lg:flex-col">
         <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
           <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs">
-            <span className="font-medium text-tab-active-foreground">총괄</span>
-            {current && <span className="truncate text-muted-foreground">{current.view.title}</span>}
+            <span className="shrink-0 font-medium text-tab-active-foreground">{project ? `${project.name} 총괄` : "총괄"}</span>
+            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs text-muted-foreground">{LEAD_WORD[lead]}</span>}
+            {current && (lead === "working" || lead === "ready") && <span className="truncate text-muted-foreground">{current.view.title}</span>}
             <span className="ml-auto flex items-center gap-1">
+              {project && <WhoIsWorking runs={project.runs} onOpen={openCard} />}
               {layout.popped && (
                 <button type="button" onClick={layout.dock} className="flex h-6 items-center gap-1 rounded-md border px-2 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
                   <SquareArrowOutUpRight className="size-3.5" aria-hidden="true" />
@@ -96,14 +136,20 @@ function MainWindow() {
               )}
             </span>
           </header>
-          <Thread
-            state={state}
-            messages={current?.messages ?? []}
-            run={current?.view}
-            onOpenCard={(id) => current && openCard(current.view.runId, id)}
-            onRetry={retry}
-            onCompose={compose}
-          />
+          {state === "full" && project && (lead === "resting" || lead === "loading") ? (
+            <LeadGate project={project} loading={lead === "loading"} onWake={() => leads.wake(project.path)} />
+          ) : (
+            <div key={project?.path} className="bloom flex min-h-0 flex-1 flex-col">
+              <Thread
+                state={state}
+                messages={current?.messages ?? []}
+                run={current?.view}
+                onOpenCard={(id) => current && openCard(current.view.runId, id)}
+                onRetry={retry}
+                onCompose={compose}
+              />
+            </div>
+          )}
           <Composer inputRef={askRef} />
         </section>
         {showPanel && (
@@ -121,13 +167,16 @@ function MainWindow() {
             <div className="min-h-0 shrink-0 max-lg:h-[50vh] max-lg:w-full! max-lg:border-t" style={{ width: layout.width }}>
               <SidePanel
                 run={current?.view}
+                projectRuns={project?.runs ?? []}
                 usageRuns={runs.map((r) => r.view)}
+                usageWindows={USAGE_WINDOWS}
+                leadResting={lead === "resting" || lead === "loading"}
                 view={selection.view}
                 card={selection.card}
                 onView={(view: PanelView) => select({ view })}
-                onCard={(card) => select({ card })}
+                onCard={(target) => (target ? openCard(target.run, target.card) : select({ card: undefined }))}
                 onClose={() => layout.setOpen(false)}
-                onPopout={() => layout.popout(selection)}
+                onPopout={() => layout.popout({ ...selection, project: project?.path, run: current?.view.runId })}
               />
             </div>
           </>
@@ -144,9 +193,9 @@ function MainWindow() {
 /** The right panel alone in its own window, following and steering the main window's selection. */
 function PopoutPanel() {
   const { runs } = useDemoRuns(initial.run, 1);
-  const { selection, update } = useSelection(runs[0]?.view.runId);
+  const { selection, update } = useSelection();
   const send = usePopoutChannel(update);
-  const current = runs.find((r) => r.view.runId === selection.run) ?? runs[0];
+  const { project, current } = resolve(runs, selection);
   const select = (next: Partial<Selection>) => {
     update(next);
     send({ ...selection, ...next });
@@ -156,7 +205,16 @@ function PopoutPanel() {
   }, [current]);
   return (
     <div className="h-full">
-      <SidePanel run={current?.view} usageRuns={runs.map((r) => r.view)} view={selection.view} card={selection.card} onView={(view) => select({ view })} onCard={(card) => select({ card })} />
+      <SidePanel
+        run={current?.view}
+        projectRuns={project?.runs ?? []}
+        usageRuns={runs.map((r) => r.view)}
+        usageWindows={USAGE_WINDOWS}
+        view={selection.view}
+        card={selection.card}
+        onView={(view) => select({ view })}
+        onCard={(target) => select(target ? { project: runs.find((r) => r.view.runId === target.run)?.view.project, run: target.run, card: target.card } : { card: undefined })}
+      />
     </div>
   );
 }

@@ -7,10 +7,15 @@ import { describeTool, snapshot } from "../src/core/snapshot.ts";
 
 // The app's demo fixture is today's real end-to-end run, paths sanitised.
 const demo = JSON.parse(readFileSync(new URL("../app/src/data/demo-runs.json", import.meta.url), "utf8")) as { runs: { events: OEvent[] }[] };
-const fixture = demo.runs[2];
+const byId = (runId: string) => {
+  const run = demo.runs.find((r) => r.events[0].t === "run.start" && r.events[0].runId === runId);
+  if (!run) throw new Error(`fixture lacks run ${runId}`);
+  return run;
+};
+const fixture = byId("20261101-100916-402x");
 
 test("real team runs carry their messages between codex, claude and agy", () => {
-  const [agyCodex, codexClaude] = demo.runs.map((r) => snapshot(r.events));
+  const [agyCodex, codexClaude] = ["20261101-145813-t353", "20261101-145332-q3eg"].map((id) => snapshot(byId(id).events));
   assert.deepEqual(agyCodex?.messages.map((m) => `${m.from}>${m.to}`), ["c>d", "d>c"]);
   assert.deepEqual(codexClaude?.messages.map((m) => `${m.from}>${m.to}`), ["a>b", "b>a", "a>lead"]);
   assert.equal(codexClaude?.cards.find((c) => c.id === "a")?.label, "a");

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 
 import type { OEvent } from "../../src/core/events.ts";
 import { snapshot, type RunView } from "../../src/core/snapshot.ts";
+import type { UsageWindow } from "../../src/core/usage.ts";
 import demo from "./data/demo-runs.json";
 
 export interface Message {
@@ -20,6 +21,8 @@ interface DemoRun {
 
 /** Real runs from this machine, newest first (app/src/data/demo-runs.json). */
 const RUNS = demo.runs as DemoRun[];
+/** Subscription windows from `o usage` (Codex, Antigravity); the desktop build reads usage.json. */
+export const USAGE_WINDOWS = (demo.usage?.windows ?? []) as UsageWindow[];
 /** A replayed run plays back in about thirty seconds, whatever it really took. */
 const REPLAY_MS = 30_000;
 const TICK_MS = 250;
@@ -70,6 +73,7 @@ export function readParams() {
   const t = Number(params.get("t"));
   return {
     state: (["loading", "empty", "error"].includes(state ?? "") ? state : "full") as ScreenState,
+    project: params.get("project") ?? undefined,
     run: params.get("run") ?? undefined,
     // The team chat now lives under the office; older links with view=team land there.
     view: (view === "office" || view === "team" ? "office" : "work") as PanelView,

@@ -41,6 +41,22 @@
   .sprite-sheet { animation: none; }
 }
 
+/* Indeterminate progress (beakho-design lucian-083) and a loading shimmer (lucian-079). */
+@keyframes progress-flow { from { left: -40%; } to { left: 100%; } }
+.progress-flow { animation: progress-flow 1.2s ease-in-out infinite; }
+@keyframes shimmer { to { background-position: -200% 0; } }
+.shimmer {
+  background: linear-gradient(90deg, var(--muted) 25%, color-mix(in srgb, var(--muted) 55%, var(--foreground) 8%) 50%, var(--muted) 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.2s linear infinite;
+}
+@keyframes bloom { from { opacity: 0; transform: scale(0.98) translateY(6px); } to { opacity: 1; transform: none; } }
+.bloom { animation: bloom 0.42s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
+@media (prefers-reduced-motion: reduce) {
+  .progress-flow { animation: none; left: 0; width: 100%; opacity: 0.6; }
+  .shimmer, .bloom { animation: none; }
+}
+
 /* Office people glide between spots; the sheet frames do the walking. */
 @media (prefers-reduced-motion: reduce) {
   .person { transition: none !important; }

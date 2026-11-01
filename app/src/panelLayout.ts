@@ -8,6 +8,7 @@ const MIN = 320;
 const MIN_CHAT = 360;
 
 export interface Selection {
+  project?: string;
   run?: string;
   view: PanelView;
   card?: string;
@@ -88,6 +89,7 @@ export function usePanelLayout(onRemoteSelect: (s: Selection) => void) {
     url.search = "";
     url.searchParams.set("popout", "panel");
     url.searchParams.set("view", selection.view);
+    if (selection.project) url.searchParams.set("project", selection.project);
     if (selection.run) url.searchParams.set("run", selection.run);
     if (selection.card) url.searchParams.set("card", selection.card);
     const win = window.open(url, "project-o-panel", "popup,width=760,height=880");

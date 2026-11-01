@@ -13,3 +13,7 @@ app/.hallmark/shots/
 
 # Grafly's local graph cache — regenerable, not committed (run `grafly build`).
 /.grafly/
+
+# Intermediate aligned bodies; regenerate with scripts/align-sprite-sheets.py (see build-character-parts.py).
+app/public/office/parts/body-*.png
+__pycache__/
