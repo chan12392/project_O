@@ -4,10 +4,10 @@
 
 ## 팀
 
-| 코드 | 사람 | 개인 브랜치 |
-|---|---|---|
-| A | 황윤찬 | `younchan` |
-| B | 용우 | `yongwoo` (임시 이름 — 합류 시 본인이 정하면 바꾼다) |
+| 코드 | 개인 브랜치 |
+|---|---|
+| A | `younchan` |
+| B | `yongwoo` (임시 이름 — 합류 시 본인이 정하면 바꾼다) |
 
 ## 브랜치
 
@@ -18,7 +18,7 @@
   - `/`로 나누지 않는 이유: git은 `younchan` 브랜치가 있으면 `younchan/<주제>`를 만들 수 없다.
   - 사람마다 동시에 살아 있는 작업 브랜치는 최대 3개. 개인 브랜치에 병합하면 바로 삭제한다.
 - 상대의 개인 브랜치·작업 브랜치에 커밋하지 않는다.
-- 개인 브랜치 목록은 `src/guard/hook.ts`의 `PERSONAL_BRANCHES`와 `.github/workflows/branch-flow.yml`에 함께 적혀 있다. 바꿀 때 두 곳을 같이 고친다.
+- 개인 브랜치 목록은 `crates/o-guard/src/hook.rs`의 `PERSONAL_BRANCHES`와 `.github/workflows/branch-flow.yml`에 함께 적혀 있다. 바꿀 때 두 곳을 같이 고친다.
 
 ## 병합 흐름
 
@@ -44,9 +44,9 @@ yongwoo-<주제>  ──PR──▶ yongwoo  ──PR──▶ test ─┘
 | `orca/workspaces/project_O/test` | `test` | **읽기 전용 거울.** 병합 결과를 받아 함께 돌려 보는 곳 |
 
 - `test`·`main`이 체크아웃된 폴더는 에이전트가 바꿀 수 없다. 파일 수정, 허용 목록 밖의 셸 명령(조회·테스트·`git pull --ff-only`만 허용), 커밋, push, O 작업 전달이 모두 막힌다. 다른 폴더의 세션이 경로로 거울 파일을 고치려 해도 막는다.
-- 거울은 예약 작업이 5분마다 `origin/test`로 fast-forward한다(`scripts/install-mirror-sync.ps1`, 로그 `%LOCALAPPDATA%\project_O\mirror-sync.log`). 로컬 변경이 있으면 지우지 않고 동기화를 멈춘 뒤 로그에 남긴다.
-- 설치 스크립트는 `scripts/sync-mirror.mjs`를 `%LOCALAPPDATA%\project_O`로 복사해 그 사본을 실행한다(거울이 뒤처져도 동기화가 돌도록). 이 파일을 바꾸면 설치 스크립트를 다시 실행한다.
-- 각자 PC에서 한 번 설정한다: `git worktree add <거울 폴더> test` → `pwsh scripts/install-mirror-sync.ps1 -Mirror <거울 폴더>`.
+- 거울은 예약 작업이 5분마다 `origin/test`로 fast-forward한다(`o sync-mirror`, 설치는 `scripts/install-mirror-sync.ps1`, 로그 `%LOCALAPPDATA%\project_O\mirror-sync.log`). 로컬 변경이 있으면 지우지 않고 동기화를 멈춘 뒤 로그에 남긴다.
+- 예약 작업은 저장소 밖에 설치된 `o.exe`를 실행한다(거울이 뒤처져도 동기화가 돌도록). 동기화의 git 호출은 저장소 git 훅을 쓰지 않는다.
+- 각자 PC에서 한 번 설정한다: `cargo install --path crates/o-cli` → `git worktree add <거울 폴더> test` → `pwsh scripts/install-mirror-sync.ps1 -Mirror <거울 폴더>`.
 
 ## 설계 변경
 
@@ -62,19 +62,19 @@ yongwoo-<주제>  ──PR──▶ yongwoo  ──PR──▶ test ─┘
 
 ## 프로바이더 정책 자동 차단
 
-사람이 매번 약관을 확인하지 않도록 아래 지점에서 자동으로 막는다. 규칙 원문은 `src/guard/rules.ts`, 근거는 `docs/DESIGN.md` §8.
+사람이 매번 약관을 확인하지 않도록 아래 지점에서 자동으로 막는다. 규칙 원문은 `crates/o-guard/src/rules.rs`, 근거는 `docs/DESIGN.md` §8.
 
 | 지점 | 무엇을 막나 |
 |---|---|
-| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `src/guard/hook.ts`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / main 커밋·push / 규칙 밖 브랜치 이름. 훅이 실패하면 막는다 |
-| git 훅 (`.githooks/`, `npm install` 시 자동 설정) | 같은 코드 규칙으로 커밋 검사, main 커밋·push |
+| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `o hook`, `crates/o-guard`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / main 커밋·push / 규칙 밖 브랜치 이름. 훅이 실패하면 막는다 |
+| git 훅 (`.githooks/` → `o scan`, `npm install` 시 자동 설정) | 같은 코드 규칙으로 커밋 검사, main 커밋·push |
 | CI (`.github/workflows/guard.yml`) | 전체 파일 정책 검사 + 테스트 + 타입 검사 (읽기 전용 토큰) |
-| O CLI (`src/core/policy.ts`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002) |
+| O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002) |
 
 - 카드 CLI에 열어 주는 권한은 팀 대화 명령(`o msg`)뿐이다: Claude는 `--allowedTools "Bash(o msg *)"`, Codex는 실행 폴더 `--add-dir`, Antigravity는 정확히 `o msg read`·`o msg post` 두 명령(그 CLI의 허용 규칙은 전체 일치만 지원). 그 밖의 권한 확인은 그대로 둔다.
 
 - 차단되면 우회하지 않는다. 사유를 그대로 상대에게 공유하고, 규칙이 틀렸다면 ADR로 바꾼다.
-- `src/guard/rules.ts`의 규칙·허용 경로, `src/core/policy.ts`의 `LIMITS`는 공용 경계다(ADR + 두 사람 승인). 설정·환경변수로 상한을 올리는 길은 일부러 두지 않았다.
+- `crates/o-guard/src/rules.rs`의 규칙·허용 경로, `crates/o-core/src/policy.rs`의 `LIMITS`(화면 표시용 사본 `src/core/limits.ts`)는 공용 경계다(ADR + 두 사람 승인). 설정·환경변수로 상한을 올리는 길은 일부러 두지 않았다.
 - Codex는 프로젝트 훅을 처음 쓸 때 신뢰 승인을 요구할 수 있다. 훅이 안 돌아도 git 훅과 CI가 같은 검사를 한다.
 
 ## 커밋·PR

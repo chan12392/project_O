@@ -1,0 +1,16 @@
+[package]
+name = "o-cli"
+description = "The o command."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "o"
+path = "src/main.rs"
+
+[dependencies]
+o-core = { path = "../o-core" }
+o-guard = { path = "../o-guard" }
+chrono.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }

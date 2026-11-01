@@ -6,7 +6,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "node \"$CLAUDE_PROJECT_DIR/src/guard/hook.ts\"",
+            "command": "o hook",
             "timeout": 10
           }
         ]
