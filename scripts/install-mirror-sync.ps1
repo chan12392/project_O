@@ -1,6 +1,7 @@
 # Registers a hidden scheduled task that keeps a test/main mirror checkout
 # up to date every few minutes. Run once per PC:
 #   pwsh scripts/install-mirror-sync.ps1 -Mirror C:/Users/me/orca/workspaces/project_O/test
+# Re-run after sync-mirror.mjs changes to refresh the installed copy.
 param(
   [Parameter(Mandatory = $true)][string]$Mirror,
   [int]$Minutes = 5
@@ -10,7 +11,11 @@ $branch = (git -C $Mirror branch --show-current).Trim()
 if ($branch -notin @('test', 'main')) { throw "거울 브랜치(test, main)가 아닙니다: $branch" }
 
 $node = (Get-Command node -ErrorAction Stop).Source
-$script = Join-Path $Mirror 'scripts/sync-mirror.ts'
+# Run a copy outside the repo: a mirror that is behind may not contain the script.
+$home_ = Join-Path $env:LOCALAPPDATA 'project_O'
+New-Item -ItemType Directory -Force $home_ | Out-Null
+$script = Join-Path $home_ 'sync-mirror.mjs'
+Copy-Item (Join-Path $PSScriptRoot 'sync-mirror.mjs') $script -Force
 # conhost --headless keeps the console process from opening a window.
 $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\conhost.exe" `
   -Argument "--headless `"$node`" `"$script`" `"$Mirror`""

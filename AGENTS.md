@@ -45,6 +45,7 @@ yongwoo-<주제>  ──PR──▶ yongwoo  ──PR──▶ test ─┘
 
 - `test`·`main`이 체크아웃된 폴더는 에이전트가 바꿀 수 없다. 파일 수정, 허용 목록 밖의 셸 명령(조회·테스트·`git pull --ff-only`만 허용), 커밋, push, O 작업 전달이 모두 막힌다. 다른 폴더의 세션이 경로로 거울 파일을 고치려 해도 막는다.
 - 거울은 예약 작업이 5분마다 `origin/test`로 fast-forward한다(`scripts/install-mirror-sync.ps1`, 로그 `%LOCALAPPDATA%\project_O\mirror-sync.log`). 로컬 변경이 있으면 지우지 않고 동기화를 멈춘 뒤 로그에 남긴다.
+- 설치 스크립트는 `scripts/sync-mirror.mjs`를 `%LOCALAPPDATA%\project_O`로 복사해 그 사본을 실행한다(거울이 뒤처져도 동기화가 돌도록). 이 파일을 바꾸면 설치 스크립트를 다시 실행한다.
 - 각자 PC에서 한 번 설정한다: `git worktree add <거울 폴더> test` → `pwsh scripts/install-mirror-sync.ps1 -Mirror <거울 폴더>`.
 
 ## 설계 변경
