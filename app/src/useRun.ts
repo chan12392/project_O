@@ -49,14 +49,14 @@ export function useDemoRun(initial: number) {
   return { run, messages, events: visible, playing, replay };
 }
 
-/** Screen state, card selection and replay start live in the URL. */
+/** Screen state, the open tab and replay start live in the URL. */
 export function readParams() {
   const params = new URLSearchParams(window.location.search);
   const state = params.get("state");
   const t = Number(params.get("t"));
   return {
     state: (["loading", "empty", "error"].includes(state ?? "") ? state : "full") as ScreenState,
-    card: params.get("card") ?? undefined,
+    tab: params.get("tab") ?? "lead",
     start: Number.isFinite(t) && t > 0 ? Math.min(1, t) : 0,
   };
 }

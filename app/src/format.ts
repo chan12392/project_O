@@ -8,6 +8,7 @@ export function timeOf(iso: string | undefined): string {
 }
 
 export const PROVIDER_NAME: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
+export const PROVIDER_SHORT: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Agy" };
 
 export const STATE_WORD: Record<CardState, string> = {
   waiting: "대기",

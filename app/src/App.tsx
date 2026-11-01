@@ -1,23 +1,32 @@
 import { useEffect, useRef, useState } from "react";
 
-import { STATE_WORD } from "./format.ts";
+import { CardTranscript } from "./components/CardTranscript.tsx";
 import { Composer } from "./components/Composer.tsx";
-import { Office } from "./components/Office.tsx";
+import { Sidebar } from "./components/Sidebar.tsx";
+import { StatusBar } from "./components/StatusBar.tsx";
+import { TabBar } from "./components/TabBar.tsx";
 import { Thread } from "./components/Thread.tsx";
+import { STATE_WORD } from "./format.ts";
 import { readParams, useDemoRun, writeParam, type ScreenState } from "./useRun.ts";
 
 const initial = readParams();
 
+/** Orca's window layout: worktree sidebar, tab strip with panes, status bar. */
 export function App() {
   const [state, setState] = useState<ScreenState>(initial.state);
-  const [selected, setSelected] = useState<string | undefined>(initial.card);
-  const { run, messages, playing, replay } = useDemoRun(initial.start);
+  const [tab, setTab] = useState(initial.tab);
+  const { run, messages, replay } = useDemoRun(initial.start);
   const askRef = useRef<HTMLTextAreaElement>(null);
   const announced = useAnnouncer(run);
 
-  const select = (id: string) => {
-    setSelected(id);
-    writeParam("card", id);
+  const card = run?.cards.find((c) => c.id === tab);
+  const openTab = (id: string) => {
+    setTab(id);
+    writeParam("tab", id === "lead" ? undefined : id);
+  };
+  const compose = () => {
+    openTab("lead");
+    requestAnimationFrame(() => askRef.current?.focus());
   };
   const retry = () => {
     setState("full");
@@ -25,47 +34,30 @@ export function App() {
   };
 
   return (
-    <div className="app">
-      <a className="skip" href="#ask">
-        요청 입력으로 건너뛰기
-      </a>
-      <header className="bar">
-        <h1 className="bar__mark">Project O</h1>
-        <p className="bar__project">
-          <span className="bar__label">프로젝트</span> {run?.project.split("/").pop() ?? "todo-app"}
-        </p>
-        <div className="bar__end">
-          <p className="bar__preview">미리보기: 오늘 시험 실행 기록을 다시 보여 줍니다</p>
-          {state === "full" && (
-            <button type="button" className="btn btn--secondary btn--small" onClick={replay} disabled={playing && !run}>
-              처음부터 다시 보기
-            </button>
-          )}
-        </div>
-      </header>
-      <main className="panes" id="main">
-        <section className="chat" aria-label="총괄과의 대화">
-          <Thread
-            state={state}
-            messages={messages}
-            run={run}
-            selected={selected}
-            onSelect={select}
-            onRetry={retry}
-            onCompose={() => askRef.current?.focus()}
-          />
-          <Composer inputRef={askRef} />
-        </section>
-        <Office state={state} run={run} selected={selected ?? run?.cards[0]?.id} onSelect={select} />
+    <div className="grid h-full grid-cols-[17rem_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] max-md:grid-cols-[minmax(0,1fr)]">
+      <div className="contents max-md:hidden">
+        <Sidebar state={state} run={run} tab={tab} onTab={openTab} onCompose={compose} />
+      </div>
+      <main className="flex min-h-0 min-w-0 flex-col">
+        <TabBar run={state === "full" ? run : undefined} tab={card ? tab : "lead"} onTab={openTab} />
+        {state === "full" && card ? (
+          <CardTranscript card={card} />
+        ) : (
+          <>
+            <Thread state={state} messages={messages} run={run} onOpenCard={openTab} onRetry={retry} onCompose={compose} />
+            <Composer inputRef={askRef} />
+          </>
+        )}
       </main>
-      <p className="visually-hidden" aria-live="polite">
+      <StatusBar state={state} run={state === "full" ? run : undefined} onReplay={replay} />
+      <p className="sr-only" aria-live="polite">
         {announced}
       </p>
     </div>
   );
 }
 
-/** Says out loud when a card finishes, for anyone not watching the office. */
+/** Says out loud when a card finishes, for anyone on another tab. */
 function useAnnouncer(run: ReturnType<typeof useDemoRun>["run"]) {
   const [text, setText] = useState("");
   const seen = useRef(new Set<string>());

@@ -2,7 +2,7 @@
 
 여러 AI 코딩 에이전트와 구독 계정을 한 데스크톱 앱에서 실행하고(작업대), 돌고 있는 세션을 한 화면에서 관측하는(관제탑) 개인용 로컬 앱. 비유하면 Orca의 채팅 UI 버전.
 
-> 상태: O CLI(작업카드 분배)와 정책 자동 차단까지 동작. 채팅 UI·픽셀 사무실 화면은 브라우저 미리보기(실제 기록 재생)까지. 총괄 세션 연결과 Tauri 셸은 다음 단계.
+> 상태: O CLI(작업카드 분배)와 정책 자동 차단까지 동작. 화면은 Orca 디자인 시스템을 따른 브라우저 미리보기(실제 기록 재생)까지. 총괄 세션 연결과 Tauri 셸은 다음 단계.
 
 ## 화면 (app/)
 
@@ -13,10 +13,13 @@ npm run dev        # http://localhost:1430 — 오늘 종단 시험 기록을 30
 npm run check      # TypeScript
 ```
 
-- 왼쪽: 총괄과의 대화, 작업 묶음 종이(카드별 상태·최근 활동·선택한 카드 기록), 요청 입력. 미리보기에서는 보내지 않는다고 그대로 알린다.
-- 오른쪽: 픽셀 사무실. 카드 하나가 책상 하나이고, 각 회사 캐릭터가 이벤트대로 작업 중·완료·실패로 그려진다. 아래는 오늘 장부(정책 상한 대비).
-- URL로 상태를 볼 수 있다: `?state=loading|empty|error`, `?t=0.5`(재생 시작 지점), `?card=design`(선택 카드).
-- 이벤트 → 화면 상태 변환은 `src/core/snapshot.ts` 하나로 CLI(`o status`)와 공유한다. 디자인 기록은 `app/src/styles/app.css` 첫 줄의 Hallmark 스탬프와 `.hallmark/log.json`.
+Orca(MIT)의 디자인 시스템을 그대로 따른다: 토큰은 `app/src/styles/orca-theme.css`(원본 복사, 고치지 말고 다시 추출), Geist 글꼴, Tailwind 4, lucide 아이콘. 출처와 라이선스는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+- 사이드바: 작업(run) 목록. 진행 중·끝남 묶음, 실행마다 카드별 에이전트 상태 줄.
+- 탭: 총괄 대화(작업 묶음 카드와 요청 입력) + 카드마다 한 탭(그 카드의 명령·파일·메시지 기록).
+- 상태줄: 오늘 카드 수와 동시 실행 수(정책 상한 대비), 한도 걸린 서비스.
+- 미리보기 입력창은 보내지 않는다고 그대로 알린다. URL로 상태를 볼 수 있다: `?state=loading|empty|error`, `?t=0.5`(재생 시작 지점), `?tab=design`(열 탭).
+- 이벤트 → 화면 상태 변환은 `src/core/snapshot.ts` 하나로 CLI(`o status`)와 공유한다.
 
 - 작업 규칙·브랜치 흐름·정책 차단: [AGENTS.md](AGENTS.md)
 - 설계 초안: [docs/DESIGN.md](docs/DESIGN.md)

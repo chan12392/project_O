@@ -1,168 +1,139 @@
+import { ChevronRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 
-import type { CardView, RunView } from "../../../src/core/snapshot.ts";
+import type { RunView } from "../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, STATE_WORD, clip, modelLine, timeOf } from "../format.ts";
 import type { Message, ScreenState } from "../useRun.ts";
+import { AgentStateDot } from "./AgentStateDot.tsx";
 import { Markdown } from "./Markdown.tsx";
 
 interface Props {
   state: ScreenState;
   messages: Message[];
   run?: RunView;
-  selected?: string;
-  onSelect: (id: string) => void;
+  onOpenCard: (id: string) => void;
   onRetry: () => void;
   onCompose: () => void;
 }
 
-export function Thread({ state, messages, run, selected, onSelect, onRetry, onCompose }: Props) {
-  useFollowBottom([messages, run]);
-  if (state === "loading") {
-    return (
-      <div className="thread" aria-busy="true" aria-label="대화 불러오는 중">
-        <div className="msg msg--me msg--skeleton" />
-        <div className="msg msg--lead msg--skeleton" />
-        <div className="runsheet runsheet--skeleton" />
-      </div>
-    );
-  }
-  if (state === "error") {
-    return (
-      <div className="thread">
-        <section className="notice" aria-labelledby="error-title">
-          <h2 id="error-title">기록을 읽지 못했습니다</h2>
-          <p>실행 기록 파일(events.jsonl)을 열 수 없습니다. 파일이 없거나 아직 쓰는 중일 수 있습니다.</p>
-          <p>터미널에서 o status로 실행이 남아 있는지 확인한 뒤 다시 불러오세요.</p>
-          <button type="button" className="btn btn--primary" onClick={onRetry}>
-            다시 불러오기
-          </button>
-        </section>
-      </div>
-    );
-  }
-  if (state === "empty" || messages.length === 0) {
-    return (
-      <div className="thread">
-        <section className="notice" aria-labelledby="empty-title">
-          <h2 id="empty-title">아직 맡긴 일이 없습니다</h2>
-          <p>총괄에게 할 일을 적어 보내면 작업카드로 나뉘어 각 에이전트에게 전달됩니다.</p>
-          <button type="button" className="btn btn--primary" onClick={onCompose}>
-            첫 요청 쓰기
-          </button>
-        </section>
-      </div>
-    );
-  }
+/** The lead chat, in Orca's native chat style: a centred column on the chat canvas. */
+export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }: Props) {
+  const scroller = useFollowBottom([messages, run]);
+
   return (
-    <div className="thread">
-      {messages.map((m) => (
-        <article key={m.at} className={`msg msg--${m.from}`} aria-label={m.from === "me" ? "내 요청" : "총괄의 답"}>
-          <header className="msg__head">
-            <span className="msg__who">{m.from === "me" ? "나" : "총괄 Claude"}</span>
-            <time dateTime={m.at}>{timeOf(m.at)}</time>
-          </header>
-          <div className="msg__body">
-            <Markdown text={m.text} />
+    <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6 text-sm text-chat-foreground">
+        {state === "loading" && (
+          <div className="flex flex-col gap-4" aria-busy="true" aria-label="대화 불러오는 중">
+            <div className="ml-auto h-16 w-3/5 rounded-lg bg-chat-user-surface" />
+            <div className="h-24 w-4/5 rounded-lg bg-muted/40" />
           </div>
-        </article>
-      ))}
-      {run && <RunSheet run={run} selected={selected} onSelect={onSelect} />}
+        )}
+        {state === "error" && (
+          <Notice title="기록을 읽지 못했습니다" action="다시 불러오기" onAction={onRetry}>
+            실행 기록 파일(events.jsonl)을 열 수 없습니다. 터미널에서 <code className="font-mono text-chat-code">o status</code>로 실행이 남아 있는지 확인한 뒤 다시 불러오세요.
+          </Notice>
+        )}
+        {(state === "empty" || (state === "full" && messages.length === 0)) && (
+          <Notice title="아직 맡긴 일이 없습니다" action="첫 요청 쓰기" onAction={onCompose}>
+            총괄에게 할 일을 보내면 작업카드로 나뉘어 각 에이전트에게 전달됩니다.
+          </Notice>
+        )}
+        {state === "full" &&
+          messages.map((m) =>
+            m.from === "me" ? (
+              <div key={m.at} className="ml-auto max-w-[85%] rounded-lg border border-chat-user-border bg-chat-user-surface px-3.5 py-2.5">
+                <Markdown text={m.text} />
+              </div>
+            ) : (
+              <article key={m.at} aria-label="총괄의 답">
+                <p className="mb-1.5 text-xs text-chat-foreground-faint">
+                  총괄 Claude <time dateTime={m.at}>{timeOf(m.at)}</time>
+                </p>
+                <Markdown text={m.text} />
+              </article>
+            ),
+          )}
+        {state === "full" && run && <RunCard run={run} onOpenCard={onOpenCard} />}
+      </div>
     </div>
   );
-}
-
-/** Keeps the newest message in view, unless the reader has scrolled up to read. */
-function useFollowBottom(deps: unknown[]) {
-  const follow = useRef(true);
-  useEffect(() => {
-    const onScroll = () => {
-      const root = document.documentElement;
-      follow.current = root.scrollHeight - window.scrollY - window.innerHeight < 80;
-    };
-    window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
-  }, []);
-  useLayoutEffect(() => {
-    if (follow.current) window.scrollTo({ top: document.documentElement.scrollHeight });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, deps);
 }
 
 const RUN_WORD: Record<RunView["status"], string> = { running: "진행 중", done: "모두 완료", failed: "실패한 카드 있음", stopped: "중지됨" };
 
-function RunSheet({ run, selected, onSelect }: { run: RunView; selected?: string; onSelect: (id: string) => void }) {
-  const current = run.cards.find((c) => c.id === selected) ?? run.cards[0];
+function RunCard({ run, onOpenCard }: { run: RunView; onOpenCard: (id: string) => void }) {
   return (
-    <section className="runsheet" aria-labelledby="run-title">
-      <header className="runsheet__head">
-        <h2 id="run-title">{run.title}</h2>
-        <p className="runsheet__status" role="status">
+    <section className="overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby="run-title">
+      <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <h2 id="run-title" className="truncate text-sm font-medium">
+          {run.title}
+        </h2>
+        <span role="status" className="shrink-0 rounded-full border px-2 py-0.5 text-2xs text-muted-foreground">
           {RUN_WORD[run.status]}
-        </p>
+        </span>
       </header>
-      <table className="cards">
-        <caption className="visually-hidden">작업카드 {run.cards.length}장</caption>
-        <colgroup>
-          <col className="cards__col-card" />
-          <col className="cards__col-state" />
-          <col />
-        </colgroup>
-        <thead>
-          <tr>
-            <th scope="col">카드</th>
-            <th scope="col">상태</th>
-            <th scope="col">최근 활동</th>
-          </tr>
-        </thead>
-        <tbody>
-          {run.cards.map((card) => (
-            <CardRow key={card.id} card={card} selected={card.id === current?.id} onSelect={onSelect} />
-          ))}
-        </tbody>
-      </table>
-      {current && <CardLog card={current} />}
+      <ul>
+        {run.cards.map((card) => (
+          <li key={card.id} className="border-b last:border-b-0">
+            <button
+              type="button"
+              onClick={() => onOpenCard(card.id)}
+              className="grid w-full grid-cols-[auto_minmax(0,11rem)_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 max-sm:grid-cols-[auto_minmax(0,1fr)_auto] text-left hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+            >
+              <AgentStateDot state={card.state} />
+              <span className="min-w-0">
+                <span className="block truncate text-sm">{card.role}</span>
+                <span className="block truncate font-mono text-xs text-muted-foreground">
+                  {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
+                </span>
+              </span>
+              <span className="min-w-0 truncate text-xs text-muted-foreground max-sm:hidden" title={card.activity}>
+                <span className="mr-1.5 text-foreground/80">{STATE_WORD[card.state]}</span>
+                {clip(card.activity, 80)}
+              </span>
+              <ChevronRight className="size-4 text-muted-foreground" aria-hidden="true" />
+            </button>
+          </li>
+        ))}
+      </ul>
     </section>
   );
 }
 
-function CardRow({ card, selected, onSelect }: { card: CardView; selected: boolean; onSelect: (id: string) => void }) {
+function Notice({ title, action, onAction, children }: { title: string; action: string; onAction: () => void; children: React.ReactNode }) {
   return (
-    <tr className={`is-${card.state}${selected ? " is-selected" : ""}`}>
-      <th scope="row">
-        <button type="button" className="cards__pick" aria-pressed={selected} onClick={() => onSelect(card.id)}>
-          {card.role}
-        </button>
-        <span className="cards__who">
-          <span>{PROVIDER_NAME[card.provider]}</span> <span className="nowrap">{modelLine(card.model, card.effort)}</span>
-        </span>
-      </th>
-      <td className="cards__state">{STATE_WORD[card.state]}</td>
-      <td>
-        <span className="cards__activity">{card.activity ? clip(card.activity, 44) : "아직 기록 없음"}</span>
-      </td>
-    </tr>
+    <section className="rounded-xl border bg-card p-6 text-card-foreground">
+      <h2 className="text-sm font-medium">{title}</h2>
+      <p className="mt-1.5 text-sm text-muted-foreground">{children}</p>
+      <button
+        type="button"
+        onClick={onAction}
+        className="mt-4 inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+      >
+        {action}
+      </button>
+    </section>
   );
 }
 
-function CardLog({ card }: { card: CardView }) {
-  const entries = card.log.slice(-8).reverse();
-  return (
-    <div className="cardlog">
-      <h3>
-        {card.role} 카드 기록
-      </h3>
-      {entries.length === 0 ? (
-        <p className="cardlog__empty">아직 남긴 기록이 없습니다.</p>
-      ) : (
-        <ol className="cardlog__list" reversed>
-          {entries.map((entry, i) => (
-            <li key={`${entry.at}-${i}`} className={`cardlog__entry is-${entry.kind}`}>
-              <time dateTime={entry.at}>{timeOf(entry.at)}</time>
-              <span>{entry.text.split("\n")[0]}</span>
-            </li>
-          ))}
-        </ol>
-      )}
-    </div>
-  );
+/** Keeps the newest message in view, unless the reader has scrolled up to read. */
+export function useFollowBottom(deps: unknown[]) {
+  const ref = useRef<HTMLDivElement>(null);
+  const follow = useRef(true);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onScroll = () => {
+      follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, []);
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (el && follow.current) el.scrollTop = el.scrollHeight;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, deps);
+  return ref;
 }

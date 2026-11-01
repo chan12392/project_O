@@ -11,6 +11,8 @@ export interface CardLogEntry {
   at: string;
   kind: "queued" | "tool" | "message" | "limit" | "end";
   text: string;
+  /** For tool entries: the act in words and the raw detail the CLI reported. */
+  tool?: { word: string; detail: string };
 }
 
 export interface CardView {
@@ -71,7 +73,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         break;
       case "card.tool":
         card.activity = describeTool(e.name, e.summary);
-        card.log.push({ at: e.at, kind: "tool", text: `${e.name} ${e.summary}`.trim() });
+        card.log.push({ at: e.at, kind: "tool", text: `${e.name} ${e.summary}`.trim(), tool: { word: toolWord(e.name), detail: toolDetail(e.summary) } });
         break;
       case "card.message":
         card.activity = firstLine(e.text);
@@ -101,12 +103,19 @@ const TOOL_WORD: [RegExp, string][] = [
   [/^(web_search|websearch|webfetch|search_web|read_url_content)$/i, "웹 검색"],
 ];
 
+export function toolWord(name: string): string {
+  return TOOL_WORD.find(([pattern]) => pattern.test(name))?.[1] ?? name;
+}
+
+function toolDetail(summary: string): string {
+  const detail = summary.replace(/\\"/g, '"').trim();
+  return /^".*"$/s.test(detail) ? detail.slice(1, -1) : detail;
+}
+
 /** "명령 실행: git status" rather than `shell "git status\"`; the log keeps the original. */
 export function describeTool(name: string, summary: string): string {
-  const word = TOOL_WORD.find(([pattern]) => pattern.test(name))?.[1] ?? name;
-  let detail = summary.replace(/\\"/g, '"').trim();
-  if (/^".*"$/s.test(detail)) detail = detail.slice(1, -1);
-  return detail ? `${word}: ${detail}` : word;
+  const detail = toolDetail(summary);
+  return detail ? `${toolWord(name)}: ${detail}` : toolWord(name);
 }
 
 /** The first line, without the Markdown agents write in (`code`, **bold**): an activity is read at a glance. */
