@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 
 import type { OEvent } from "../core/events.ts";
 import { checkPlan, type Violation } from "../core/policy.ts";
+import { snapshot } from "../core/snapshot.ts";
 import { runPlan } from "./runner.ts";
 import {
   activeMarkers,
@@ -82,45 +83,16 @@ function printViolations(violations: Violation[]): void {
   console.error("위반을 우회하지 말고 사용자에게 이 내용을 그대로 보고하세요.");
 }
 
-interface CardView {
-  state: "waiting" | "queued" | "running" | "done" | "failed" | "stopped";
-  provider: string;
-  role: string;
-  activity: string;
-}
-
-function summarize(list: OEvent[]): { title: string; cards: Map<string, CardView>; ended?: string } {
-  const cards = new Map<string, CardView>();
-  let title = "";
-  let ended: string | undefined;
-  for (const e of list) {
-    if (e.t === "run.start") {
-      title = e.title;
-      for (const c of e.cards) cards.set(c.id, { state: "waiting", provider: c.provider, role: c.role, activity: "" });
-    } else if (e.t === "run.end") ended = e.status;
-    else {
-      const card = cards.get(e.cardId);
-      if (!card) continue;
-      if (e.t === "card.queued") Object.assign(card, { state: "queued", activity: e.reason });
-      else if (e.t === "card.start") card.state = "running";
-      else if (e.t === "card.tool") card.activity = `${e.name} ${e.summary}`.trim();
-      else if (e.t === "card.message") card.activity = e.text;
-      else if (e.t === "card.limit") card.activity = `사용량 한도 — ${e.until}까지 차단`;
-      else if (e.t === "card.end") Object.assign(card, { state: e.status, activity: e.result ?? card.activity });
-    }
-  }
-  return { title, cards, ended };
-}
-
 function status(runId: string | undefined): number {
   const ids = runId ? [runId] : listRuns(home).slice(-5);
   if (ids.length === 0) console.log("실행 기록이 없습니다.");
   for (const id of ids) {
-    const { title, cards, ended } = summarize(readEvents(home, id));
-    console.log(`${id}  ${title}  [${ended ?? "running"}]`);
-    for (const [cardId, c] of cards) {
+    const run = snapshot(readEvents(home, id));
+    if (!run) continue;
+    console.log(`${id}  ${run.title}  [${run.status}]`);
+    for (const c of run.cards) {
       const activity = c.activity.replace(/\s+/g, " ").slice(0, 100);
-      console.log(`  ${c.state.padEnd(8)} ${cardId} (${c.provider} · ${c.role}) ${activity}`);
+      console.log(`  ${c.state.padEnd(8)} ${c.id} (${c.provider} · ${c.role}) ${activity}`);
     }
   }
   return 0;

@@ -2,7 +2,21 @@
 
 여러 AI 코딩 에이전트와 구독 계정을 한 데스크톱 앱에서 실행하고(작업대), 돌고 있는 세션을 한 화면에서 관측하는(관제탑) 개인용 로컬 앱. 비유하면 Orca의 채팅 UI 버전.
 
-> 상태: O CLI(작업카드 분배)와 정책 자동 차단까지 동작. 채팅 UI·캐릭터 화면은 다음 단계.
+> 상태: O CLI(작업카드 분배)와 정책 자동 차단까지 동작. 채팅 UI·픽셀 사무실 화면은 브라우저 미리보기(실제 기록 재생)까지. 총괄 세션 연결과 Tauri 셸은 다음 단계.
+
+## 화면 (app/)
+
+```sh
+cd app
+npm install
+npm run dev        # http://localhost:1430 — 오늘 종단 시험 기록을 30초로 재생
+npm run check      # TypeScript
+```
+
+- 왼쪽: 총괄과의 대화, 작업 묶음 종이(카드별 상태·최근 활동·선택한 카드 기록), 요청 입력. 미리보기에서는 보내지 않는다고 그대로 알린다.
+- 오른쪽: 픽셀 사무실. 카드 하나가 책상 하나이고, 각 회사 캐릭터가 이벤트대로 작업 중·완료·실패로 그려진다. 아래는 오늘 장부(정책 상한 대비).
+- URL로 상태를 볼 수 있다: `?state=loading|empty|error`, `?t=0.5`(재생 시작 지점), `?card=design`(선택 카드).
+- 이벤트 → 화면 상태 변환은 `src/core/snapshot.ts` 하나로 CLI(`o status`)와 공유한다. 디자인 기록은 `app/src/styles/app.css` 첫 줄의 Hallmark 스탬프와 `.hallmark/log.json`.
 
 - 작업 규칙·브랜치 흐름·정책 차단: [AGENTS.md](AGENTS.md)
 - 설계 초안: [docs/DESIGN.md](docs/DESIGN.md)

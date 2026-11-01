@@ -196,7 +196,7 @@ function readCodex(data: Record<string, unknown>): StreamSignal[] {
   if (data.type === "item.completed" && isRecord(data.item)) {
     const item = data.item;
     if (item.type === "agent_message" && typeof item.text === "string") return [{ kind: "message", text: item.text.trim() }];
-    if (item.type === "command_execution") return [{ kind: "tool", name: "shell", summary: short(item.command) }];
+    if (item.type === "command_execution") return [{ kind: "tool", name: "shell", summary: short(unwrapShell(String(item.command ?? ""))) }];
     if (item.type === "file_change") return [{ kind: "tool", name: "edit", summary: short(JSON.stringify(item.changes ?? "")) }];
     if (item.type === "web_search") return [{ kind: "tool", name: "web_search", summary: short(item.query) }];
     // item.type === "error" items are config warnings; the turn still runs.
@@ -210,7 +210,19 @@ function readCodex(data: Record<string, unknown>): StreamSignal[] {
   return [];
 }
 
-const LIMIT_TEXT = /usage limit|rate limit|quota|resource[_ ]exhausted|too many requests|429/i;
+/**
+ * Codex reports commands wrapped in their shell (`"C:\…\pwsh.exe" -Command "…"`);
+ * people want the command itself.
+ */
+export function unwrapShell(command: string): string {
+  const shell = "(?:pwsh|powershell|bash|sh|cmd|zsh)(?:\\.exe)?";
+  const match = new RegExp(`^\\s*(?:"[^"]*?${shell}"|\\S*?${shell})\\s+(?:-NoProfile\\s+)?(?:-Command|-lc|-c|/c)\\s+([\\s\\S]+)$`, "i").exec(command);
+  if (!match) return command;
+  const inner = match[1].trim();
+  return /^".*"$/s.test(inner) || /^'.*'$/s.test(inner) ? inner.slice(1, -1) : inner;
+}
+
+const LIMIT_TEXT =/usage limit|rate limit|quota|resource[_ ]exhausted|too many requests|429/i;
 
 function limitFromText(text: string, ok: boolean): StreamSignal[] {
   if (ok || !LIMIT_TEXT.test(text)) return [];

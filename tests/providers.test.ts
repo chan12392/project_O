@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Plan } from "../src/core/plan.ts";
-import { StreamReader, cardPrompt, launchSpec } from "../src/core/providers.ts";
+import { StreamReader, cardPrompt, launchSpec, unwrapShell } from "../src/core/providers.ts";
 import { BYPASS_RULES, findHits } from "../src/guard/rules.ts";
 
 const plan: Plan = {
@@ -75,6 +75,14 @@ test("agy: a permission denial that ended the turn is a failure, not SUCCESS", (
   assert.equal(final.kind, "final");
   assert.equal(final.kind === "final" && final.ok, false);
   assert.match(final.kind === "final" ? final.text : "", /RunCommand/);
+});
+
+test("codex shell commands are shown without their shell wrapper", () => {
+  assert.equal(unwrapShell('"C:\\Program Files\\PowerShell\\7.6.4\\pwsh.exe" -Command "Get-Content -LiteralPath \'index.html\'"'), "Get-Content -LiteralPath 'index.html'");
+  assert.equal(unwrapShell("/bin/bash -lc 'npm test'"), "npm test");
+  assert.equal(unwrapShell("git status"), "git status");
+  const [tool] = new StreamReader("codex").read('{"type":"item.completed","item":{"type":"command_execution","command":"\\"C:\\\\pwsh.exe\\" -Command \\"git diff\\""}}');
+  assert.deepEqual(tool, { kind: "tool", name: "shell", summary: "git diff" });
 });
 
 test("card prompts warn about parallel siblings and headless shells", () => {
