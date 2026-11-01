@@ -1,7 +1,7 @@
 # Registers a hidden scheduled task that keeps a test/main mirror checkout
-# up to date every few minutes. Run once per PC:
+# up to date every few minutes with `o sync-mirror`. Run once per PC, after
+# installing o (cargo install --path crates/o-cli):
 #   pwsh scripts/install-mirror-sync.ps1 -Mirror C:/Users/me/orca/workspaces/project_O/test
-# Re-run after sync-mirror.mjs changes to refresh the installed copy.
 param(
   [Parameter(Mandatory = $true)][string]$Mirror,
   [int]$Minutes = 5
@@ -10,15 +10,11 @@ param(
 $branch = (git -C $Mirror branch --show-current).Trim()
 if ($branch -notin @('test', 'main')) { throw "거울 브랜치(test, main)가 아닙니다: $branch" }
 
-$node = (Get-Command node -ErrorAction Stop).Source
-# Run a copy outside the repo: a mirror that is behind may not contain the script.
-$home_ = Join-Path $env:LOCALAPPDATA 'project_O'
-New-Item -ItemType Directory -Force $home_ | Out-Null
-$script = Join-Path $home_ 'sync-mirror.mjs'
-Copy-Item (Join-Path $PSScriptRoot 'sync-mirror.mjs') $script -Force
+# The installed o.exe lives outside the repo, so a mirror that is behind still syncs.
+$o = (Get-Command o.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
 # conhost --headless keeps the console process from opening a window.
 $action = New-ScheduledTaskAction -Execute "$env:WINDIR\System32\conhost.exe" `
-  -Argument "--headless `"$node`" `"$script`" `"$Mirror`""
+  -Argument "--headless `"$o`" sync-mirror `"$Mirror`""
 $trigger = New-ScheduledTaskTrigger -Once -At (Get-Date).AddMinutes(1) `
   -RepetitionInterval (New-TimeSpan -Minutes $Minutes)
 $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnBatteries `
@@ -27,4 +23,4 @@ $settings = New-ScheduledTaskSettingsSet -StartWhenAvailable -DontStopIfGoingOnB
 $name = "project_O mirror sync ($branch)"
 Register-ScheduledTask -TaskName $name -Action $action -Trigger $trigger -Settings $settings `
   -Description "project_O $branch 거울 폴더를 origin/$branch로 fast-forward" -Force | Out-Null
-Write-Output "등록: $name → $Mirror (${Minutes}분마다). 로그: $env:LOCALAPPDATA\project_O\mirror-sync.log"
+Write-Output "등록: $name → $Mirror (${Minutes}분마다, $o). 로그: $env:LOCALAPPDATA\project_O\mirror-sync.log"

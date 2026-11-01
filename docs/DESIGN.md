@@ -8,7 +8,7 @@
 
 ## 1. 풀고 싶은 문제
 
-| | A (황윤찬) — 관제탑 | B (용우) — 통합 작업대 |
+| | A — 관제탑 | B — 통합 작업대 |
 |---|---|---|
 | 한 줄 | 흩어진 에이전트 세션을 한 화면에서 관측하고, 사람이 개입할 일을 놓치지 않는다 | Claude·Codex 등 여러 구독 계정과 모델을 한 데스크톱 앱에서 쓰고, 역할별로 라우팅한다 |
 | 답하는 질문 | 지금 뭐가 돌고 있나? 누가 나를 기다리나? 어디까지 했고 뭘 하다 말았나? | 이 일은 어느 모델·계정으로 시킬까? 계정을 바꾸지 않고 바로 이어서 쓸 수 있나? |
@@ -103,11 +103,11 @@
 - 구독 한도는 일반적인 개인 사용을 전제로 한다. 계정을 돌려 가며 한도를 피하는 용도로 쓰지 않는다.
 - 총괄 에이전트가 작업을 나눠 다른 CLI에 넘기는 것은 허용 범위다. 각 단계가 공식 CLI 자신의 로그인으로 실행되기 때문이다. 단, 사람이 보지 않는 대량·상시 자동 실행은 하지 않는다 — 실행 동시성과 하루 작업 수에 상한을 둔다. Anthropic 소비자 약관은 API 키나 명시 허용 외의 자동화 접근을 금지하며, `claude -p`는 공식 도움말이 허용한 경로다.
 - 출처: [Claude Code 법률·준수](https://code.claude.com/docs/en/legal-and-compliance), [Claude 플랜으로 Agent SDK 사용](https://support.claude.com/en/articles/15036540), [Gemini CLI FAQ](https://geminicli.com/docs/resources/faq/), [Gemini CLI 헤드리스](https://www.geminicli.com/docs/cli/headless), [OpenAI 토큰 공유](https://developers.openai.com/siwc/token-sharing-open-source)
-- 자동 차단 구현: `src/guard/`(에이전트 훅·git 훅·CI), `src/core/policy.ts`(O CLI). 목록은 AGENTS.md "프로바이더 정책 자동 차단".
+- 자동 차단 구현: `crates/o-guard`(에이전트 훅·git 훅·CI), `crates/o-core/src/policy.rs`(O CLI). 목록은 AGENTS.md "프로바이더 정책 자동 차단".
 
 ## 9. 화면 계약 (다음 단계)
 
-채팅 UI와 캐릭터 화면은 O CLI가 쓰는 `events.jsonl`(`src/core/events.ts`의 `OEvent`)만 읽는다. 프로바이더별 출력 형식은 화면에 오지 않는다.
+채팅 UI와 캐릭터 화면은 O CLI가 쓰는 `events.jsonl`(Rust `crates/o-core`가 쓰고, 화면은 `src/core/events.ts`의 `OEvent` 타입으로 읽음)만 읽는다. 프로바이더별 출력 형식은 화면에 오지 않는다.
 
 | 이벤트 | 채팅 UI | 오른쪽 캐릭터 화면 |
 |---|---|---|

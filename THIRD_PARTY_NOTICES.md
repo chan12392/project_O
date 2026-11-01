@@ -71,6 +71,13 @@ sheets for composed characters) were generated the same way (runs `20261101-1642
 `20261101-165327-6n89`); `body-*.png` and `char-*.png` are derived from them by
 `scripts/align-sprite-sheets.py` and `scripts/build-character-parts.py`.
 
+## Rust crates
+
+The `o` command (`crates/`) builds on crates from crates.io under permissive licenses:
+serde, serde_json, regex, chrono and windows-sys (MIT or Apache-2.0), rusqlite (MIT) with
+SQLite compiled in (public domain). `cargo tree` lists the full set; their license texts
+ship in each crate's source.
+
 ## Fonts
 
 - Geist (`@fontsource-variable/geist`), SIL Open Font License 1.1
