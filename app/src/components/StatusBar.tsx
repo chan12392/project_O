@@ -1,6 +1,6 @@
 import { RefreshCw, RotateCcw } from "lucide-react";
 
-import { LIMITS } from "../../../src/core/policy.ts";
+import { LIMITS } from "../../../src/core/limits.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../format.ts";
 import type { LiveStatus } from "../useLiveRuns.ts";

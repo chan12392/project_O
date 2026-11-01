@@ -1,8 +1,8 @@
 # ADR-0001: Tauri 2 + Rust 코어 + React 화면
 
-- 상태: 제안
+- 상태: 채택 (2026-11-02 — B 승인 없이 진행하기로 A가 결정. 단계 1·2 적용, 단계 3(Tauri 셸)은 다음)
 - 날짜: 2026-11-01
-- 승인: [x] A  [ ] B
+- 승인: [x] A  [ ] B (사후 확인 필요)
 - 관련: `docs/DESIGN.md` D1(기술 스택), D2(Orchestrator 코드 이관)
 
 ## 배경
@@ -33,3 +33,11 @@ O CLI(작업카드 분배)와 정책 차단을 TypeScript로 먼저 만들어 �
 - 수정 반복이 느려진다(컴파일 대기). CI에 Rust 빌드가 추가되어 몇 분 늘어난다.
 - 훅은 빌드된 바이너리가 있어야 동작한다. 빌드 전 상태에서 검사가 조용히 통과하지 않도록 git 훅이 바이너리 부재 시 커밋을 막는다.
 - 되돌리기: 이관 완료 전까지는 TypeScript 버전이 남아 있으므로 언제든 1번으로 돌아갈 수 있다.
+
+## 적용 결과 (2026-11-02)
+
+- `crates/o-guard`: 정책 규칙·에이전트 훅(`o hook`)·저장소 검사(`o scan`). 훅은 Node를 띄우지 않고 실행 파일 하나로 끝난다.
+- `crates/o-core`: 계획·이벤트·정책·프로바이더 실행/스트림 해석·실행 기록·실행기·사용량 조회. Windows에서 카드 프로세스는 Job Object에 묶여 실행기가 죽어도 남지 않는다. CLI는 셸 없이 띄운다.
+- `crates/o-cli`: `o.exe` 하나. 기존 명령에 `o hook`, `o scan`, `o runs --json`, `o usage --cached`, `o sync-mirror`를 더했다. 거울 동기화는 Node 스크립트 대신 `o sync-mirror`.
+- TypeScript로 남긴 것: 화면이 쓰는 기록 접기(`src/core/snapshot.ts`)·다음 할 일(`attention.ts`)·타입과 한도 표시값. 개발 서버 API는 직접 파일을 읽지 않고 `o`를 부른다.
+- 다음 단계: Tauri 셸에서 `o-core`를 직접 쓰고 개발 서버 API를 Tauri 명령·파일 감시로 바꾼다.

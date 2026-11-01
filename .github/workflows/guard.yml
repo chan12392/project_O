@@ -14,16 +14,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: 프로바이더 정책 검사 (o scan)
+        run: cargo run --quiet --release -p o-cli -- scan --all
+      - name: Rust 테스트·lint
+        run: |
+          cargo test --workspace --release
+          cargo clippy --workspace --release -- -D warnings
       - uses: actions/setup-node@v4
         with:
           node-version: 24
-      - name: 프로바이더 정책 검사
-        run: node src/guard/scan.ts --all
-      - name: 테스트
-        run: npm test
-      - name: 타입 검사 (O CLI·앱)
+      - name: 화면 로직 테스트·타입 검사
         run: |
           npm ci --ignore-scripts
           npm ci --ignore-scripts --prefix app
+          npm test
           npm run check
           npx tsc --noEmit -p app
