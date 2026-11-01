@@ -12,7 +12,7 @@ function ctx(overrides: Partial<PolicyContext> = {}): PolicyContext {
     startedToday: 0,
     cooldowns: {},
     projectExists: () => true,
-    projectBranch: () => "younchan",
+    isMirror: () => false,
     ...overrides,
   };
 }
@@ -75,7 +75,7 @@ test("caps: plan size, active slots and the daily ceiling", () => {
 });
 
 test("work cannot be sent into a test/main mirror", () => {
-  const { violations } = checkPlan(plan([codeCard]), ctx({ projectBranch: () => "test" }));
+  const { violations } = checkPlan(plan([codeCard]), ctx({ isMirror: () => true }));
   assert.ok(violations.some((v) => v.rule === "read-only-project"));
 });
 

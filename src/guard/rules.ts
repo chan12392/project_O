@@ -45,6 +45,9 @@ export const CODE_RULES: Rule[] = [...CREDENTIAL_RULES, ...BACKEND_RULES, ...BYP
  */
 export const READ_ONLY_BRANCHES = ["test", "main"];
 
+/** Mirrors are project_O checkouts only; other repositories on main are ordinary work. */
+export const PROJECT_REMOTE = /[/:]project_O(\.git)?\/?$/i;
+
 /** Shell commands an agent may run inside a read-only checkout. */
 export const READ_ONLY_COMMANDS: RegExp[] = [
   /^git\s+(status|log|diff|show|fetch|rev-parse|ls-files|grep|blame|shortlog|describe)\b/,

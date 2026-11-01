@@ -1,5 +1,5 @@
 import { CARD_FIELDS, PLAN_FIELDS, PROVIDERS, isProvider, type Card, type Plan, type ProviderId } from "./plan.ts";
-import { CODE_RULES, READ_ONLY_BRANCHES, findHits } from "../guard/rules.ts";
+import { CODE_RULES, findHits } from "../guard/rules.ts";
 
 /**
  * The rules that decide whether a plan may run. The supervising agent only
@@ -36,8 +36,8 @@ export interface PolicyContext {
   /** Provider → ISO time until which it may not be used. */
   cooldowns: Partial<Record<ProviderId, string>>;
   projectExists: (path: string) => boolean;
-  /** Git branch checked out at the project folder, "" outside a repo. */
-  projectBranch: (path: string) => string;
+  /** Whether the folder is a project_O test/main mirror checkout. */
+  isMirror: (path: string) => boolean;
 }
 
 export function emptyCounts(): Record<ProviderId, number> {
@@ -59,8 +59,8 @@ export function checkPlan(input: unknown, ctx: PolicyContext): { plan?: Plan; vi
   if (typeof title !== "string" || !title.trim()) add("plan-shape", "title이 필요합니다");
   if (typeof project !== "string" || !isAbsolute(project)) add("plan-shape", "project는 절대 경로여야 합니다");
   else if (!ctx.projectExists(project)) add("plan-shape", `project 폴더가 없습니다: ${project}`);
-  else if (READ_ONLY_BRANCHES.includes(ctx.projectBranch(project))) {
-    add("read-only-project", `${project}는 ${ctx.projectBranch(project)} 브랜치 거울이라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요`);
+  else if (ctx.isMirror(project)) {
+    add("read-only-project", `${project}는 project_O의 test·main 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요`);
   }
   if (!Array.isArray(cards) || cards.length === 0) {
     add("plan-shape", "cards가 1개 이상 필요합니다");
