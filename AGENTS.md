@@ -29,12 +29,23 @@ yongwoo-<주제>  ──PR──▶ yongwoo  ──PR──▶ test ─┘
 
 1. 작업 브랜치 → 자기 개인 브랜치: 본인이 병합한다.
 2. A, B는 각자 개인 브랜치에서 `test`로 PR을 올린다.
-3. `test`에 병합한 뒤 함께 돌려 보며 오류·보완점을 찾는다. 통합 수정은 `test`에 직접 커밋할 수 있다(작고 통합에 한정된 수정만).
+3. `test`에 병합한 뒤 함께 돌려 보며 오류·보완점을 찾는다. 수정은 `test`에 직접 하지 않고 개인 브랜치에서 고쳐 다시 PR로 올린다.
 4. 두 사람 모두 승인하면 `test` → `main` PR을 병합한다. PR 작성자는 템플릿의 승인 체크로, 상대는 GitHub 리뷰 Approve로 승인한다.
 5. `main` 병합 후 각자 `main`을 개인 브랜치에 병합해 맞춘다.
 
 - 병합 방식은 merge commit만 쓴다(squash·rebase 병합은 저장소에서 꺼 두었다). 브랜치 간 이력이 어긋나지 않게 하기 위해서다.
 - 위 흐름에 맞지 않는 PR은 `.github/workflows/branch-flow.yml` 검사가 실패시킨다. 비공개 무료 플랜이라 브랜치 보호를 켤 수 없어 검사 실패가 병합 버튼을 막지는 않는다. 검사가 빨간색이면 병합하지 않는다.
+
+## 작업 폴더 (Orca 프로젝트 `project_O`)
+
+| 폴더 | 브랜치 | 용도 |
+|---|---|---|
+| `orca/projects/project_O` | 자기 개인 브랜치 (`younchan` 또는 `yongwoo`) | 작업 |
+| `orca/workspaces/project_O/test` | `test` | **읽기 전용 거울.** 병합 결과를 받아 함께 돌려 보는 곳 |
+
+- `test`·`main`이 체크아웃된 폴더는 에이전트가 바꿀 수 없다. 파일 수정, 허용 목록 밖의 셸 명령(조회·테스트·`git pull --ff-only`만 허용), 커밋, push, O 작업 전달이 모두 막힌다. 다른 폴더의 세션이 경로로 거울 파일을 고치려 해도 막는다.
+- 거울은 예약 작업이 5분마다 `origin/test`로 fast-forward한다(`scripts/install-mirror-sync.ps1`, 로그 `%LOCALAPPDATA%\project_O\mirror-sync.log`). 로컬 변경이 있으면 지우지 않고 동기화를 멈춘 뒤 로그에 남긴다.
+- 각자 PC에서 한 번 설정한다: `git worktree add <거울 폴더> test` → `pwsh scripts/install-mirror-sync.ps1 -Mirror <거울 폴더>`.
 
 ## 설계 변경
 

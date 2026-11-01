@@ -47,8 +47,27 @@ test("hook enforces branch names", () => {
   assert.ok(review(bash("git checkout -b younchan/x"), onBranch("younchan")).length > 0);
   assert.ok(review(bash("git switch -c a/x"), onBranch("younchan")).length > 0);
   assert.deepEqual(review(bash("git switch -c yongwoo-account-vault"), onBranch("yongwoo")), []);
-  assert.deepEqual(review(bash("git switch -c younchan"), onBranch("main")), []);
+  assert.deepEqual(review(bash("git switch -c younchan"), onBranch("yongwoo")), []);
   assert.deepEqual(review(bash("git branch -d younchan-old"), onBranch("younchan")), []);
+});
+
+test("test and main checkouts are read-only for agents", () => {
+  const mirror = (command: string) => ({ tool_name: "Bash", tool_input: { command }, cwd: "C:/ws/test" });
+  for (const ok of ["git status", "git pull --ff-only", "git log --oneline -5", "npm test", "node --test tests/x.test.ts", "git diff 2>&1 | head -20", "ls > /dev/null"]) {
+    assert.deepEqual(review(mirror(ok), onBranch("test")), [], ok);
+  }
+  for (const bad of ["git commit -m x", "git pull", "git checkout younchan", "npm install left-pad", "echo hi > notes.md", "rm -rf src", "git status && touch x"]) {
+    assert.ok(review(mirror(bad), onBranch("test")).length > 0, bad);
+  }
+  assert.ok(review(mirror("sed -i s/a/b/ README.md"), onBranch("main")).length > 0);
+  assert.deepEqual(review(mirror("sed -i s/a/b/ README.md"), onBranch("younchan")), []);
+
+  // An edit is judged by the branch of the folder the file lives in, wherever the session runs.
+  const branchOf = (dir: string) => (dir.replace(/\\/g, "/").startsWith("C:/ws/test") ? "test" : "younchan");
+  const write = (file_path: string) => ({ tool_name: "Edit", tool_input: { file_path, new_string: "x" }, cwd: "C:/ws/younchan" });
+  assert.ok(review(write("C:/ws/test/src/a.ts"), branchOf).length > 0);
+  assert.ok(review(write("C:\\ws\\test\\new\\dir\\b.ts"), branchOf).length > 0);
+  assert.deepEqual(review(write("C:/ws/younchan/src/a.ts"), branchOf), []);
 });
 
 test("hook blocks edits that introduce forbidden code, outside allowed files", () => {

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import type { OEvent } from "../core/events.ts";
 import type { Plan, ProviderId } from "../core/plan.ts";
 import { LIMITS, emptyCounts, type PolicyContext, type Violation } from "../core/policy.ts";
+import { gitBranchAt } from "../guard/hook.ts";
 
 /**
  * O's state directory. Fixed per machine on purpose: if a caller could point
@@ -131,6 +132,13 @@ export function policyContext(home: string, now: Date): PolicyContext {
     startedToday: startedOn(home, now),
     cooldowns: readCooldowns(home),
     projectExists: (path) => existsSync(path),
+    projectBranch: (path) => {
+      try {
+        return gitBranchAt(path);
+      } catch {
+        return "";
+      }
+    },
   };
 }
 

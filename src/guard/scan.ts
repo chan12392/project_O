@@ -2,14 +2,14 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 
-import { CODE_RULES, findHits, isAllowedPath } from "./rules.ts";
+import { CODE_RULES, READ_ONLY_BRANCHES, findHits, isAllowedPath } from "./rules.ts";
 
 /**
  * Static policy scan, run by git hooks and CI.
  *
  *   --all       every tracked file (CI)
- *   --staged    staged content, and no commits on main (pre-commit)
- *   --pre-push  refuses pushes that target main (pre-push; refs on stdin)
+ *   --staged    staged content, and no commits on test/main (pre-commit)
+ *   --pre-push  refuses pushes that target test/main (pre-push; refs on stdin)
  */
 const mode = process.argv[2] ?? "--all";
 
@@ -42,11 +42,12 @@ function fail(title: string, lines: string[]): never {
 
 if (mode === "--pre-push") {
   const refs = readFileSync(0, "utf8").split("\n").filter(Boolean);
-  const toMain = refs.filter((line) => line.split(" ")[2] === "refs/heads/main");
-  if (toMain.length > 0) fail("main에는 직접 push할 수 없습니다. test → main PR로 병합하세요", toMain);
+  const protectedRefs = READ_ONLY_BRANCHES.map((b) => `refs/heads/${b}`);
+  const blocked = refs.filter((line) => protectedRefs.includes(line.split(" ")[2]));
+  if (blocked.length > 0) fail("test·main에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", blocked);
 } else if (mode === "--staged") {
   const branch = git(["branch", "--show-current"]).trim();
-  if (branch === "main") fail("main 브랜치에서는 커밋할 수 없습니다. 자기 개인 브랜치나 <개인 브랜치>-<주제> 브랜치에서 작업하세요", []);
+  if (READ_ONLY_BRANCHES.includes(branch)) fail(`${branch} 브랜치에서는 커밋할 수 없습니다. 자기 개인 브랜치나 <개인 브랜치>-<주제> 브랜치에서 작업하고 PR로 올리세요`, []);
   const files = git(["diff", "--cached", "--name-only", "--diff-filter=ACMR"]).split("\n").filter(Boolean);
   const problems = scanFiles(files, (path) => git(["show", `:${path}`]));
   if (problems.length > 0) fail("프로바이더 정책에 어긋나는 코드가 있습니다", problems);
