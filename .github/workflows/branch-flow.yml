@@ -1,5 +1,9 @@
 name: branch-flow
 
+# Read-only token: this job only reads the PR's branch names.
+permissions:
+  contents: read
+
 on:
   pull_request:
     types: [opened, reopened, edited, synchronize]
@@ -12,23 +16,23 @@ jobs:
         env:
           HEAD: ${{ github.head_ref }}
           BASE: ${{ github.base_ref }}
+          # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
+          PERSONAL: "younchan yongwoo"
         run: |
           fail() { echo "::error::$1 (head=$HEAD, base=$BASE). AGENTS.md의 병합 흐름을 확인하세요."; exit 1; }
-          case "$BASE" in
-            main)
-              [ "$HEAD" = "test" ] || fail "main에는 test만 병합할 수 있습니다" ;;
-            test)
-              [ "$HEAD" = "a/main" ] || [ "$HEAD" = "b/main" ] || fail "test에는 a/main 또는 b/main만 병합할 수 있습니다" ;;
-            a/main|b/main)
-              owner="${BASE%/main}"
-              case "$HEAD" in
-                "$owner"/main) fail "개인 브랜치 자신에게는 PR을 올릴 수 없습니다" ;;
-                "$owner"/*/*) fail "작업 브랜치는 한 단계까지만 허용됩니다" ;;
-                "$owner"/*) ;;
-                main) ;;  # main 동기화
-                *) fail "$BASE에는 $owner/<주제> 브랜치만 병합할 수 있습니다" ;;
-              esac ;;
-            *)
-              fail "PR 대상은 main, test, a/main, b/main 중 하나여야 합니다" ;;
-          esac
+          is_personal() { for p in $PERSONAL; do [ "$1" = "$p" ] && return 0; done; return 1; }
+          if [ "$BASE" = "main" ]; then
+            [ "$HEAD" = "test" ] || fail "main에는 test만 병합할 수 있습니다"
+          elif [ "$BASE" = "test" ]; then
+            is_personal "$HEAD" || fail "test에는 개인 브랜치($PERSONAL)만 병합할 수 있습니다"
+          elif is_personal "$BASE"; then
+            case "$HEAD" in
+              main) ;;  # main 동기화
+              */*) fail "작업 브랜치 이름에는 /를 쓰지 않습니다" ;;
+              "$BASE"-*) ;;
+              *) fail "$BASE에는 $BASE-<주제> 브랜치만 병합할 수 있습니다" ;;
+            esac
+          else
+            fail "PR 대상은 main, test, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
+          fi
           echo "ok: $HEAD -> $BASE"

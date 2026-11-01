@@ -1,0 +1,28 @@
+[package]
+name = "o-core"
+description = "O CLI core: plans, policy, provider launch and stream reading, run store and runner."
+edition.workspace = true
+version.workspace = true
+publish.workspace = true
+
+[dependencies]
+o-guard = { path = "../o-guard" }
+chrono.workspace = true
+regex.workspace = true
+rusqlite.workspace = true
+serde.workspace = true
+# Key order as written: events, plans and tool summaries keep the order the TS port wrote.
+serde_json = { workspace = true, features = ["preserve_order"] }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_System_JobObjects",
+  "Win32_System_Threading",
+] }
+
+[[test]]
+name = "runner"
+# Its own main: the test binary doubles as the fake provider CLI (see tests/runner.rs).
+harness = false
