@@ -27,6 +27,11 @@
   }
 }
 
+/* The keyboard focus ring every control uses; add focus-visible:ring-inset where the ring must stay inside. */
+@utility focus-ring {
+  @apply focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none;
+}
+
 /* Action sheets: 4 x 4 frames; the x position steps through a row's four frames. */
 .sprite-sheet {
   background-size: 400% 400%;

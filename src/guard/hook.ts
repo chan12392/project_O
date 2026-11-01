@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODE_RULES, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS, findHits, isAllowedPath } from "./rules.ts";
+import { CODE_RULES, CREDENTIAL_RULES, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS, findHits, isAllowedPath } from "./rules.ts";
 
 /**
  * PreToolUse hook for Claude Code and Codex working in this repository.
@@ -39,15 +39,22 @@ export function review(input: HookInput, git: GitProbe): string[] {
   const tool = input.tool_name ?? "";
   const args = input.tool_input ?? {};
   const cwd = input.cwd ?? process.cwd();
-  const currentBranch = () => git.branch(cwd);
+  let branch: string | undefined;
+  const currentBranch = () => (branch ??= git.branch(cwd));
   const reasons: string[] = [];
 
   if (tool === "Bash" || tool === "shell" || tool === "PowerShell") {
     const command = String(args.command ?? "");
     for (const hit of findHits(command, CODE_RULES)) reasons.push(hit.reason);
     reasons.push(...gitReasons(command, currentBranch));
-    if (git.isMirror(cwd)) reasons.push(...readOnlyShellReasons(command));
+    // A mirror is read-only whether the command runs in it or names it from elsewhere.
+    if (git.isMirror(cwd) || pathsIn(command).some((p) => git.isMirror(p))) reasons.push(...readOnlyShellReasons(command));
     return reasons;
+  }
+
+  // Reading a CLI's sign-in files is as off-limits as copying them in a shell.
+  if (tool === "Read" || tool === "Grep" || tool === "Glob") {
+    return findHits(JSON.stringify(args), CREDENTIAL_RULES).map((hit) => hit.reason);
   }
 
   const rawPaths = editedPaths(tool, args);
@@ -75,9 +82,9 @@ function gitReasons(command: string, currentBranch: () => string): string[] {
     if (/\bpush\b/.test(segment)) {
       if (/(\s|:)(refs\/heads\/)?main\b/.test(segment)) reasons.push("main에는 직접 push할 수 없습니다. test → main PR로 병합하세요");
       else if (/(--force\b|--force-with-lease\b|\s-f\b)/.test(segment) && /\stest\b/.test(segment)) reasons.push("test 브랜치는 강제 push할 수 없습니다");
-      else if (!/\bpush\s+\S+\s+\S+/.test(segment) && safeBranch(currentBranch) === "main") reasons.push("main 브랜치에서 push할 수 없습니다");
+      else if (!/\bpush\s+\S+\s+\S+/.test(segment) && currentBranch() === "main") reasons.push("main 브랜치에서 push할 수 없습니다");
     }
-    if (/\b(commit|merge|cherry-pick|rebase)\b/.test(segment) && safeBranch(currentBranch) === "main") {
+    if (/\b(commit|merge|cherry-pick|rebase)\b/.test(segment) && currentBranch() === "main") {
       reasons.push("main 브랜치에서는 커밋·병합하지 않습니다. 자기 개인 브랜치나 <개인 브랜치>-<주제> 브랜치로 옮기세요");
     }
   }
@@ -88,10 +95,24 @@ function gitReasons(command: string, currentBranch: () => string): string[] {
   return reasons;
 }
 
+/** Absolute paths and `git -C` targets a command names, so a mirror can't be changed from another folder. */
+function pathsIn(command: string): string[] {
+  const found = [
+    ...[...command.matchAll(/\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)/g)].map((m) => m[1]),
+    ...(command.match(/(?:[A-Za-z]:[\\/]|\/)[^\s"'|;&<>]+/g) ?? []),
+  ];
+  return [...new Set(found.map((p) => p.replace(/^["']|["']$/g, "")))].slice(0, 6);
+}
+
 function readOnlyShellReasons(command: string): string[] {
   const reasons: string[] = [];
+  // Substitution or a background `&` would run a second command the allow list never saw.
+  if (/\$\(|`|(?<![&>])&(?![&>])/.test(command)) reasons.push(`${READ_ONLY_REASON} — 명령 치환이나 &로 이은 명령은 허용하지 않습니다`);
+  // Read-only commands with options that run a program or write a file.
+  if (/\s(--pre\b|-O\S*|--open-files-in-pager\b|--output\b)/.test(command)) reasons.push(`${READ_ONLY_REASON} — 다른 프로그램을 실행하거나 파일을 쓰는 옵션은 허용하지 않습니다`);
   for (const raw of command.split(/&&|\|\||;|\||\n/)) {
-    const segment = raw.trim();
+    // `git -C <mirror> status` is judged as `git status`.
+    const segment = raw.trim().replace(/^git\s+-C\s+("[^"]+"|'[^']+'|\S+)\s+/, "git ");
     if (!segment) continue;
     const withoutSafeRedirects = segment.replace(/\d?>&\d/g, "").replace(/\d?>\s*(\/dev\/null|\$null|NUL)\b/gi, "");
     if (withoutSafeRedirects.includes(">") || !READ_ONLY_COMMANDS.some((p) => p.test(segment))) {
@@ -102,7 +123,8 @@ function readOnlyShellReasons(command: string): string[] {
 }
 
 function editedPaths(tool: string, args: Record<string, unknown>): string[] {
-  if (typeof args.file_path === "string") return [args.file_path];
+  const path = args.file_path ?? args.notebook_path;
+  if (typeof path === "string") return [path];
   if (tool === "apply_patch") {
     const patch = String(args.command ?? args.patch ?? args.input ?? "");
     return [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((m) => m[1].trim());
@@ -117,18 +139,12 @@ function repoRelative(path: string, cwd: string): string {
   return file.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? file.slice(root.length + 1) : file;
 }
 
-function safeBranch(currentBranch: () => string): string {
-  try {
-    return currentBranch();
-  } catch {
-    return "";
-  }
-}
-
 /** New files live in folders that may not exist yet; ask git from the nearest existing parent. */
 function gitAt(dir: string, args: string[]): string {
   let existing = dir;
   while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+  // A command may name a file; git runs in its folder.
+  if (existsSync(existing) && !statSync(existing).isDirectory()) existing = dirname(existing);
   try {
     return execFileSync("git", args, { cwd: existing, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
   } catch {
@@ -144,13 +160,13 @@ export const realGit: GitProbe = {
 };
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  let input: HookInput = {};
+  // Fail closed: a hook that cannot read its input or crashes blocks the call instead of waving it through.
+  let reasons: string[];
   try {
-    input = JSON.parse(readFileSync(0, "utf8"));
-  } catch {
-    process.exit(0);
+    reasons = review(JSON.parse(readFileSync(0, "utf8")) as HookInput, realGit);
+  } catch (error) {
+    reasons = [`정책 훅이 입력을 검사하지 못했습니다: ${(error as Error).message}`];
   }
-  const reasons = review(input, realGit);
   if (reasons.length > 0) {
     console.error(`project_O 정책 훅이 차단했습니다:\n${[...new Set(reasons)].map((r) => `  - ${r}`).join("\n")}\n규칙: AGENTS.md · docs/DESIGN.md §8. 우회하지 말고 사용자에게 보고하세요.`);
     process.exit(2);

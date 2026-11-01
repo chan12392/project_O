@@ -32,13 +32,18 @@ function span(run: DemoRun): { start: number; length: number } {
   return { start, length: Date.parse(run.events[run.events.length - 1].at) - start };
 }
 
+const IDS = RUNS.map((r) => (r.events[0].t === "run.start" ? r.events[0].runId : ""));
+/** Each recorded run as it ended, drawn once; only the replayed one is redrawn as it plays. */
+const ENDED = RUNS.map((run) => ({ view: snapshot(run.events) as RunView, messages: run.transcript }));
+/** Recorded runs are old: once a replay ends, tickets age by the newest record. */
+const NEWEST = new Date(Math.max(...RUNS.map((r) => Date.parse(r.events[r.events.length - 1].at))));
+
 /**
  * The browser preview's data source: recorded runs, one of them replayed as if
  * live. Live runs come from useRunSource (useLiveRuns.ts); the replay only plays while `active`.
  */
 export function useDemoRuns(initialRun: string | undefined, initialFraction: number, active = true) {
-  const ids = RUNS.map((r) => r.events[0].t === "run.start" ? r.events[0].runId : "");
-  const [replay, setReplay] = useState({ runId: initialRun && ids.includes(initialRun) ? initialRun : ids[0], fraction: initialFraction });
+  const [replay, setReplay] = useState({ runId: initialRun && IDS.includes(initialRun) ? initialRun : IDS[0], fraction: initialFraction });
   const playing = replay.fraction < 1;
 
   useEffect(() => {
@@ -50,27 +55,23 @@ export function useDemoRuns(initialRun: string | undefined, initialFraction: num
   const runs = useMemo(
     () =>
       RUNS.map((run, i) => {
-        const replayed = ids[i] === replay.runId;
+        if (IDS[i] !== replay.runId || replay.fraction >= 1) return ENDED[i];
         const { start, length } = span(run);
-        const cutoff = replayed ? start + length * replay.fraction : Infinity;
+        const cutoff = start + length * replay.fraction;
         return {
           view: snapshot(run.events.filter((e) => Date.parse(e.at) <= cutoff)) as RunView,
           messages: run.transcript.filter((m) => Date.parse(m.at) <= cutoff),
         };
       }),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
     [replay],
   );
   const restart = useCallback((runId: string) => setReplay({ runId, fraction: 0 }), []);
-  // Recorded runs are old: tickets age by the replay's moment, or by the newest record once it ends.
+  // Tickets age by the replay's moment while it plays.
   const clock = useMemo(() => {
-    const replayed = RUNS[ids.indexOf(replay.runId)];
-    if (playing && replayed) {
-      const { start, length } = span(replayed);
-      return new Date(start + length * replay.fraction);
-    }
-    return new Date(Math.max(...RUNS.map((r) => Date.parse(r.events[r.events.length - 1].at))));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+    const replayed = RUNS[IDS.indexOf(replay.runId)];
+    if (!playing || !replayed) return NEWEST;
+    const { start, length } = span(replayed);
+    return new Date(start + length * replay.fraction);
   }, [replay, playing]);
   return { runs, replayingId: playing ? replay.runId : undefined, restart, clock };
 }

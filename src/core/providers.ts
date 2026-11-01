@@ -1,5 +1,5 @@
 import type { StreamSignal } from "./events.ts";
-import { cardLabel, type Card, type Plan, type ProviderId } from "./plan.ts";
+import { cardLabel, isRecord, type Card, type Plan, type ProviderId } from "./plan.ts";
 
 /**
  * How each official CLI is launched in headless mode and how its stream is
@@ -19,16 +19,15 @@ export interface LaunchSpec {
   env: Record<string, string>;
 }
 
-export interface TeamChannel {
+interface TeamChannel {
   runId: string;
   /** The run's folder, where `o msg` appends; opened for writing to sandboxed CLIs. */
   runDir: string;
 }
 
-export const BINARIES: Record<ProviderId, string> = { claude: "claude", codex: "codex", agy: "agy" };
 
 /** The team channel command each CLI may run without a prompt. */
-export const TEAM_COMMAND = "o msg";
+const TEAM_COMMAND = "o msg";
 
 export function launchSpec(card: Card, plan: Plan, team: TeamChannel): LaunchSpec {
   const prompt = cardPrompt(card, plan, team);
@@ -36,7 +35,7 @@ export function launchSpec(card: Card, plan: Plan, team: TeamChannel): LaunchSpe
   switch (card.provider) {
     case "claude":
       return {
-        bin: BINARIES.claude,
+        bin: "claude",
         args: [
           "-p",
           "--output-format", "stream-json",
@@ -51,7 +50,7 @@ export function launchSpec(card: Card, plan: Plan, team: TeamChannel): LaunchSpe
       };
     case "codex":
       return {
-        bin: BINARIES.codex,
+        bin: "codex",
         args: [
           "exec",
           "--json",
@@ -69,7 +68,7 @@ export function launchSpec(card: Card, plan: Plan, team: TeamChannel): LaunchSpe
       // agy allow-rules match whole commands only, so it gets two fixed ones and
       // writes what it sends to its outbox file first (see `o msg post`).
       return {
-        bin: BINARIES.agy,
+        bin: "agy",
         args: [
           "--output-format", "stream-json",
           "--mode", "accept-edits",
@@ -234,7 +233,8 @@ function readClaude(data: Record<string, unknown>): StreamSignal[] {
             : [],
         )
       : [];
-    if (info.status !== "allowed" && typeof info.resetsAt === "number") {
+    // "allowed_warning" is a heads-up while work still runs; only "rejected" blocks the provider.
+    if (info.status === "rejected" && typeof info.resetsAt === "number") {
       return [...windows, { kind: "limit", until: new Date(info.resetsAt * 1000).toISOString() }];
     }
     return windows;
@@ -314,6 +314,3 @@ function short(value: unknown): string {
   return line.length > 120 ? `${line.slice(0, 117)}...` : line;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}

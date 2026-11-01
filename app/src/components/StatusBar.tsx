@@ -6,7 +6,7 @@ import { PROVIDER_NAME, timeOf } from "../format.ts";
 import type { LiveStatus } from "../useLiveRuns.ts";
 import type { ScreenState } from "../useRun.ts";
 
-const BUTTON = "flex h-5 items-center gap-1 rounded px-1.5 whitespace-nowrap hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
+const BUTTON = "flex h-5 items-center gap-1 rounded px-1.5 whitespace-nowrap hover:bg-accent hover:text-foreground focus-ring";
 
 function sameDay(at: string, now: Date): boolean {
   const day = new Date(at);

@@ -66,10 +66,10 @@ yongwoo-<주제>  ──PR──▶ yongwoo  ──PR──▶ test ─┘
 
 | 지점 | 무엇을 막나 |
 |---|---|
-| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `src/guard/hook.ts`) | 인증 파일·토큰 접근, 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / main 커밋·push / 규칙 밖 브랜치 이름 |
+| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `src/guard/hook.ts`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / main 커밋·push / 규칙 밖 브랜치 이름. 훅이 실패하면 막는다 |
 | git 훅 (`.githooks/`, `npm install` 시 자동 설정) | 같은 코드 규칙으로 커밋 검사, main 커밋·push |
-| CI (`.github/workflows/guard.yml`) | 전체 파일 정책 검사 + 테스트 |
-| O CLI (`src/core/policy.ts`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과, 정책 위반 내용의 팀 메시지 |
+| CI (`.github/workflows/guard.yml`) | 전체 파일 정책 검사 + 테스트 + 타입 검사 (읽기 전용 토큰) |
+| O CLI (`src/core/policy.ts`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002) |
 
 - 카드 CLI에 열어 주는 권한은 팀 대화 명령(`o msg`)뿐이다: Claude는 `--allowedTools "Bash(o msg *)"`, Codex는 실행 폴더 `--add-dir`, Antigravity는 정확히 `o msg read`·`o msg post` 두 명령(그 CLI의 허용 규칙은 전체 일치만 지원). 그 밖의 권한 확인은 그대로 둔다.
 

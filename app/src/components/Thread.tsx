@@ -91,7 +91,7 @@ function RunCard({ run, onOpenCard }: { run: RunView; onOpenCard: (id: string) =
             <button
               type="button"
               onClick={() => onOpenCard(card.id)}
-              className="grid w-full grid-cols-[auto_minmax(0,11rem)_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 max-sm:grid-cols-[auto_minmax(0,1fr)_auto] text-left hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+              className="grid w-full grid-cols-[auto_minmax(0,11rem)_minmax(0,1fr)_auto] items-center gap-3 px-4 py-2.5 max-sm:grid-cols-[auto_minmax(0,1fr)_auto] text-left hover:bg-accent/40 focus-ring focus-visible:ring-inset"
             >
               <AgentStateDot state={card.state} />
               <span className="min-w-0">
@@ -121,7 +121,7 @@ function Notice({ title, action, onAction, children }: { title: string; action: 
       <button
         type="button"
         onClick={onAction}
-        className="mt-4 inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        className="mt-4 inline-flex h-8 items-center rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 focus-ring"
       >
         {action}
       </button>

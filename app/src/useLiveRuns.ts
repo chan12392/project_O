@@ -6,9 +6,9 @@ import type { UsageWindow } from "../../src/core/usage.ts";
 import { USAGE_WINDOWS, useDemoRuns, type Message } from "./useRun.ts";
 
 /** Where the screen's runs come from: this machine's O home, or the recorded demo. */
-export type Source = "live" | "demo";
+type Source = "live" | "demo";
 
-export interface RunEntry {
+interface RunEntry {
   view: RunView;
   messages: Message[];
 }
@@ -46,6 +46,9 @@ function useLiveRuns(enabled: boolean) {
     // Unchanged answers keep the same objects, so a quiet poll re-renders nothing.
     let lastRuns = "";
     let lastUsage = "";
+    // Events are append-only: a run whose event count did not change keeps its RunView,
+    // so memoised readers and the components showing it skip the poll.
+    let known = new Map<string, { count: number; entry: RunEntry }>();
     const schedule = () => {
       window.clearTimeout(timer);
       if (!stopped && !document.hidden) timer = window.setTimeout(poll, POLL_MS);
@@ -61,11 +64,22 @@ function useLiveRuns(enabled: boolean) {
         if (stopped) return;
         if (runsText !== lastRuns) {
           lastRuns = runsText;
-          const body = JSON.parse(runsText) as { runs: { events: OEvent[] }[] };
-          setRuns(body.runs.flatMap((r) => {
+          const body = JSON.parse(runsText) as { runs: { runId: string; events: OEvent[] }[] };
+          const next = new Map<string, { count: number; entry: RunEntry }>();
+          const entries = body.runs.flatMap((r) => {
+            const hit = known.get(r.runId);
+            if (hit && hit.count === r.events.length) {
+              next.set(r.runId, hit);
+              return [hit.entry];
+            }
             const view = snapshot(r.events);
-            return view ? [{ view, messages: [] }] : [];
-          }));
+            if (!view) return [];
+            const entry = { view, messages: [] };
+            next.set(r.runId, { count: r.events.length, entry });
+            return [entry];
+          });
+          known = next;
+          setRuns((prev) => (prev && prev.length === entries.length && prev.every((e, i) => e === entries[i]) ? prev : entries));
         }
         if (usageText && usageText !== lastUsage) {
           lastUsage = usageText;
@@ -120,13 +134,13 @@ export function useRunSource(initialRun: string | undefined, initialFraction: nu
   }, [source, live.runs]);
   const demo = useDemoRuns(initialRun, initialFraction, source === "demo");
 
-  if (source === "demo") return { source, pending: false, ...demo, usageWindows: USAGE_WINDOWS, live: undefined };
+  if (source === "demo") return { pending: false, ...demo, usageWindows: USAGE_WINDOWS, live: undefined };
   return {
-    source: "live" as const,
     /** Waiting for the first answer before deciding or showing anything. */
     pending: !live.runs,
     runs: live.runs ?? [],
     replayingId: undefined,
+    /** Nothing to replay; the status bar offers it only for the demo. */
     restart: (_runId: string) => {},
     /** Live tickets age by the wall clock. */
     clock: undefined,

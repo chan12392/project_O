@@ -1,4 +1,4 @@
-import type { ProviderId } from "./plan.ts";
+import { isRecord, type ProviderId } from "./plan.ts";
 
 /**
  * Subscription windows read through each official CLI, the way Orca reads them:
@@ -24,9 +24,6 @@ function windowName(minutes: unknown): string {
   return typeof minutes === "number" ? `${minutes}m` : "window";
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 /** The `account/rateLimits/read` result: primary and secondary windows of the codex limit. */
 export function parseCodexRateLimits(result: unknown): UsageWindow[] {

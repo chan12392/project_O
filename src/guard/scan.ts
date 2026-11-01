@@ -14,7 +14,7 @@ import { CODE_RULES, READ_ONLY_BRANCHES, findHits, isAllowedPath } from "./rules
 const mode = process.argv[2] ?? "--all";
 
 function git(args: string[]): string {
-  return execFileSync("git", args, { encoding: "utf8", windowsHide: true });
+  return execFileSync("git", args, { encoding: "utf8", windowsHide: true, maxBuffer: 256 * 1024 * 1024 });
 }
 
 function scanFiles(files: string[], read: (path: string) => string): string[] {
@@ -24,8 +24,10 @@ function scanFiles(files: string[], read: (path: string) => string): string[] {
     let text: string;
     try {
       text = read(file);
-    } catch {
-      continue; // deleted in this commit
+    } catch (error) {
+      // A tracked file deleted from the working tree has nothing to scan; any other failure must not pass silently.
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
     }
     if (text.includes("\u0000")) continue; // binary
     for (const hit of findHits(text, CODE_RULES)) problems.push(`${file}:${hit.line} [${hit.rule}] ${hit.reason}`);

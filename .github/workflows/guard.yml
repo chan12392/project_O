@@ -5,6 +5,10 @@ on:
   push:
     branches: [test, younchan, yongwoo]
 
+# Read-only token: these jobs only check out and inspect.
+permissions:
+  contents: read
+
 jobs:
   policy:
     runs-on: ubuntu-latest
@@ -16,4 +20,10 @@ jobs:
       - name: 프로바이더 정책 검사
         run: node src/guard/scan.ts --all
       - name: 테스트
-        run: node --test "tests/*.test.ts"
+        run: npm test
+      - name: 타입 검사 (O CLI·앱)
+        run: |
+          npm ci --ignore-scripts
+          npm ci --ignore-scripts --prefix app
+          npm run check
+          npx tsc --noEmit -p app

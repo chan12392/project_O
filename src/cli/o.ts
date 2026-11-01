@@ -5,6 +5,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { OEvent } from "../core/events.ts";
+import type { Plan } from "../core/plan.ts";
 import { checkMessage, checkPlan, type Violation } from "../core/policy.ts";
 import { outboxPath } from "../core/providers.ts";
 import { snapshot } from "../core/snapshot.ts";
@@ -50,18 +51,17 @@ async function main(argv: string[]): Promise<number> {
     case "dispatch":
       return check(readInput(rest[0]), true);
     case "status":
-      return status(rest[0]);
+      return status(rest[0] === undefined ? undefined : runIdArg(rest[0]));
     case "events":
-      return events(required(rest[0]), rest.includes("--follow"));
+      return events(runIdArg(rest[0]), rest.includes("--follow"));
     case "stop":
-      return stop(required(rest[0]));
+      return stop(runIdArg(rest[0]));
     case "msg":
       return message(rest);
     case "usage":
       return usage(rest.includes("--json"));
     case "_run":
-      await runPlan(home, required(rest[0]), readPlan(home, required(rest[0])));
-      return 0;
+      return runDetached(runIdArg(rest[0]));
     default:
       console.log(USAGE);
       return command && command !== "help" && command !== "--help" ? 1 : 0;
@@ -129,7 +129,13 @@ function stop(runId: string): number {
   requestStop(home, runId);
   for (const marker of activeMarkers(home).filter((m) => m.runId === runId)) {
     if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(marker.pid), "/T", "/F"], { windowsHide: true });
-    else process.kill(marker.pid, "SIGTERM");
+    else {
+      try {
+        process.kill(marker.pid, "SIGTERM");
+      } catch {
+        // Already gone between listing and stopping.
+      }
+    }
   }
   console.log(`중지 요청: ${runId}`);
   return 0;
@@ -149,13 +155,20 @@ function message(args: string[]): number {
     else if (rest[i].startsWith("--")) flags.set(rest[i].slice(2), rest[(i += 1)] ?? "");
     else words.push(rest[i]);
   }
-  const runId = flags.get("run") ?? process.env.O_RUN_ID;
-  const me = flags.get("as") ?? process.env.O_CARD_ID ?? "lead";
-  if (!runId || !existsSync(runDir(home, runId))) {
+  // Inside a card the runner fixes who and where: a card cannot speak as the lead or reach another run.
+  const inCard = Boolean(process.env.O_CARD_ID);
+  const runId = inCard ? process.env.O_RUN_ID : (flags.get("run") ?? process.env.O_RUN_ID);
+  const me = inCard ? (process.env.O_CARD_ID as string) : (flags.get("as") ?? "lead");
+  if (!runId || !RUN_ID.test(runId) || !existsSync(runDir(home, runId))) {
     console.error(`실행을 찾지 못했습니다: ${runId ?? "(--run 없음)"}`);
     return 1;
   }
   const cards = readPlan(home, runId).cards.map((c) => c.id);
+  // `me` names files (outbox, read cursor), so it must be a party of this run.
+  if (me !== "lead" && !cards.includes(me)) {
+    console.error(`이 실행의 카드가 아닙니다: ${me}`);
+    return 1;
+  }
 
   const send = (to: string, text: string): number => {
     const violations = checkMessage(text, { from: me, to, known: cards });
@@ -184,14 +197,15 @@ function message(args: string[]): number {
     return code;
   }
   if (verb === "read") {
-    const all = readEvents(home, runId).filter((e) => e.t === "msg");
-    const mine = flags.has("all") ? all : all.filter((e) => e.t === "msg" && e.from !== me && (e.to === me || e.to === "all"));
+    const all = readEvents(home, runId).filter((e): e is Extract<OEvent, { t: "msg" }> => e.t === "msg");
+    const mine = flags.has("all") ? all : all.filter((e) => e.from !== me && (e.to === me || e.to === "all"));
     const cursorPath = join(runDir(home, runId), `read.${me}`);
     const seen = flags.has("all") || !existsSync(cursorPath) ? 0 : Number(readFileSync(cursorPath, "utf8")) || 0;
     const fresh = mine.slice(seen);
     if (!flags.has("all")) writeFileSync(cursorPath, String(mine.length));
     if (fresh.length === 0) console.log("새 메시지가 없습니다.");
-    for (const e of fresh) if (e.t === "msg") console.log(`[${e.from} → ${e.to}] ${e.text}`);
+    // One line per message: a newline in the text can't fake a second sender.
+    for (const e of fresh) console.log(`[${e.from} → ${e.to}] ${e.text.replace(/\r?\n/g, " ⏎ ")}`);
     return 0;
   }
   console.error(USAGE);
@@ -222,12 +236,40 @@ function readInput(path: string | undefined): unknown {
   }
 }
 
-function required(value: string | undefined): string {
-  if (!value) {
-    console.error(USAGE);
+/** Run ids name folders: letters, digits, "-" and "_" only, so none can climb out of the runs folder. */
+const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+
+function runIdArg(value: string | undefined): string {
+  if (!value || !RUN_ID.test(value)) {
+    console.error(value ? `실행 id 형식이 아닙니다: ${value}` : USAGE);
     process.exit(1);
   }
   return value;
+}
+
+/**
+ * The background half of `o dispatch`. It checks the plan again, since anyone
+ * can start it with a hand-written plan.json, and a crash still ends the run
+ * on record so watchers (`o events --follow`, the app) are not left waiting.
+ */
+async function runDetached(runId: string): Promise<number> {
+  const now = () => new Date().toISOString();
+  let raw: Plan | undefined;
+  try {
+    raw = readPlan(home, runId);
+    const checked = checkPlan(raw, policyContext(home, new Date()));
+    if (!checked.plan) throw new Error(`정책 위반: ${checked.violations.map((v) => v.message).join(" / ")}`);
+    await runPlan(home, runId, checked.plan);
+    return 0;
+  } catch (error) {
+    const message = (error as Error).message;
+    writeFileSync(join(runDir(home, runId), "runner.err.log"), `${now()} ${(error as Error).stack ?? message}\n`);
+    const started = readEvents(home, runId).some((e) => e.t === "run.start");
+    if (!started && raw) appendEvent(home, runId, { t: "run.start", at: now(), runId, title: String(raw.title), project: String(raw.project), cards: [] });
+    if (started || raw) appendEvent(home, runId, { t: "run.end", at: now(), runId, status: "failed" });
+    console.error(message);
+    return 1;
+  }
 }
 
 process.exitCode = await main(process.argv.slice(2));

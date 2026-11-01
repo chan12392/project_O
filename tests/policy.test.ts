@@ -13,9 +13,19 @@ function ctx(overrides: Partial<PolicyContext> = {}): PolicyContext {
     cooldowns: {},
     projectExists: () => true,
     isMirror: () => false,
+    oHome: "C:/Users/me/AppData/Local/project_O",
+    userHome: "C:/Users/me",
     ...overrides,
   };
 }
+
+test("a project may not hold O's state or the home folder within a card's reach", () => {
+  for (const bad of ["C:/Users/me/AppData/Local/project_O", "C:\\Users\\me\\AppData\\Local\\project_O\\runs", "C:/Users/me", "C:/Users/ME/", "C:/", "C:/Users/me/AppData"]) {
+    const { violations } = checkPlan({ ...plan([codeCard]), project: bad }, ctx());
+    assert.ok(violations.some((v) => v.rule === "protected-project"), bad);
+  }
+  assert.ok(checkPlan({ ...plan([codeCard]), project: "C:/Users/me/projects/app" }, ctx()).plan);
+});
 
 function plan(cards: unknown[]) {
   return { title: "랜딩 개편", project, cards };

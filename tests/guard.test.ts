@@ -57,7 +57,8 @@ test("test and main checkouts are read-only for agents", () => {
   for (const ok of ["git status", "git pull --ff-only", "git log --oneline -5", "npm test", "node --test tests/x.test.ts", "git diff 2>&1 | head -20", "ls > /dev/null"]) {
     assert.deepEqual(review(mirror(ok), onBranch("test")), [], ok);
   }
-  for (const bad of ["git commit -m x", "git pull", "git checkout younchan", "npm install left-pad", "echo hi > notes.md", "rm -rf src", "git status && touch x"]) {
+  const sneaky = ["ls & rm -rf src", "echo $(rm -rf src)", "rg --pre=calc x", "git grep -Ocalc x", "git diff --output=f", "grafly build"];
+  for (const bad of ["git commit -m x", "git pull", "git checkout younchan", "npm install left-pad", "echo hi > notes.md", "rm -rf src", "git status && touch x", ...sneaky]) {
     assert.ok(review(mirror(bad), onBranch("test")).length > 0, bad);
   }
   assert.ok(review(mirror("sed -i s/a/b/ README.md"), onBranch("main")).length > 0);
@@ -70,6 +71,19 @@ test("test and main checkouts are read-only for agents", () => {
   assert.ok(review(write("C:/ws/test/src/a.ts"), probe).length > 0);
   assert.ok(review(write("C:\\ws\\test\\new\\dir\\b.ts"), probe).length > 0);
   assert.deepEqual(review(write("C:/ws/younchan/src/a.ts"), probe), []);
+  const notebook = { tool_name: "NotebookEdit", tool_input: { notebook_path: "C:/ws/test/n.ipynb", new_source: "x" }, cwd: "C:/ws/younchan" };
+  assert.ok(review(notebook, probe).length > 0);
+
+  // Naming the mirror from another folder is the same as working in it.
+  const elsewhere = (command: string) => ({ tool_name: "Bash", tool_input: { command }, cwd: "C:/ws/younchan" });
+  assert.ok(review(elsewhere("git -C C:/ws/test commit -m x"), probe).length > 0);
+  assert.ok(review(elsewhere("rm C:/ws/test/src/a.ts"), probe).length > 0);
+  assert.deepEqual(review(elsewhere("git -C C:/ws/test status"), probe), []);
+});
+
+test("sign-in files are off limits to read tools too", () => {
+  assert.ok(review({ tool_name: "Read", tool_input: { file_path: "C:/Users/me/.codex/auth.json" } }, onBranch("younchan")).length > 0);
+  assert.deepEqual(review({ tool_name: "Read", tool_input: { file_path: "C:/repo/README.md" } }, onBranch("younchan")), []);
 });
 
 test("another repository on main is not a mirror", () => {

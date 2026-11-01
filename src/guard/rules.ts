@@ -22,7 +22,7 @@ export const CREDENTIAL_RULES: Rule[] = [
 ];
 
 /** Provider backends. Talking to them ourselves is what the terms forbid. */
-export const BACKEND_RULES: Rule[] = [
+const BACKEND_RULES: Rule[] = [
   { id: "anthropic-api", pattern: /api\.anthropic\.com|anthropic-beta[^\n]{0,40}oauth/i, reason: "Anthropic 서버를 직접 호출할 수 없습니다 — claude CLI를 거치세요" },
   { id: "openai-backend", pattern: /chatgpt\.com\/backend-api|api\.openai\.com/i, reason: "OpenAI 서버를 직접 호출할 수 없습니다 — codex CLI를 거치세요" },
   { id: "google-backend", pattern: /cloudcode-pa\.googleapis\.com|generativelanguage\.googleapis\.com|daily-cloudcode-pa/i, reason: "Google 모델 서버를 직접 호출할 수 없습니다 — agy CLI를 거치세요" },
@@ -58,7 +58,7 @@ export const READ_ONLY_COMMANDS: RegExp[] = [
   /^npm\s+(test|ci|run\s+(test|check|guard))\s*$/,
   /^npx\s+tsc\s+--noEmit\s*$/,
   /^node\s+src\/(guard\/scan\.ts(\s+--all)?|cli\/o\.ts\s+(status|events|check)\b.*)$/,
-  /^grafly\b/,
+  /^grafly\s+(ask|grep|skeleton|callers|map)\b/,
   /^gh\s+(pr|run)\s+(view|list|checks|diff)\b/,
 ];
 
@@ -73,7 +73,7 @@ export const ALLOWED_PATHS: RegExp[] = [
   /^docs\//,
 ];
 
-export interface Hit {
+interface Hit {
   rule: string;
   reason: string;
   line?: number;
