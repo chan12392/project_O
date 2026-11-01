@@ -1,0 +1,23 @@
+{
+  "name": "project-o",
+  "private": true,
+  "version": "0.0.1",
+  "type": "module",
+  "bin": {
+    "o": "src/cli/o.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "o": "node src/cli/o.ts",
+    "test": "node --test \"tests/*.test.ts\"",
+    "check": "tsc --noEmit",
+    "guard": "node src/guard/scan.ts --all",
+    "prepare": "git config core.hooksPath .githooks"
+  },
+  "devDependencies": {
+    "@types/node": "^22.18.0",
+    "typescript": "^5.9.0"
+  }
+}

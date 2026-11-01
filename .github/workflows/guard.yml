@@ -1,0 +1,19 @@
+name: guard
+
+on:
+  pull_request:
+  push:
+    branches: [test, younchan, yongwoo]
+
+jobs:
+  policy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 프로바이더 정책 검사
+        run: node src/guard/scan.ts --all
+      - name: 테스트
+        run: node --test "tests/*.test.ts"

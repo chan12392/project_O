@@ -1,0 +1,3 @@
+#!/bin/sh
+# Policy scan of staged content; also refuses commits on main.
+exec node src/guard/scan.ts --staged
