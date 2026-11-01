@@ -48,7 +48,8 @@ export function review(input: HookInput, branchOf: BranchOf): string[] {
 
   const rawPaths = editedPaths(tool, args);
   for (const path of rawPaths) {
-    const absolute = /^([A-Za-z]:)?[\\/]/.test(path) ? path : `${cwd}/${path}`;
+    // Forward slashes so dirname works on Linux too (hosts send Windows paths).
+    const absolute = (/^([A-Za-z]:)?[\\/]/.test(path) ? path : `${cwd}/${path}`).replace(/\\/g, "/");
     if (READ_ONLY_BRANCHES.includes(safeBranch(() => branchOf(dirname(absolute))))) {
       reasons.push(`${READ_ONLY_REASON} (${path})`);
       return reasons;
