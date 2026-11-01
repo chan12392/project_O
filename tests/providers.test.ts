@@ -69,7 +69,10 @@ test("codex stream: config warnings are not failures", () => {
   assert.deepEqual(r.read('{"type":"thread.started","thread_id":"t1"}'), [{ kind: "session", sessionId: "t1" }]);
   assert.deepEqual(r.read('{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting."}}'), []);
   assert.deepEqual(r.read('{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"ok"}}'), [{ kind: "message", text: "ok" }]);
-  assert.deepEqual(r.read('{"type":"turn.completed","usage":{"input_tokens":1}}'), [{ kind: "final", ok: true, text: "" }]);
+  assert.deepEqual(r.read('{"type":"turn.completed","usage":{"input_tokens":127105,"cached_input_tokens":112384,"output_tokens":519}}'), [
+    { kind: "usage", input: 14721, cached: 112384, output: 519 },
+    { kind: "final", ok: true, text: "" },
+  ]);
   const failed = r.read('{"type":"turn.failed","error":{"message":"You have hit your usage limit."}}');
   assert.deepEqual(failed.map((s) => s.kind), ["limit", "final"]);
 });
@@ -97,6 +100,22 @@ test("agy: a permission denial that ended the turn is a failure, not SUCCESS", (
   assert.equal(final.kind, "final");
   assert.equal(final.kind === "final" && final.ok, false);
   assert.match(final.kind === "final" ? final.text : "", /RunCommand/);
+});
+
+// Real lines from 2026-11-01 runs: Claude reports subscription windows; every CLI reports tokens.
+test("usage and subscription windows come from what each CLI reports", () => {
+  const claude = new StreamReader("claude");
+  assert.deepEqual(
+    claude.read('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1793562000,"rateLimitType":"five_hour","unifiedWindows":{"five_hour":{"utilization":0.02,"resetsAt":1793562000},"seven_day":{"utilization":0.46,"resetsAt":1793750400}}}}'),
+    [
+      { kind: "quota", window: "five_hour", used: 0.02, resetsAt: new Date(1793562000 * 1000).toISOString() },
+      { kind: "quota", window: "seven_day", used: 0.46, resetsAt: new Date(1793750400 * 1000).toISOString() },
+    ],
+  );
+  const [usage] = claude.read('{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":12,"cache_creation_input_tokens":19104,"cache_read_input_tokens":189889,"output_tokens":659}}');
+  assert.deepEqual(usage, { kind: "usage", input: 19116, cached: 189889, output: 659 });
+  const [agy] = new StreamReader("agy").read('{"event":"result","result":{"status":"SUCCESS","response":"ok","usage":{"input_tokens":6981,"output_tokens":13,"thinking_tokens":8,"cache_read_tokens":0}}}');
+  assert.deepEqual(agy, { kind: "usage", input: 6981, cached: 0, output: 21 });
 });
 
 test("codex shell commands are shown without their shell wrapper", () => {

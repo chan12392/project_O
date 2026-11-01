@@ -1,4 +1,4 @@
-import { Building2, ExternalLink, MessagesSquare, PanelRightClose, SquareTerminal } from "lucide-react";
+import { Building2, ExternalLink, PanelRightClose, SquareTerminal } from "lucide-react";
 
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { PROVIDER_SHORT, names } from "../format.ts";
@@ -7,15 +7,17 @@ import { AgentStateDot } from "./AgentStateDot.tsx";
 import { CardTranscript } from "./CardTranscript.tsx";
 import { Office } from "./Office.tsx";
 import { TeamChat } from "./TeamChat.tsx";
+import { UsagePanel } from "./UsagePanel.tsx";
 
 const VIEWS: { id: PanelView; label: string; icon: typeof Building2 }[] = [
   { id: "work", label: "에이전트 작업", icon: SquareTerminal },
   { id: "office", label: "사무실", icon: Building2 },
-  { id: "team", label: "팀 대화", icon: MessagesSquare },
 ];
 
 interface Props {
   run?: RunView;
+  /** Runs whose usage the office shows (today's); defaults to the current run. */
+  usageRuns?: RunView[];
   view: PanelView;
   card?: string;
   onView: (view: PanelView) => void;
@@ -29,7 +31,7 @@ const ICON_BUTTON =
   "flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
 
 /** The right half of the split: pick what to watch beside the lead chat. */
-export function SidePanel({ run, view, card, onView, onCard, onClose, onPopout }: Props) {
+export function SidePanel({ run, usageRuns, view, card, onView, onCard, onClose, onPopout }: Props) {
   const current = run?.cards.find((c) => c.id === card) ?? run?.cards[0];
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col" aria-label="작업 보기">
@@ -46,9 +48,6 @@ export function SidePanel({ run, view, card, onView, onCard, onClose, onPopout }
           >
             <Icon className="size-3.5" aria-hidden="true" />
             {label}
-            {id === "team" && run && run.messages.length > 0 && (
-              <span className="rounded-full bg-muted px-1.5 text-3xs text-muted-foreground">{run.messages.length}</span>
-            )}
             {view === id && <span className="absolute inset-x-0 bottom-0 h-px bg-tab-active-indicator" aria-hidden="true" />}
           </button>
         ))}
@@ -90,9 +89,18 @@ export function SidePanel({ run, view, card, onView, onCard, onClose, onPopout }
         </>
       )}
 
-      {run && view === "office" && <Office run={run} selected={current?.id} onSelect={(id) => { onCard(id); onView("work"); }} />}
-
-      {run && view === "team" && <TeamChat run={run} />}
+      {run && view === "office" && (
+        <div className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas pb-6">
+          <Office run={run} selected={current?.id} onSelect={(id) => { onCard(id); onView("work"); }} />
+          <UsagePanel runs={usageRuns ?? [run]} />
+          <section aria-labelledby="team-title" className="mt-5">
+            <h3 id="team-title" className="px-5 text-2xs font-semibold tracking-wider text-muted-foreground uppercase">
+              팀 대화 {run.messages.length > 0 && <span className="ml-1 normal-case">{run.messages.length}</span>}
+            </h3>
+            <TeamChat run={run} embedded />
+          </section>
+        </div>
+      )}
     </section>
   );
 }

@@ -1,0 +1,9 @@
+{
+  "cell": 256,
+  "cols": 4,
+  "sheets": {
+    "a": { "file": "sheet-{speaker}.png", "raw": "raw-{speaker}.png", "rows": { "idle": 0, "walk": 1, "type": 2, "wave": 3 } },
+    "b": { "file": "sheet-b-{speaker}.png", "raw": "raw-b-{speaker}.png", "rows": { "coffee": 0, "think": 1, "cheer": 2, "stuck": 3 } }
+  },
+  "align": "python scripts/align-sprite-sheets.py app/public/office/sheets raw- sheet- claude codex agy lead (and raw-b- sheet-b- for sheet b)"
+}

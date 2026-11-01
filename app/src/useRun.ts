@@ -11,7 +11,7 @@ export interface Message {
 }
 
 export type ScreenState = "loading" | "empty" | "error" | "full";
-export type PanelView = "work" | "office" | "team";
+export type PanelView = "work" | "office";
 
 interface DemoRun {
   events: OEvent[];
@@ -71,7 +71,8 @@ export function readParams() {
   return {
     state: (["loading", "empty", "error"].includes(state ?? "") ? state : "full") as ScreenState,
     run: params.get("run") ?? undefined,
-    view: (["work", "office", "team"].includes(view ?? "") ? view : "work") as PanelView,
+    // The team chat now lives under the office; older links with view=team land there.
+    view: (view === "office" || view === "team" ? "office" : "work") as PanelView,
     card: params.get("card") ?? undefined,
     start: Number.isFinite(t) && t > 0 ? Math.min(1, t) : 0,
     popout: params.get("popout") === "panel",

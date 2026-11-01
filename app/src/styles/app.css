@@ -27,13 +27,22 @@
   }
 }
 
-/* Office people: a step bounce while walking, a small nod while working. */
-@keyframes person-walk { 0%, 100% { translate: 0 0; } 50% { translate: 0 -6%; } }
-@keyframes person-work { 0%, 100% { translate: 0 0; } 50% { translate: 0 -2%; } }
-.person-walk { animation: person-walk 380ms steps(2, end) infinite; }
-.person-work { animation: person-work 900ms steps(2, end) infinite; }
+/* Action sheets: 4 x 4 frames; the x position steps through a row's four frames. */
+.sprite-sheet {
+  background-size: 400% 400%;
+  background-repeat: no-repeat;
+  image-rendering: pixelated;
+  animation-name: sprite-frames;
+  animation-timing-function: steps(4, jump-end);
+  animation-iteration-count: infinite;
+}
+@keyframes sprite-frames { from { background-position-x: 0%; } to { background-position-x: 133.3333%; } }
 @media (prefers-reduced-motion: reduce) {
-  .person-walk, .person-work { animation: none; }
+  .sprite-sheet { animation: none; }
+}
+
+/* Office people glide between spots; the sheet frames do the walking. */
+@media (prefers-reduced-motion: reduce) {
   .person { transition: none !important; }
 }
 

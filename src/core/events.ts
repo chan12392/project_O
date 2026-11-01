@@ -33,6 +33,10 @@ export type OEvent =
   | { t: "card.end"; at: string; cardId: string; status: CardStatus; result?: string; exitCode: number | null }
   /** A team message between agents of one run (`o msg send`), "lead" for the supervisor, "all" for everyone. */
   | { t: "msg"; at: string; from: Party; to: Party; text: string }
+  /** Tokens a card spent since its last usage event (fresh input, cached input, output). */
+  | { t: "card.usage"; at: string; cardId: string; input: number; cached: number; output: number }
+  /** A subscription window the provider reported: share used (0 to 1) and when it resets. */
+  | { t: "quota"; at: string; provider: ProviderId; window: string; used: number; resetsAt: string }
   | { t: "run.end"; at: string; runId: string; status: "done" | "failed" | "stopped" };
 
 /** What a provider stream line means, before it gets a timestamp and card id. */
@@ -41,4 +45,6 @@ export type StreamSignal =
   | { kind: "message"; text: string }
   | { kind: "tool"; name: string; summary: string }
   | { kind: "limit"; until: string }
+  | { kind: "usage"; input: number; cached: number; output: number }
+  | { kind: "quota"; window: string; used: number; resetsAt: string }
   | { kind: "final"; ok: boolean; text: string };

@@ -121,6 +121,7 @@ function MainWindow() {
             <div className="min-h-0 shrink-0 max-lg:h-[50vh] max-lg:w-full! max-lg:border-t" style={{ width: layout.width }}>
               <SidePanel
                 run={current?.view}
+                usageRuns={runs.map((r) => r.view)}
                 view={selection.view}
                 card={selection.card}
                 onView={(view: PanelView) => select({ view })}
@@ -155,7 +156,7 @@ function PopoutPanel() {
   }, [current]);
   return (
     <div className="h-full">
-      <SidePanel run={current?.view} view={selection.view} card={selection.card} onView={(view) => select({ view })} onCard={(card) => select({ card })} />
+      <SidePanel run={current?.view} usageRuns={runs.map((r) => r.view)} view={selection.view} card={selection.card} onView={(view) => select({ view })} onCard={(card) => select({ card })} />
     </div>
   );
 }

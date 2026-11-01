@@ -135,7 +135,9 @@ function runCard(home: string, runId: string, plan: Plan, card: Card, spawner: S
       else if (signal.kind === "limit") {
         const until = setCooldown(home, card.provider, signal.until, new Date());
         emit({ t: "card.limit", at: now(), cardId: card.id, until });
-      } else final = { ok: signal.ok, text: signal.text };
+      } else if (signal.kind === "usage") emit({ t: "card.usage", at: now(), cardId: card.id, input: signal.input, cached: signal.cached, output: signal.output });
+      else if (signal.kind === "quota") emit({ t: "quota", at: now(), provider: card.provider, window: signal.window, used: signal.used, resetsAt: signal.resetsAt });
+      else final = { ok: signal.ok, text: signal.text };
     }
   });
 

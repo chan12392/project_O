@@ -38,6 +38,23 @@ export interface CardView {
   startedAt?: string;
   endedAt?: string;
   log: CardLogEntry[];
+  /** Tokens the card spent, as its CLI reported them. */
+  usage: Usage;
+}
+
+export interface Usage {
+  input: number;
+  cached: number;
+  output: number;
+}
+
+/** A provider's subscription window as last reported (Claude reports five_hour and seven_day). */
+export interface Quota {
+  provider: ProviderId;
+  window: string;
+  used: number;
+  resetsAt: string;
+  at: string;
 }
 
 export interface RunView {
@@ -50,6 +67,8 @@ export interface RunView {
   cards: CardView[];
   /** The run's team channel, in order. */
   messages: TeamMessage[];
+  /** Latest report per provider and window. */
+  quotas: Quota[];
 }
 
 export function snapshot(events: OEvent[]): RunView | undefined {
@@ -57,10 +76,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
   const byId = new Map<string, CardView>();
   for (const e of events) {
     if (e.t === "run.start") {
-      run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [], messages: [] };
+      run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [], messages: [], quotas: [] };
       for (const c of e.cards) {
         // Runs recorded before labels existed carry only a role.
-        const card: CardView = { ...c, label: c.label ?? cardLabel(c), state: "waiting", activity: "", log: [] };
+        const card: CardView = { ...c, label: c.label ?? cardLabel(c), state: "waiting", activity: "", log: [], usage: { input: 0, cached: 0, output: 0 } };
         byId.set(c.id, card);
         run.cards.push(card);
       }
@@ -79,6 +98,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     if (e.t === "run.end") {
       run.status = e.status;
       run.endedAt = e.at;
+      continue;
+    }
+    if (e.t === "quota") {
+      run.quotas = [...run.quotas.filter((q) => q.provider !== e.provider || q.window !== e.window), { provider: e.provider, window: e.window, used: e.used, resetsAt: e.resetsAt, at: e.at }];
       continue;
     }
     const card = byId.get(e.cardId);
@@ -104,6 +127,9 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       case "card.limit":
         card.activity = `사용량 한도: ${e.until}까지 차단`;
         card.log.push({ at: e.at, kind: "limit", text: card.activity });
+        break;
+      case "card.usage":
+        card.usage = { input: card.usage.input + e.input, cached: card.usage.cached + e.cached, output: card.usage.output + e.output };
         break;
       case "card.end":
         card.state = e.status;

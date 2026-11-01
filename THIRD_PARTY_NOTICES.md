@@ -39,6 +39,10 @@ SOFTWARE.
 by Codex's built-in `image_gen` tool, dispatched through O CLI (run `20261101-151813-l32j`).
 No third-party artwork or logos were used as input.
 
+`app/public/office/sheets/raw-*.png` and `raw-b-*.png` (action sheets) were generated the same way
+from those characters (runs `20261101-161526-km7d`, `20261101-162328-9p0b`); `sheet-*.png` are
+their aligned copies made by `scripts/align-sprite-sheets.py`.
+
 ## Fonts
 
 - Geist (`@fontsource-variable/geist`), SIL Open Font License 1.1

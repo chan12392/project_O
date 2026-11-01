@@ -196,10 +196,17 @@ export class StreamReader {
         return [{ kind: "final", ok: false, text: `권한 거부로 아무 작업 없이 끝남: ${denied.join(", ")} (헤드리스 모드는 승인할 수 없음)` }];
       }
       const ok = result.status === "SUCCESS";
-      return [...limitFromText(text, ok), { kind: "final", ok, text }];
+      const usage: StreamSignal[] = isRecord(result.usage)
+        ? [{ kind: "usage", input: num(result.usage.input_tokens), cached: num(result.usage.cache_read_tokens), output: num(result.usage.output_tokens) + num(result.usage.thinking_tokens) }]
+        : [];
+      return [...usage, ...limitFromText(text, ok), { kind: "final", ok, text }];
     }
     return [];
   }
+}
+
+function num(value: unknown): number {
+  return typeof value === "number" && Number.isFinite(value) ? value : 0;
 }
 
 function readClaude(data: Record<string, unknown>): StreamSignal[] {
@@ -220,14 +227,25 @@ function readClaude(data: Record<string, unknown>): StreamSignal[] {
   }
   if (data.type === "rate_limit_event" && isRecord(data.rate_limit_info)) {
     const info = data.rate_limit_info;
+    const windows: StreamSignal[] = isRecord(info.unifiedWindows)
+      ? Object.entries(info.unifiedWindows).flatMap(([window, w]) =>
+          isRecord(w) && typeof w.utilization === "number" && typeof w.resetsAt === "number"
+            ? [{ kind: "quota" as const, window, used: w.utilization, resetsAt: new Date(w.resetsAt * 1000).toISOString() }]
+            : [],
+        )
+      : [];
     if (info.status !== "allowed" && typeof info.resetsAt === "number") {
-      return [{ kind: "limit", until: new Date(info.resetsAt * 1000).toISOString() }];
+      return [...windows, { kind: "limit", until: new Date(info.resetsAt * 1000).toISOString() }];
     }
-    return [];
+    return windows;
   }
   if (data.type === "result") {
     const ok = data.is_error !== true && data.subtype === "success";
-    return [{ kind: "final", ok, text: String(data.result ?? "").trim() }];
+    const u = isRecord(data.usage) ? data.usage : undefined;
+    const usage: StreamSignal[] = u
+      ? [{ kind: "usage", input: num(u.input_tokens) + num(u.cache_creation_input_tokens), cached: num(u.cache_read_input_tokens), output: num(u.output_tokens) }]
+      : [];
+    return [...usage, { kind: "final", ok, text: String(data.result ?? "").trim() }];
   }
   return [];
 }
@@ -245,7 +263,13 @@ function readCodex(data: Record<string, unknown>): StreamSignal[] {
     // item.type === "error" items are config warnings; the turn still runs.
     return [];
   }
-  if (data.type === "turn.completed") return [{ kind: "final", ok: true, text: "" }];
+  if (data.type === "turn.completed") {
+    const u = isRecord(data.usage) ? data.usage : undefined;
+    const usage: StreamSignal[] = u
+      ? [{ kind: "usage", input: Math.max(0, num(u.input_tokens) - num(u.cached_input_tokens)), cached: num(u.cached_input_tokens), output: num(u.output_tokens) }]
+      : [];
+    return [...usage, { kind: "final", ok: true, text: "" }];
+  }
   if (data.type === "turn.failed" || data.type === "error") {
     const text = String((isRecord(data.error) ? data.error.message : data.message) ?? "").trim();
     return [...limitFromText(text, false), { kind: "final", ok: false, text }];
