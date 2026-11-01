@@ -118,7 +118,11 @@ function runCard(home: string, runId: string, plan: Plan, card: Card, spawner: S
   const reader = new StreamReader(card.provider);
   let final: { ok: boolean; text: string } | undefined;
   let lastMessage = "";
-  child.stderr?.on("data", (chunk: Buffer) => appendFileSync(join(cardsDir, `${card.id}.err.log`), chunk));
+  let stderrTail = "";
+  child.stderr?.on("data", (chunk: Buffer) => {
+    appendFileSync(join(cardsDir, `${card.id}.err.log`), chunk);
+    stderrTail = (stderrTail + chunk.toString("utf8")).slice(-400);
+  });
   const lines = createInterface({ input: child.stdout! });
   lines.on("line", (line) => {
     appendFileSync(join(cardsDir, `${card.id}.raw.jsonl`), `${line}\n`);
@@ -143,7 +147,8 @@ function runCard(home: string, runId: string, plan: Plan, card: Card, spawner: S
       clearActive(home, runId, card.id);
       const stopped = stopRequested(home, runId);
       const status: CardStatus = stopped ? "stopped" : final?.ok && exitCode === 0 ? "done" : "failed";
-      const result = error ?? (final?.text || lastMessage || undefined);
+      // A failure with nothing on stdout usually explains itself on stderr.
+      const result = error ?? (final?.text || lastMessage || (status === "failed" ? stderrTail.trim() : "") || undefined);
       emit({ t: "card.end", at: now(), cardId: card.id, status, result, exitCode });
       resolve(status);
     };

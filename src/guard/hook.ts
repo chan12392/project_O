@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODE_RULES, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS, findHits, isAllowedPath } from "./rules.ts";
+import { CODE_RULES, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS, findHits, isAllowedPath } from "./rules.ts";
 
 /**
  * PreToolUse hook for Claude Code and Codex working in this repository.
@@ -26,23 +26,27 @@ export const PERSONAL_BRANCHES = ["younchan", "yongwoo"];
 const BRANCH_NAME = new RegExp(`^(${PERSONAL_BRANCHES.join("|")})(-[a-z0-9][a-z0-9._-]*)?$`);
 const CREATE_BRANCH = /\bgit\s+(?:switch\s+(?:-c|-C|--create)|checkout\s+(?:-b|-B)|branch)\s+([^\s-]\S*)/g;
 
-/** Returns the git branch checked out at a directory, or "" outside a repo. */
-export type BranchOf = (dir: string) => string;
+/** What the hook asks git about a directory. Both answer "" / false outside a repo. */
+export interface GitProbe {
+  branch: (dir: string) => string;
+  /** A project_O checkout on test or main — not any repository that happens to be on main. */
+  isMirror: (dir: string) => boolean;
+}
 
-const READ_ONLY_REASON = "test·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
+const READ_ONLY_REASON = "project_O의 test·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
 
-export function review(input: HookInput, branchOf: BranchOf): string[] {
+export function review(input: HookInput, git: GitProbe): string[] {
   const tool = input.tool_name ?? "";
   const args = input.tool_input ?? {};
   const cwd = input.cwd ?? process.cwd();
-  const currentBranch = () => branchOf(cwd);
+  const currentBranch = () => git.branch(cwd);
   const reasons: string[] = [];
 
   if (tool === "Bash" || tool === "shell" || tool === "PowerShell") {
     const command = String(args.command ?? "");
     for (const hit of findHits(command, CODE_RULES)) reasons.push(hit.reason);
     reasons.push(...gitReasons(command, currentBranch));
-    if (READ_ONLY_BRANCHES.includes(safeBranch(currentBranch))) reasons.push(...readOnlyShellReasons(command));
+    if (git.isMirror(cwd)) reasons.push(...readOnlyShellReasons(command));
     return reasons;
   }
 
@@ -50,7 +54,7 @@ export function review(input: HookInput, branchOf: BranchOf): string[] {
   for (const path of rawPaths) {
     // Forward slashes so dirname works on Linux too (hosts send Windows paths).
     const absolute = (/^([A-Za-z]:)?[\\/]/.test(path) ? path : `${cwd}/${path}`).replace(/\\/g, "/");
-    if (READ_ONLY_BRANCHES.includes(safeBranch(() => branchOf(dirname(absolute))))) {
+    if (git.isMirror(dirname(absolute))) {
       reasons.push(`${READ_ONLY_REASON} (${path})`);
       return reasons;
     }
@@ -122,11 +126,22 @@ function safeBranch(currentBranch: () => string): string {
 }
 
 /** New files live in folders that may not exist yet; ask git from the nearest existing parent. */
-export function gitBranchAt(dir: string): string {
+function gitAt(dir: string, args: string[]): string {
   let existing = dir;
   while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
-  return execFileSync("git", ["branch", "--show-current"], { cwd: existing, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  try {
+    return execFileSync("git", args, { cwd: existing, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+  } catch {
+    return "";
+  }
 }
+
+export const realGit: GitProbe = {
+  branch: (dir) => gitAt(dir, ["branch", "--show-current"]),
+  isMirror: (dir) =>
+    READ_ONLY_BRANCHES.includes(gitAt(dir, ["branch", "--show-current"])) &&
+    PROJECT_REMOTE.test(gitAt(dir, ["remote", "get-url", "origin"])),
+};
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   let input: HookInput = {};
@@ -135,7 +150,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   } catch {
     process.exit(0);
   }
-  const reasons = review(input, gitBranchAt);
+  const reasons = review(input, realGit);
   if (reasons.length > 0) {
     console.error(`project_O 정책 훅이 차단했습니다:\n${[...new Set(reasons)].map((r) => `  - ${r}`).join("\n")}\n규칙: AGENTS.md · docs/DESIGN.md §8. 우회하지 말고 사용자에게 보고하세요.`);
     process.exit(2);

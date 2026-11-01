@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { review } from "../src/guard/hook.ts";
-import { CODE_RULES, findHits, isAllowedPath } from "../src/guard/rules.ts";
+import { review, type GitProbe } from "../src/guard/hook.ts";
+import { CODE_RULES, PROJECT_REMOTE, findHits, isAllowedPath } from "../src/guard/rules.ts";
 
-const onBranch = (name: string) => () => name;
+/** A project_O checkout on `name`; test/main checkouts are mirrors. */
+const onBranch = (name: string): GitProbe => ({ branch: () => name, isMirror: () => name === "test" || name === "main" });
 const bash = (command: string) => ({ tool_name: "Bash", tool_input: { command }, cwd: "C:/repo" });
 
 test("code that touches credentials, backends or bypass flags is found", () => {
@@ -63,11 +64,22 @@ test("test and main checkouts are read-only for agents", () => {
   assert.deepEqual(review(mirror("sed -i s/a/b/ README.md"), onBranch("younchan")), []);
 
   // An edit is judged by the branch of the folder the file lives in, wherever the session runs.
-  const branchOf = (dir: string) => (dir.replace(/\\/g, "/").startsWith("C:/ws/test") ? "test" : "younchan");
+  const inMirror = (dir: string) => dir.replace(/\\/g, "/").startsWith("C:/ws/test");
+  const probe: GitProbe = { branch: (dir) => (inMirror(dir) ? "test" : "younchan"), isMirror: inMirror };
   const write = (file_path: string) => ({ tool_name: "Edit", tool_input: { file_path, new_string: "x" }, cwd: "C:/ws/younchan" });
-  assert.ok(review(write("C:/ws/test/src/a.ts"), branchOf).length > 0);
-  assert.ok(review(write("C:\\ws\\test\\new\\dir\\b.ts"), branchOf).length > 0);
-  assert.deepEqual(review(write("C:/ws/younchan/src/a.ts"), branchOf), []);
+  assert.ok(review(write("C:/ws/test/src/a.ts"), probe).length > 0);
+  assert.ok(review(write("C:\\ws\\test\\new\\dir\\b.ts"), probe).length > 0);
+  assert.deepEqual(review(write("C:/ws/younchan/src/a.ts"), probe), []);
+});
+
+test("another repository on main is not a mirror", () => {
+  const otherRepoOnMain: GitProbe = { branch: () => "main", isMirror: () => false };
+  const edit = { tool_name: "Edit", tool_input: { file_path: "C:/other/app/index.html", new_string: "x" }, cwd: "C:/ws/younchan" };
+  assert.deepEqual(review(edit, otherRepoOnMain), []);
+  assert.ok(PROJECT_REMOTE.test("https://github.com/chan12392/project_O.git"));
+  assert.ok(PROJECT_REMOTE.test("git@github.com:chan12392/project_O"));
+  assert.ok(!PROJECT_REMOTE.test("https://github.com/someone/project_Other.git"));
+  assert.ok(!PROJECT_REMOTE.test(""));
 });
 
 test("hook blocks edits that introduce forbidden code, outside allowed files", () => {

@@ -62,11 +62,24 @@ export function launchSpec(card: Card, plan: Plan): LaunchSpec {
   }
 }
 
+/**
+ * Headless runs cannot answer permission prompts, so a denied command ends
+ * the turn. Tell the agents that cannot run shell commands up front.
+ */
+const TOOL_NOTE: Record<ProviderId, string | undefined> = {
+  claude: "셸 명령은 승인할 사람이 없어 거부될 수 있습니다. 파일 읽기·쓰기 도구를 우선 쓰세요.",
+  codex: undefined,
+  agy: "셸 명령은 실행할 수 없습니다(헤드리스 모드라 승인 불가). 파일 읽기·쓰기 도구만 쓰세요.",
+};
+
 /** The work card text a provider receives. Kept short: it is paid for on every card. */
 export function cardPrompt(card: Card, plan: Plan): string {
+  const others = plan.cards.filter((c) => c.id !== card.id).map((c) => c.role);
   return [
     `[O 작업카드] ${plan.title} · ${card.role}`,
     `프로젝트: ${plan.project}`,
+    ...(others.length > 0 ? [`같은 폴더에서 다른 카드(${others.join(", ")})가 동시에 일합니다. 맡은 파일 밖의 파일은 지우거나 고치지 마세요.`] : []),
+    ...(TOOL_NOTE[card.provider] ? [TOOL_NOTE[card.provider] as string] : []),
     "",
     card.task.trim(),
     "",
@@ -123,14 +136,23 @@ export class StreamReader {
         }
         return [];
       }
-      if (step.state === "ACTIVE" && typeof step.step_type === "string" && step.step_type !== "user_input") {
-        return [{ kind: "tool", name: step.step_type, summary: short(step.tool_name ?? step.title ?? "") }];
+      if (step.state === "ACTIVE" && step.step_type === "tool" && typeof step.tool_name === "string") {
+        const params = isRecord(step.tool_info) ? step.tool_info.parameters : undefined;
+        return [{ kind: "tool", name: step.tool_name, summary: toolSummary(params) || short(JSON.stringify(params ?? "")) }];
       }
       return [];
     }
     if (data.event === "result" && isRecord(data.result)) {
-      const ok = data.result.status === "SUCCESS";
-      const text = String(data.result.response ?? data.result.error ?? "").trim();
+      const result = data.result;
+      const text = String(result.response ?? result.error ?? "").trim();
+      // agy reports SUCCESS even when a denied permission ended the turn with nothing done.
+      const denied = Array.isArray(result.denied_actions)
+        ? result.denied_actions.map((a) => (isRecord(a) ? String(a.display_name ?? a.action ?? "") : "")).filter(Boolean)
+        : [];
+      if (denied.length > 0 && !text) {
+        return [{ kind: "final", ok: false, text: `권한 거부로 아무 작업 없이 끝남: ${denied.join(", ")} (헤드리스 모드는 승인할 수 없음)` }];
+      }
+      const ok = result.status === "SUCCESS";
       return [...limitFromText(text, ok), { kind: "final", ok, text }];
     }
     return [];
@@ -197,7 +219,10 @@ function limitFromText(text: string, ok: boolean): StreamSignal[] {
 
 function toolSummary(input: unknown): string {
   if (!isRecord(input)) return "";
-  return short(input.file_path ?? input.command ?? input.pattern ?? input.url ?? input.description ?? "");
+  const path = input.file_path ?? input.Path ?? input.TargetFile;
+  // Paths keep their last two segments; the project folder is already known.
+  if (typeof path === "string") return short(path.replace(/\\/g, "/").split("/").slice(-2).join("/"));
+  return short(input.command ?? input.CommandLine ?? input.pattern ?? input.url ?? input.description ?? "");
 }
 
 function short(value: unknown): string {
