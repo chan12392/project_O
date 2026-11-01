@@ -1,0 +1,34 @@
+name: branch-flow
+
+on:
+  pull_request:
+    types: [opened, reopened, edited, synchronize]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: PR 방향 검사
+        env:
+          HEAD: ${{ github.head_ref }}
+          BASE: ${{ github.base_ref }}
+        run: |
+          fail() { echo "::error::$1 (head=$HEAD, base=$BASE). AGENTS.md의 병합 흐름을 확인하세요."; exit 1; }
+          case "$BASE" in
+            main)
+              [ "$HEAD" = "test" ] || fail "main에는 test만 병합할 수 있습니다" ;;
+            test)
+              [ "$HEAD" = "a/main" ] || [ "$HEAD" = "b/main" ] || fail "test에는 a/main 또는 b/main만 병합할 수 있습니다" ;;
+            a/main|b/main)
+              owner="${BASE%/main}"
+              case "$HEAD" in
+                "$owner"/main) fail "개인 브랜치 자신에게는 PR을 올릴 수 없습니다" ;;
+                "$owner"/*/*) fail "작업 브랜치는 한 단계까지만 허용됩니다" ;;
+                "$owner"/*) ;;
+                main) ;;  # main 동기화
+                *) fail "$BASE에는 $owner/<주제> 브랜치만 병합할 수 있습니다" ;;
+              esac ;;
+            *)
+              fail "PR 대상은 main, test, a/main, b/main 중 하나여야 합니다" ;;
+          esac
+          echo "ok: $HEAD -> $BASE"
