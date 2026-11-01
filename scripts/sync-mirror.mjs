@@ -21,8 +21,11 @@ const log = (message) => {
   mkdirSync(home, { recursive: true });
   appendFileSync(join(home, "mirror-sync.log"), `${new Date().toISOString()} ${mirror} ${message}\n`);
 };
+// No repository hooks: this runs unattended every few minutes, and a hook merged into
+// test would otherwise run here unseen. Pointing hooksPath at a missing folder disables them.
+const NO_HOOKS = join(home, "no-hooks");
 const git = (...args) =>
-  execFileSync("git", ["-C", mirror, ...args], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
+  execFileSync("git", ["-c", `core.hooksPath=${NO_HOOKS}`, "-C", mirror, ...args], { encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] }).trim();
 
 try {
   if (!mirror) throw new Error("사용법: node sync-mirror.mjs <mirror 폴더>");

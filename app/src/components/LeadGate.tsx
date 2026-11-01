@@ -28,7 +28,7 @@ export function LeadGate({ project, loading, onWake }: { project: Project; loadi
         <button
           type="button"
           onClick={onWake}
-          className="w-28 rounded-xl focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          className="w-28 rounded-xl focus-ring"
           aria-label={`${project.name} 총괄 부르기`}
         >
           <Sprite speaker="lead" action="coffee" />
@@ -46,7 +46,7 @@ export function LeadGate({ project, loading, onWake }: { project: Project; loadi
         <button
           type="button"
           onClick={onWake}
-          className="mt-4 flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+          className="mt-4 flex h-8 items-center gap-1.5 rounded-md border bg-background px-3 text-xs hover:bg-accent focus-ring"
         >
           <Coffee className="size-3.5" aria-hidden="true" />
           총괄 부르기 · 최근 세션 불러오기

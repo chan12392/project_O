@@ -3,11 +3,11 @@ import { useState } from "react";
 
 import { activity, fleetStats, type ActivityItem, type NextItem } from "../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_SHORT, STATE_WORD, clip, timeOf } from "../format.ts";
+import { PROVIDER_SHORT, STATE_WORD, clip, compact, timeOf } from "../format.ts";
 import { NextTicket } from "./NextUp.tsx";
+import { timeScale } from "../timeScale.ts";
 import { age } from "./Ticket.tsx";
 
-const compact = new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 });
 /** Kinds that hold an agent or a person up; the pass shows these first. */
 const URGENT = new Set(["answer", "failed", "silent", "limit", "review"]);
 const PASS_VISIBLE = 4;
@@ -44,7 +44,7 @@ export function WorkDashboard({ runs, todo, stopped, now, onOpen, onToggle, onNe
           {pass.length > 0 && <span className="rounded-full bg-red-500 px-1.5 text-2xs font-bold text-white tabular-nums">{pass.length}</span>}
           <span className="truncate text-2xs text-muted-foreground">오래 기다린 것부터</span>
           {pass.length > PASS_VISIBLE && (
-            <button type="button" onClick={() => setAll((a) => !a)} className="ml-auto shrink-0 rounded px-1.5 text-2xs text-muted-foreground hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+            <button type="button" onClick={() => setAll((a) => !a)} className="ml-auto shrink-0 rounded px-1.5 text-2xs text-muted-foreground hover:text-foreground focus-ring">
               {all ? "줄여 보기" : `모두 ${pass.length}개 보기`}
             </button>
           )}
@@ -91,7 +91,7 @@ function Metric({ label, value, hint, tone = "", onClick, action }: { label: str
   );
   const cls = "flex items-center gap-2.5 bg-card px-3.5 py-3 text-left";
   return onClick ? (
-    <button type="button" onClick={onClick} title={action} className={`${cls} hover:bg-accent/40 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset`}>
+    <button type="button" onClick={onClick} title={action} className={`${cls} hover:bg-accent/40 focus-ring focus-visible:ring-inset`}>
       {body}
     </button>
   ) : (
@@ -108,35 +108,6 @@ const BAR: Record<CardView["state"], string> = {
   stopped: "bg-neutral-400/60",
 };
 const FLOW_CARDS = 10;
-/** Quiet stretches longer than this fold into a thin gap, so minute-long cards hours apart stay readable. */
-const FOLD_MS = 10 * 60_000;
-const GAP_SHARE = 3;
-
-/** A time axis that skips idle gaps: busy stretches share the width by length, each gap gets a sliver. */
-function timeScale(spans: (readonly [number, number])[]) {
-  const sorted = [...spans].sort((a, b) => a[0] - b[0]);
-  const merged: [number, number][] = [];
-  for (const [s, e] of sorted) {
-    const last = merged.at(-1);
-    if (last && s - last[1] <= FOLD_MS) last[1] = Math.max(last[1], e);
-    else merged.push([s, Math.max(e, s + 1000)]);
-  }
-  const room = 100 - GAP_SHARE * (merged.length - 1);
-  const total = merged.reduce((sum, [s, e]) => sum + (e - s), 0);
-  let left = 0;
-  const stretches = merged.map(([from, to]) => {
-    const width = (room * (to - from)) / total;
-    const stretch = { from, to, left, width };
-    left += width + GAP_SHARE;
-    return stretch;
-  });
-  const at = (t: number) => {
-    const s = stretches.find((x) => t <= x.to) ?? stretches[stretches.length - 1];
-    return s.left + (Math.min(Math.max(t, s.from), s.to) - s.from) / (s.to - s.from) * s.width;
-  };
-  return { at, stretches };
-}
-
 /** The Orchestrator's commit flow, as card lanes: when each card ran, and how it ended. */
 function WorkFlow({ runs, now, onCard }: { runs: RunView[]; now: Date; onCard: (run: string, card: string) => void }) {
   const lanes = runs
@@ -172,7 +143,7 @@ function WorkFlow({ runs, now, onCard }: { runs: RunView[]; now: Date; onCard: (
               <button
                 type="button"
                 onClick={() => onCard(run.runId, card.id)}
-                className="truncate rounded text-left text-2xs hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+                className="truncate rounded text-left text-2xs hover:text-foreground focus-ring"
                 title={`${run.title} · ${card.label}`}
               >
                 <span className="text-foreground">{card.label}</span> <span className="text-muted-foreground">{PROVIDER_SHORT[card.provider]}</span>

@@ -9,7 +9,7 @@ import { Sidebar } from "./components/Sidebar.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
 import { Thread } from "./components/Thread.tsx";
 import { WhoIsWorking } from "./components/WhoIsWorking.tsx";
-import { STATE_WORD } from "./format.ts";
+import { ICON_BUTTON, STATE_WORD } from "./format.ts";
 import { usePanelLayout, usePopoutChannel, type Selection } from "./panelLayout.ts";
 import { LEAD_WORD, projectsOf, useLeads, useProjectGroups, type Project } from "./projects.ts";
 import { useRunSource } from "./useLiveRuns.ts";
@@ -21,20 +21,32 @@ export function App() {
   return initial.popout ? <PopoutPanel /> : <MainWindow />;
 }
 
-/** Selection shared by the main window and the pop-out, mirrored into the URL. */
-function useSelection() {
+/**
+ * Selection shared by the main window and the pop-out, mirrored into the URL.
+ * `select` merges a change into the newest selection (even one made earlier in the
+ * same event) and sends the merged whole to the other window; `receive` applies
+ * what the other window sent without echoing it back.
+ */
+function useSelection(send: (selection: Selection) => void) {
   const [selection, setSelection] = useState<Selection>({ project: initial.project, run: initial.run, view: initial.view, card: initial.card });
-  /** Applies a change from this window or the other one, and mirrors it into this window's URL. */
-  const update = (next: Partial<Selection>) =>
-    setSelection((s) => {
-      const merged = { ...s, ...next };
-      writeParam("project", merged.project);
-      writeParam("run", merged.run);
-      writeParam("view", merged.view);
-      writeParam("card", merged.card);
-      return merged;
-    });
-  return { selection, update };
+  const latest = useRef(selection);
+  const apply = (next: Partial<Selection>) => {
+    const merged = { ...latest.current, ...next };
+    latest.current = merged;
+    setSelection(merged);
+    return merged;
+  };
+  useEffect(() => {
+    writeParam("project", selection.project);
+    writeParam("run", selection.run);
+    writeParam("view", selection.view);
+    writeParam("card", selection.card);
+  }, [selection]);
+  return {
+    selection,
+    select: (next: Partial<Selection>) => send(apply(next)),
+    receive: (next: Selection) => void apply(next),
+  };
 }
 
 type Run = ReturnType<typeof useRunSource>["runs"][number];
@@ -59,8 +71,8 @@ function MainWindow() {
   // Live mode: loading until the first answer, an error only when nothing could ever be read.
   const state: ScreenState =
     chosenState !== "full" ? chosenState : data.pending ? "loading" : data.live?.failed && runs.length === 0 ? "error" : "full";
-  const { selection, update } = useSelection();
-  const layout = usePanelLayout(update);
+  const layout = usePanelLayout((s) => receive(s));
+  const { selection, select, receive } = useSelection(layout.broadcast);
   const askRef = useRef<HTMLTextAreaElement>(null);
   const groups = useProjectGroups();
 
@@ -71,10 +83,6 @@ function MainWindow() {
   const lead = project ? leads.stateOf(project.path) : "ready";
   const announced = useAnnouncer(current?.view);
 
-  const select = (next: Partial<Selection>) => {
-    update(next);
-    layout.broadcast({ ...selection, ...next });
-  };
   const projectOf = (run: string) => runs.find((r) => r.view.runId === run)?.view.project;
   const openCard = (run: string, card: string) => {
     const path = projectOf(run);
@@ -123,19 +131,13 @@ function MainWindow() {
             <span className="ml-auto flex items-center gap-1">
               {project && <WhoIsWorking runs={project.runs} onOpen={openCard} />}
               {layout.popped && (
-                <button type="button" onClick={layout.dock} className="flex h-6 items-center gap-1 rounded-md border px-2 hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none">
+                <button type="button" onClick={layout.dock} className="flex h-6 items-center gap-1 rounded-md border px-2 hover:bg-accent focus-ring">
                   <SquareArrowOutUpRight className="size-3.5" aria-hidden="true" />
                   별도 창에서 보는 중, 다시 붙이기
                 </button>
               )}
               {!layout.popped && !layout.open && (
-                <button
-                  type="button"
-                  onClick={() => layout.setOpen(true)}
-                  aria-label="작업 보기 패널 열기"
-                  title="작업 보기 패널 열기"
-                  className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-                >
+                <button type="button" onClick={() => layout.setOpen(true)} aria-label="작업 보기 패널 열기" title="작업 보기 패널 열기" className={ICON_BUTTON}>
                   <PanelRightOpen className="size-3.5" aria-hidden="true" />
                 </button>
               )}
@@ -169,7 +171,8 @@ function MainWindow() {
               onKeyDown={layout.resizeByKey}
               className="w-1 shrink-0 cursor-col-resize border-l bg-transparent hover:bg-ring/30 focus-visible:bg-ring/50 focus-visible:outline-none max-lg:hidden"
             />
-            <div className="min-h-0 shrink-0 max-lg:h-[50vh] max-lg:w-full! max-lg:border-t" style={{ width: layout.width }}>
+            {/* The stored width can outgrow a window made narrower since; the chat keeps 360px (MIN_CHAT). */}
+            <div className="min-h-0 shrink-0 max-lg:h-[50vh] max-lg:w-full! max-lg:border-t lg:max-w-[calc(100%-360px)]" style={{ width: layout.width }}>
               <SidePanel
                 run={current?.view}
                 projectRuns={project?.runs ?? []}
@@ -205,13 +208,9 @@ function MainWindow() {
 /** The right panel alone in its own window, following and steering the main window's selection. */
 function PopoutPanel() {
   const { runs, usageWindows, clock } = useRunSource(initial.run, 1);
-  const { selection, update } = useSelection();
-  const send = usePopoutChannel(update);
+  const send = usePopoutChannel((s) => receive(s));
+  const { selection, select, receive } = useSelection(send);
   const { project, current } = resolve(runs, selection);
-  const select = (next: Partial<Selection>) => {
-    update(next);
-    send({ ...selection, ...next });
-  };
   useEffect(() => {
     document.title = `${current?.view.title ?? "작업"} 보기 · project_O`;
   }, [current]);
@@ -226,22 +225,28 @@ function PopoutPanel() {
         view={selection.view}
         card={selection.card}
         onView={(view) => select({ view })}
-        onCard={(target) => select(target ? { project: runs.find((r) => r.view.runId === target.run)?.view.project, run: target.run, card: target.card } : { card: undefined })}
+        onCard={(target) =>
+          select(target ? { project: runs.find((r) => r.view.runId === target.run)?.view.project, run: target.run, card: target.card, view: "work" } : { card: undefined })
+        }
       />
     </div>
   );
 }
 
-/** Says out loud when a card finishes, for anyone looking elsewhere. */
+/** Says out loud when a card finishes while its run is watched; cards that had already finished stay quiet. */
 function useAnnouncer(run: RunView | undefined) {
   const [text, setText] = useState("");
   const seen = useRef(new Set<string>());
+  const runs = useRef(new Set<string>());
   useEffect(() => {
-    for (const card of run?.cards ?? []) {
-      const key = `${run?.runId}/${card.id}`;
+    if (!run) return;
+    const first = !runs.current.has(run.runId);
+    runs.current.add(run.runId);
+    for (const card of run.cards) {
+      const key = `${run.runId}/${card.id}`;
       if (card.endedAt && !seen.current.has(key)) {
         seen.current.add(key);
-        setText(`${card.label} 카드 ${STATE_WORD[card.state]}`);
+        if (!first) setText(`${card.label} 카드 ${STATE_WORD[card.state]}`);
       }
     }
   }, [run]);

@@ -3,9 +3,9 @@ import { useCallback, useRef, useState } from "react";
 
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../dismiss.ts";
-import { PROVIDER_SHORT, STATE_WORD, clip, timeOf } from "../format.ts";
+import { ICON_BUTTON, PROVIDER_SHORT, STATE_WORD, clip, timeOf } from "../format.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
-import { lookFor } from "../characters.ts";
+import { lookOf } from "../characters.ts";
 import { Avatar } from "./Avatar.tsx";
 
 const RECENT = 6;
@@ -38,7 +38,7 @@ export function WhoIsWorking({ runs, onOpen }: { runs: RunView[]; onOpen: (run: 
         aria-controls="who-is-working"
         aria-label={`누가 무엇을 하는지 보기, 작업 중 ${working.length}명`}
         title="누가 무엇을 하는지"
-        className="relative flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none aria-expanded:bg-accent aria-expanded:text-foreground"
+        className={`relative ${ICON_BUTTON} aria-expanded:bg-accent aria-expanded:text-foreground`}
       >
         <Users className="size-3.5" aria-hidden="true" />
         {working.length > 0 && (
@@ -80,7 +80,7 @@ function Row({ run, card, onOpen }: { run: RunView; card: CardView; onOpen: () =
       className="flex w-full gap-2.5 border-b px-3.5 py-2.5 text-left last:border-b-0 hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none data-live:bg-agent-working/5"
       data-live={live || undefined}
     >
-      <Avatar speaker={card.provider} look={lookFor(card.id, run.cards.map((c) => c.id))} size="sm" />
+      <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5 text-xs">
           <span className="truncate font-medium">{card.label}</span>

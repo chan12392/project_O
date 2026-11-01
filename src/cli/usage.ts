@@ -1,8 +1,9 @@
 import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { join } from "node:path";
 
 import { parseAgyUsage, parseCodexRateLimits, type UsageWindow } from "../core/usage.ts";
+import { resolveCli } from "./resolve.ts";
 
 const TIMEOUT_MS = 20_000;
 
@@ -13,24 +14,12 @@ export interface UsageReading {
   unavailable: { provider: string; reason: string }[];
 }
 
-/** Finds a CLI on PATH; npm installs Codex as a .cmd shim, so we run its script with node. */
-function resolveCli(name: string): [string, string[]] | undefined {
-  const where = spawnSync(process.platform === "win32" ? "where" : "which", [name], { encoding: "utf8", windowsHide: true });
-  const first = where.stdout?.split(/\r?\n/).find(Boolean);
-  if (!first) return undefined;
-  if (/\.cmd$/i.test(first) || name === "codex") {
-    const script = join(dirname(first), "node_modules", "@openai", "codex", "bin", "codex.js");
-    if (existsSync(script)) return [process.execPath, [script]];
-  }
-  return [first, []];
-}
-
 /** Codex: a short-lived, read-only app-server answers account/rateLimits/read (no model turn). */
 function codexWindows(): Promise<UsageWindow[]> {
   const cli = resolveCli("codex");
   if (!cli) return Promise.reject(new Error("codex CLI를 찾지 못했습니다"));
   return new Promise((resolve, reject) => {
-    const child = spawn(cli[0], [...cli[1], "-c", "approval_policy=never", "-c", "features.plugins=false", "-s", "read-only", "-a", "never", "app-server"], {
+    const child = spawn(cli.command, [...cli.prefix, "-c", "features.plugins=false", "-s", "read-only", "-a", "never", "app-server"], {
       windowsHide: true,
       stdio: ["pipe", "pipe", "ignore"],
     });
@@ -72,21 +61,24 @@ function codexWindows(): Promise<UsageWindow[]> {
 function agyWindows(): UsageWindow[] {
   const cli = resolveCli("agy");
   if (!cli) throw new Error("agy CLI를 찾지 못했습니다");
-  const result = spawnSync(cli[0], [...cli[1], "-p", "/usage", "--output-format", "json", "--print-timeout", "20s"], {
+  const result = spawnSync(cli.command, [...cli.prefix, "-p", "/usage", "--output-format", "json", "--print-timeout", "20s"], {
     encoding: "utf8",
     windowsHide: true,
     timeout: TIMEOUT_MS + 10_000,
     env: { ...process.env, AGY_CLI_DISABLE_AUTO_UPDATE: "true" },
   });
+  if (result.error) throw new Error(`agy /usage 실행 실패: ${result.error.message}`);
   if (result.status !== 0) throw new Error(`agy /usage 실패 (${result.status ?? "시간 초과"})`);
   return parseAgyUsage(result.stdout ?? "");
 }
 
 export async function readUsage(): Promise<UsageReading> {
   const reading: UsageReading = { at: new Date().toISOString(), windows: [], unavailable: [] };
-  const [codex] = await Promise.allSettled([codexWindows()]);
-  if (codex.status === "fulfilled") reading.windows.push(...codex.value);
-  else reading.unavailable.push({ provider: "codex", reason: (codex.reason as Error).message });
+  try {
+    reading.windows.push(...(await codexWindows()));
+  } catch (error) {
+    reading.unavailable.push({ provider: "codex", reason: (error as Error).message });
+  }
   try {
     reading.windows.push(...agyWindows());
   } catch (error) {

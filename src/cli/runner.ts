@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
-import { appendFileSync, existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { appendFileSync } from "node:fs";
+import { join } from "node:path";
 import { createInterface } from "node:readline";
 
 import type { CardStatus } from "../core/events.ts";
@@ -16,8 +16,10 @@ import {
   recordStart,
   runDir,
   setCooldown,
+  startedOn,
   stopRequested,
 } from "./store.ts";
+import { resolveCli } from "./resolve.ts";
 
 export type Spawner = (spec: LaunchSpec, cwd: string) => ChildProcess;
 
@@ -58,6 +60,13 @@ export async function runPlan(home: string, runId: string, plan: Plan, spawner: 
       if (until && Date.parse(until) > Date.now()) {
         pending.splice(pending.indexOf(card), 1);
         emit({ t: "card.end", at: now(), cardId: card.id, status: "failed", result: `${card.provider} 사용량 한도로 ${until}까지 차단됨`, exitCode: null });
+        results.push("failed");
+        continue;
+      }
+      // Dispatch checked the day's cap, but plans dispatched back to back all see the same count.
+      if (startedOn(home, new Date()) >= LIMITS.maxCardsPerDay) {
+        pending.splice(pending.indexOf(card), 1);
+        emit({ t: "card.end", at: now(), cardId: card.id, status: "failed", result: `오늘 실행 상한 ${LIMITS.maxCardsPerDay}개에 닿아 시작하지 않음`, exitCode: null });
         results.push("failed");
         continue;
       }
@@ -106,9 +115,18 @@ function runCard(home: string, runId: string, plan: Plan, card: Card, spawner: S
     return Promise.resolve("failed");
   }
 
+  // No pid: the program never started; "error" follows, nothing to count.
+  if (child.pid === undefined) {
+    return new Promise((resolve) =>
+      child.once("error", (error) => {
+        emit({ t: "card.end", at: now(), cardId: card.id, status: "failed", result: `실행 실패: ${error.message}`, exitCode: null });
+        resolve("failed");
+      }),
+    );
+  }
+
   // Count the card the moment it holds a slot, so a parallel dispatch sees it.
-  const pid = child.pid ?? process.pid;
-  markActive(home, { runId, cardId: card.id, provider: card.provider, pid });
+  markActive(home, { runId, cardId: card.id, provider: card.provider, pid: child.pid });
   recordStart(home, runId, card.id, card.provider, new Date());
   emit({ t: "card.start", at: now(), cardId: card.id, pid: child.pid });
 
@@ -160,35 +178,11 @@ function runCard(home: string, runId: string, plan: Plan, card: Card, spawner: S
   });
 }
 
-/**
- * Launches the official CLI found on PATH. npm installs some CLIs as `.cmd`
- * shims; for Codex we run its script with node directly, and any other shim
- * is refused when the prompt would travel through a shell command line.
- */
-export function spawnOfficial(spec: LaunchSpec, cwd: string): ChildProcess {
-  const resolved = which(spec.bin);
-  if (!resolved) throw new Error(`${spec.bin} CLI를 PATH에서 찾지 못했습니다`);
-  const options = { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ("pipe")[], env: { ...process.env, ...spec.env } };
-  if (/\.(cmd|bat)$/i.test(resolved)) {
-    const script = join(dirname(resolved), "node_modules", "@openai", "codex", "bin", "codex.js");
-    if (spec.bin === "codex" && existsSync(script)) return spawn(process.execPath, [script, ...spec.args], options);
-    if (spec.stdin === undefined) throw new Error(`${spec.bin}는 셸 래퍼로 설치되어 있어 프롬프트를 안전하게 넘길 수 없습니다`);
-    return spawn(resolved, spec.args, { ...options, shell: true });
-  }
-  return spawn(resolved, spec.args, options);
-}
-
-function which(bin: string): string | undefined {
-  const exts = process.platform === "win32" ? [".exe", ".cmd", ".bat", ""] : [""];
-  const sep = process.platform === "win32" ? ";" : ":";
-  for (const dir of (process.env.PATH ?? "").split(sep)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      const candidate = join(dir, bin + ext);
-      if (existsSync(candidate) && (ext || process.platform !== "win32")) return candidate;
-    }
-  }
-  return undefined;
+/** Launches the official CLI found on PATH, never through a shell (see resolveCli). */
+function spawnOfficial(spec: LaunchSpec, cwd: string): ChildProcess {
+  const cli = resolveCli(spec.bin);
+  if (!cli) throw new Error(`${spec.bin} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다`);
+  return spawn(cli.command, [...cli.prefix, ...spec.args], { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"], env: { ...process.env, ...spec.env } });
 }
 
 function sleep(ms: number): Promise<void> {

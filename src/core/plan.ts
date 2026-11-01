@@ -36,3 +36,8 @@ export interface Plan {
 export function isProvider(value: unknown): value is ProviderId {
   return typeof value === "string" && (PROVIDERS as readonly string[]).includes(value);
 }
+
+/** A plain JSON object, as CLI stream lines and plan files are read. */
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}

@@ -16,7 +16,7 @@ import { realGit } from "../guard/hook.ts";
  *   active/<runId>.<cardId>.json   running card markers ({ pid, provider })
  *   ledger.jsonl                   one line per started card (daily cap)
  *   cooldowns.json                 provider → ISO time it is blocked until
- *   blocked.jsonl                  plans the policy refused (shown in the UI)
+ *   blocked.jsonl                  plans the policy refused (an audit trail; o check shows the reasons)
  */
 export function defaultHome(): string {
   const base = process.env.LOCALAPPDATA ?? join(homedir(), ".local", "state");
@@ -48,8 +48,24 @@ export function appendEvent(home: string, runId: string, event: OEvent): void {
 
 export function readEvents(home: string, runId: string): OEvent[] {
   const path = join(runDir(home, runId), "events.jsonl");
-  if (!existsSync(path)) return [];
-  return readLines(path).map((line) => JSON.parse(line) as OEvent);
+  return existsSync(path) ? parseEvents(readFileSync(path, "utf8")) : [];
+}
+
+/**
+ * events.jsonl lines, skipping any that do not parse. A run that is still going
+ * can be read between O's append and its newline, so the last line may be half written.
+ */
+export function parseEvents(text: string): OEvent[] {
+  const events: OEvent[] = [];
+  for (const line of text.split("\n")) {
+    if (!line.trim()) continue;
+    try {
+      events.push(JSON.parse(line) as OEvent);
+    } catch {
+      // Half-written line; the next read gets it whole.
+    }
+  }
+  return events;
 }
 
 export function listRuns(home: string): string[] {
@@ -58,7 +74,7 @@ export function listRuns(home: string): string[] {
   return readdirSync(dir).sort();
 }
 
-export interface ActiveMarker {
+interface ActiveMarker {
   runId: string;
   cardId: string;
   provider: ProviderId;
@@ -134,6 +150,8 @@ export function policyContext(home: string, now: Date): PolicyContext {
     cooldowns: readCooldowns(home),
     projectExists: (path) => existsSync(path),
     isMirror: realGit.isMirror,
+    oHome: home,
+    userHome: homedir(),
   };
 }
 

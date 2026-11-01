@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { nextUp, type NextItem } from "../../../src/core/attention.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { names } from "../format.ts";
+import { readStored, writeStored } from "../storage.ts";
 import { AgentBoard } from "./AgentBoard.tsx";
 import { CardTranscript } from "./CardTranscript.tsx";
 import { NextUp, useHandled } from "./NextUp.tsx";
@@ -17,14 +18,7 @@ const SUBS: { id: Sub; label: string; icon: typeof ListTodo }[] = [
 ];
 const SUB_KEY = "project-o-work-tab";
 
-function loadSub(): Sub {
-  try {
-    const saved = localStorage.getItem(SUB_KEY);
-    return saved === "next" || saved === "board" ? saved : "dashboard";
-  } catch {
-    return "dashboard";
-  }
-}
+const loadSub = () => readStored<Sub>(SUB_KEY, "dashboard", (saved) => (saved === "next" || saved === "board" ? saved : undefined));
 
 /** The clock tickets age by: the caller's (a replay's) or the wall clock, re-read every half minute. */
 function useNow(given: Date | undefined): Date {
@@ -56,11 +50,7 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
   const { todo, stopped } = useMemo(() => nextUp(runs, now, handled), [runs, now, handled]);
   const choose = (next: Sub) => {
     setSub(next);
-    try {
-      localStorage.setItem(SUB_KEY, next);
-    } catch {
-      // Storage off: the choice lasts for this window.
-    }
+    writeStored(SUB_KEY, next);
   };
   const openItem = (item: NextItem) => {
     const run = runs.find((r) => r.runId === item.runId);
@@ -76,7 +66,7 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
         <button
           type="button"
           onClick={() => onCard(undefined)}
-          className="flex h-8 shrink-0 items-center gap-1.5 border-b px-3 text-xs text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
+          className="flex h-8 shrink-0 items-center gap-1.5 border-b px-3 text-xs text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-ring focus-visible:ring-inset"
         >
           <ArrowLeft className="size-3.5" aria-hidden="true" />
           {SUBS.find((s) => s.id === sub)?.label}(으)로 돌아가기
@@ -90,15 +80,14 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
   const waiting = todo.length + stopped.length;
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div role="tablist" aria-label="에이전트 작업 보기" className="flex shrink-0 gap-1 border-b px-3 py-1.5">
+      <div role="group" aria-label="에이전트 작업 보기" className="flex shrink-0 gap-1 border-b px-3 py-1.5">
         {SUBS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             type="button"
-            role="tab"
-            aria-selected={sub === id}
+            aria-pressed={sub === id}
             onClick={() => choose(id)}
-            className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none aria-selected:bg-accent aria-selected:text-foreground"
+            className="flex h-7 items-center gap-1.5 rounded-md px-2.5 text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground focus-ring aria-pressed:bg-accent aria-pressed:text-foreground"
           >
             <Icon className="size-3.5" aria-hidden="true" />
             {label}
@@ -110,7 +99,7 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
           </button>
         ))}
       </div>
-      <div role="tabpanel" aria-label={SUBS.find((s) => s.id === sub)?.label} className="scrollbar-sleek min-h-0 flex-1 overflow-auto bg-chat-canvas p-4">
+      <div className="scrollbar-sleek min-h-0 flex-1 overflow-auto bg-chat-canvas p-4">
         {runs.length === 0 ? (
           <p className="text-sm text-muted-foreground">이 프로젝트에는 아직 작업이 없습니다.</p>
         ) : sub === "dashboard" ? (

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type PointerEvent } from "react";
 
+import { readStored, writeStored } from "./storage.ts";
 import type { PanelView } from "./useRun.ts";
 
 const KEY = "project-o.panel";
@@ -16,22 +17,13 @@ export interface Selection {
 
 type Signal = { type: "select"; selection: Selection } | { type: "popout-closed" } | { type: "dock" };
 
-function load(): { open: boolean; width: number } {
-  try {
-    const saved = JSON.parse(localStorage.getItem(KEY) ?? "{}");
-    return { open: saved.open !== false, width: typeof saved.width === "number" ? saved.width : 560 };
-  } catch {
-    return { open: true, width: 560 };
-  }
-}
+type Layout = { open: boolean; width: number };
 
-function save(state: { open: boolean; width: number }) {
-  try {
-    localStorage.setItem(KEY, JSON.stringify(state));
-  } catch {
-    // Private windows may refuse storage; the layout just won't be remembered.
-  }
-}
+const load = () =>
+  readStored<Layout>(KEY, { open: true, width: 560 }, (saved) => {
+    const s = saved as Partial<Layout> | null;
+    return s && typeof s === "object" ? { open: s.open !== false, width: typeof s.width === "number" ? s.width : 560 } : undefined;
+  });
 
 /**
  * The right panel's layout in the main window: open or closed, its width,
@@ -45,8 +37,12 @@ export function usePanelLayout(onRemoteSelect: (s: Selection) => void) {
   const container = useRef<HTMLDivElement>(null);
   const remote = useRef(onRemoteSelect);
   remote.current = onRemoteSelect;
+  // A drag saves once when it ends, not on every move.
+  const dragging = useRef(false);
 
-  useEffect(() => save({ open, width }), [open, width]);
+  useEffect(() => {
+    if (!dragging.current) writeStored(KEY, { open, width });
+  }, [open, width]);
 
   useEffect(() => {
     const ch = new BroadcastChannel(CHANNEL);
@@ -67,13 +63,22 @@ export function usePanelLayout(onRemoteSelect: (s: Selection) => void) {
     const box = container.current?.getBoundingClientRect();
     if (!box) return;
     event.currentTarget.setPointerCapture(event.pointerId);
-    const move = (e: globalThis.PointerEvent) => setLayout((s) => ({ ...s, width: clamp(box.right - e.clientX) }));
+    dragging.current = true;
+    let next = width;
+    const move = (e: globalThis.PointerEvent) => {
+      next = clamp(box.right - e.clientX);
+      setLayout((s) => ({ ...s, width: next }));
+    };
     const up = () => {
       window.removeEventListener("pointermove", move);
       window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", up);
+      dragging.current = false;
+      writeStored(KEY, { open, width: next });
     };
     window.addEventListener("pointermove", move);
     window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", up);
   };
 
   const resizeByKey = (event: KeyboardEvent<HTMLDivElement>) => {

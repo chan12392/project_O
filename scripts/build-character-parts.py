@@ -200,8 +200,6 @@ def main():
     folder = Path(sys.argv[1])
     data = {"cell": CELL, "rows": FACING, "expressions": EXPRESSIONS, "bodies": {}, "hair": {}, "faces": {}}
     for gender, outfits in OUTFITS.items():
-        raw_front = np.array(align.cut(next(Image.open(folder / f"raw-base-{gender}-move.png").convert("RGBA").crop(b) for _r, _c, b in align.cells(Image.open(folder / f"raw-base-{gender}-move.png").convert("RGBA"))))[0])
-        raw_w = head_width(raw_front)
         heads_w = None
         for outfit in outfits:
             stacked = np.concatenate([np.array(Image.open(folder / f"body-{outfit}-{gender}-{s}.png").convert("RGBA")) for s in SHEETS])
@@ -272,7 +270,7 @@ def main():
                 offsets.append(offset)
         rects = pack(flat, folder / f"char-hair-{gender}.png")
         data["hair"][gender] = {"styles": HAIR_STYLES[gender], "columns": HAIR_COLUMN, "rects": rects, "offsets": offsets}
-        print(f"char-hair-{gender}.png  (raw head {raw_w}px)")
+        print(f"char-hair-{gender}.png")
     (folder / "characters.json").write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
 
 

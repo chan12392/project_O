@@ -1,17 +1,19 @@
 import { ChevronRight, Coffee, Folder, FolderPlus, MoreHorizontal, Pencil, SquarePen, X } from "lucide-react";
 import { useCallback, useId, useRef, useState } from "react";
 
-import type { CardState, RunView } from "../../../src/core/snapshot.ts";
+import type { RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../dismiss.ts";
 import { PROVIDER_SHORT, timeOf } from "../format.ts";
 import { LEAD_WORD, type LeadState, type Project, type useProjectGroups } from "../projects.ts";
 import type { ScreenState } from "../useRun.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
 
+type Groups = ReturnType<typeof useProjectGroups>;
+
 interface Props {
   state: ScreenState;
   projects: Project[];
-  groups: ReturnType<typeof useProjectGroups>;
+  groups: Groups;
   leadState: (path: string) => LeadState;
   project?: string;
   run?: string;
@@ -22,8 +24,6 @@ interface Props {
   onCard: (runId: string, cardId: string) => void;
   onCompose: () => void;
 }
-
-const ROW_FOCUS = "focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
 
 /** Orca's repo sidebar: projects, optionally in groups, each with its lead and its runs. */
 export function Sidebar({ state, projects, groups, leadState, project, run, card, onProject, onWake, onRun, onCard, onCompose }: Props) {
@@ -69,7 +69,7 @@ export function Sidebar({ state, projects, groups, leadState, project, run, card
       </div>
 
       <nav className="flex flex-col gap-0.5 px-2 pb-2">
-        <button type="button" onClick={onCompose} className={`flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent ${ROW_FOCUS}`}>
+        <button type="button" onClick={onCompose} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring">
           <SquarePen className="size-4 text-muted-foreground" aria-hidden="true" />새 요청
         </button>
       </nav>
@@ -79,7 +79,7 @@ export function Sidebar({ state, projects, groups, leadState, project, run, card
         <button
           type="button"
           onClick={() => setNaming({})}
-          className={`ml-auto flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground ${ROW_FOCUS}`}
+          className="ml-auto flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus-ring"
           aria-label="그룹 만들기"
           title="그룹 만들기"
         >
@@ -122,10 +122,10 @@ export function Sidebar({ state, projects, groups, leadState, project, run, card
   );
 }
 
-type Group = ReturnType<typeof useProjectGroups>["groups"][number];
+type Group = Groups["groups"][number];
 
 /** A group's header: fold, rename (pencil or double-click, Enter saves, Esc cancels) and ungroup. */
-function GroupHead({ group: g, count, groups }: { group: Group; count: number; groups: ReturnType<typeof useProjectGroups> }) {
+function GroupHead({ group: g, count, groups }: { group: Group; count: number; groups: Groups }) {
   const [renaming, setRenaming] = useState(false);
   const head = useRef<HTMLButtonElement>(null);
   const finish = (name: string | undefined) => {
@@ -137,7 +137,7 @@ function GroupHead({ group: g, count, groups }: { group: Group; count: number; g
     });
   };
   if (renaming) return <GroupNameInput label={`${g.name} 그룹의 새`} initial={g.name} onDone={finish} />;
-  const icon = `flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover/head:opacity-100 hover:text-foreground focus-visible:opacity-100 ${ROW_FOCUS}`;
+  const icon = "flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover/head:opacity-100 hover:text-foreground focus-visible:opacity-100 focus-ring";
   return (
     <div className="group/head flex items-center rounded-md hover:bg-sidebar-accent/60">
       <button
@@ -146,7 +146,7 @@ function GroupHead({ group: g, count, groups }: { group: Group; count: number; g
         onClick={() => groups.toggle(g.id)}
         onDoubleClick={() => setRenaming(true)}
         aria-expanded={!g.collapsed}
-        className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[13px] font-semibold ${ROW_FOCUS}`}
+        className="flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[13px] font-semibold focus-ring"
       >
         <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${g.collapsed ? "" : "rotate-90"}`} aria-hidden="true" />
         <span className="truncate">{g.name}</span>
@@ -191,17 +191,15 @@ function GroupNameInput({ label, initial, onDone: done }: { label: string; initi
         maxLength={30}
         onKeyDown={(e) => e.key === "Escape" && onDone(undefined)}
         onBlur={(e) => onDone(e.currentTarget.value.trim() || undefined)}
-        className="h-7 w-full rounded-md border bg-background px-2 text-xs focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        className="h-7 w-full rounded-md border bg-background px-2 text-xs focus-ring"
       />
     </form>
   );
 }
 
-const RUN_STATE: Record<RunView["status"], CardState> = { running: "running", done: "done", failed: "failed", stopped: "stopped" };
-
 interface RowProps {
   project: Project;
-  groups: ReturnType<typeof useProjectGroups>;
+  groups: Groups;
   lead: LeadState;
   current: boolean;
   open: boolean;
@@ -220,10 +218,10 @@ function ProjectRow({ project, groups, lead, current, open, run, card, onSelect,
   return (
     <div className="mt-0.5">
       <div data-current={current || undefined} className="group/row flex items-center rounded-md hover:bg-sidebar-accent data-current:bg-sidebar-accent">
-        <button type="button" onClick={onToggle} aria-expanded={open} aria-label={`${project.name} 작업 목록 ${open ? "접기" : "펼치기"}`} className={`flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground ${ROW_FOCUS}`}>
+        <button type="button" onClick={onToggle} aria-expanded={open} aria-label={`${project.name} 작업 목록 ${open ? "접기" : "펼치기"}`} className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground focus-ring">
           <ChevronRight className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />
         </button>
-        <button type="button" onClick={onSelect} aria-current={current || undefined} className={`flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left ${ROW_FOCUS}`}>
+        <button type="button" onClick={onSelect} aria-current={current || undefined} className="flex min-w-0 flex-1 items-center gap-2 py-1.5 pr-1 text-left focus-ring">
           <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
           <span className="truncate text-[13px] font-medium">{project.name}</span>
           {live > 0 && <span className="shrink-0 rounded-full bg-agent-working/15 px-1.5 text-3xs text-agent-working">{live} 진행</span>}
@@ -235,7 +233,7 @@ function ProjectRow({ project, groups, lead, current, open, run, card, onSelect,
           <button
             type="button"
             onClick={lead === "resting" ? onWake : onSelect}
-            className={`flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent ${ROW_FOCUS}`}
+            className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent focus-ring"
             aria-label={`총괄, ${LEAD_WORD[lead]}${lead === "resting" ? ". 눌러서 최근 세션 불러오기" : ""}`}
           >
             {lead === "resting" ? <Coffee className="size-3.5 text-muted-foreground" aria-hidden="true" /> : <AgentStateDot state={lead === "working" ? "running" : lead === "loading" ? "queued" : "done"} />}
@@ -252,42 +250,41 @@ function ProjectRow({ project, groups, lead, current, open, run, card, onSelect,
 }
 
 /** Pattern from beakho-design lucian-074 (header dropdown): a small menu panel under its button. */
-function ProjectMenu({ project, groups, onNewGroup }: { project: Project; groups: ReturnType<typeof useProjectGroups>; onNewGroup: () => void }) {
+function ProjectMenu({ project, groups, onNewGroup }: { project: Project; groups: Groups; onNewGroup: () => void }) {
   const [open, setOpen] = useState(false);
   const panel = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpen(false), []);
   useDismiss(panel, open, close, button);
   const inGroup = groups.member[project.path];
-  const item = `flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent ${ROW_FOCUS}`;
+  const item = "flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent focus-ring";
   return (
     <div className="relative shrink-0">
       <button
         ref={button}
         type="button"
         onClick={() => setOpen((o) => !o)}
-        aria-haspopup="menu"
         aria-expanded={open}
         aria-label={`${project.name} 메뉴`}
-        className={`mr-1 flex size-6 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 aria-expanded:opacity-100 ${ROW_FOCUS}`}
+        className="mr-1 flex size-6 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover/row:opacity-100 hover:text-foreground focus-visible:opacity-100 aria-expanded:opacity-100 focus-ring"
       >
         <MoreHorizontal className="size-3.5" aria-hidden="true" />
       </button>
       {open && (
-        <div ref={panel} role="menu" aria-label={`${project.name} 그룹`} className="bloom absolute top-full right-0 z-20 mt-1 w-48 rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg">
+        <div ref={panel} role="group" aria-label={`${project.name} 그룹`} className="bloom absolute top-full right-0 z-20 mt-1 w-48 rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg">
           <p className="px-2 pt-1 pb-1.5 text-3xs font-semibold text-muted-foreground">그룹으로 옮기기</p>
           {groups.groups
             .filter((g) => g.id !== inGroup)
             .map((g) => (
-              <button key={g.id} type="button" role="menuitem" className={item} onClick={() => (groups.move(project.path, g.id), close())}>
+              <button key={g.id} type="button" className={item} onClick={() => (groups.move(project.path, g.id), close())}>
                 {g.name}
               </button>
             ))}
-          <button type="button" role="menuitem" className={item} onClick={() => (onNewGroup(), close())}>
+          <button type="button" className={item} onClick={() => (onNewGroup(), close())}>
             새 그룹 만들어 넣기…
           </button>
           {inGroup && (
-            <button type="button" role="menuitem" className={`${item} text-muted-foreground`} onClick={() => (groups.move(project.path, undefined), close())}>
+            <button type="button" className={`${item} text-muted-foreground`} onClick={() => (groups.move(project.path, undefined), close())}>
               그룹에서 빼기
             </button>
           )}
@@ -300,8 +297,8 @@ function ProjectMenu({ project, groups, onNewGroup }: { project: Project; groups
 function RunRow({ run, current, card, onRun, onCard }: { run: RunView; current: boolean; card?: string; onRun: (id: string) => void; onCard: (runId: string, cardId: string) => void }) {
   return (
     <div data-current={current || undefined} className="rounded-md px-2 py-1.5 hover:bg-sidebar-accent data-current:bg-sidebar-accent/70">
-      <button type="button" onClick={() => onRun(run.runId)} aria-current={current || undefined} className={`flex w-full items-center gap-2 text-left ${ROW_FOCUS}`}>
-        <AgentStateDot state={RUN_STATE[run.status]} />
+      <button type="button" onClick={() => onRun(run.runId)} aria-current={current || undefined} className="flex w-full items-center gap-2 text-left focus-ring">
+        <AgentStateDot state={run.status} />
         <span className="truncate text-xs">{run.title}</span>
         <span className="ml-auto shrink-0 text-3xs text-muted-foreground tabular-nums">{timeOf(run.startedAt)}</span>
       </button>
@@ -314,7 +311,7 @@ function RunRow({ run, current, card, onRun, onCard }: { run: RunView; current: 
             aria-pressed={current && card === c.id}
             aria-label={`${c.label} 카드 열기`}
             title={c.label}
-            className={`flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent aria-pressed:bg-accent ${ROW_FOCUS}`}
+            className="flex items-center gap-1 rounded px-1 py-0.5 hover:bg-accent aria-pressed:bg-accent focus-ring"
           >
             <AgentStateDot state={c.state} />
             <span className="text-3xs font-semibold text-muted-foreground">{PROVIDER_SHORT[c.provider]}</span>
