@@ -40,6 +40,26 @@ export const BYPASS_RULES: Rule[] = [
 export const CODE_RULES: Rule[] = [...CREDENTIAL_RULES, ...BACKEND_RULES, ...BYPASS_RULES];
 
 /**
+ * Checkouts on these branches are mirrors: they only move by pulling merged
+ * PRs. Agents may read and test there, never change anything.
+ */
+export const READ_ONLY_BRANCHES = ["test", "main"];
+
+/** Shell commands an agent may run inside a read-only checkout. */
+export const READ_ONLY_COMMANDS: RegExp[] = [
+  /^git\s+(status|log|diff|show|fetch|rev-parse|ls-files|grep|blame|shortlog|describe)\b/,
+  /^git\s+(remote(\s+-v)?|worktree\s+list|pull\s+--ff-only)\s*$/,
+  /^git\s+branch(\s+(-a|-r|-v|-vv|--list|--show-current))*\s*$/,
+  /^(ls|dir|pwd|cd|cat|type|head|tail|wc|grep|rg|echo|which|where|Get-ChildItem|Get-Content|Select-String|Get-Location)\b/,
+  /^node\s+--test\b/,
+  /^npm\s+(test|ci|run\s+(test|check|guard))\s*$/,
+  /^npx\s+tsc\s+--noEmit\s*$/,
+  /^node\s+src\/(guard\/scan\.ts(\s+--all)?|cli\/o\.ts\s+(status|events|check)\b.*)$/,
+  /^grafly\b/,
+  /^gh\s+(pr|run)\s+(view|list|checks|diff)\b/,
+];
+
+/**
  * Paths that must mention the patterns to do their job. Changing this list is
  * a shared-boundary change (ADR + both approvals).
  */

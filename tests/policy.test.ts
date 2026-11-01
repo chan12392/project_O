@@ -12,6 +12,7 @@ function ctx(overrides: Partial<PolicyContext> = {}): PolicyContext {
     startedToday: 0,
     cooldowns: {},
     projectExists: () => true,
+    projectBranch: () => "younchan",
     ...overrides,
   };
 }
@@ -71,6 +72,11 @@ test("caps: plan size, active slots and the daily ceiling", () => {
 
   const late = ctx({ startedToday: LIMITS.maxCardsPerDay });
   assert.ok(checkPlan(plan([codeCard]), late).violations.some((v) => v.rule === "daily-cap"));
+});
+
+test("work cannot be sent into a test/main mirror", () => {
+  const { violations } = checkPlan(plan([codeCard]), ctx({ projectBranch: () => "test" }));
+  assert.ok(violations.some((v) => v.rule === "read-only-project"));
 });
 
 test("shape errors are reported, not thrown", () => {

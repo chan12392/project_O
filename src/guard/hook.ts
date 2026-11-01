@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
-import { resolve } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
-import { CODE_RULES, findHits, isAllowedPath } from "./rules.ts";
+import { CODE_RULES, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS, findHits, isAllowedPath } from "./rules.ts";
 
 /**
  * PreToolUse hook for Claude Code and Codex working in this repository.
@@ -12,7 +12,8 @@ import { CODE_RULES, findHits, isAllowedPath } from "./rules.ts";
  *
  * It refuses: shell commands that touch provider credentials or disable a
  * CLI's permission checks, code edits that introduce those, commits or
- * pushes to main, and branch names outside the <personal>-<topic> rule.
+ * pushes to main, branch names outside the <personal>-<topic> rule, and any
+ * change inside a test/main checkout (those are pull-only mirrors).
  */
 export interface HookInput {
   tool_name?: string;
@@ -25,20 +26,36 @@ export const PERSONAL_BRANCHES = ["younchan", "yongwoo"];
 const BRANCH_NAME = new RegExp(`^(${PERSONAL_BRANCHES.join("|")})(-[a-z0-9][a-z0-9._-]*)?$`);
 const CREATE_BRANCH = /\bgit\s+(?:switch\s+(?:-c|-C|--create)|checkout\s+(?:-b|-B)|branch)\s+([^\s-]\S*)/g;
 
-export function review(input: HookInput, currentBranch: () => string): string[] {
+/** Returns the git branch checked out at a directory, or "" outside a repo. */
+export type BranchOf = (dir: string) => string;
+
+const READ_ONLY_REASON = "test·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
+
+export function review(input: HookInput, branchOf: BranchOf): string[] {
   const tool = input.tool_name ?? "";
   const args = input.tool_input ?? {};
   const cwd = input.cwd ?? process.cwd();
+  const currentBranch = () => branchOf(cwd);
   const reasons: string[] = [];
 
   if (tool === "Bash" || tool === "shell" || tool === "PowerShell") {
     const command = String(args.command ?? "");
     for (const hit of findHits(command, CODE_RULES)) reasons.push(hit.reason);
     reasons.push(...gitReasons(command, currentBranch));
+    if (READ_ONLY_BRANCHES.includes(safeBranch(currentBranch))) reasons.push(...readOnlyShellReasons(command));
     return reasons;
   }
 
-  const paths = editedPaths(tool, args).map((p) => repoRelative(p, cwd));
+  const rawPaths = editedPaths(tool, args);
+  for (const path of rawPaths) {
+    // Forward slashes so dirname works on Linux too (hosts send Windows paths).
+    const absolute = (/^([A-Za-z]:)?[\\/]/.test(path) ? path : `${cwd}/${path}`).replace(/\\/g, "/");
+    if (READ_ONLY_BRANCHES.includes(safeBranch(() => branchOf(dirname(absolute))))) {
+      reasons.push(`${READ_ONLY_REASON} (${path})`);
+      return reasons;
+    }
+  }
+  const paths = rawPaths.map((p) => repoRelative(p, cwd));
   if (paths.length > 0 && paths.every((p) => isAllowedPath(p))) return reasons;
   if (paths.length > 0 || tool === "apply_patch") {
     for (const hit of findHits(JSON.stringify(args), CODE_RULES)) reasons.push(`${hit.reason} (${paths.join(", ") || tool})`);
@@ -67,6 +84,19 @@ function gitReasons(command: string, currentBranch: () => string): string[] {
   return reasons;
 }
 
+function readOnlyShellReasons(command: string): string[] {
+  const reasons: string[] = [];
+  for (const raw of command.split(/&&|\|\||;|\||\n/)) {
+    const segment = raw.trim();
+    if (!segment) continue;
+    const withoutSafeRedirects = segment.replace(/\d?>&\d/g, "").replace(/\d?>\s*(\/dev\/null|\$null|NUL)\b/gi, "");
+    if (withoutSafeRedirects.includes(">") || !READ_ONLY_COMMANDS.some((p) => p.test(segment))) {
+      reasons.push(`${READ_ONLY_REASON} — 허용되지 않은 명령: ${segment.slice(0, 80)}`);
+    }
+  }
+  return reasons;
+}
+
 function editedPaths(tool: string, args: Record<string, unknown>): string[] {
   if (typeof args.file_path === "string") return [args.file_path];
   if (tool === "apply_patch") {
@@ -91,6 +121,13 @@ function safeBranch(currentBranch: () => string): string {
   }
 }
 
+/** New files live in folders that may not exist yet; ask git from the nearest existing parent. */
+export function gitBranchAt(dir: string): string {
+  let existing = dir;
+  while (!existsSync(existing) && dirname(existing) !== existing) existing = dirname(existing);
+  return execFileSync("git", ["branch", "--show-current"], { cwd: existing, encoding: "utf8", windowsHide: true, stdio: ["ignore", "pipe", "ignore"] }).trim();
+}
+
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   let input: HookInput = {};
   try {
@@ -98,9 +135,7 @@ if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.ur
   } catch {
     process.exit(0);
   }
-  const reasons = review(input, () =>
-    execFileSync("git", ["branch", "--show-current"], { cwd: input.cwd, encoding: "utf8", windowsHide: true }).trim(),
-  );
+  const reasons = review(input, gitBranchAt);
   if (reasons.length > 0) {
     console.error(`project_O 정책 훅이 차단했습니다:\n${[...new Set(reasons)].map((r) => `  - ${r}`).join("\n")}\n규칙: AGENTS.md · docs/DESIGN.md §8. 우회하지 말고 사용자에게 보고하세요.`);
     process.exit(2);
