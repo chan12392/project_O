@@ -268,6 +268,7 @@ fn repo_relative(path: &str, cwd: &str) -> String {
 
 /// `git` without a console window (the hook runs on every tool call).
 pub(crate) fn git_command() -> Command {
+    #[cfg_attr(not(windows), allow(unused_mut))] // only Windows sets a creation flag
     let mut command = Command::new("git");
     #[cfg(windows)]
     {
