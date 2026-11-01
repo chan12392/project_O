@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { isAbsolute, relative, resolve } from "node:path";
+import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { CODE_RULES, findHits, isAllowedPath } from "./rules.ts";
@@ -38,7 +38,7 @@ export function review(input: HookInput, currentBranch: () => string): string[] 
     return reasons;
   }
 
-  const paths = editedPaths(tool, args).map((p) => (isAbsolute(p) ? relative(cwd, p) : p));
+  const paths = editedPaths(tool, args).map((p) => repoRelative(p, cwd));
   if (paths.length > 0 && paths.every((p) => isAllowedPath(p))) return reasons;
   if (paths.length > 0 || tool === "apply_patch") {
     for (const hit of findHits(JSON.stringify(args), CODE_RULES)) reasons.push(`${hit.reason} (${paths.join(", ") || tool})`);
@@ -74,6 +74,13 @@ function editedPaths(tool: string, args: Record<string, unknown>): string[] {
     return [...patch.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)].map((m) => m[1].trim());
   }
   return [];
+}
+
+/** String-based on purpose: hosts send Windows paths that node:path on Linux would not treat as absolute. */
+function repoRelative(path: string, cwd: string): string {
+  const file = path.replace(/\\/g, "/");
+  const root = cwd.replace(/\\/g, "/").replace(/\/+$/, "");
+  return file.toLowerCase().startsWith(`${root.toLowerCase()}/`) ? file.slice(root.length + 1) : file;
 }
 
 function safeBranch(currentBranch: () => string): string {
