@@ -32,7 +32,7 @@ b/<주제> ──PR──▶ b/main ──PR──▶ test ─┘
 5. `main` 병합 후 각자 `main`을 개인 브랜치에 병합해 맞춘다.
 
 - 병합 방식은 merge commit만 쓴다(squash·rebase 병합은 저장소에서 꺼 두었다). 브랜치 간 이력이 어긋나지 않게 하기 위해서다.
-- 위 흐름에 맞지 않는 PR은 `.github/workflows/branch-flow.yml` 검사가 실패시킨다.
+- 위 흐름에 맞지 않는 PR은 `.github/workflows/branch-flow.yml` 검사가 실패시킨다. 비공개 무료 플랜이라 브랜치 보호를 켤 수 없어 검사 실패가 병합 버튼을 막지는 않는다. 검사가 빨간색이면 병합하지 않는다.
 
 ## 설계 변경
 
