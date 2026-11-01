@@ -27,31 +27,14 @@
   }
 }
 
-/* Office sprites: pixels coloured by the agent's provider and the card's state, from palette tokens. */
-.desk--claude { --hair: var(--color-stone-800); --shirt: var(--color-orange-400); }
-.desk--codex { --hair: var(--color-neutral-900); --shirt: var(--color-sky-500); }
-.desk--agy { --hair: var(--color-amber-900); --shirt: var(--color-emerald-500); }
-.desk { --screen: var(--color-neutral-700); --screen-mark: var(--color-neutral-700); }
-.desk.is-running { --screen: var(--agent-working); --screen-mark: var(--color-neutral-900); }
-.desk.is-done { --screen: var(--color-emerald-400); --screen-mark: var(--color-emerald-800); }
-.desk.is-failed { --screen: var(--color-red-500); --screen-mark: var(--color-red-950); }
-.px-k { fill: var(--color-neutral-950); }
-.px-h { fill: var(--hair); }
-.px-s { fill: var(--color-orange-200); }
-.px-c { fill: var(--shirt); }
-.px-l, .px-r { fill: var(--color-neutral-700); }
-.px-d { fill: var(--color-amber-800); }
-.px-e { fill: var(--color-amber-950); }
-.px-g { fill: var(--screen); }
-.px-L { fill: var(--screen-mark); }
-.px-p { fill: var(--color-neutral-100); }
-.frame-b { opacity: 0; }
-.office-running .frame-a { animation: frame-a 640ms steps(1, end) infinite; }
-.office-running .frame-b { animation: frame-b 640ms steps(1, end) infinite; }
-@keyframes frame-a { 0% { opacity: 1; } 50% { opacity: 0; } }
-@keyframes frame-b { 0% { opacity: 0; } 50% { opacity: 1; } }
+/* Office people: a step bounce while walking, a small nod while working. */
+@keyframes person-walk { 0%, 100% { translate: 0 0; } 50% { translate: 0 -6%; } }
+@keyframes person-work { 0%, 100% { translate: 0 0; } 50% { translate: 0 -2%; } }
+.person-walk { animation: person-walk 380ms steps(2, end) infinite; }
+.person-work { animation: person-work 900ms steps(2, end) infinite; }
 @media (prefers-reduced-motion: reduce) {
-  .office-running .frame-a, .office-running .frame-b { animation: none; }
+  .person-walk, .person-work { animation: none; }
+  .person { transition: none !important; }
 }
 
 /* Orca's sleek scrollbar, one recipe for every scrolling pane. */

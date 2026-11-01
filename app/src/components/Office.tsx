@@ -1,90 +1,206 @@
 import { Pause, Play } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_NAME, STATE_WORD, clip, modelLine } from "../format.ts";
-import { HEIGHT, POSES, TYPING, WIDTH, type Rect } from "../sprite.ts";
+import { PROVIDER_SHORT, STATE_WORD, clip } from "../format.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
+import { spriteUrl, type Speaker } from "./Avatar.tsx";
 
 const REDUCED = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-/** The office: one desk per card, each agent drawn in its card's real state. */
+type Point = { x: number; y: number };
+
+/**
+ * Where people's feet go in public/office/office.png (1536 x 1024), as
+ * percentages of the room. Desks are the four chairs; the rest are places to wander.
+ */
+const DESKS: Point[] = [
+  { x: 14, y: 50 },
+  { x: 30, y: 50 },
+  { x: 14, y: 80 },
+  { x: 30, y: 80 },
+];
+const LOUNGE: Point[] = [
+  { x: 79, y: 37 },
+  { x: 71, y: 50 },
+  { x: 81, y: 55 },
+];
+const MEETING: Point[] = [
+  { x: 64, y: 78 },
+  { x: 90, y: 74 },
+];
+const AISLE: Point[] = [
+  { x: 47, y: 42 },
+  { x: 55, y: 62 },
+  { x: 46, y: 86 },
+  { x: 61, y: 48 },
+];
+const BOARD: Point = { x: 45, y: 33 };
+
+/** Where a card's agent should be for its state. */
+function homeFor(card: CardView, index: number): { spot: Point; roam: Point[] } {
+  const desk = DESKS[index % DESKS.length];
+  if (card.state === "running" || card.state === "failed") return { spot: desk, roam: [] };
+  if (card.state === "done") return { spot: LOUNGE[index % LOUNGE.length], roam: [...LOUNGE, ...MEETING] };
+  return { spot: AISLE[index % AISLE.length], roam: AISLE };
+}
+
+/** The office: agents at their desks while they work, wandering otherwise, saying what they do. */
 export function Office({ run, selected, onSelect }: { run: RunView; selected?: string; onSelect: (id: string) => void }) {
   const [held, setHeld] = useState(REDUCED);
-  const anyRunning = run.cards.some((c) => c.state === "running");
   return (
     <div className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
-      <div className="flex items-center justify-between px-5 pt-4">
-        <p className="text-xs text-muted-foreground">카드마다 책상 하나. 상태는 실행 기록에서 읽습니다.</p>
-        {anyRunning && (
-          <button
-            type="button"
-            onClick={() => setHeld((h) => !h)}
-            className="flex h-7 items-center gap-1.5 rounded-md border px-2 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
-          >
-            {held ? <Play className="size-3.5" aria-hidden="true" /> : <Pause className="size-3.5" aria-hidden="true" />}
-            {held ? "움직임 켜기" : "움직임 멈추기"}
-          </button>
-        )}
+      <div className="flex items-center justify-between gap-3 px-5 pt-4">
+        <p className="text-xs text-muted-foreground">카드마다 한 사람. 일하면 자기 책상에, 끝나면 휴게 공간으로 갑니다.</p>
+        <button
+          type="button"
+          onClick={() => setHeld((h) => !h)}
+          className="flex h-7 shrink-0 items-center gap-1.5 rounded-md border px-2 text-xs hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+        >
+          {held ? <Play className="size-3.5" aria-hidden="true" /> : <Pause className="size-3.5" aria-hidden="true" />}
+          {held ? "움직임 켜기" : "움직임 멈추기"}
+        </button>
       </div>
-      <div
-        role="group"
-        aria-label="작업 현황 다이어그램, 카드마다 책상 하나"
-        className={`grid grid-cols-[repeat(auto-fill,minmax(11rem,1fr))] gap-4 p-5 ${held ? "" : "office-running"}`}
-      >
-        {run.cards.map((card) => (
-          <Desk key={card.id} card={card} selected={card.id === selected} onSelect={onSelect} />
-        ))}
+      <div className="p-5">
+        <div
+          role="group"
+          aria-label="사무실: 카드마다 한 사람이 상태에 따라 움직이는 다이어그램"
+          className="relative mx-auto aspect-[3/2] w-full max-w-[960px] overflow-hidden rounded-xl border bg-amber-950/40"
+        >
+          <img src="/office/office.png" alt="" className="absolute inset-0 size-full object-cover [image-rendering:pixelated]" onError={(e) => (e.currentTarget.style.display = "none")} />
+          <Person speaker="lead" label="총괄" spot={BOARD} roam={[BOARD, AISLE[0]]} held={held} line={latestLine(run, "lead")} />
+          {run.cards.map((card, i) => {
+            const home = homeFor(card, i);
+            return (
+              <Person
+                key={card.id}
+                speaker={card.provider}
+                label={card.label}
+                spot={home.spot}
+                roam={home.roam}
+                held={held}
+                working={card.state === "running"}
+                alert={card.state === "failed"}
+                line={latestLine(run, card.id, card)}
+                selected={card.id === selected}
+                onClick={() => onSelect(card.id)}
+                nudge={card.state === "running" || card.state === "failed" ? 0 : ((i % 3) - 1) * 4}
+              />
+            );
+          })}
+        </div>
+        <ul className="mx-auto mt-3 flex max-w-[960px] flex-wrap gap-x-4 gap-y-1 text-xs text-muted-foreground">
+          {run.cards.map((card) => (
+            <li key={card.id} className="flex items-center gap-1.5">
+              <AgentStateDot state={card.state} />
+              <span className="text-foreground">{card.label}</span>
+              {PROVIDER_SHORT[card.provider]} {STATE_WORD[card.state]}
+            </li>
+          ))}
+        </ul>
       </div>
     </div>
   );
 }
 
-function Pixels({ rects }: { rects: Rect[] }) {
-  return (
-    <>
-      {rects.map((r, i) => (
-        <rect key={i} className={`px-${r.key}`} x={r.x} y={r.y} width={r.w} height={1} />
-      ))}
-    </>
-  );
+/** What a person last said: their newest team message, else what their card last did. */
+function latestLine(run: RunView, party: string, card?: CardView): { key: string; text: string } | undefined {
+  const message = [...run.messages].reverse().find((m) => m.from === party);
+  const activity = card && card.state === "running" && card.activity ? { key: `a:${card.activity}`, text: card.activity } : undefined;
+  if (card?.state === "failed") return { key: "failed", text: "!" };
+  if (message && (!card?.log.length || message.at >= (card.log[card.log.length - 1]?.at ?? ""))) return { key: `m:${message.at}`, text: message.text };
+  return activity ?? (message ? { key: `m:${message.at}`, text: message.text } : undefined);
 }
 
-function Desk({ card, selected, onSelect }: { card: CardView; selected: boolean; onSelect: (id: string) => void }) {
+interface PersonProps {
+  speaker: Speaker;
+  label: string;
+  spot: Point;
+  roam: Point[];
+  held: boolean;
+  line?: { key: string; text: string };
+  working?: boolean;
+  alert?: boolean;
+  selected?: boolean;
+  onClick?: () => void;
+  /** Sideways offset in room percent, so people sharing a spot don't overlap. */
+  nudge?: number;
+}
+
+const SHOW_LINE_MS = 6000;
+
+function Person({ speaker, label, spot, roam, held, line, working, alert, selected, onClick, nudge = 0 }: PersonProps) {
+  const [pos, setPos] = useState(spot);
+  const [facingLeft, setFacingLeft] = useState(false);
+  const [walking, setWalking] = useState(false);
+  const [speaking, setSpeaking] = useState(false);
+  const last = useRef(spot);
+
+  const goTo = useMemo(
+    () => (target: Point) => {
+      // People heading for the same spot stand a step apart instead of on top of each other.
+      const next = { x: target.x + nudge, y: target.y };
+      if (next.x === last.current.x && next.y === last.current.y) return;
+      setFacingLeft(next.x < last.current.x);
+      setWalking(true);
+      last.current = next;
+      setPos(next);
+    },
+    [nudge],
+  );
+
+  useEffect(() => goTo(spot), [spot.x, spot.y, goTo]);
+
+  useEffect(() => {
+    if (held || roam.length < 2) return;
+    const id = window.setInterval(() => goTo(roam[Math.floor(Math.random() * roam.length)]), 4200 + Math.random() * 2400);
+    return () => window.clearInterval(id);
+  }, [held, roam, goTo]);
+
+  useEffect(() => {
+    if (!line) return;
+    setSpeaking(true);
+    if (line.text === "!") return;
+    const id = window.setTimeout(() => setSpeaking(false), SHOW_LINE_MS);
+    return () => window.clearTimeout(id);
+  }, [line?.key]);
+
+  const moving = walking && !held;
   return (
-    <button
-      type="button"
-      aria-pressed={selected}
-      onClick={() => onSelect(card.id)}
-      className={`desk desk--${card.provider} is-${card.state} flex flex-col gap-3 rounded-xl border bg-card p-3 text-left text-card-foreground hover:bg-accent/30 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none aria-pressed:border-ring`}
+    <div
+      className="person absolute w-[10%] -translate-x-1/2 -translate-y-[94%]"
+      style={{ left: `${pos.x}%`, top: `${pos.y}%`, transition: held ? "none" : "left 2.6s linear, top 2.6s linear", zIndex: Math.round(pos.y) }}
+      onTransitionEnd={() => setWalking(false)}
     >
-      <span className="flex justify-center rounded-lg bg-muted/40 px-2 pt-3">
-        <svg className="w-full max-w-40" viewBox={`0 0 ${WIDTH} ${HEIGHT}`} shapeRendering="crispEdges" aria-hidden="true">
-          {card.state === "running" ? (
-            <>
-              <g className="frame-a">
-                <Pixels rects={TYPING[0]} />
-              </g>
-              <g className="frame-b">
-                <Pixels rects={TYPING[1]} />
-              </g>
-            </>
-          ) : (
-            <Pixels rects={card.state === "done" ? POSES.done : POSES.rest} />
-          )}
-        </svg>
-      </span>
-      <span className="flex min-w-0 flex-col gap-1">
-        <span className="flex items-center gap-1.5 text-sm font-medium">
-          <AgentStateDot state={card.state} />
-          <span className="truncate">{card.label}</span>
-          <span className="ml-auto shrink-0 text-xs text-muted-foreground">{STATE_WORD[card.state]}</span>
-        </span>
-        <span className="truncate font-mono text-xs text-muted-foreground">
-          {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
-        </span>
-        {card.activity && <span className="line-clamp-2 text-xs text-muted-foreground">{clip(card.activity, 72)}</span>}
-      </span>
-    </button>
+      {speaking && line && (
+        <p
+          role="status"
+          className={`absolute bottom-full mb-1 w-max max-w-[13rem] rounded-xl border px-2.5 py-1.5 text-xs shadow-sm ${
+            // Keep the bubble inside the room: anchor it to the side away from the nearer wall.
+            pos.x < 30 ? "left-0" : pos.x > 70 ? "right-0" : "left-1/2 -translate-x-1/2"
+          } ${
+            alert ? "border-red-500/60 bg-red-950 text-red-100" : "bg-popover text-popover-foreground"
+          }`}
+        >
+          {alert ? "막혔어요! 기록을 봐 주세요" : clip(line.text, 70)}
+        </p>
+      )}
+      <button
+        type="button"
+        onClick={onClick}
+        disabled={!onClick}
+        aria-label={`${label}${working ? ", 작업 중" : ""}`}
+        aria-pressed={onClick ? selected : undefined}
+        className="block w-full rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default aria-pressed:ring-2 aria-pressed:ring-ring"
+      >
+        <img
+          src={spriteUrl(speaker)}
+          alt=""
+          className={`w-full [image-rendering:pixelated] ${facingLeft ? "-scale-x-100" : ""} ${moving ? "person-walk" : working && !held ? "person-work" : ""}`}
+          onError={(e) => (e.currentTarget.style.visibility = "hidden")}
+        />
+      </button>
+      <span className="pointer-events-none absolute top-full left-1/2 mt-0.5 -translate-x-1/2 rounded bg-black/60 px-1.5 text-3xs whitespace-nowrap text-white">{label}</span>
+    </div>
   );
 }

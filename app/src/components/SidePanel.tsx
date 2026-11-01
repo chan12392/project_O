@@ -1,11 +1,12 @@
-import { Building2, MessagesSquare, SquareTerminal } from "lucide-react";
+import { Building2, ExternalLink, MessagesSquare, PanelRightClose, SquareTerminal } from "lucide-react";
 
 import type { RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_SHORT, names, timeOf } from "../format.ts";
+import { PROVIDER_SHORT, names } from "../format.ts";
 import type { PanelView } from "../useRun.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
 import { CardTranscript } from "./CardTranscript.tsx";
 import { Office } from "./Office.tsx";
+import { TeamChat } from "./TeamChat.tsx";
 
 const VIEWS: { id: PanelView; label: string; icon: typeof Building2 }[] = [
   { id: "work", label: "에이전트 작업", icon: SquareTerminal },
@@ -19,14 +20,21 @@ interface Props {
   card?: string;
   onView: (view: PanelView) => void;
   onCard: (id: string) => void;
+  /** Absent in the pop-out window, where the window itself is closed instead. */
+  onClose?: () => void;
+  onPopout?: () => void;
 }
 
+const ICON_BUTTON =
+  "flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
+
 /** The right half of the split: pick what to watch beside the lead chat. */
-export function SidePanel({ run, view, card, onView, onCard }: Props) {
+export function SidePanel({ run, view, card, onView, onCard, onClose, onPopout }: Props) {
   const current = run?.cards.find((c) => c.id === card) ?? run?.cards[0];
   return (
-    <section className="flex min-h-0 min-w-0 flex-col border-l" aria-label="작업 보기">
-      <div role="tablist" aria-label="보기 고르기" className="flex h-9 shrink-0 items-stretch border-b bg-tab-bar">
+    <section className="flex h-full min-h-0 min-w-0 flex-col" aria-label="작업 보기">
+      <div className="flex h-9 shrink-0 items-stretch border-b bg-tab-bar">
+      <div role="tablist" aria-label="보기 고르기" className="flex min-w-0 items-stretch overflow-x-auto">
         {VIEWS.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -44,6 +52,19 @@ export function SidePanel({ run, view, card, onView, onCard }: Props) {
             {view === id && <span className="absolute inset-x-0 bottom-0 h-px bg-tab-active-indicator" aria-hidden="true" />}
           </button>
         ))}
+      </div>
+        <div className="ml-auto flex shrink-0 items-center gap-0.5 px-1.5">
+          {onPopout && (
+            <button type="button" onClick={onPopout} className={ICON_BUTTON} aria-label="별도 창으로 띄우기" title="별도 창으로 띄우기">
+              <ExternalLink className="size-3.5" aria-hidden="true" />
+            </button>
+          )}
+          {onClose && (
+            <button type="button" onClick={onClose} className={ICON_BUTTON} aria-label="패널 닫기" title="패널 닫기">
+              <PanelRightClose className="size-3.5" aria-hidden="true" />
+            </button>
+          )}
+        </div>
       </div>
 
       {!run && <p className="p-5 text-sm text-muted-foreground">작업을 고르면 여기서 볼 수 있습니다.</p>}
@@ -71,35 +92,8 @@ export function SidePanel({ run, view, card, onView, onCard }: Props) {
 
       {run && view === "office" && <Office run={run} selected={current?.id} onSelect={(id) => { onCard(id); onView("work"); }} />}
 
-      {run && view === "team" && <TeamView run={run} />}
+      {run && view === "team" && <TeamChat run={run} />}
     </section>
   );
 }
 
-function TeamView({ run }: { run: RunView }) {
-  const name = names(run);
-  return (
-    <div className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
-      <ol className="mx-auto flex max-w-2xl flex-col gap-3 px-5 py-5 text-sm text-chat-foreground">
-        {run.messages.length === 0 && (
-          <li className="text-chat-foreground-faint">
-            아직 카드끼리 주고받은 메시지가 없습니다. 카드는 <code className="font-mono text-chat-code">o msg send</code>로 서로와 총괄에게 말할 수 있습니다.
-          </li>
-        )}
-        {run.messages.map((m, i) => (
-          <li key={`${m.at}-${i}`} className="rounded-lg border bg-card px-3.5 py-2.5 text-card-foreground">
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <span className="text-foreground">{name(m.from)}</span>
-              <span aria-label="에게">→</span>
-              <span className="text-foreground">{name(m.to)}</span>
-              <time className="ml-auto" dateTime={m.at}>
-                {timeOf(m.at)}
-              </time>
-            </p>
-            <p className="mt-1 whitespace-pre-wrap">{m.text}</p>
-          </li>
-        ))}
-      </ol>
-    </div>
-  );
-}

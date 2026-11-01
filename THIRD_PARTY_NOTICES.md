@@ -33,6 +33,12 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
 
+## Generated art
+
+`app/public/office/*.png` (사무실 배경, 캐릭터 4종) were generated for this project on 2026-11-02
+by Codex's built-in `image_gen` tool, dispatched through O CLI (run `20261101-151813-l32j`).
+No third-party artwork or logos were used as input.
+
 ## Fonts
 
 - Geist (`@fontsource-variable/geist`), SIL Open Font License 1.1

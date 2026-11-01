@@ -74,6 +74,7 @@ export function readParams() {
     view: (["work", "office", "team"].includes(view ?? "") ? view : "work") as PanelView,
     card: params.get("card") ?? undefined,
     start: Number.isFinite(t) && t > 0 ? Math.min(1, t) : 0,
+    popout: params.get("popout") === "panel",
   };
 }
 
