@@ -5,6 +5,7 @@ import type { CardView, RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../dismiss.ts";
 import { PROVIDER_SHORT, STATE_WORD, clip, timeOf } from "../format.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
+import { lookFor } from "../characters.ts";
 import { Avatar } from "./Avatar.tsx";
 
 const RECENT = 6;
@@ -79,7 +80,7 @@ function Row({ run, card, onOpen }: { run: RunView; card: CardView; onOpen: () =
       className="flex w-full gap-2.5 border-b px-3.5 py-2.5 text-left last:border-b-0 hover:bg-accent/60 focus-visible:bg-accent focus-visible:outline-none data-live:bg-agent-working/5"
       data-live={live || undefined}
     >
-      <Avatar speaker={card.provider} size="sm" />
+      <Avatar speaker={card.provider} look={lookFor(card.id, run.cards.map((c) => c.id))} size="sm" />
       <span className="min-w-0 flex-1">
         <span className="flex items-center gap-1.5 text-xs">
           <span className="truncate font-medium">{card.label}</span>

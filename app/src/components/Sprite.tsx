@@ -1,17 +1,21 @@
 import { useEffect, useState } from "react";
 
-import { characterSheet, type Look } from "../characters.ts";
+import { useCharacterSheet, type Look } from "../characters.ts";
 import { spriteUrl, type Speaker } from "./Avatar.tsx";
 
 /**
  * Actions drawn from two 4 x 4 sheets per character (public/office/sheets/sheets.json):
  * sheet a holds idle, walk, type and wave; sheet b holds coffee, think, cheer and stuck.
+ * Walking toward the viewer (walkDown) or away (walkUp) has its own rows only in
+ * composed sheets; drawn sheets walk sideways instead.
  */
-export type Action = "idle" | "walk" | "type" | "wave" | "coffee" | "think" | "cheer" | "stuck" | "talk";
+export type Action = "idle" | "walk" | "walkDown" | "walkUp" | "type" | "wave" | "coffee" | "think" | "cheer" | "stuck" | "talk";
 
 const FRAME: Record<Action, { sheet: "a" | "b"; row: number; ms: number }> = {
   idle: { sheet: "a", row: 0, ms: 1400 },
   walk: { sheet: "a", row: 1, ms: 520 },
+  walkDown: { sheet: "a", row: 1, ms: 520 },
+  walkUp: { sheet: "a", row: 1, ms: 520 },
   type: { sheet: "a", row: 2, ms: 480 },
   wave: { sheet: "a", row: 3, ms: 760 },
   coffee: { sheet: "b", row: 0, ms: 1600 },
@@ -22,25 +26,7 @@ const FRAME: Record<Action, { sheet: "a" | "b"; row: number; ms: number }> = {
 };
 
 /** Rows of a composed character's 4 x 12 sheet (move, act1, act2; see characters.ts). */
-const COMPOSED_ROW: Record<Action, number> = { idle: 0, walk: 1, type: 5, wave: 6, talk: 7, coffee: 8, think: 9, cheer: 10, stuck: 11 };
-
-function useComposed(look: Look | undefined) {
-  const [url, setUrl] = useState<string>();
-  const key = look && `${look.body}/${look.hair}`;
-  useEffect(() => {
-    if (!look) return;
-    let live = true;
-    characterSheet(look).then(
-      (u) => live && setUrl(u),
-      () => live && setUrl(undefined),
-    );
-    return () => {
-      live = false;
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [key]);
-  return look ? url : undefined;
-}
+const COMPOSED_ROW: Record<Action, number> = { idle: 0, walk: 1, walkDown: 2, walkUp: 3, type: 5, wave: 6, talk: 7, coffee: 8, think: 9, cheer: 10, stuck: 11 };
 
 function sheetUrl(speaker: Speaker, sheet: "a" | "b"): string {
   return `/office/sheets/sheet${sheet === "b" ? "-b" : ""}-${speaker}.png`;
@@ -84,7 +70,7 @@ function useSheets(speaker: Speaker) {
  */
 export function Sprite({ speaker, action, flip, paused, look }: { speaker: Speaker; action: Action; flip?: boolean; paused?: boolean; look?: Look }) {
   const ready = useSheets(speaker);
-  const composed = useComposed(look);
+  const composed = useCharacterSheet(look);
   if (composed) {
     return (
       <span

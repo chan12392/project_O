@@ -44,6 +44,9 @@ test("tool activity reads as an act, the log keeps the raw event", () => {
   assert.equal(describeTool("shell", 'ego-browser nodejs -e \\"const task\\"'), '명령 실행: ego-browser nodejs -e "const task"');
   assert.equal(describeTool("read_file", "src/app.js"), "파일 읽기: src/app.js");
   assert.equal(describeTool("Edit", ""), "파일 수정");
+  assert.equal(describeTool("edit", '[{"path":"C:/p\\\\app\\\\align.py","kind":"add"},{"path":"src/app.js","kind":"update"}]'), "파일 수정: align.py 추가, app.js 수정");
+  assert.equal(describeTool("edit", '[{"path":"C:/projects/todo-app/index.html","kind":"update"},{"path":"C:/projects/to'), "파일 수정: index.html 수정 외");
+  assert.equal(describeTool("edit", '[{"path":"C:/projects/todo-app'), "파일 수정");
   assert.equal(describeTool("todo_write", "x"), "todo_write: x");
   const run = snapshot(fixture.events);
   const design = run?.cards.find((c) => c.id === "design");

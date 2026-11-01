@@ -105,7 +105,7 @@ export function Office({ run, selected, leadResting, onSelect }: { run: RunView;
               <Person
                 key={card.id}
                 speaker={card.provider}
-                look={lookFor(card.id)}
+                look={lookFor(card.id, run.cards.map((c) => c.id))}
                 label={card.label}
                 spot={home.spot}
                 roam={home.roam}
@@ -166,6 +166,7 @@ const CHEER_MS = 3200;
 function Person({ speaker, look, label, spot, roam, held, mood, line, selected, onClick, nudge = 0 }: PersonProps) {
   const [pos, setPos] = useState(spot);
   const [facingLeft, setFacingLeft] = useState(false);
+  const [stride, setStride] = useState<"walk" | "walkDown" | "walkUp">("walk");
   const [walking, setWalking] = useState(false);
   const [speaking, setSpeaking] = useState(false);
   const [waving, setWaving] = useState(false);
@@ -196,7 +197,12 @@ function Person({ speaker, look, label, spot, roam, held, mood, line, selected, 
       // People heading for the same spot stand a step apart instead of on top of each other.
       const next = { x: target.x + nudge, y: target.y };
       if (next.x === last.current.x && next.y === last.current.y) return;
-      setFacingLeft(next.x < last.current.x);
+      // Room percent across is 1.5 times percent down (the room is 3:2); a mostly vertical
+      // move walks toward the viewer or away instead of sideways.
+      const across = (next.x - last.current.x) * 1.5;
+      const down = next.y - last.current.y;
+      setFacingLeft(across < 0);
+      setStride(Math.abs(down) > Math.abs(across) ? (down > 0 ? "walkDown" : "walkUp") : "walk");
       setWalking(true);
       last.current = next;
       setPos(next);
@@ -228,7 +234,7 @@ function Person({ speaker, look, label, spot, roam, held, mood, line, selected, 
 
   const moving = walking && !held;
   const action: Action = moving
-    ? "walk"
+    ? stride
     : mood === "work"
       ? "type"
       : alert
@@ -274,7 +280,8 @@ function Person({ speaker, look, label, spot, roam, held, mood, line, selected, 
         aria-pressed={onClick ? selected : undefined}
         className="block w-full rounded-md focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-default aria-pressed:ring-2 aria-pressed:ring-ring"
       >
-        <Sprite speaker={speaker} look={look} action={action} flip={action === "walk" && facingLeft} paused={held} />
+        {/* Drawn sheets walk sideways in every direction, so they turn whenever they walk. */}
+        <Sprite speaker={speaker} look={look} action={action} flip={facingLeft && (action === "walk" || (moving && !look))} paused={held} />
       </button>
       <span className="pointer-events-none absolute top-full left-1/2 mt-0.5 -translate-x-1/2 rounded bg-black/60 px-1.5 text-3xs whitespace-nowrap text-white">{label}</span>
     </div>

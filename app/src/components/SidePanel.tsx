@@ -3,10 +3,10 @@ import { Building2, ExternalLink, KanbanSquare, PanelRightClose } from "lucide-r
 import type { RunView } from "../../../src/core/snapshot.ts";
 import type { UsageWindow } from "../../../src/core/usage.ts";
 import type { PanelView } from "../useRun.ts";
-import { AgentBoard } from "./AgentBoard.tsx";
 import { Office } from "./Office.tsx";
 import { TeamChat } from "./TeamChat.tsx";
 import { UsagePanel } from "./UsagePanel.tsx";
+import { WorkTab } from "./WorkTab.tsx";
 
 const VIEWS: { id: PanelView; label: string; icon: typeof Building2 }[] = [
   { id: "work", label: "에이전트 작업", icon: KanbanSquare },
@@ -21,6 +21,8 @@ interface Props {
   usageRuns: RunView[];
   usageWindows: UsageWindow[];
   leadResting?: boolean;
+  /** The clock tickets age by; a replayed run passes its own. Defaults to the wall clock. */
+  now?: Date;
   view: PanelView;
   card?: string;
   onView: (view: PanelView) => void;
@@ -35,7 +37,7 @@ const ICON_BUTTON =
   "flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none";
 
 /** The right half of the split: pick what to watch beside the lead chat. */
-export function SidePanel({ run, projectRuns, usageRuns, usageWindows, leadResting, view, card, onView, onCard, onClose, onPopout }: Props) {
+export function SidePanel({ run, projectRuns, usageRuns, usageWindows, leadResting, now, view, card, onView, onCard, onClose, onPopout }: Props) {
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-col" aria-label="작업 보기">
       <div className="flex h-9 shrink-0 items-stretch border-b bg-tab-bar">
@@ -69,7 +71,7 @@ export function SidePanel({ run, projectRuns, usageRuns, usageWindows, leadResti
         </div>
       </div>
 
-      {view === "work" && <AgentBoard runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onOpen={onCard} />}
+      {view === "work" && <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} />}
 
       {view === "office" && !run && <p className="p-5 text-sm text-muted-foreground">이 프로젝트에는 아직 작업이 없습니다.</p>}
       {view === "office" && run && (

@@ -1,10 +1,12 @@
 import type { RunView } from "../../../src/core/snapshot.ts";
+import { lookFor } from "../characters.ts";
 import { names, timeOf } from "../format.ts";
 import { Avatar, type Speaker } from "./Avatar.tsx";
 
-/** The team channel as a messenger: each agent speaks with its own face; the lead talks from the right. */
+/** The team channel as a messenger: each card speaks as its office character; the lead talks from the right. */
 export function TeamChat({ run, embedded }: { run: RunView; embedded?: boolean }) {
   const name = names(run);
+  const isCard = (party: string) => party !== "lead" && run.cards.some((c) => c.id === party);
   const speaker = (party: string): Speaker => (party === "lead" ? "lead" : run.cards.find((c) => c.id === party)?.provider ?? "lead");
 
   return (
@@ -21,7 +23,7 @@ export function TeamChat({ run, embedded }: { run: RunView; embedded?: boolean }
           return (
             <li key={`${m.at}-${i}`} className={`flex items-end gap-2 ${mine ? "flex-row-reverse" : ""} ${grouped ? "-mt-1.5" : ""}`}>
               <span className={grouped ? "invisible" : ""}>
-                <Avatar speaker={speaker(m.from)} />
+                <Avatar speaker={speaker(m.from)} look={isCard(m.from) ? lookFor(m.from, run.cards.map((c) => c.id)) : undefined} />
               </span>
               <div className={`flex max-w-[78%] flex-col ${mine ? "items-end" : "items-start"}`}>
                 {!grouped && (

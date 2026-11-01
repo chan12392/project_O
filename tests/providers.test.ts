@@ -69,6 +69,10 @@ test("codex stream: config warnings are not failures", () => {
   assert.deepEqual(r.read('{"type":"thread.started","thread_id":"t1"}'), [{ kind: "session", sessionId: "t1" }]);
   assert.deepEqual(r.read('{"type":"item.completed","item":{"id":"item_0","type":"error","message":"Codex is ignoring 1 unrecognized configuration setting."}}'), []);
   assert.deepEqual(r.read('{"type":"item.completed","item":{"id":"item_4","type":"agent_message","text":"ok"}}'), [{ kind: "message", text: "ok" }]);
+  // File edits keep file names only, so two long Windows paths still fit the summary.
+  assert.deepEqual(r.read('{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"C:\\\\Users\\\\someone\\\\projects\\\\todo-app\\\\index.html","kind":"update"},{"path":"C:/Users/someone/projects/todo-app/app.js","kind":"add"}]}}'), [
+    { kind: "tool", name: "edit", summary: '[{"path":"index.html","kind":"update"},{"path":"app.js","kind":"add"}]' },
+  ]);
   assert.deepEqual(r.read('{"type":"turn.completed","usage":{"input_tokens":127105,"cached_input_tokens":112384,"output_tokens":519}}'), [
     { kind: "usage", input: 14721, cached: 112384, output: 519 },
     { kind: "final", ok: true, text: "" },

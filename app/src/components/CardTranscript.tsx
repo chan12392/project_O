@@ -1,20 +1,30 @@
-import { CircleAlert, CircleCheck, FilePen, FileText, Globe, Hourglass, MessagesSquare, SquareTerminal, Wrench } from "lucide-react";
+import { CircleAlert, CircleCheck, FilePen, FileText, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
 
-import type { CardLogEntry, CardView } from "../../../src/core/snapshot.ts";
+import type { CardLogEntry, CardView, RunView } from "../../../src/core/snapshot.ts";
+import { lookFor } from "../characters.ts";
 import { PROVIDER_NAME, STATE_WORD, modelLine, timeOf } from "../format.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
+import { Avatar } from "./Avatar.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { useFollowBottom } from "./Thread.tsx";
+import type { ReactNode } from "react";
 
 const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTerminal, "파일 읽기": FileText, "파일 수정": FilePen, "웹 검색": Globe };
 
 /** One work card's session, read back as Orca shows an agent transcript. */
-export function CardTranscript({ card, names }: { card: CardView; names: (party: string) => string }) {
+export function CardTranscript({ card, run, names }: { card: CardView; run: RunView; names: (party: string) => string }) {
+  const siblings = run.cards.map((c) => c.id);
+  // Who wrote a team message, drawn as in the team chat: a card's own person, or the lead.
+  const avatarOf = (party: string) => {
+    const sender = run.cards.find((c) => c.id === party);
+    return sender ? <Avatar speaker={sender.provider} look={lookFor(sender.id, siblings)} size="sm" /> : <Avatar speaker="lead" size="sm" />;
+  };
   const scroller = useFollowBottom([card.log.length]);
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-chat-canvas">
       <header className="flex shrink-0 items-center gap-3 border-b px-6 py-2.5">
         <AgentStateDot state={card.state} size="md" />
+        <Avatar speaker={card.provider} look={lookFor(card.id, siblings)} size="sm" />
         <span className="text-sm font-medium">{card.label}</span>
         <span className="font-mono text-xs text-muted-foreground">
           {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
@@ -29,7 +39,7 @@ export function CardTranscript({ card, names }: { card: CardView; names: (party:
         <ol className="mx-auto flex max-w-3xl flex-col gap-1 px-6 py-5 text-sm text-chat-foreground">
           {card.log.length === 0 && <li className="text-chat-foreground-faint">아직 남긴 기록이 없습니다.</li>}
           {card.log.map((entry, i) => (
-            <Entry key={`${entry.at}-${i}`} entry={entry} cardFailed={card.state === "failed"} names={names} echoes={repeatsLastMessage(card.log, i)} />
+            <Entry key={`${entry.at}-${i}`} entry={entry} cardFailed={card.state === "failed"} names={names} avatarOf={avatarOf} echoes={repeatsLastMessage(card.log, i)} />
           ))}
         </ol>
       </div>
@@ -44,11 +54,23 @@ function repeatsLastMessage(log: CardLogEntry[], index: number): boolean {
   return last?.text.trim() === log[index].text.trim();
 }
 
-function Entry({ entry, cardFailed, names, echoes }: { entry: CardLogEntry; cardFailed: boolean; names: (party: string) => string; echoes: boolean }) {
+function Entry({
+  entry,
+  cardFailed,
+  names,
+  avatarOf,
+  echoes,
+}: {
+  entry: CardLogEntry;
+  cardFailed: boolean;
+  names: (party: string) => string;
+  avatarOf: (party: string) => ReactNode;
+  echoes: boolean;
+}) {
   if (entry.kind === "team" && entry.team) {
     return (
       <li className="my-1 flex items-start gap-2 rounded-lg border border-chat-user-border bg-chat-user-surface px-3 py-2">
-        <MessagesSquare className="mt-0.5 size-3.5 shrink-0 text-chat-foreground-faint" aria-hidden="true" />
+        <span className="shrink-0">{avatarOf(entry.team.from)}</span>
         <div className="min-w-0">
           <p className="text-xs text-chat-foreground-faint">
             {names(entry.team.from)} → {names(entry.team.to)}

@@ -12,7 +12,8 @@ import { WhoIsWorking } from "./components/WhoIsWorking.tsx";
 import { STATE_WORD } from "./format.ts";
 import { usePanelLayout, usePopoutChannel, type Selection } from "./panelLayout.ts";
 import { LEAD_WORD, projectsOf, useLeads, useProjectGroups, type Project } from "./projects.ts";
-import { USAGE_WINDOWS, readParams, useDemoRuns, writeParam, type PanelView, type ScreenState } from "./useRun.ts";
+import { useRunSource } from "./useLiveRuns.ts";
+import { readParams, writeParam, type PanelView, type ScreenState } from "./useRun.ts";
 
 const initial = readParams();
 
@@ -36,7 +37,7 @@ function useSelection() {
   return { selection, update };
 }
 
-type Run = ReturnType<typeof useDemoRuns>["runs"][number];
+type Run = ReturnType<typeof useRunSource>["runs"][number];
 
 /**
  * What the selection points at: a project (the run's, else the newest), and the
@@ -52,8 +53,12 @@ function resolve(runs: Run[], selection: Selection) {
 
 /** Orca's window: run sidebar, then the lead chat and a chosen view side by side, status bar below. */
 function MainWindow() {
-  const [state, setState] = useState<ScreenState>(initial.state);
-  const { runs, replayingId, restart } = useDemoRuns(initial.run, initial.start);
+  const [chosenState, setState] = useState<ScreenState>(initial.state);
+  const data = useRunSource(initial.run, initial.start);
+  const { runs, replayingId, restart } = data;
+  // Live mode: loading until the first answer, an error only when nothing could ever be read.
+  const state: ScreenState =
+    chosenState !== "full" ? chosenState : data.pending ? "loading" : data.live?.failed && runs.length === 0 ? "error" : "full";
   const { selection, update } = useSelection();
   const layout = usePanelLayout(update);
   const askRef = useRef<HTMLTextAreaElement>(null);
@@ -169,7 +174,8 @@ function MainWindow() {
                 run={current?.view}
                 projectRuns={project?.runs ?? []}
                 usageRuns={runs.map((r) => r.view)}
-                usageWindows={USAGE_WINDOWS}
+                usageWindows={data.usageWindows}
+                now={data.clock}
                 leadResting={lead === "resting" || lead === "loading"}
                 view={selection.view}
                 card={selection.card}
@@ -182,7 +188,13 @@ function MainWindow() {
           </>
         )}
       </main>
-      <StatusBar state={state} runs={state === "full" ? runs.map((r) => r.view) : []} replaying={Boolean(replayingId)} onReplay={() => current && restart(current.view.runId)} />
+      <StatusBar
+        state={state}
+        runs={state === "full" ? runs.map((r) => r.view) : []}
+        live={data.live}
+        replaying={Boolean(replayingId)}
+        onReplay={() => current && restart(current.view.runId)}
+      />
       <p className="sr-only" aria-live="polite">
         {announced}
       </p>
@@ -192,7 +204,7 @@ function MainWindow() {
 
 /** The right panel alone in its own window, following and steering the main window's selection. */
 function PopoutPanel() {
-  const { runs } = useDemoRuns(initial.run, 1);
+  const { runs, usageWindows, clock } = useRunSource(initial.run, 1);
   const { selection, update } = useSelection();
   const send = usePopoutChannel(update);
   const { project, current } = resolve(runs, selection);
@@ -209,7 +221,8 @@ function PopoutPanel() {
         run={current?.view}
         projectRuns={project?.runs ?? []}
         usageRuns={runs.map((r) => r.view)}
-        usageWindows={USAGE_WINDOWS}
+        usageWindows={usageWindows}
+        now={clock}
         view={selection.view}
         card={selection.card}
         onView={(view) => select({ view })}

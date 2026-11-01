@@ -155,9 +155,27 @@ export function toolWord(name: string): string {
   return TOOL_WORD.find(([pattern]) => pattern.test(name))?.[1] ?? name;
 }
 
+const CHANGE_WORD: Record<string, string> = { add: "추가", update: "수정", delete: "삭제" };
+
 function toolDetail(summary: string): string {
+  const files = fileChanges(summary);
+  if (files !== undefined) return files;
   const detail = summary.replace(/\\"/g, '"').trim();
   return /^".*"$/s.test(detail) ? detail.slice(1, -1) : detail;
+}
+
+/**
+ * Codex reports file edits as a JSON list of {path, kind}; a person reads "app.js 수정".
+ * Read with a pattern, not JSON.parse: long summaries arrive cut short.
+ */
+function fileChanges(summary: string): string | undefined {
+  if (!/^\s*\[\s*\{\s*\\?"path\\?"/.test(summary)) return undefined;
+  const text = summary.replace(/\\"/g, '"');
+  const whole = [...text.matchAll(/"path":"((?:[^"\\]|\\.)*)"(?:,"kind":"(\w+)")?/g)];
+  const files = whole.map(([, path, kind]) => `${path.split(/[\\/]+/).pop()}${kind && CHANGE_WORD[kind] ? ` ${CHANGE_WORD[kind]}` : ""}`);
+  // A path cut off mid-way names no file; say there were more rather than guess.
+  const cut = (text.match(/"path":/g)?.length ?? 0) > whole.length;
+  return files.length > 0 ? `${files.join(", ")}${cut ? " 외" : ""}` : "";
 }
 
 /** "명령 실행: git status" rather than `shell "git status\"`; the log keeps the original. */

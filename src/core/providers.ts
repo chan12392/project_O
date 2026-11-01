@@ -258,7 +258,11 @@ function readCodex(data: Record<string, unknown>): StreamSignal[] {
     const item = data.item;
     if (item.type === "agent_message" && typeof item.text === "string") return [{ kind: "message", text: item.text.trim() }];
     if (item.type === "command_execution") return [{ kind: "tool", name: "shell", summary: short(unwrapShell(String(item.command ?? ""))) }];
-    if (item.type === "file_change") return [{ kind: "tool", name: "edit", summary: short(JSON.stringify(item.changes ?? "")) }];
+    if (item.type === "file_change") {
+      // File names only: full Windows paths of two files already overflow the summary's length.
+      const changes = Array.isArray(item.changes) ? item.changes.filter(isRecord).map((c) => ({ path: String(c.path ?? "").split(/[\\/]+/).pop(), kind: c.kind })) : [];
+      return [{ kind: "tool", name: "edit", summary: short(JSON.stringify(changes)) }];
+    }
     if (item.type === "web_search") return [{ kind: "tool", name: "web_search", summary: short(item.query) }];
     // item.type === "error" items are config warnings; the turn still runs.
     return [];

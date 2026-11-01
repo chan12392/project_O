@@ -3,6 +3,8 @@
  * expression laid over each frame's head, drawn once per look into a canvas.
  * The parts and each frame's head box come from scripts/build-character-parts.py.
  */
+import { useEffect, useState } from "react";
+
 const BASE = "/office/parts";
 
 export type Body = "male-tee" | "male-hoodie" | "female-tee" | "female-cardigan";
@@ -97,7 +99,13 @@ async function compose(look: Look): Promise<string> {
       const piece = look.hair * 4 + data.hair[g].columns[facing];
       const [px, py, pw, ph] = data.hair[g].rects[piece];
       const [dx, dy] = data.hair[g].offsets[piece];
+      // A tall style (a bun on a raised head) is cut at its own cell rather than spilling into the row above.
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x0, y0, cell, cell);
+      ctx.clip();
       ctx.drawImage(hairImg, px, py, pw, ph, x0 + hx + Math.round(w / 2 - pw / 2) + dx, y0 + hy + dy, pw, ph);
+      ctx.restore();
     }
   });
 
@@ -106,9 +114,48 @@ async function compose(look: Look): Promise<string> {
   return URL.createObjectURL(blob);
 }
 
-/** A steady look per card: the same card always gets the same person. */
-export function lookFor(id: string): Look {
+/** A look's composed sheet URL once drawn; undefined without a look, while drawing, or if it can't be drawn. */
+export function useCharacterSheet(look: Look | undefined): string | undefined {
+  const [url, setUrl] = useState<string>();
+  const key = look && `${look.body}/${look.hair}`;
+  useEffect(() => {
+    if (!look) return;
+    let live = true;
+    characterSheet(look).then(
+      (u) => live && setUrl(u),
+      () => live && setUrl(undefined),
+    );
+    return () => {
+      live = false;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [key]);
+  return look ? url : undefined;
+}
+
+const LOOKS = BODIES.length * 4;
+
+function hashOf(id: string): number {
   let hash = 2166136261;
   for (const ch of id) hash = Math.imul(hash ^ ch.charCodeAt(0), 16777619) >>> 0;
-  return { body: BODIES[hash % BODIES.length], hair: (hash >>> 4) % 4 };
+  return hash;
+}
+
+const toLook = (n: number): Look => ({ body: BODIES[n % BODIES.length], hair: Math.floor(n / BODIES.length) % 4 });
+
+/**
+ * A steady look per card: the same card always gets the same person. Given the
+ * run's card ids, cards of one run get different people (up to 16), whichever
+ * screen asks, because the assignment depends only on the sorted ids.
+ */
+export function lookFor(id: string, siblings?: readonly string[]): Look {
+  if (!siblings?.includes(id)) return toLook(hashOf(id) % LOOKS);
+  const taken = new Set<number>();
+  for (const sibling of [...siblings].sort()) {
+    let n = hashOf(sibling) % LOOKS;
+    while (taken.has(n) && taken.size < LOOKS) n = (n + 1) % LOOKS;
+    taken.add(n);
+    if (sibling === id) return toLook(n);
+  }
+  return toLook(hashOf(id) % LOOKS);
 }

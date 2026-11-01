@@ -62,6 +62,56 @@
   .person { transition: none !important; }
 }
 
+/*
+ * Thermal-paper tickets for the work tab's dashboard and next up, after the
+ * Orchestrator app's ticket rail (colors from its DESIGN.md). Paper reads the
+ * same in light and dark themes; only its top edge scorches with age.
+ */
+.ticket {
+  --paper: #efeee9;
+  --paper-2: #e5e3dc;
+  --paper-edge: #cfccc2;
+  --ink: #1e1c18;
+  --ink-dim: #4c473d;
+  --ink-faint: #625c50;
+  --focus: #3a78f2;
+  position: relative;
+  border-radius: 6px;
+  background: var(--paper);
+  color: var(--ink);
+  box-shadow: 0 1px 0 rgb(0 0 0 / 0.35), 0 8px 18px -10px rgb(0 0 0 / 0.7);
+}
+.ticket::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto;
+  height: 4px;
+  border-radius: 6px 6px 0 0;
+  background: var(--paper-edge);
+}
+.ticket[data-heat="warm"]::before { background: #b3ada0; }
+.ticket[data-heat="hot"]::before { height: 5px; background: #7a756b; }
+.ticket[data-heat="scorched"]::before { height: 6px; background: #3a3731; }
+.ticket[data-done] { background: var(--paper-2); opacity: 0.75; }
+.stamp {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: 18px;
+  padding: 0 6px;
+  border: 1.5px solid currentColor;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  transform: rotate(-2.5deg);
+  white-space: nowrap;
+}
+.stamp--rush { color: #b3342a; }
+.stamp--heat { color: #7d5300; }
+.stamp--info { color: #2558b5; }
+.stamp--done { color: #625c50; }
+
 /* Orca's sleek scrollbar, one recipe for every scrolling pane. */
 .scrollbar-sleek {
   scrollbar-width: thin;

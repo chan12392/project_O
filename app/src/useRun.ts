@@ -21,7 +21,7 @@ interface DemoRun {
 
 /** Real runs from this machine, newest first (app/src/data/demo-runs.json). */
 const RUNS = demo.runs as DemoRun[];
-/** Subscription windows from `o usage` (Codex, Antigravity); the desktop build reads usage.json. */
+/** Subscription windows from `o usage` (Codex, Antigravity) at recording time; live mode reads usage.json. */
 export const USAGE_WINDOWS = (demo.usage?.windows ?? []) as UsageWindow[];
 /** A replayed run plays back in about thirty seconds, whatever it really took. */
 const REPLAY_MS = 30_000;
@@ -34,18 +34,18 @@ function span(run: DemoRun): { start: number; length: number } {
 
 /**
  * The browser preview's data source: recorded runs, one of them replayed as if
- * live. The desktop build replaces this with the runs folder and a tail of events.jsonl.
+ * live. Live runs come from useRunSource (useLiveRuns.ts); the replay only plays while `active`.
  */
-export function useDemoRuns(initialRun: string | undefined, initialFraction: number) {
+export function useDemoRuns(initialRun: string | undefined, initialFraction: number, active = true) {
   const ids = RUNS.map((r) => r.events[0].t === "run.start" ? r.events[0].runId : "");
   const [replay, setReplay] = useState({ runId: initialRun && ids.includes(initialRun) ? initialRun : ids[0], fraction: initialFraction });
   const playing = replay.fraction < 1;
 
   useEffect(() => {
-    if (!playing) return;
+    if (!playing || !active) return;
     const id = window.setInterval(() => setReplay((r) => ({ ...r, fraction: Math.min(1, r.fraction + TICK_MS / REPLAY_MS) })), TICK_MS);
     return () => window.clearInterval(id);
-  }, [playing]);
+  }, [playing, active]);
 
   const runs = useMemo(
     () =>
@@ -62,7 +62,17 @@ export function useDemoRuns(initialRun: string | undefined, initialFraction: num
     [replay],
   );
   const restart = useCallback((runId: string) => setReplay({ runId, fraction: 0 }), []);
-  return { runs, replayingId: playing ? replay.runId : undefined, restart };
+  // Recorded runs are old: tickets age by the replay's moment, or by the newest record once it ends.
+  const clock = useMemo(() => {
+    const replayed = RUNS[ids.indexOf(replay.runId)];
+    if (playing && replayed) {
+      const { start, length } = span(replayed);
+      return new Date(start + length * replay.fraction);
+    }
+    return new Date(Math.max(...RUNS.map((r) => Date.parse(r.events[r.events.length - 1].at))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [replay, playing]);
+  return { runs, replayingId: playing ? replay.runId : undefined, restart, clock };
 }
 
 /** Screen state, run, panel view and card live in the URL. */

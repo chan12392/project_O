@@ -80,8 +80,20 @@ def head_width(cell):
     return int(head.sum(axis=1).max())
 
 
+def head_skin(cell, h, y):
+    """The head's own skin: the biggest skin region above the bottom of a head box at y."""
+    mask = skin(cell)
+    mask[y + h :, :] = False
+    return biggest_component(mask)
+
+
 def locate_head(cell, w, h):
-    """Top-left of the w x h box holding the most head skin, searched in the frame's upper part."""
+    """Top-left of the w x h box holding the most head skin, its top on the skull's top.
+
+    The box with the most skin also takes in the neck, so it sits a few pixels below
+    the skull by an amount that changes frame to frame; snapping it to the skull keeps
+    hair and faces at the same height on every frame.
+    """
     mask = skin(cell)
     opaque = np.nonzero(cell[..., 3] > 40)
     top, bottom = opaque[0].min(), opaque[0].max()
@@ -91,45 +103,72 @@ def locate_head(cell, w, h):
     best = sums.max()
     ys, xs = np.nonzero(sums >= best - 2)
     i = np.argmin(ys * 1000 + np.abs(xs + w / 2 - CELL / 2))  # the topmost of near-equal boxes
-    return int(xs[i]), int(ys[i])
+    x, y = int(xs[i]), int(ys[i])
+    # The skull's top: the first skin row over the box's middle half (a hand at the side doesn't count).
+    rows = np.nonzero(head_skin(cell, h, y)[:, x + w // 4 : x + 3 * w // 4].any(axis=1))[0]
+    if len(rows):
+        y = int(np.clip(rows.min(), y - h * 0.15, y + h * 0.15))
+    return x, y
 
 
 # The body frame each hair direction is fitted on: (row, column) in the 12-row stack.
 FIT_FRAME = {"front": (0, 0), "side": (1, 0), "back": (3, 0), "backdiag": (5, 0)}
+# Piece sizes tried around the style's HAIR_FIT, as factors of it; the nearest to 1 wins among equals.
+FIT_SCALES = [0.92, 0.96, 1.0, 1.04, 1.08, 1.12, 1.16, 1.2, 1.25]
 
 
-def fit_hair(piece, cell, box, head, facing):
-    """Where a hair piece sits on its head box: the offset covering the most skull and the least face.
+def placements(weight, piece):
+    """Sum of weight under a piece mask for every top-left (y, x): result[y + ph, x + pw]."""
+    ph, pw = piece.shape
+    size = (weight.shape[0] + 2 * ph, weight.shape[1] + 2 * pw)
+    padded = np.zeros(size)
+    padded[ph : ph + weight.shape[0], pw : pw + weight.shape[1]] = weight
+    return np.fft.irfft2(np.fft.rfft2(padded) * np.conj(np.fft.rfft2(piece.astype(float), s=size)), s=size)
 
-    Returns [dx, dy] in pixels from the centred-on-the-head, top-aligned spot.
+
+def fit_hair(raw, factor, cell, box, head, facing, features):
+    """Size and place a hair piece on its head box: most skull covered, least face hidden.
+
+    Skull is the head's skin over the top half of the box. Covering the eyes and mouth
+    (features, front views) costs far more than covering cheeks or the side of the face,
+    which long hair may. Returns the scaled piece and [dx, dy] in pixels from the
+    centred-on-the-head, top-aligned spot.
     """
     w, h = head
     hx, hy = box
-    hair = piece[..., 3] > 40
-    ph, pw = hair.shape
-    head_skin = skin(cell)
-    skull = np.zeros_like(head_skin)
-    skull[hy : hy + int(h * 0.5), hx : hx + w] = True
-    skull &= head_skin
-    face = np.zeros_like(head_skin)
+    own = head_skin(cell, h, hy)
+    # The skull with its outline, so hair doesn't leave a dark rim showing over it.
+    rim = own.copy()
+    for _ in range(2):
+        rim |= np.roll(rim, -1, 0) | np.roll(rim, 1, 1) | np.roll(rim, -1, 1)
+    rim &= cell[..., 3] > 40
+    # Hair beside or above the head costs a little, so pieces don't grow past what covering needs.
+    weight = np.zeros(own.shape)
+    weight[: hy + h] = -0.1
+    weight[: hy + int(h * 0.5)][rim[: hy + int(h * 0.5)]] = 1
+    if facing == "side":  # the back of the head, behind the ear, is hair too
+        weight[: hy + int(h * 0.62), : hx + int(w * 0.45)][rim[: hy + int(h * 0.62), : hx + int(w * 0.45)]] = 1
+    face = np.zeros_like(own)
     if facing == "front":
         face[hy + int(h * 0.42) : hy + h, hx + int(w * 0.18) : hx + int(w * 0.82)] = True
-        face &= head_skin
-    best, best_key = [0, 0], None
-    for dy in range(-int(h * 0.4), int(h * 0.25) + 1):
-        for dx in range(-int(w * 0.3), int(w * 0.3) + 1):
-            x, y = hx + round(w / 2 - pw / 2) + dx, hy + dy
-            x0, y0, x1, y1 = max(0, x), max(0, y), min(CELL, x + pw), min(CELL, y + ph)
-            if x1 <= x0 or y1 <= y0:
-                continue
-            placed = hair[y0 - y : y1 - y, x0 - x : x1 - x]
-            covered = int((placed & skull[y0:y1, x0:x1]).sum())
-            masked = int((placed & face[y0:y1, x0:x1]).sum())
-            # Most skull, least face; among equals, the smallest move.
-            key = (covered - 2 * masked, -(abs(dx) + abs(dy)))
-            if best_key is None or key > best_key:
-                best, best_key = [dx, dy], key
-    return best
+    elif facing == "side":  # faces right
+        face[hy + int(h * 0.42) : hy + h, hx + int(w * 0.55) : hx + w] = True
+    weight[face & own] = -1
+    weight[features & own] = -6
+    skull = weight.clip(0).sum()
+    candidates = []
+    for s in FIT_SCALES:
+        piece = scaled(raw, factor * s)
+        hair = np.array(piece)[..., 3] > 40
+        ph, pw = hair.shape
+        score = placements(weight, hair)
+        dys, dxs = np.mgrid[-int(ph * 0.6) : int(h * 0.25) + 1, -int(w * 0.3) : int(w * 0.3) + 1]
+        values = np.rint(score[hy + dys + ph, hx + round(w / 2 - pw / 2) + dxs + pw])
+        candidates += [(v, abs(s - 1), abs(dx) + abs(dy), [int(dx), int(dy)], piece) for v, dx, dy in zip(values.ravel(), dxs.ravel(), dys.ravel())]
+    best = max(c[0] for c in candidates)
+    # Among placements within half a percent of the skull of the best: the nearest size, then the smallest move.
+    pick = min((c for c in candidates if c[0] >= best - skull * 0.005), key=lambda c: c[1:3])
+    return pick[4], pick[3]
 
 
 def pieces(sheet):
@@ -186,19 +225,6 @@ def main():
             data["bodies"][key] = {"gender": gender, "outfit": OUTFIT_NAME[outfit], "head": [w, h], "boxes": boxes}
             print(f"char-body-{key}.png  head {w}x{h}")
 
-        # The generator draws hair at its own size, so each style is fitted by its front piece:
-        # that piece spans the head plus the style's volume (HAIR_FIT of the head's width).
-        hair = pieces(Image.open(folder / f"raw-hair-{gender}.png").convert("RGBA"))
-        flat = []
-        for r in range(GRID):
-            factor = heads_w * HAIR_FIT[gender][r] / hair[r][HAIR_COLUMN["front"]].width
-            flat += [scaled(hair[r][c], factor) for c in range(GRID)]
-        rects = pack(flat, folder / f"char-hair-{gender}.png")
-        base = data["bodies"][f"{gender}-tee"]
-        offsets = [fit_hair(np.array(piece), base_cells[FIT_FRAME[d][0]][FIT_FRAME[d][1]], base["boxes"][FIT_FRAME[d][0] * GRID + FIT_FRAME[d][1]], base["head"], d) for piece, d in zip(flat, [d for _ in range(GRID) for d in HAIR_COLUMN])]
-        data["hair"][gender] = {"styles": HAIR_STYLES[gender], "columns": HAIR_COLUMN, "rects": rects, "offsets": offsets}
-        print(f"char-hair-{gender}.png  (raw head {raw_w}px)")
-
         faces = pieces(Image.open(folder / "raw-face.png").convert("RGBA"))
         features, offsets = [], []
         for r in range(GRID):
@@ -222,6 +248,31 @@ def main():
                 offsets.append([round((fx - left) * f), round((fy - top) * f)])
         rects = pack(features, folder / f"char-face-{gender}.png")
         data["faces"][gender] = {"rects": rects, "offsets": offsets}
+
+        # Where the neutral expression draws eyes and mouth on the front fit frame, a pixel wider:
+        # hair keeps off it. (Other expressions add brows, which bangs may cover.)
+        base = data["bodies"][f"{gender}-tee"]
+        fx, fy = base["boxes"][FIT_FRAME["front"][0] * GRID + FIT_FRAME["front"][1]]
+        (ox, oy), a = offsets[EXPRESSIONS.index("neutral")], np.array(features[EXPRESSIONS.index("neutral")])[..., 3] > 40
+        drawn = np.zeros((CELL, CELL), dtype=bool)
+        drawn[fy + oy : fy + oy + a.shape[0], fx + ox : fx + ox + a.shape[1]] = a
+        drawn |= np.roll(drawn, 1, 0) | np.roll(drawn, -1, 0) | np.roll(drawn, 1, 1) | np.roll(drawn, -1, 1)
+
+        # The generator draws hair at its own size, so each style starts from its front piece
+        # spanning the head plus the style's volume (HAIR_FIT of the head's width); each piece
+        # is then sized and placed on its own direction's fit frame.
+        hair = pieces(Image.open(folder / f"raw-hair-{gender}.png").convert("RGBA"))
+        flat, offsets = [], []
+        for r in range(GRID):
+            factor = heads_w * HAIR_FIT[gender][r] / hair[r][HAIR_COLUMN["front"]].width
+            for d, c in HAIR_COLUMN.items():
+                fr, fc = FIT_FRAME[d]
+                piece, offset = fit_hair(hair[r][c], factor, base_cells[fr][fc], base["boxes"][fr * GRID + fc], base["head"], d, drawn if d == "front" else np.zeros_like(drawn))
+                flat.append(piece)
+                offsets.append(offset)
+        rects = pack(flat, folder / f"char-hair-{gender}.png")
+        data["hair"][gender] = {"styles": HAIR_STYLES[gender], "columns": HAIR_COLUMN, "rects": rects, "offsets": offsets}
+        print(f"char-hair-{gender}.png  (raw head {raw_w}px)")
     (folder / "characters.json").write_text(json.dumps(data, separators=(",", ":")) + "\n", encoding="utf-8")
 
 

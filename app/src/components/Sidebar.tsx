@@ -1,5 +1,5 @@
-import { ChevronRight, Coffee, Folder, FolderPlus, MoreHorizontal, SquarePen, X } from "lucide-react";
-import { useCallback, useRef, useState } from "react";
+import { ChevronRight, Coffee, Folder, FolderPlus, MoreHorizontal, Pencil, SquarePen, X } from "lucide-react";
+import { useCallback, useId, useRef, useState } from "react";
 
 import type { CardState, RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../dismiss.ts";
@@ -105,22 +105,7 @@ export function Sidebar({ state, projects, groups, leadState, project, run, card
           const members = shown.filter((p) => groups.member[p.path] === g.id);
           return (
             <section key={g.id} className="mt-1" aria-label={`${g.name} 그룹`}>
-              <div className="group/head flex items-center rounded-md hover:bg-sidebar-accent/60">
-                <button type="button" onClick={() => groups.toggle(g.id)} aria-expanded={!g.collapsed} className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[13px] font-semibold ${ROW_FOCUS}`}>
-                  <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${g.collapsed ? "" : "rotate-90"}`} aria-hidden="true" />
-                  <span className="truncate">{g.name}</span>
-                  <span className="rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{members.length}</span>
-                </button>
-                <button
-                  type="button"
-                  onClick={() => groups.remove(g.id)}
-                  className={`mr-1 flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover/head:opacity-100 hover:text-foreground focus-visible:opacity-100 ${ROW_FOCUS}`}
-                  aria-label={`${g.name} 그룹 풀기 (프로젝트는 남음)`}
-                  title="그룹 풀기 (프로젝트는 남음)"
-                >
-                  <X className="size-3.5" aria-hidden="true" />
-                </button>
-              </div>
+              <GroupHead group={g} count={members.length} groups={groups} />
               {!g.collapsed && (
                 <div className="ml-2 border-l pl-1">
                   {members.length === 0 && <p className="px-2 py-1.5 text-2xs text-muted-foreground">프로젝트의 ⋯ 메뉴에서 이 그룹으로 옮길 수 있습니다.</p>}
@@ -137,7 +122,48 @@ export function Sidebar({ state, projects, groups, leadState, project, run, card
   );
 }
 
-function GroupNameInput({ label, onDone: done }: { label: string; onDone: (name: string | undefined) => void }) {
+type Group = ReturnType<typeof useProjectGroups>["groups"][number];
+
+/** A group's header: fold, rename (pencil or double-click, Enter saves, Esc cancels) and ungroup. */
+function GroupHead({ group: g, count, groups }: { group: Group; count: number; groups: ReturnType<typeof useProjectGroups> }) {
+  const [renaming, setRenaming] = useState(false);
+  const head = useRef<HTMLButtonElement>(null);
+  const finish = (name: string | undefined) => {
+    if (name && name !== g.name) groups.rename(g.id, name);
+    setRenaming(false);
+    // Enter or Esc leaves focus nowhere; put it back on the header. A click elsewhere keeps its target.
+    requestAnimationFrame(() => {
+      if (document.activeElement === document.body) head.current?.focus();
+    });
+  };
+  if (renaming) return <GroupNameInput label={`${g.name} 그룹의 새`} initial={g.name} onDone={finish} />;
+  const icon = `flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover/head:opacity-100 hover:text-foreground focus-visible:opacity-100 ${ROW_FOCUS}`;
+  return (
+    <div className="group/head flex items-center rounded-md hover:bg-sidebar-accent/60">
+      <button
+        ref={head}
+        type="button"
+        onClick={() => groups.toggle(g.id)}
+        onDoubleClick={() => setRenaming(true)}
+        aria-expanded={!g.collapsed}
+        className={`flex min-w-0 flex-1 items-center gap-1.5 px-2 py-1.5 text-[13px] font-semibold ${ROW_FOCUS}`}
+      >
+        <ChevronRight className={`size-3.5 shrink-0 text-muted-foreground transition-transform ${g.collapsed ? "" : "rotate-90"}`} aria-hidden="true" />
+        <span className="truncate">{g.name}</span>
+        <span className="rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{count}</span>
+      </button>
+      <button type="button" onClick={() => setRenaming(true)} className={icon} aria-label={`${g.name} 그룹 이름 바꾸기`} title="이름 바꾸기 (두 번 눌러도 됨)">
+        <Pencil className="size-3" aria-hidden="true" />
+      </button>
+      <button type="button" onClick={() => groups.remove(g.id)} className={`mr-1 ${icon}`} aria-label={`${g.name} 그룹 풀기 (프로젝트는 남음)`} title="그룹 풀기 (프로젝트는 남음)">
+        <X className="size-3.5" aria-hidden="true" />
+      </button>
+    </div>
+  );
+}
+
+function GroupNameInput({ label, initial, onDone: done }: { label: string; initial?: string; onDone: (name: string | undefined) => void }) {
+  const id = useId();
   // Enter, Escape and the blur that follows them must finish only once.
   const finished = useRef(false);
   const onDone = (name: string | undefined) => {
@@ -153,13 +179,15 @@ function GroupNameInput({ label, onDone: done }: { label: string; onDone: (name:
         onDone(new FormData(e.currentTarget).get("name")?.toString().trim() || undefined);
       }}
     >
-      <label className="mb-1 block text-2xs text-muted-foreground" htmlFor="group-name">
+      <label className="mb-1 block text-2xs text-muted-foreground" htmlFor={id}>
         {label} 이름 (Enter 저장, Esc 취소)
       </label>
       <input
-        id="group-name"
+        id={id}
         name="name"
+        defaultValue={initial}
         autoFocus
+        onFocus={(e) => e.currentTarget.select()}
         maxLength={30}
         onKeyDown={(e) => e.key === "Escape" && onDone(undefined)}
         onBlur={(e) => onDone(e.currentTarget.value.trim() || undefined)}

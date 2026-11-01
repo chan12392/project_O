@@ -1,9 +1,10 @@
-import { ArrowLeft, GitPullRequest } from "lucide-react";
+import { GitPullRequest } from "lucide-react";
 
+import { prOf } from "../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_NAME, STATE_WORD, clip, modelLine, names, timeOf } from "../format.ts";
+import { PROVIDER_NAME, STATE_WORD, clip, modelLine, timeOf } from "../format.ts";
+import { lookFor } from "../characters.ts";
 import { Avatar } from "./Avatar.tsx";
-import { CardTranscript } from "./CardTranscript.tsx";
 import { KanbanBoard, KanbanCard, KanbanCards, KanbanHeader, KanbanProvider, type KanbanColumn } from "./Kanban.tsx";
 
 type ColumnId = "waiting" | "running" | "review" | "done" | "blocked";
@@ -14,17 +15,6 @@ const COLUMNS: (KanbanColumn & { id: ColumnId; tone: string })[] = [
   { id: "done", name: "완료", tone: "bg-emerald-500" },
   { id: "blocked", name: "막힘·중지", tone: "bg-red-500" },
 ];
-
-const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
-
-/** A pull request the card's agent reported, found in what it wrote. */
-export function prOf(card: CardView): string | undefined {
-  for (const text of [card.result ?? "", ...card.log.map((l) => l.text)]) {
-    const match = PR_URL.exec(text);
-    if (match) return match[0];
-  }
-  return undefined;
-}
 
 function columnOf(card: CardView): ColumnId {
   if (card.state === "running") return "running";
@@ -39,50 +29,29 @@ interface Item {
 }
 
 /** The project's work cards on a board: who does what, which PR, how far along. */
-export function AgentBoard({ runs, open, onOpen }: { runs: RunView[]; open?: { run: string; card: string }; onOpen: (target?: { run: string; card: string }) => void }) {
-  const opened = open && runs.find((r) => r.runId === open.run);
-  const openedCard = opened?.cards.find((c) => c.id === open?.card);
-  if (opened && openedCard) {
-    return (
-      <div className="flex min-h-0 flex-1 flex-col">
-        <button
-          type="button"
-          onClick={() => onOpen(undefined)}
-          className="flex h-8 shrink-0 items-center gap-1.5 border-b px-3 text-xs text-muted-foreground hover:bg-accent/40 hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none focus-visible:ring-inset"
-        >
-          <ArrowLeft className="size-3.5" aria-hidden="true" />
-          보드로 돌아가기
-          <span className="truncate">{opened.title}</span>
-        </button>
-        <CardTranscript card={openedCard} names={names(opened)} />
-      </div>
-    );
-  }
-
+export function AgentBoard({ runs, onOpen }: { runs: RunView[]; onOpen: (target: { run: string; card: string }) => void }) {
   const items: Item[] = runs.flatMap((run) => run.cards.map((card) => ({ card, run })));
   return (
-    <div className="scrollbar-sleek min-h-0 flex-1 overflow-auto bg-chat-canvas p-3">
-      <KanbanProvider columns={COLUMNS}>
-        {(column) => {
-          const inColumn = items.filter((i) => columnOf(i.card) === column.id);
-          return (
-            <KanbanBoard key={column.id} id={column.id}>
-              <KanbanHeader id={column.id}>
-                <span className={`size-2 rounded-full ${column.tone}`} aria-hidden="true" />
-                {column.name}
-                <span className="ml-auto rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{inColumn.length}</span>
-              </KanbanHeader>
-              <KanbanCards>
-                {inColumn.length === 0 && <p className={`px-1 py-1 text-2xs text-muted-foreground ${column.id === "review" ? "" : "@max-4xl:hidden"}`}>{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
-                {inColumn.map(({ card, run }) => (
-                  <BoardCard key={`${run.runId}/${card.id}`} card={card} run={run} onOpen={() => onOpen({ run: run.runId, card: card.id })} />
-                ))}
-              </KanbanCards>
-            </KanbanBoard>
-          );
-        }}
-      </KanbanProvider>
-    </div>
+    <KanbanProvider columns={COLUMNS}>
+      {(column) => {
+        const inColumn = items.filter((i) => columnOf(i.card) === column.id);
+        return (
+          <KanbanBoard key={column.id} id={column.id}>
+            <KanbanHeader id={column.id}>
+              <span className={`size-2 rounded-full ${column.tone}`} aria-hidden="true" />
+              {column.name}
+              <span className="ml-auto rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{inColumn.length}</span>
+            </KanbanHeader>
+            <KanbanCards>
+              {inColumn.length === 0 && <p className={`px-1 py-1 text-2xs text-muted-foreground ${column.id === "review" ? "" : "@max-4xl:hidden"}`}>{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
+              {inColumn.map(({ card, run }) => (
+                <BoardCard key={`${run.runId}/${card.id}`} card={card} run={run} onOpen={() => onOpen({ run: run.runId, card: card.id })} />
+              ))}
+            </KanbanCards>
+          </KanbanBoard>
+        );
+      }}
+    </KanbanProvider>
   );
 }
 
@@ -95,7 +64,7 @@ function BoardCard({ card, run, onOpen }: { card: CardView; run: RunView; onOpen
   return (
     <KanbanCard action="카드 기록 열기" onOpen={onOpen}>
       <span className="flex items-center gap-2">
-        <Avatar speaker={card.provider} size="sm" />
+        <Avatar speaker={card.provider} look={lookFor(card.id, run.cards.map((c) => c.id))} size="sm" />
         <span className="min-w-0">
           <span className="block truncate text-sm font-medium">{card.label}</span>
           <span className="block truncate font-mono text-2xs text-muted-foreground">

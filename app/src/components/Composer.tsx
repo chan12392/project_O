@@ -31,6 +31,7 @@ export function Composer({ inputRef }: { inputRef: RefObject<HTMLTextAreaElement
           id="ask"
           ref={inputRef}
           name="ask"
+          spellCheck={false}
           rows={2}
           value={text}
           placeholder="총괄에게 맡길 일을 적어 주세요"
