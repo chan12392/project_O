@@ -15,8 +15,10 @@ const plan: Plan = {
   ],
 };
 
+const team = { runId: "r1", runDir: "C:/o/runs/r1" };
+
 test("launch specs pin model and effort and never add a bypass flag", () => {
-  const [codex, claude, agy] = plan.cards.map((card) => launchSpec(card, plan));
+  const [codex, claude, agy] = plan.cards.map((card) => launchSpec(card, plan, team));
   assert.deepEqual(codex.args.slice(0, 5), ["exec", "--json", "-s", "workspace-write", "-C"]);
   assert.ok(codex.args.includes("model_reasoning_effort=xhigh"));
   assert.ok(codex.stdin?.includes("구현"));
@@ -24,6 +26,26 @@ test("launch specs pin model and effort and never add a bypass flag", () => {
   assert.equal(agy.stdin, undefined);
   assert.ok(agy.args.at(-1)?.includes("시안"));
   for (const spec of [codex, claude, agy]) assert.deepEqual(findHits(spec.args.join(" "), BYPASS_RULES), []);
+});
+
+test("the only opening each CLI gets is the run's team channel", () => {
+  const [codex, claude, agy] = plan.cards.map((card) => launchSpec(card, plan, team));
+  assert.deepEqual(claude.args.slice(claude.args.indexOf("--allowedTools"), claude.args.indexOf("--allowedTools") + 2), ["--allowedTools", "Bash(o msg *)"]);
+  assert.equal(codex.args[codex.args.indexOf("--add-dir") + 1], "C:/o/runs/r1");
+  // agy matches whole commands only: two fixed ones, and its outbox lives in the run folder.
+  assert.deepEqual(JSON.parse(agy.args[agy.args.indexOf("--settings") + 1]), { permissions: { allow: ["command(o msg read)", "command(o msg post)"] } });
+  assert.equal(agy.args[agy.args.indexOf("--add-dir") + 1], "C:/o/runs/r1");
+  assert.match(agy.args.at(-1) ?? "", /C:\/o\/runs\/r1\/outbox\/design\.txt/);
+  assert.deepEqual(codex.env, { O_RUN_ID: "r1", O_CARD_ID: "code" });
+});
+
+test("a card needs no role, and a role never picks a model", () => {
+  const free: Plan = { ...plan, cards: [{ id: "a", provider: "codex", task: "README 오타 고치기" }, plan.cards[1]] };
+  const prompt = cardPrompt(free.cards[0], free, team);
+  assert.match(prompt, /^\[O 작업카드\] 랜딩 개편\n/);
+  assert.match(prompt, /- plan: 설계 \(claude\)/);
+  assert.match(prompt, /o msg send --to/);
+  assert.ok(!launchSpec(free.cards[0], free, team).args.includes("-m"));
 });
 
 // Lines below are trimmed from real headless runs (2026-11-01).
@@ -86,10 +108,10 @@ test("codex shell commands are shown without their shell wrapper", () => {
 });
 
 test("card prompts warn about parallel siblings and headless shells", () => {
-  const [, claude, agy] = plan.cards.map((card) => cardPrompt(card, plan));
-  assert.match(agy, /코딩, 설계/);
-  assert.match(agy, /셸 명령은 실행할 수 없습니다/);
+  const [, claude, agy] = plan.cards.map((card) => cardPrompt(card, plan, team));
+  assert.match(agy, /- code: 코딩 \(codex gpt-6\.1-sol\)/);
+  assert.match(agy, /"o msg read"와 "o msg post" 두 개만/);
   assert.match(claude, /셸 명령은 승인할 사람이 없어/);
   const solo: Plan = { ...plan, cards: [plan.cards[0]] };
-  assert.doesNotMatch(cardPrompt(solo.cards[0], solo), /동시에 일합니다/);
+  assert.doesNotMatch(cardPrompt(solo.cards[0], solo, team), /동시에 일합니다/);
 });

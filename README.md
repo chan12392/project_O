@@ -58,5 +58,6 @@ npm link           # 선택: 어디서나 `o` 명령 사용
 | `o status [runId]` | 카드별 상태 |
 | `o events <runId> [--follow]` | 정규화 이벤트(JSONL) |
 | `o stop <runId>` | 중지 |
+| `o msg send / read / post` | 팀 대화: 카드끼리, 카드와 총괄(`lead`)이 메시지를 주고받음 |
 
 계획 형식과 총괄 에이전트 사용법은 [skills/o/SKILL.md](skills/o/SKILL.md). Claude Code에서 쓰려면 이 폴더를 `~/.claude/skills/o`로 복사하거나 링크한다.

@@ -4,7 +4,7 @@ import { dirname, join } from "node:path";
 import { createInterface } from "node:readline";
 
 import type { CardStatus } from "../core/events.ts";
-import type { Card, Plan, ProviderId } from "../core/plan.ts";
+import { cardLabel, type Card, type Plan, type ProviderId } from "../core/plan.ts";
 import { LIMITS } from "../core/policy.ts";
 import { StreamReader, launchSpec, type LaunchSpec } from "../core/providers.ts";
 import {
@@ -38,7 +38,7 @@ export async function runPlan(home: string, runId: string, plan: Plan, spawner: 
     runId,
     title: plan.title,
     project: plan.project,
-    cards: plan.cards.map(({ id, provider, role, model, effort }) => ({ id, provider, role, model, effort })),
+    cards: plan.cards.map((c) => ({ id: c.id, provider: c.provider, label: cardLabel(c), role: c.role, model: c.model, effort: c.effort })),
   });
 
   const pending = [...plan.cards];
@@ -96,7 +96,7 @@ function runCard(home: string, runId: string, plan: Plan, card: Card, spawner: S
   const emit = (event: Parameters<typeof appendEvent>[2]) => appendEvent(home, runId, event);
   const now = () => new Date().toISOString();
   const cardsDir = join(runDir(home, runId), "cards");
-  const spec = launchSpec(card, plan);
+  const spec = launchSpec(card, plan, { runId, runDir: runDir(home, runId) });
 
   let child: ChildProcess;
   try {
@@ -166,7 +166,7 @@ function runCard(home: string, runId: string, plan: Plan, card: Card, spawner: S
 export function spawnOfficial(spec: LaunchSpec, cwd: string): ChildProcess {
   const resolved = which(spec.bin);
   if (!resolved) throw new Error(`${spec.bin} CLI를 PATH에서 찾지 못했습니다`);
-  const options = { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ("pipe")[] };
+  const options = { cwd, windowsHide: true, stdio: ["pipe", "pipe", "pipe"] as ("pipe")[], env: { ...process.env, ...spec.env } };
   if (/\.(cmd|bat)$/i.test(resolved)) {
     const script = join(dirname(resolved), "node_modules", "@openai", "codex", "bin", "codex.js");
     if (spec.bin === "codex" && existsSync(script)) return spawn(process.execPath, [script, ...spec.args], options);

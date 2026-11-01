@@ -1,15 +1,17 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { OEvent } from "../core/events.ts";
-import { checkPlan, type Violation } from "../core/policy.ts";
+import { checkMessage, checkPlan, type Violation } from "../core/policy.ts";
+import { outboxPath } from "../core/providers.ts";
 import { snapshot } from "../core/snapshot.ts";
 import { runPlan } from "./runner.ts";
 import {
   activeMarkers,
+  appendEvent,
   createRun,
   defaultHome,
   listRuns,
@@ -29,6 +31,10 @@ const USAGE = `O CLI — 작업카드를 공식 에이전트 CLI에 병렬로 �
   o status [runId]           카드별 상태 (runId 없으면 최근 5개 실행)
   o events <runId> [--follow]  정규화된 이벤트(JSONL) — UI·총괄 에이전트용
   o stop <runId>             실행 중지
+  o msg send [--to <카드|lead|all>] "내용"   팀 대화에 보내기 (카드 안에서는 실행·카드가 자동)
+  o msg read [--all]         나에게 온 새 메시지 (--all: 전체 대화)
+  o msg post                 카드의 outbox 파일(첫 줄 "to: <상대>")을 팀 대화로 보내기
+                             카드 밖에서는 --run <runId> 와 --as <카드|lead> 로 지정
 
 정책 위반이 하나라도 있으면 계획 전체를 실행하지 않고 종료 코드 2로 끝납니다.`;
 
@@ -47,6 +53,8 @@ async function main(argv: string[]): Promise<number> {
       return events(required(rest[0]), rest.includes("--follow"));
     case "stop":
       return stop(required(rest[0]));
+    case "msg":
+      return message(rest);
     case "_run":
       await runPlan(home, required(rest[0]), readPlan(home, required(rest[0])));
       return 0;
@@ -92,7 +100,7 @@ function status(runId: string | undefined): number {
     console.log(`${id}  ${run.title}  [${run.status}]`);
     for (const c of run.cards) {
       const activity = c.activity.replace(/\s+/g, " ").slice(0, 100);
-      console.log(`  ${c.state.padEnd(8)} ${c.id} (${c.provider} · ${c.role}) ${activity}`);
+      console.log(`  ${c.state.padEnd(8)} ${c.id} (${c.provider} · ${c.label}) ${activity}`);
     }
   }
   return 0;
@@ -121,6 +129,69 @@ function stop(runId: string): number {
   }
   console.log(`중지 요청: ${runId}`);
   return 0;
+}
+
+/**
+ * The run's team channel. Cards get O_RUN_ID and O_CARD_ID from the runner;
+ * the lead or a person passes --run and --as. Messages are events in the
+ * run's events.jsonl, checked by the same policy rules as tasks.
+ */
+function message(args: string[]): number {
+  const [verb, ...rest] = args;
+  const flags = new Map<string, string>();
+  const words: string[] = [];
+  for (let i = 0; i < rest.length; i += 1) {
+    if (rest[i] === "--all") flags.set("all", "1");
+    else if (rest[i].startsWith("--")) flags.set(rest[i].slice(2), rest[(i += 1)] ?? "");
+    else words.push(rest[i]);
+  }
+  const runId = flags.get("run") ?? process.env.O_RUN_ID;
+  const me = flags.get("as") ?? process.env.O_CARD_ID ?? "lead";
+  if (!runId || !existsSync(runDir(home, runId))) {
+    console.error(`실행을 찾지 못했습니다: ${runId ?? "(--run 없음)"}`);
+    return 1;
+  }
+  const cards = readPlan(home, runId).cards.map((c) => c.id);
+
+  const send = (to: string, text: string): number => {
+    const violations = checkMessage(text, { from: me, to, known: cards });
+    if (violations.length > 0) {
+      printViolations(violations);
+      return 2;
+    }
+    appendEvent(home, runId, { t: "msg", at: new Date().toISOString(), from: me, to, text });
+    console.log(`보냄: ${me} → ${to}`);
+    return 0;
+  };
+
+  if (verb === "send") return send(flags.get("to") ?? "all", words.join(" "));
+  if (verb === "post") {
+    // For CLIs that may only run fixed commands: the message waits in the card's outbox file.
+    const path = outboxPath(runDir(home, runId), me);
+    if (!existsSync(path)) {
+      console.error(`보낼 메시지 파일이 없습니다: ${path}`);
+      return 1;
+    }
+    const [first = "", ...lines] = readFileSync(path, "utf8").split(/\r?\n/);
+    const to = /^to:\s*(\S+)/i.exec(first)?.[1];
+    const text = (to ? lines : [first, ...lines]).join("\n").trim();
+    const code = send(to ?? "all", text);
+    if (code === 0) rmSync(path);
+    return code;
+  }
+  if (verb === "read") {
+    const all = readEvents(home, runId).filter((e) => e.t === "msg");
+    const mine = flags.has("all") ? all : all.filter((e) => e.t === "msg" && e.from !== me && (e.to === me || e.to === "all"));
+    const cursorPath = join(runDir(home, runId), `read.${me}`);
+    const seen = flags.has("all") || !existsSync(cursorPath) ? 0 : Number(readFileSync(cursorPath, "utf8")) || 0;
+    const fresh = mine.slice(seen);
+    if (!flags.has("all")) writeFileSync(cursorPath, String(mine.length));
+    if (fresh.length === 0) console.log("새 메시지가 없습니다.");
+    for (const e of fresh) if (e.t === "msg") console.log(`[${e.from} → ${e.to}] ${e.text}`);
+    return 0;
+  }
+  console.error(USAGE);
+  return 1;
 }
 
 function readInput(path: string | undefined): unknown {

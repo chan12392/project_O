@@ -6,7 +6,16 @@ import type { OEvent } from "../src/core/events.ts";
 import { describeTool, snapshot } from "../src/core/snapshot.ts";
 
 // The app's demo fixture is today's real end-to-end run, paths sanitised.
-const fixture = JSON.parse(readFileSync(new URL("../app/src/data/demo-run.json", import.meta.url), "utf8")) as { events: OEvent[] };
+const demo = JSON.parse(readFileSync(new URL("../app/src/data/demo-runs.json", import.meta.url), "utf8")) as { runs: { events: OEvent[] }[] };
+const fixture = demo.runs[2];
+
+test("real team runs carry their messages between codex, claude and agy", () => {
+  const [agyCodex, codexClaude] = demo.runs.map((r) => snapshot(r.events));
+  assert.deepEqual(agyCodex?.messages.map((m) => `${m.from}>${m.to}`), ["c>d", "d>c"]);
+  assert.deepEqual(codexClaude?.messages.map((m) => `${m.from}>${m.to}`), ["a>b", "b>a", "a>lead"]);
+  assert.equal(codexClaude?.cards.find((c) => c.id === "a")?.label, "a");
+  assert.equal(codexClaude?.cards.find((c) => c.id === "b")?.label, "답장 담당");
+});
 
 test("folds a real run into per-card state, activity and log", () => {
   const run = snapshot(fixture.events);
@@ -34,6 +43,21 @@ test("tool activity reads as an act, the log keeps the raw event", () => {
   const run = snapshot(fixture.events);
   const design = run?.cards.find((c) => c.id === "design");
   assert.ok(design?.log.some((l) => l.kind === "tool" && l.text.startsWith("run_command")));
+});
+
+test("team messages land on the run and in each party's log", () => {
+  const start = fixture.events[0];
+  const run = snapshot([
+    start,
+    { t: "msg", at: "2026-11-01T10:10:00.000Z", from: "code", to: "research", text: "app.js 끝났어요" },
+    { t: "msg", at: "2026-11-01T10:11:00.000Z", from: "lead", to: "all", text: "모두 마무리해 주세요" },
+  ]);
+  assert.equal(run?.messages.length, 2);
+  const log = (id: string) => run?.cards.find((c) => c.id === id)?.log.filter((l) => l.kind === "team").map((l) => l.text);
+  assert.deepEqual(log("code"), ["app.js 끝났어요", "모두 마무리해 주세요"]);
+  assert.deepEqual(log("research"), ["app.js 끝났어요", "모두 마무리해 주세요"]);
+  assert.deepEqual(log("design"), ["모두 마무리해 주세요"]);
+  assert.equal(run?.cards[0].label, "코딩");
 });
 
 test("no run.start means nothing to show", () => {

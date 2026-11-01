@@ -1,4 +1,4 @@
-import type { CardState } from "../../src/core/snapshot.ts";
+import type { CardState, RunView } from "../../src/core/snapshot.ts";
 import type { ProviderId } from "../../src/core/plan.ts";
 
 const clock = new Intl.DateTimeFormat("ko-KR", { hour: "2-digit", minute: "2-digit", hour12: false });
@@ -9,6 +9,12 @@ export function timeOf(iso: string | undefined): string {
 
 export const PROVIDER_NAME: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
 export const PROVIDER_SHORT: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Agy" };
+
+/** Display names for team parties: a card's label and agent, "총괄" for the lead, "모두" for all. */
+export function names(run: RunView): (party: string) => string {
+  const byId = new Map(run.cards.map((c) => [c.id, `${c.label} (${PROVIDER_SHORT[c.provider]})`]));
+  return (party) => (party === "lead" ? "총괄" : party === "all" ? "모두" : byId.get(party) ?? party);
+}
 
 export const STATE_WORD: Record<CardState, string> = {
   waiting: "대기",

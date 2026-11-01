@@ -1,5 +1,5 @@
 import type { CardStatus, OEvent } from "./events.ts";
-import type { ProviderId } from "./plan.ts";
+import { cardLabel, type ProviderId } from "./plan.ts";
 
 /**
  * Folds a run's event stream into what a screen shows. Pure: the CLI's
@@ -9,16 +9,26 @@ export type CardState = "waiting" | "queued" | "running" | CardStatus;
 
 export interface CardLogEntry {
   at: string;
-  kind: "queued" | "tool" | "message" | "limit" | "end";
+  kind: "queued" | "tool" | "message" | "limit" | "end" | "team";
   text: string;
   /** For tool entries: the act in words and the raw detail the CLI reported. */
   tool?: { word: string; detail: string };
+  /** For team entries: who sent it and to whom. */
+  team?: { from: string; to: string };
+}
+
+export interface TeamMessage {
+  at: string;
+  from: string;
+  to: string;
+  text: string;
 }
 
 export interface CardView {
   id: string;
   provider: ProviderId;
-  role: string;
+  label: string;
+  role?: string;
   model?: string;
   effort?: string;
   state: CardState;
@@ -38,6 +48,8 @@ export interface RunView {
   endedAt?: string;
   status: "running" | "done" | "failed" | "stopped";
   cards: CardView[];
+  /** The run's team channel, in order. */
+  messages: TeamMessage[];
 }
 
 export function snapshot(events: OEvent[]): RunView | undefined {
@@ -45,15 +57,25 @@ export function snapshot(events: OEvent[]): RunView | undefined {
   const byId = new Map<string, CardView>();
   for (const e of events) {
     if (e.t === "run.start") {
-      run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [] };
+      run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [], messages: [] };
       for (const c of e.cards) {
-        const card: CardView = { ...c, state: "waiting", activity: "", log: [] };
+        // Runs recorded before labels existed carry only a role.
+        const card: CardView = { ...c, label: c.label ?? cardLabel(c), state: "waiting", activity: "", log: [] };
         byId.set(c.id, card);
         run.cards.push(card);
       }
       continue;
     }
     if (!run) continue;
+    if (e.t === "msg") {
+      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text });
+      for (const card of run.cards) {
+        if (card.id === e.from || card.id === e.to || (e.to === "all" && card.id !== e.from)) {
+          card.log.push({ at: e.at, kind: "team", text: e.text, team: { from: e.from, to: e.to } });
+        }
+      }
+      continue;
+    }
     if (e.t === "run.end") {
       run.status = e.status;
       run.endedAt = e.at;

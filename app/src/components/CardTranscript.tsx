@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, FilePen, FileText, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
+import { CircleAlert, CircleCheck, FilePen, FileText, Globe, Hourglass, MessagesSquare, SquareTerminal, Wrench } from "lucide-react";
 
 import type { CardLogEntry, CardView } from "../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, STATE_WORD, modelLine, timeOf } from "../format.ts";
@@ -9,13 +9,13 @@ import { useFollowBottom } from "./Thread.tsx";
 const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTerminal, "파일 읽기": FileText, "파일 수정": FilePen, "웹 검색": Globe };
 
 /** One work card's session, read back as Orca shows an agent transcript. */
-export function CardTranscript({ card }: { card: CardView }) {
+export function CardTranscript({ card, names }: { card: CardView; names: (party: string) => string }) {
   const scroller = useFollowBottom([card.log.length]);
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-chat-canvas">
       <header className="flex shrink-0 items-center gap-3 border-b px-6 py-2.5">
         <AgentStateDot state={card.state} size="md" />
-        <span className="text-sm font-medium">{card.role}</span>
+        <span className="text-sm font-medium">{card.label}</span>
         <span className="font-mono text-xs text-muted-foreground">
           {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
         </span>
@@ -29,7 +29,7 @@ export function CardTranscript({ card }: { card: CardView }) {
         <ol className="mx-auto flex max-w-3xl flex-col gap-1 px-6 py-5 text-sm text-chat-foreground">
           {card.log.length === 0 && <li className="text-chat-foreground-faint">아직 남긴 기록이 없습니다.</li>}
           {card.log.map((entry, i) => (
-            <Entry key={`${entry.at}-${i}`} entry={entry} cardFailed={card.state === "failed"} />
+            <Entry key={`${entry.at}-${i}`} entry={entry} cardFailed={card.state === "failed"} names={names} echoes={repeatsLastMessage(card.log, i)} />
           ))}
         </ol>
       </div>
@@ -37,7 +37,27 @@ export function CardTranscript({ card }: { card: CardView }) {
   );
 }
 
-function Entry({ entry, cardFailed }: { entry: CardLogEntry; cardFailed: boolean }) {
+/** CLIs often end with the same text as their last message; the end block then needs only its verdict. */
+function repeatsLastMessage(log: CardLogEntry[], index: number): boolean {
+  if (log[index].kind !== "end") return false;
+  const last = log.slice(0, index).reverse().find((l) => l.kind === "message");
+  return last?.text.trim() === log[index].text.trim();
+}
+
+function Entry({ entry, cardFailed, names, echoes }: { entry: CardLogEntry; cardFailed: boolean; names: (party: string) => string; echoes: boolean }) {
+  if (entry.kind === "team" && entry.team) {
+    return (
+      <li className="my-1 flex items-start gap-2 rounded-lg border border-chat-user-border bg-chat-user-surface px-3 py-2">
+        <MessagesSquare className="mt-0.5 size-3.5 shrink-0 text-chat-foreground-faint" aria-hidden="true" />
+        <div className="min-w-0">
+          <p className="text-xs text-chat-foreground-faint">
+            {names(entry.team.from)} → {names(entry.team.to)}
+          </p>
+          <p className="whitespace-pre-wrap">{entry.text}</p>
+        </div>
+      </li>
+    );
+  }
   if (entry.kind === "tool" && entry.tool) {
     const Icon = TOOL_ICON[entry.tool.word] ?? Wrench;
     return (
@@ -66,9 +86,7 @@ function Entry({ entry, cardFailed }: { entry: CardLogEntry; cardFailed: boolean
   return (
     <li className="mt-3 flex items-start gap-2 rounded-lg border bg-card px-3 py-2.5 text-card-foreground">
       <Icon className={`mt-0.5 size-4 shrink-0 ${tone}`} aria-hidden="true" />
-      <div className="min-w-0">
-        <Markdown text={entry.text} />
-      </div>
+      <div className="min-w-0">{echoes ? <p>{failed ? "실패로 끝났습니다." : "완료했습니다."} 결과는 위 메시지와 같습니다.</p> : <Markdown text={entry.text} />}</div>
     </li>
   );
 }

@@ -12,10 +12,15 @@ export type CardStatus = "done" | "failed" | "stopped";
 export interface CardInfo {
   id: string;
   provider: ProviderId;
-  role: string;
+  /** What people call the card: its role label, or the start of its task. */
+  label: string;
+  role?: string;
   model?: string;
   effort?: string;
 }
+
+/** Who a team message is from or to: a card id, the lead, or every card. */
+export type Party = string;
 
 export type OEvent =
   | { t: "run.start"; at: string; runId: string; title: string; project: string; cards: CardInfo[] }
@@ -26,6 +31,8 @@ export type OEvent =
   | { t: "card.tool"; at: string; cardId: string; name: string; summary: string }
   | { t: "card.limit"; at: string; cardId: string; until: string }
   | { t: "card.end"; at: string; cardId: string; status: CardStatus; result?: string; exitCode: number | null }
+  /** A team message between agents of one run (`o msg send`), "lead" for the supervisor, "all" for everyone. */
+  | { t: "msg"; at: string; from: Party; to: Party; text: string }
   | { t: "run.end"; at: string; runId: string; status: "done" | "failed" | "stopped" };
 
 /** What a provider stream line means, before it gets a timestamp and card id. */

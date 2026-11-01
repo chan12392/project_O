@@ -2,7 +2,7 @@ import { ChevronRight } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 
 import type { RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_NAME, STATE_WORD, clip, modelLine, timeOf } from "../format.ts";
+import { PROVIDER_NAME, STATE_WORD, clip, modelLine, names, timeOf } from "../format.ts";
 import type { Message, ScreenState } from "../useRun.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -19,6 +19,7 @@ interface Props {
 /** The lead chat, in Orca's native chat style: a centred column on the chat canvas. */
 export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }: Props) {
   const scroller = useFollowBottom([messages, run]);
+  const name = run ? names(run) : (party: string) => party;
 
   return (
     <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
@@ -34,7 +35,7 @@ export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }:
             실행 기록 파일(events.jsonl)을 열 수 없습니다. 터미널에서 <code className="font-mono text-chat-code">o status</code>로 실행이 남아 있는지 확인한 뒤 다시 불러오세요.
           </Notice>
         )}
-        {(state === "empty" || (state === "full" && messages.length === 0)) && (
+        {(state === "empty" || (state === "full" && !run)) && (
           <Notice title="아직 맡긴 일이 없습니다" action="첫 요청 쓰기" onAction={onCompose}>
             총괄에게 할 일을 보내면 작업카드로 나뉘어 각 에이전트에게 전달됩니다.
           </Notice>
@@ -55,6 +56,17 @@ export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }:
             ),
           )}
         {state === "full" && run && <RunCard run={run} onOpenCard={onOpenCard} />}
+        {state === "full" &&
+          run?.messages
+            .filter((m) => m.to === "lead" || m.from === "lead")
+            .map((m, i) => (
+              <article key={`${m.at}-${i}`} aria-label="팀 대화" className="rounded-lg border border-dashed px-3.5 py-2.5">
+                <p className="mb-1 text-xs text-chat-foreground-faint">
+                  {name(m.from)} → {name(m.to)} <time dateTime={m.at}>{timeOf(m.at)}</time>
+                </p>
+                <p className="whitespace-pre-wrap">{m.text}</p>
+              </article>
+            ))}
       </div>
     </div>
   );
@@ -83,7 +95,7 @@ function RunCard({ run, onOpenCard }: { run: RunView; onOpenCard: (id: string) =
             >
               <AgentStateDot state={card.state} />
               <span className="min-w-0">
-                <span className="block truncate text-sm">{card.role}</span>
+                <span className="block truncate text-sm">{card.label}</span>
                 <span className="block truncate font-mono text-xs text-muted-foreground">
                   {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
                 </span>
