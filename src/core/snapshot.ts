@@ -17,7 +17,7 @@ export interface CardLogEntry {
   team?: { from: string; to: string };
 }
 
-export interface TeamMessage {
+interface TeamMessage {
   at: string;
   from: string;
   to: string;
@@ -42,14 +42,14 @@ export interface CardView {
   usage: Usage;
 }
 
-export interface Usage {
+interface Usage {
   input: number;
   cached: number;
   output: number;
 }
 
 /** A provider's subscription window as last reported (Claude reports five_hour and seven_day). */
-export interface Quota {
+interface Quota {
   provider: ProviderId;
   window: string;
   used: number;
@@ -151,7 +151,7 @@ const TOOL_WORD: [RegExp, string][] = [
   [/^(web_search|websearch|webfetch|search_web|read_url_content)$/i, "웹 검색"],
 ];
 
-export function toolWord(name: string): string {
+function toolWord(name: string): string {
   return TOOL_WORD.find(([pattern]) => pattern.test(name))?.[1] ?? name;
 }
 
@@ -190,6 +190,6 @@ function firstLine(text: string): string {
   return line.replace(/\*\*|`/g, "");
 }
 
-function endWord(status: CardStatus): string {
+export function endWord(status: CardStatus): string {
   return status === "done" ? "완료" : status === "stopped" ? "중지됨" : "실패";
 }

@@ -39,13 +39,33 @@ test("a running card that goes quiet is flagged; a ticked item stays gone", () =
   const quiet = nextUp([live], after(last, SILENT_MS + 1000)).stopped;
   assert.deepEqual(quiet.map((i) => i.kind), ["silent"]);
   assert.equal(nextUp([live], after(last, SILENT_MS + 1000), new Set([quiet[0].key])).stopped.length, 0);
+
+  // A message someone else sent it is not a sign of life.
+  const card = live.cards[0];
+  const heard = { ...card, log: [...card.log, { at: after(last, SILENT_MS).toISOString(), kind: "team" as const, text: "hi", team: { from: "other", to: card.id } }] };
+  assert.deepEqual(nextUp([{ ...live, cards: [heard] }], after(last, SILENT_MS + 1000)).stopped.map((i) => i.kind), ["silent"]);
+});
+
+test("the lead answering one card leaves the other card's question waiting", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const asked: RunView = {
+    ...team,
+    messages: [
+      { at: at(1000), from: "a", to: "lead", text: "어느 쪽으로 할까요?" },
+      { at: at(2000), from: "b", to: "lead", text: "확인 부탁드립니다" },
+      { at: at(3000), from: "lead", to: "b", text: "확인" },
+    ],
+  };
+  assert.deepEqual(nextUp([asked], after(team.endedAt!, 60_000)).todo.filter((i) => i.kind === "answer").map((i) => i.cardId), ["a"]);
 });
 
 test("fleet stats and activity read the same runs", () => {
   const now = after(byId("20261101-162328-9p0b").endedAt!, 0);
   const stats = fleetStats(runs, now);
   assert.equal(stats.running, 0);
-  assert.ok(stats.stopped >= 1);
+  assert.equal(stats.stopped, 2);
+  assert.equal(stats.prs, 0);
   const feed = activity(runs, 5);
   assert.equal(feed.length, 5);
   assert.ok(feed.every((item, i) => i === 0 || feed[i - 1].at >= item.at));

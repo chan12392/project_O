@@ -1,5 +1,9 @@
 name: branch-flow
 
+# Read-only token: this job only reads the PR's branch names.
+permissions:
+  contents: read
+
 on:
   pull_request:
     types: [opened, reopened, edited, synchronize]
@@ -24,7 +28,7 @@ jobs:
           elif is_personal "$BASE"; then
             case "$HEAD" in
               main) ;;  # main 동기화
-              "$BASE"-*/*|*/*) fail "작업 브랜치 이름에는 /를 쓰지 않습니다" ;;
+              */*) fail "작업 브랜치 이름에는 /를 쓰지 않습니다" ;;
               "$BASE"-*) ;;
               *) fail "$BASE에는 $BASE-<주제> 브랜치만 병합할 수 있습니다" ;;
             esac

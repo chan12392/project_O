@@ -1,10 +1,10 @@
+import { tokensOf } from "../../../src/core/attention.ts";
 import type { ProviderId } from "../../../src/core/plan.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import type { UsageWindow } from "../../../src/core/usage.ts";
-import { PROVIDER_NAME, timeOf } from "../format.ts";
+import { PROVIDER_NAME, compact, timeOf } from "../format.ts";
 import { Avatar } from "./Avatar.tsx";
 
-const compact = new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 });
 const ORDER: ProviderId[] = ["claude", "codex", "agy"];
 const RINGS: { window: string; short: string; name: string }[] = [
   { window: "five_hour", short: "5h", name: "5시간" },
@@ -36,7 +36,7 @@ export function UsagePanel({ runs, windows }: Props) {
       <ul className="grid auto-cols-fr grid-flow-col divide-x rounded-xl border bg-card text-card-foreground">
         {providers.map((provider) => {
           const cards = runs.flatMap((r) => r.cards.filter((c) => c.provider === provider));
-          const tokens = cards.reduce((sum, c) => sum + c.usage.input + c.usage.cached + c.usage.output, 0);
+          const tokens = cards.reduce((sum, c) => sum + tokensOf(c), 0);
           const mine = all.filter((w) => w.provider === provider);
           return (
             <li key={provider} className="flex min-w-0 items-center gap-1.5 px-2 py-2">

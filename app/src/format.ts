@@ -38,3 +38,9 @@ export function modelLine(model: string | undefined, effort: string | undefined)
   if (!model && !effort) return "기본 모델";
   return [model, effort].filter(Boolean).join(" ");
 }
+
+/** Token counts and the like, short: 12.3만. */
+export const compact = new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 });
+
+/** A square, borderless icon button in a toolbar or header. */
+export const ICON_BUTTON = "flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-ring";

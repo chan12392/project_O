@@ -1,5 +1,6 @@
 import type { ProviderId } from "./plan.ts";
-import type { CardView, RunView } from "./snapshot.ts";
+import type { CardStatus } from "./events.ts";
+import { endWord, type CardView, type RunView } from "./snapshot.ts";
 
 /**
  * What needs a person next, read from runs alone (pure, like snapshot.ts).
@@ -30,7 +31,7 @@ export interface NextItem {
 /** A card still marked running with nothing new for this long has gone quiet. */
 export const SILENT_MS = 10 * 60_000;
 /** Finished runs stay on the list to be checked for this long. */
-export const CHECK_WINDOW_MS = 24 * 60 * 60_000;
+const CHECK_WINDOW_MS = 24 * 60 * 60_000;
 
 const PR_URL = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/;
 
@@ -43,9 +44,14 @@ export function prOf(card: CardView): string | undefined {
   return undefined;
 }
 
-/** The last time a card showed any sign of life. */
-export function lastSign(card: CardView): string | undefined {
-  return card.log[card.log.length - 1]?.at ?? card.startedAt;
+/** Every token a card's CLI reported: fresh input, cached input and output. */
+export function tokensOf(card: CardView): number {
+  return card.usage.input + card.usage.cached + card.usage.output;
+}
+
+/** The card's own last entry: messages it received say nothing about whether it is alive. */
+function lastOwn(card: CardView): CardView["log"][number] | undefined {
+  return card.log.findLast((l) => l.kind !== "team" || l.team?.from === card.id);
 }
 
 const TODO_ORDER: TodoKind[] = ["answer", "review", "check", "queued"];
@@ -66,10 +72,10 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
     const base = { runId: run.runId, runTitle: run.title };
     const cardOf = new Map(run.cards.map((c) => [c.id, c]));
 
-    // An agent wrote to the lead and the lead has not written back since.
-    const lastLead = run.messages.filter((m) => m.from === "lead").at(-1)?.at ?? "";
+    // An agent wrote to the lead and the lead has not written back to it (or to everyone) since.
+    const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
     for (const m of run.messages) {
-      if (m.to !== "lead" || m.at <= lastLead) continue;
+      if (m.to !== "lead" || m.at <= answeredAt(m.from)) continue;
       const card = cardOf.get(m.from);
       keep(todo, { ...base, key: `answer:${run.runId}:${m.from}:${m.at}`, kind: "answer", cardId: m.from, provider: card?.provider, title: card?.label ?? m.from, detail: m.text, since: m.at });
     }
@@ -84,9 +90,10 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
       }
       if (card.state === "failed") keep(stopped, { ...item, key: `failed:${run.runId}:${card.id}`, kind: "failed", detail: card.result ?? card.activity, since: card.endedAt ?? run.startedAt });
       if (card.state === "stopped") keep(stopped, { ...item, key: `stopped:${run.runId}:${card.id}`, kind: "stopped", detail: card.result ?? card.activity, since: card.endedAt ?? run.startedAt });
-      const sign = lastSign(card);
       if (card.state === "running") {
-        if (card.log.at(-1)?.kind === "limit") keep(stopped, { ...item, key: `limit:${run.runId}:${card.id}`, kind: "limit", detail: card.activity, since: card.log.at(-1)!.at });
+        const own = lastOwn(card);
+        const sign = own?.at ?? card.startedAt;
+        if (own?.kind === "limit") keep(stopped, { ...item, key: `limit:${run.runId}:${card.id}`, kind: "limit", detail: card.activity, since: own.at });
         else if (sign && now.getTime() - Date.parse(sign) > SILENT_MS) keep(stopped, { ...item, key: `silent:${run.runId}:${card.id}:${sign}`, kind: "silent", detail: card.activity, since: sign });
       }
     }
@@ -99,7 +106,7 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
   return { todo: todo.sort(byKindThenAge(TODO_ORDER)), stopped: stopped.sort(byKindThenAge(STOPPED_ORDER)) };
 }
 
-export interface FleetStats {
+interface FleetStats {
   running: number;
   stopped: number;
   prs: number;
@@ -118,7 +125,7 @@ export function fleetStats(runs: RunView[], now: Date): FleetStats {
     stopped: cards.filter((c) => c.state === "failed" || c.state === "stopped").length,
     prs: cards.filter((c) => prOf(c)).length,
     cardsToday: todays.length,
-    tokensToday: todays.reduce((sum, c) => sum + c.usage.input + c.usage.cached + c.usage.output, 0),
+    tokensToday: todays.reduce((sum, c) => sum + tokensOf(c), 0),
   };
 }
 
@@ -142,7 +149,7 @@ export function activity(runs: RunView[], limit: number): ActivityItem[] {
       if (card.startedAt) items.push({ ...who, at: card.startedAt, kind: "start", text: card.label, detail: `시작 · ${run.title}` });
       if (card.endedAt) {
         const pr = prOf(card);
-        items.push({ ...who, at: card.endedAt, kind: pr ? "pr" : "end", text: card.label, detail: pr ? `PR ${pr.replace(/^https:\/\/github\.com\//, "")}` : `${card.state === "done" ? "완료" : card.state === "failed" ? "실패" : "중지"} · ${run.title}` });
+        items.push({ ...who, at: card.endedAt, kind: pr ? "pr" : "end", text: card.label, detail: pr ? `PR ${pr.replace(/^https:\/\/github\.com\//, "")}` : `${endWord(card.state as CardStatus)} · ${run.title}` });
       }
     }
     for (const m of run.messages) {

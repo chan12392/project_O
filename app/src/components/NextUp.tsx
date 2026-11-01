@@ -1,11 +1,12 @@
 import { Check, Copy, ExternalLink } from "lucide-react";
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 
 import type { NextItem, StoppedKind, TodoKind } from "../../../src/core/attention.ts";
 import { PROVIDER_SHORT, clip } from "../format.ts";
+import { readStored, writeStored } from "../storage.ts";
 import { Rail, Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket, type StampTone } from "./Ticket.tsx";
 
-export const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
+const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
   answer: { label: "답하기", tone: "rush" },
   review: { label: "PR 검토", tone: "info" },
   check: { label: "결과 확인", tone: "done" },
@@ -19,14 +20,8 @@ export const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampT
 const HANDLED_KEY = "project-o-handled";
 const HANDLED_MAX = 500;
 
-function loadHandled(): Set<string> {
-  try {
-    const saved = JSON.parse(localStorage.getItem(HANDLED_KEY) ?? "[]");
-    return new Set(Array.isArray(saved) ? saved.filter((k): k is string => typeof k === "string") : []);
-  } catch {
-    return new Set();
-  }
-}
+const loadHandled = () =>
+  readStored(HANDLED_KEY, new Set<string>(), (saved) => (Array.isArray(saved) ? new Set(saved.filter((k): k is string => typeof k === "string")) : undefined));
 
 /** Tickets a person has ticked off, kept in this browser (newest last, capped). */
 export function useHandled() {
@@ -36,15 +31,10 @@ export function useHandled() {
       const next = new Set(prev);
       if (next.has(key)) next.delete(key);
       else next.add(key);
-      const kept = [...next].slice(-HANDLED_MAX);
-      try {
-        localStorage.setItem(HANDLED_KEY, JSON.stringify(kept));
-      } catch {
-        // Storage off: ticks last for this window only.
-      }
-      return new Set(kept);
+      return new Set([...next].slice(-HANDLED_MAX));
     });
   }, []);
+  useEffect(() => writeStored(HANDLED_KEY, [...handled]), [handled]);
   return { handled, toggle };
 }
 

@@ -1,4 +1,4 @@
-import { CARD_FIELDS, PLAN_FIELDS, PROVIDERS, isProvider, type Card, type Plan, type ProviderId } from "./plan.ts";
+import { CARD_FIELDS, PLAN_FIELDS, PROVIDERS, isProvider, isRecord, type Card, type Plan, type ProviderId } from "./plan.ts";
 import { CODE_RULES, findHits } from "../guard/rules.ts";
 
 /**
@@ -19,7 +19,7 @@ export const LIMITS = {
   defaultCooldownMs: 60 * 60 * 1000,
 } as const;
 
-export const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
+const EFFORTS = ["minimal", "low", "medium", "high", "xhigh", "max"] as const;
 const MODEL = /^[A-Za-z0-9][A-Za-z0-9._:\-/[\]]{0,79}$/;
 const CARD_ID = /^[a-z0-9][a-z0-9-]{0,31}$/;
 
@@ -39,6 +39,17 @@ export interface PolicyContext {
   projectExists: (path: string) => boolean;
   /** Whether the folder is a project_O test/main mirror checkout. */
   isMirror: (path: string) => boolean;
+  /** O's state folder: a project may neither be inside it nor contain it. */
+  oHome: string;
+  /** The user's home: a project may be inside it, never be it or above it. */
+  userHome: string;
+}
+
+/** Whether `path` is `dir` or inside it, compared as Windows does (any slash, any case). */
+function within(path: string, dir: string): boolean {
+  const norm = (p: string) => p.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  const [p, d] = [norm(path), norm(dir)];
+  return p === d || p.startsWith(`${d}/`);
 }
 
 export function emptyCounts(): Record<ProviderId, number> {
@@ -62,6 +73,9 @@ export function checkPlan(input: unknown, ctx: PolicyContext): { plan?: Plan; vi
   else if (!ctx.projectExists(project)) add("plan-shape", `project 폴더가 없습니다: ${project}`);
   else if (ctx.isMirror(project)) {
     add("read-only-project", `${project}는 project_O의 test·main 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요`);
+  } else if (within(project, ctx.oHome) || within(ctx.oHome, project) || within(ctx.userHome, project)) {
+    // A card may write inside its project: O's own state and the home folder (CLI settings) must stay out of reach.
+    add("protected-project", `${project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요`);
   }
   if (!Array.isArray(cards) || cards.length === 0) {
     add("plan-shape", "cards가 1개 이상 필요합니다");
@@ -159,9 +173,6 @@ export function checkMessage(text: string, parties: { from: string; to: string; 
   return violations;
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
 
 function isAbsolute(path: string): boolean {
   return /^[A-Za-z]:[\\/]/.test(path) || path.startsWith("/");

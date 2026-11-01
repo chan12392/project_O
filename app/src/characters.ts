@@ -5,10 +5,12 @@
  */
 import { useEffect, useState } from "react";
 
+import type { RunView } from "../../src/core/snapshot.ts";
+
 const BASE = "/office/parts";
 
-export type Body = "male-tee" | "male-hoodie" | "female-tee" | "female-cardigan";
-export const BODIES: Body[] = ["male-tee", "male-hoodie", "female-tee", "female-cardigan"];
+type Body = "male-tee" | "male-hoodie" | "female-tee" | "female-cardigan";
+const BODIES: Body[] = ["male-tee", "male-hoodie", "female-tee", "female-cardigan"];
 
 export interface Look {
   body: Body;
@@ -48,7 +50,7 @@ function image(name: string): Promise<HTMLImageElement> {
 }
 
 /** Draws a look's 4 x 12 sheet and hands back an object URL for it, once per look. */
-export function characterSheet(look: Look): Promise<string> {
+function characterSheet(look: Look): Promise<string> {
   const key = `${look.body}/${look.hair}`;
   if (!sheets.has(key)) sheets.set(key, compose(look));
   return sheets.get(key)!;
@@ -116,21 +118,22 @@ async function compose(look: Look): Promise<string> {
 
 /** A look's composed sheet URL once drawn; undefined without a look, while drawing, or if it can't be drawn. */
 export function useCharacterSheet(look: Look | undefined): string | undefined {
-  const [url, setUrl] = useState<string>();
+  // Keyed by look, so a changed look never shows the previous person's sheet while its own is drawn.
+  const [sheet, setSheet] = useState<{ key: string; url?: string }>();
   const key = look && `${look.body}/${look.hair}`;
   useEffect(() => {
-    if (!look) return;
+    if (!look || !key) return;
     let live = true;
     characterSheet(look).then(
-      (u) => live && setUrl(u),
-      () => live && setUrl(undefined),
+      (url) => live && setSheet({ key, url }),
+      () => live && setSheet({ key }),
     );
     return () => {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [key]);
-  return look ? url : undefined;
+  return key && sheet?.key === key ? sheet.url : undefined;
 }
 
 const LOOKS = BODIES.length * 4;
@@ -148,7 +151,7 @@ const toLook = (n: number): Look => ({ body: BODIES[n % BODIES.length], hair: Ma
  * run's card ids, cards of one run get different people (up to 16), whichever
  * screen asks, because the assignment depends only on the sorted ids.
  */
-export function lookFor(id: string, siblings?: readonly string[]): Look {
+function lookFor(id: string, siblings?: readonly string[]): Look {
   if (!siblings?.includes(id)) return toLook(hashOf(id) % LOOKS);
   const taken = new Set<number>();
   for (const sibling of [...siblings].sort()) {
@@ -158,4 +161,9 @@ export function lookFor(id: string, siblings?: readonly string[]): Look {
     if (sibling === id) return toLook(n);
   }
   return toLook(hashOf(id) % LOOKS);
+}
+
+/** A card's person within its run. */
+export function lookOf(run: RunView, cardId: string): Look {
+  return lookFor(cardId, run.cards.map((c) => c.id));
 }

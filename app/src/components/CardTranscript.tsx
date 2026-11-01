@@ -1,7 +1,7 @@
 import { CircleAlert, CircleCheck, FilePen, FileText, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
 
 import type { CardLogEntry, CardView, RunView } from "../../../src/core/snapshot.ts";
-import { lookFor } from "../characters.ts";
+import { lookOf } from "../characters.ts";
 import { PROVIDER_NAME, STATE_WORD, modelLine, timeOf } from "../format.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
 import { Avatar } from "./Avatar.tsx";
@@ -13,18 +13,17 @@ const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTermin
 
 /** One work card's session, read back as Orca shows an agent transcript. */
 export function CardTranscript({ card, run, names }: { card: CardView; run: RunView; names: (party: string) => string }) {
-  const siblings = run.cards.map((c) => c.id);
   // Who wrote a team message, drawn as in the team chat: a card's own person, or the lead.
   const avatarOf = (party: string) => {
     const sender = run.cards.find((c) => c.id === party);
-    return sender ? <Avatar speaker={sender.provider} look={lookFor(sender.id, siblings)} size="sm" /> : <Avatar speaker="lead" size="sm" />;
+    return sender ? <Avatar speaker={sender.provider} look={lookOf(run, sender.id)} size="sm" /> : <Avatar speaker="lead" size="sm" />;
   };
   const scroller = useFollowBottom([card.log.length]);
   return (
     <div className="flex min-h-0 flex-1 flex-col bg-chat-canvas">
       <header className="flex shrink-0 items-center gap-3 border-b px-6 py-2.5">
         <AgentStateDot state={card.state} size="md" />
-        <Avatar speaker={card.provider} look={lookFor(card.id, siblings)} size="sm" />
+        <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
         <span className="text-sm font-medium">{card.label}</span>
         <span className="font-mono text-xs text-muted-foreground">
           {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}

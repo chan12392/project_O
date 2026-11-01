@@ -1,9 +1,9 @@
 import { GitPullRequest } from "lucide-react";
 
-import { prOf } from "../../../src/core/attention.ts";
+import { prOf, tokensOf } from "../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_NAME, STATE_WORD, clip, modelLine, timeOf } from "../format.ts";
-import { lookFor } from "../characters.ts";
+import { PROVIDER_NAME, STATE_WORD, clip, compact, modelLine, timeOf } from "../format.ts";
+import { lookOf } from "../characters.ts";
 import { Avatar } from "./Avatar.tsx";
 import { KanbanBoard, KanbanCard, KanbanCards, KanbanHeader, KanbanProvider, type KanbanColumn } from "./Kanban.tsx";
 
@@ -55,16 +55,14 @@ export function AgentBoard({ runs, onOpen }: { runs: RunView[]; onOpen: (target:
   );
 }
 
-const compact = new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 });
-
 function BoardCard({ card, run, onOpen }: { card: CardView; run: RunView; onOpen: () => void }) {
   const pr = prOf(card);
   const tools = card.log.filter((l) => l.kind === "tool").length;
-  const tokens = card.usage.input + card.usage.cached + card.usage.output;
+  const tokens = tokensOf(card);
   return (
     <KanbanCard action="카드 기록 열기" onOpen={onOpen}>
       <span className="flex items-center gap-2">
-        <Avatar speaker={card.provider} look={lookFor(card.id, run.cards.map((c) => c.id))} size="sm" />
+        <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
         <span className="min-w-0">
           <span className="block truncate text-sm font-medium">{card.label}</span>
           <span className="block truncate font-mono text-2xs text-muted-foreground">

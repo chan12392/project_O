@@ -1,13 +1,13 @@
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 
 /*
  * Thermal-paper tickets, after the Orchestrator app's ticket rail (its DESIGN.md:
  * "work that waits on you hangs as thermal paper and ages in heat"). The top edge
  * darkens with age and means nothing else; stamps say what kind of wait it is.
  */
-export type Heat = "fresh" | "warm" | "hot" | "scorched";
+type Heat = "fresh" | "warm" | "hot" | "scorched";
 
-export function heatOf(since: string, now: Date): Heat {
+function heatOf(since: string, now: Date): Heat {
   const minutes = (now.getTime() - Date.parse(since)) / 60_000;
   if (!Number.isFinite(minutes) || minutes < 15) return "fresh";
   if (minutes < 60) return "warm";
@@ -46,7 +46,7 @@ export function Ticket({ since, now, code, stamp, children, done }: { since: str
 
 /** A labelled rail of tickets with its count, as the Orchestrator's Next up columns. */
 export function Rail({ title, count, meta, children }: { title: string; count: number; meta: string; children: ReactNode }) {
-  const id = `rail-${title}`;
+  const id = useId();
   return (
     <section aria-labelledby={id} className="flex min-w-0 flex-col">
       <header className="mb-2.5 flex items-baseline gap-2 border-b-2 border-muted-foreground/40 pb-1.5">

@@ -51,7 +51,7 @@ export function Composer({ inputRef }: { inputRef: RefObject<HTMLTextAreaElement
             type="submit"
             aria-label="맡기기"
             disabled={!text.trim()}
-            className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-40"
+            className="flex size-7 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground hover:bg-primary/90 focus-ring disabled:cursor-not-allowed disabled:opacity-40"
           >
             <ArrowUp className="size-4" aria-hidden="true" />
           </button>

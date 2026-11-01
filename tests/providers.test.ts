@@ -58,6 +58,8 @@ test("claude stream: session, text, tools, limit and result", () => {
     [{ kind: "message", text: "ok" }, { kind: "tool", name: "Edit", summary: "src/a.ts" }],
   );
   assert.deepEqual(r.read('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","resetsAt":1793526000}}'), []);
+  // A warning near the limit must not block the provider for the rest of the window.
+  assert.deepEqual(r.read('{"type":"rate_limit_event","rate_limit_info":{"status":"allowed_warning","resetsAt":1793526000}}'), []);
   assert.deepEqual(r.read('{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1793526000}}'), [
     { kind: "limit", until: new Date(1793526000 * 1000).toISOString() },
   ]);
