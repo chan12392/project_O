@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import type { Plan } from "../src/core/plan.ts";
-import { StreamReader, launchSpec } from "../src/core/providers.ts";
+import { StreamReader, cardPrompt, launchSpec } from "../src/core/providers.ts";
 import { BYPASS_RULES, findHits } from "../src/guard/rules.ts";
 
 const plan: Plan = {
@@ -62,4 +62,26 @@ test("agy stream: deltas become one message", () => {
   ]);
   assert.deepEqual(r.read('{"event":"result","result":{"status":"SUCCESS","response":"ok\\n"}}'), [{ kind: "final", ok: true, text: "ok" }]);
   assert.deepEqual(r.read("not json"), []);
+});
+
+// From a real run where headless agy could not get approval for `dir` (2026-11-01).
+test("agy: a permission denial that ended the turn is a failure, not SUCCESS", () => {
+  const r = new StreamReader("agy");
+  assert.deepEqual(
+    r.read('{"event":"step_update","step_update":{"state":"ACTIVE","step_type":"tool","tool_name":"run_command","tool_info":{"name":"run_command","parameters":{"CommandLine":"dir"}}}}'),
+    [{ kind: "tool", name: "run_command", summary: "dir" }],
+  );
+  const [final] = r.read('{"event":"result","result":{"status":"SUCCESS","response":"","num_turns":1,"denied_actions":[{"action":"command","display_name":"RunCommand"}]}}');
+  assert.equal(final.kind, "final");
+  assert.equal(final.kind === "final" && final.ok, false);
+  assert.match(final.kind === "final" ? final.text : "", /RunCommand/);
+});
+
+test("card prompts warn about parallel siblings and headless shells", () => {
+  const [, claude, agy] = plan.cards.map((card) => cardPrompt(card, plan));
+  assert.match(agy, /코딩, 설계/);
+  assert.match(agy, /셸 명령은 실행할 수 없습니다/);
+  assert.match(claude, /셸 명령은 승인할 사람이 없어/);
+  const solo: Plan = { ...plan, cards: [plan.cards[0]] };
+  assert.doesNotMatch(cardPrompt(solo.cards[0], solo), /동시에 일합니다/);
 });
