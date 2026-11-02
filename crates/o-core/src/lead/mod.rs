@@ -102,37 +102,62 @@ fn project_key(project: &str) -> String {
     if cfg!(windows) { key.to_lowercase() } else { key }
 }
 
-fn read_current(home: &Path) -> BTreeMap<String, String> {
-    fs::read_to_string(leads_dir(home).join("current.json")).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
+/// Every project's current thread. Missing is empty; a list that cannot be read is an error,
+/// never "empty" (that would start new threads over every project's). It is replaced whole
+/// (`write_current`), so a read that fails is tried again only briefly.
+fn read_current(home: &Path) -> io::Result<BTreeMap<String, String>> {
+    let path = leads_dir(home).join("current.json");
+    let mut tries = 0;
+    loop {
+        let read = match fs::read_to_string(&path) {
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(BTreeMap::new()),
+            read => read.and_then(|t| serde_json::from_str(&t).map_err(io::Error::other)),
+        };
+        match read {
+            Ok(current) => return Ok(current),
+            Err(_) if tries < 3 => tries += 1,
+            Err(e) => return Err(io::Error::other(format!("총괄 대화 목록({})을 읽지 못했습니다: {e}", path.to_string_lossy()))),
+        }
+        thread::sleep(Duration::from_millis(20));
+    }
 }
 
+/// Replaces the list whole: a reader sees the old list or the new one, never a part.
 fn write_current(home: &Path, current: &BTreeMap<String, String>) -> io::Result<()> {
-    fs::create_dir_all(leads_dir(home))?;
-    fs::write(leads_dir(home).join("current.json"), store::to_pretty(current)?)
+    let path = leads_dir(home).join("current.json");
+    let temp = path.with_extension(format!("{}.tmp", new_run_id(Utc::now())));
+    fs::write(&temp, store::to_pretty(current)?)?;
+    fs::rename(&temp, &path)
 }
 
-/// The project's current thread, if it has one.
+/// The project's current thread, if it has one (none when the list cannot be read).
 pub fn current_thread(home: &Path, project: &str) -> Option<String> {
-    read_current(home).get(&project_key(project)).filter(|id| is_run_id(id)).cloned()
+    read_current(home).ok()?.get(&project_key(project)).filter(|id| is_run_id(id)).cloned()
 }
 
 /// Starts a new thread for the project and makes it the current one.
 pub fn new_thread(home: &Path, project: &str) -> io::Result<String> {
-    let thread_id = new_run_id(Utc::now());
-    fs::create_dir_all(thread_dir(home, &thread_id))?;
-    append(home, &thread_id, &LeadEvent::Start { at: now_iso(), thread_id: thread_id.clone(), project: project.to_string() })?;
-    let mut current = read_current(home);
-    current.insert(project_key(project), thread_id.clone());
-    write_current(home, &current)?;
-    Ok(thread_id)
+    thread_for(home, project, true)
 }
 
 /// The project's current thread, or a new one when it has none or `fresh` asks for it.
+/// Changes to the list are made one at a time (an OS lock on `leads/current.lock`), so two
+/// first messages make one thread and threads started together for other projects all stay.
 pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String> {
-    match current_thread(home, project) {
-        Some(id) if !fresh => Ok(id),
-        _ => new_thread(home, project),
+    fs::create_dir_all(leads_dir(home))?;
+    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock"))?;
+    lock.lock()?;
+    let mut current = read_current(home)?;
+    let key = project_key(project);
+    if let Some(id) = current.get(&key).filter(|id| !fresh && is_run_id(id)) {
+        return Ok(id.clone());
     }
+    let thread_id = new_run_id(Utc::now());
+    fs::create_dir_all(thread_dir(home, &thread_id))?;
+    append(home, &thread_id, &LeadEvent::Start { at: now_iso(), thread_id: thread_id.clone(), project: project.to_string() })?;
+    current.insert(key, thread_id.clone());
+    write_current(home, &current)?;
+    Ok(thread_id)
 }
 
 fn append(home: &Path, thread_id: &str, event: &LeadEvent) -> io::Result<()> {
@@ -736,7 +761,7 @@ pub fn dispatch(home: &Path, plan_id: &str, clean: bool, start: &dyn Fn(&str) ->
 pub fn stop(home: &Path, project: Option<&str>) -> bool {
     let threads: Vec<String> = match project {
         Some(project) => current_thread(home, project).into_iter().collect(),
-        None => read_current(home).into_values().filter(|id| is_run_id(id)).collect(),
+        None => read_current(home).unwrap_or_default().into_values().filter(|id| is_run_id(id)).collect(),
     };
     let mut stopped = false;
     for thread_id in threads {
@@ -806,7 +831,7 @@ pub struct LeadProject {
 /// What `o lead show --json` prints: the project's current thread (or none), and every
 /// project that has a lead thread, newest thread first.
 pub fn show(home: &Path, project: Option<&str>) -> Value {
-    let current = read_current(home);
+    let current = read_current(home).unwrap_or_default();
     let mut projects: Vec<LeadProject> = current
         .values()
         .filter(|id| is_run_id(id))

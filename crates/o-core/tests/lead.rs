@@ -42,7 +42,7 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 20] = [
+    let tests: [(&str, fn()); 21] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -63,6 +63,7 @@ fn main() {
         ("a stop ends a running CLI; an orphaned one only when its start time matches", stop_running_and_orphans),
         ("a turn that outlasts its time limit is ended and says so", turn_time_limit),
         ("back from another agent, a resumed session hears the turns it missed", round_trip),
+        ("the thread list is written whole and a broken one is never overwritten", current_list),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -765,4 +766,45 @@ fn round_trip() {
     lead::send(&home, &request(&project, "좋아"), claude.as_ref()).unwrap();
     let prompt = seen.lock().unwrap()[2].stdin.clone().unwrap();
     assert!(!prompt.contains("main 브랜치는 절대"), "{prompt}");
+}
+/// `leads/current.json` (project → its thread) is replaced whole. One that cannot be read is
+/// not taken as empty: a new thread is not started over it (which dropped every other
+/// project's thread), and starting threads for many projects at once loses none.
+fn current_list() {
+    let (home, project) = setup("current");
+    let first = lead::thread_for(&home, &project, false).unwrap();
+    let list = home.join("leads").join("current.json");
+    for broken in ["", "{\"c:/x\": \"20"] {
+        std::fs::write(&list, broken).unwrap();
+        assert!(lead::thread_for(&home, &project, false).is_err(), "{broken:?}");
+        assert!(lead::start(&home, &project).is_err(), "{broken:?}");
+        assert_eq!(std::fs::read_to_string(&list).unwrap(), broken, "a broken list was overwritten");
+        assert!(lead::show(&home, Some(&project))["thread"].is_null());
+    }
+    std::fs::remove_file(&list).unwrap();
+    // Many projects at once: every one keeps its thread.
+    let base = home.parent().unwrap().to_path_buf();
+    let folders: Vec<String> = (0..8)
+        .map(|i| {
+            let dir = base.join(format!("p{i}"));
+            std::fs::create_dir_all(&dir).unwrap();
+            dir.to_string_lossy().into_owned()
+        })
+        .collect();
+    let gate = Arc::new(std::sync::Barrier::new(folders.len()));
+    let handles: Vec<_> = folders
+        .iter()
+        .map(|folder| {
+            let (home, folder, gate) = (home.clone(), folder.clone(), gate.clone());
+            std::thread::spawn(move || {
+                gate.wait();
+                lead::thread_for(&home, &folder, false).unwrap()
+            })
+        })
+        .collect();
+    let made: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+    for (folder, thread) in folders.iter().zip(&made) {
+        assert_eq!(lead::current_thread(&home, folder).as_ref(), Some(thread), "{folder} lost its thread");
+    }
+    assert_ne!(lead::thread_for(&home, &project, false).unwrap(), first, "the list was removed above, so a new thread starts");
 }
