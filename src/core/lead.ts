@@ -245,3 +245,63 @@ export function fileSize(bytes: number): string {
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
 }
+
+/** One file in the composer: uploading, saved for the thread, or refused. */
+export interface DraftFile {
+  key: string;
+  name: string;
+  size: number;
+  image: boolean;
+  saved?: LeadAttachment;
+  error?: string;
+}
+
+/**
+ * The composer's message being written for one project: its text and files, and a generation
+ * that moves on whenever the draft is sent, so an upload started before cannot land in it.
+ */
+export interface Draft {
+  text: string;
+  files: DraftFile[];
+  gen: number;
+}
+
+/** Every project's draft, by `draftKey`. */
+export type Drafts = Readonly<Record<string, Draft>>;
+
+export const EMPTY_DRAFT: Draft = { text: "", files: [], gen: 0 };
+
+/** A project's draft key: folders compare as O compares them (any slash, no trailing one, any case). */
+export function draftKey(project: string): string {
+  return project.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+export function draftOf(drafts: Drafts, key: string): Draft {
+  return drafts[key] ?? EMPTY_DRAFT;
+}
+
+export function editDraft(drafts: Drafts, key: string, change: (draft: Draft) => Partial<Pick<Draft, "text" | "files">>): Drafts {
+  const draft = draftOf(drafts, key);
+  return { ...drafts, [key]: { ...draft, ...change(draft) } };
+}
+
+/**
+ * An upload finished: it lands in the draft it was started from, only if that draft has not
+ * been sent since (same generation) and still has its chip. Another project's draft never gets it.
+ */
+export function uploadDone(drafts: Drafts, key: string, gen: number, fileKey: string, result: { saved?: LeadAttachment; error?: string }): Drafts {
+  const draft = drafts[key];
+  if (!draft || draft.gen !== gen || !draft.files.some((f) => f.key === fileKey)) return drafts;
+  return editDraft(drafts, key, (d) => ({ files: d.files.map((f) => (f.key === fileKey ? { ...f, ...result, image: result.saved?.image ?? f.image } : f)) }));
+}
+
+/** The draft taken to send: emptied, and its generation moved on. */
+export function takeDraft(drafts: Drafts, key: string): { drafts: Drafts; draft: Draft } {
+  const draft = draftOf(drafts, key);
+  return { drafts: { ...drafts, [key]: { text: "", files: [], gen: draft.gen + 1 } }, draft };
+}
+
+/** A send that failed (nothing recorded): its text and files come back, unless a new draft was started meanwhile. */
+export function restoreDraft(drafts: Drafts, key: string, taken: Draft): Drafts {
+  return editDraft(drafts, key, (now) => ({ text: now.text || taken.text, files: now.files.length ? now.files : taken.files }));
+}

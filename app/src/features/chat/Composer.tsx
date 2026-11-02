@@ -9,15 +9,23 @@ import {
   LEAD_PROVIDERS,
   MODEL_ID,
   attachProblem,
+  draftKey,
+  draftOf,
+  editDraft,
   effortFor,
   fileSize,
   isLeadProvider,
   modelLabel,
+  restoreDraft,
+  takeDraft,
+  uploadDone,
+  type DraftFile,
+  type Drafts,
   type LeadProvider,
 } from "../../../../src/core/lead.ts";
 import { updateSettings, useSettings } from "../../data/settings.ts";
 import { useLeadModels, type LeadState } from "../../data/useLead.ts";
-import type { AgentStatus, Backend, LeadAttachment } from "../../platform/backend/index.ts";
+import type { AgentStatus, Backend } from "../../platform/backend/index.ts";
 import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
 const MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
@@ -25,16 +33,6 @@ const SEND_KEY = MAC ? "⌘Enter" : "Ctrl+Enter";
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
 /** The model menu's "type an id" row; a leading space never starts a model id. */
 const TYPE_MODEL = " 직접 입력";
-
-/** One file in the composer: uploading, saved for the thread, or refused. */
-interface Pending {
-  key: string;
-  name: string;
-  size: number;
-  image: boolean;
-  saved?: LeadAttachment;
-  error?: string;
-}
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -84,9 +82,18 @@ export function Composer({
 }) {
   const settings = useSettings();
   const { checking, usable, why } = useLeadAgents(api, settings.clean);
-  const [text, setText] = useState("");
-  const [files, setFiles] = useState<Pending[]>([]);
+  // Each project keeps its own draft; switching shows that project's, and an upload or a failed
+  // send lands back in the draft it came from (src/core/lead.ts `Drafts`).
+  const [drafts, setDrafts] = useState<Drafts>({});
+  const key = project ? draftKey(project) : "";
+  const { text, files } = draftOf(drafts, key);
+  const setText = (value: string) => setDrafts((d) => editDraft(d, key, () => ({ text: value })));
   const [notice, setNotice] = useState<string>();
+  // The project shown now, for answers that arrive later: their notice shows only there.
+  const projectNow = useRef(project);
+  projectNow.current = project;
+  // A notice is about the project it was raised in.
+  useEffect(() => setNotice(undefined), [key]);
   /** `model` "" is the CLI's default (no `--model`). */
   const [picked, setPicked] = useState<{ agent: LeadProvider; model: string; effort: string }>();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -140,22 +147,24 @@ export function Composer({
   const addFiles = (list: FileList | File[]) => {
     if (!project) return setNotice("프로젝트 폴더를 먼저 정하세요");
     let count = files.filter((f) => !f.error).length;
-    const added: Pending[] = [];
+    const added: DraftFile[] = [];
+    // The draft these files belong to, as it is now: a later send or another project never gets them.
+    const gen = draftOf(drafts, key).gen;
     for (const file of Array.from(list)) {
       const problem = attachProblem(file.name, file.size, count);
-      const item: Pending = { key: `${file.name}-${file.size}-${Date.now()}-${added.length}`, name: file.name, size: file.size, image: file.type.startsWith("image/"), error: problem };
+      const item: DraftFile = { key: `${file.name}-${file.size}-${Date.now()}-${added.length}`, name: file.name, size: file.size, image: file.type.startsWith("image/"), error: problem };
       added.push(item);
       if (problem) continue;
       count += 1;
       api.leadAttach(project, file).then(
-        (saved) => setFiles((all) => all.map((f) => (f.key === item.key ? { ...f, saved, image: saved.image } : f))),
+        (saved) => setDrafts((d) => uploadDone(d, key, gen, item.key, { saved })),
         (e) => {
-          setFiles((all) => all.map((f) => (f.key === item.key ? { ...f, error: errorText(e) } : f)));
-          setNotice(`${file.name}: ${errorText(e)}`);
+          setDrafts((d) => uploadDone(d, key, gen, item.key, { error: errorText(e) }));
+          if (draftKey(projectNow.current ?? "") === key) setNotice(`${file.name}: ${errorText(e)}`);
         },
       );
     }
-    setFiles((all) => [...all, ...added]);
+    setDrafts((d) => editDraft(d, key, (now) => ({ files: [...now.files, ...added] })));
     // A refused file says why out loud, not only in its chip's tooltip.
     setNotice(added.find((f) => f.error)?.error);
   };
@@ -166,17 +175,17 @@ export function Composer({
       if (text.trim() && blocker) setNotice(blocker);
       return;
     }
-    const message = text;
-    const attachments = files.flatMap((f) => (f.saved ? [f.saved.path] : []));
-    setText("");
-    setFiles([]);
+    const from = key;
+    const taken = draftOf(drafts, from);
+    const attachments = taken.files.flatMap((f) => (f.saved ? [f.saved.path] : []));
+    setDrafts((d) => takeDraft(d, from).drafts);
     setNotice(undefined);
     try {
-      await lead.send({ provider: agent, model: model || undefined, effort, text: message, attachments, clean: settings.clean });
+      await lead.send({ provider: agent, model: model || undefined, effort, text: taken.text, attachments, clean: settings.clean });
     } catch (e) {
-      // Nothing was recorded: give the message back.
-      setText((now) => now || message);
-      setNotice(errorText(e));
+      // Nothing was recorded: give the message and its attachments back, to the draft they came from.
+      setDrafts((d) => restoreDraft(d, from, taken));
+      if (draftKey(projectNow.current ?? "") === from) setNotice(errorText(e));
     }
   };
 
@@ -227,7 +236,7 @@ export function Composer({
                 </span>
                 <button
                   type="button"
-                  onClick={() => setFiles((all) => all.filter((x) => x.key !== f.key))}
+                  onClick={() => setDrafts((d) => editDraft(d, key, (now) => ({ files: now.files.filter((x) => x.key !== f.key) })))}
                   aria-label={`${f.name} 첨부 빼기`}
                   className="flex size-5 shrink-0 items-center justify-center rounded-sm hover:bg-accent focus-ring"
                 >

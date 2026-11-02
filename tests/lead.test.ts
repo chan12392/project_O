@@ -2,7 +2,28 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { ATTACH, LEAD_EFFORTS, LEAD_VIEW, MODEL_ID, attachProblem, effortFor, fileSize, leadItems, leadView, modelLabel, type LeadEvent, type LeadShow } from "../src/core/lead.ts";
+import {
+  ATTACH,
+  EMPTY_DRAFT,
+  LEAD_EFFORTS,
+  LEAD_VIEW,
+  MODEL_ID,
+  attachProblem,
+  draftKey,
+  draftOf,
+  editDraft,
+  effortFor,
+  fileSize,
+  leadItems,
+  leadView,
+  modelLabel,
+  restoreDraft,
+  takeDraft,
+  uploadDone,
+  type Drafts,
+  type LeadEvent,
+  type LeadShow,
+} from "../src/core/lead.ts";
 import { createPoll } from "../src/core/poll.ts";
 
 const rust = (path: string) => readFileSync(new URL(`../crates/o-core/src/${path}`, import.meta.url), "utf8");
@@ -183,4 +204,47 @@ test("the lead poll never runs two loops: a wake while a check is in flight star
   release();
   await new Promise((r) => setTimeout(r, 0));
   assert.equal(timers.size, 0, "stopped: nothing is scheduled");
+});
+
+test("each project keeps its own composer draft; a late upload lands only where and when it started", () => {
+  const a = draftKey("C:\\work\\A");
+  const b = draftKey("C:/work/b/");
+  assert.equal(draftKey("c:/work/a/"), a, "the same folder written another way is the same draft");
+  let drafts: Drafts = {};
+  drafts = editDraft(drafts, a, (d) => ({ text: "A에게", files: [...d.files, { key: "f1", name: "a.png", size: 3, image: true }] }));
+  const started = draftOf(drafts, a).gen;
+  // Switched to B: nothing of A shows there.
+  assert.deepEqual(draftOf(drafts, b), EMPTY_DRAFT);
+  drafts = editDraft(drafts, b, () => ({ text: "B에게" }));
+  // A's upload finishes while B is shown: it lands in A's draft, not B's.
+  const saved = { name: "01-a.png", path: "C:/lead/tA/01-a.png", size: 3, image: true };
+  drafts = uploadDone(drafts, a, started, "f1", { saved });
+  assert.deepEqual(draftOf(drafts, a).files[0].saved, saved);
+  assert.deepEqual(draftOf(drafts, b).files, []);
+  // What B sends carries only B's draft.
+  const taken = takeDraft(drafts, b);
+  assert.deepEqual(taken.draft, { ...draftOf(drafts, b) });
+  assert.equal(taken.draft.files.length, 0);
+  drafts = taken.drafts;
+  assert.equal(draftOf(drafts, b).text, "");
+  // An upload started before a send finishes after it: the sent draft does not get it back.
+  drafts = editDraft(drafts, b, (d) => ({ files: [{ key: "f2", name: "b.md", size: 1, image: false }] }));
+  const before = draftOf(drafts, b).gen;
+  drafts = takeDraft(drafts, b).drafts;
+  drafts = uploadDone(drafts, b, before, "f2", { saved: { name: "01-b.md", path: "C:/lead/tB/01-b.md", size: 1, image: false } });
+  assert.deepEqual(draftOf(drafts, b).files, []);
+});
+
+test("a send that fails gives back the message and its attachments, not over a new draft", () => {
+  const key = draftKey("C:/work/a");
+  const files = [{ key: "f1", name: "a.png", size: 3, image: true, saved: { name: "01-a.png", path: "C:/l/01-a.png", size: 3, image: true } }];
+  let drafts = editDraft({}, key, () => ({ text: "보낼 글", files }));
+  const { drafts: sent, draft } = takeDraft(drafts, key);
+  drafts = restoreDraft(sent, key, draft);
+  assert.equal(draftOf(drafts, key).text, "보낼 글");
+  assert.deepEqual(draftOf(drafts, key).files, files);
+  // Something typed while it was sending stays.
+  drafts = restoreDraft(editDraft(sent, key, () => ({ text: "새 글" })), key, draft);
+  assert.equal(draftOf(drafts, key).text, "새 글");
+  assert.deepEqual(draftOf(drafts, key).files, files);
 });
