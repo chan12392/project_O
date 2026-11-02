@@ -21,6 +21,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 o-core = { path = "../../crates/o-core" }
 tauri = { version = "2", features = [] }
+# Card-finished notifications (Settings → 알림): the page's `Notification` becomes a Windows toast.
+tauri-plugin-notification = "=2.8.0"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 chrono.workspace = true

@@ -49,7 +49,7 @@ function NotificationsSection() {
           label="카드 완료 알림"
           description={
             <>
-              보고 있는 작업의 카드가 끝나거나 실패하면, 창이 뒤에 있을 때 데스크톱 알림을 띄웁니다. {state}
+              어느 작업이든 카드가 끝나거나 실패하면, 창이 뒤에 있거나 최소화되어 있을 때 데스크톱 알림을 띄웁니다. 최소화 중에는 15초마다 확인합니다. {state}
               {note && (
                 <span role="status" className="mt-1 block text-destructive">
                   {note}
