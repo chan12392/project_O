@@ -49,7 +49,18 @@ export interface LeadShow {
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string }
-  | { kind: "plan"; at: string; planId: string; title: string; cards: PlanCard[]; ok: boolean; violations: LeadViolation[]; runId?: string }
+  | {
+      kind: "plan";
+      at: string;
+      planId: string;
+      title: string;
+      cards: PlanCard[];
+      ok: boolean;
+      violations: LeadViolation[];
+      /** What was wrong with the stored plan's shape (left out of what is drawn); a plan with any never runs from here. */
+      problems: string[];
+      runId?: string;
+    }
   | { kind: "error"; at: string; text: string };
 
 /** Folds a thread's events into chat items; a dispatch marks its plan with the run it started. */
@@ -65,15 +76,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text });
         break;
       case "lead.plan":
-        items.push({
-          kind: "plan",
-          at: e.at,
-          planId: e.planId,
-          title: e.plan?.title?.trim() || "제목 없는 계획",
-          cards: Array.isArray(e.plan?.cards) ? e.plan.cards : [],
-          ok: e.ok,
-          violations: e.violations ?? [],
-        });
+        items.push(planItem(raw as Record<string, unknown>, items.length));
         break;
       case "lead.dispatch":
         for (const item of items) if (item.kind === "plan" && item.planId === e.planId) item.runId = e.runId;
@@ -87,6 +90,54 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
     }
   }
   return items;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const text = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/**
+ * A stored plan as the chat can draw it. The thread keeps a refused plan as the lead wrote it,
+ * so its fields may be anything (`title: 42`, `cards: [null]`): every field is checked, what is
+ * malformed is left out and named in `problems`, and such a plan is never offered to run.
+ */
+function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, { kind: "plan" }> {
+  const problems: string[] = [];
+  const plan = isObject(e.plan) ? e.plan : undefined;
+  if (!plan) problems.push("계획이 객체가 아닙니다");
+  const title = text(plan?.title)?.trim();
+  if (plan && plan.title !== undefined && title === undefined) problems.push("계획 제목이 글자가 아닙니다");
+  if (plan && !title) problems.push("계획 제목이 없습니다");
+  const cards: PlanCard[] = [];
+  if (plan && !Array.isArray(plan.cards)) problems.push("카드 목록(cards)이 배열이 아닙니다");
+  (Array.isArray(plan?.cards) ? plan.cards : []).forEach((card: unknown, i: number) => {
+    const id = isObject(card) ? text(card.id) : undefined;
+    const provider = isObject(card) ? text(card.provider) : undefined;
+    const task = isObject(card) ? text(card.task) : undefined;
+    if (!isObject(card) || !id || !provider || task === undefined) {
+      problems.push(`카드 ${i + 1}번의 모양이 올바르지 않아 보이지 않습니다`);
+      return;
+    }
+    const kept: PlanCard = { id, provider, task };
+    for (const key of ["role", "model", "effort"] as const) {
+      const value = text(card[key]);
+      if (value) kept[key] = value;
+    }
+    cards.push(kept);
+  });
+  const violations = (Array.isArray(e.violations) ? e.violations : []).flatMap((v: unknown): LeadViolation[] => {
+    if (!isObject(v) || typeof v.rule !== "string" || typeof v.message !== "string") return [];
+    return [typeof v.cardId === "string" ? { rule: v.rule, message: v.message, cardId: v.cardId } : { rule: v.rule, message: v.message }];
+  });
+  return {
+    kind: "plan",
+    at: text(e.at) ?? "",
+    planId: text(e.planId) ?? `plan-${index}`,
+    title: title || "제목 없는 계획",
+    cards,
+    ok: e.ok === true && problems.length === 0,
+    violations,
+    problems,
+  };
 }
 
 /** The agents that can lead and the efforts each takes (crates/o-core/src/providers `lead_efforts`). */

@@ -81,3 +81,34 @@ test("attachments are checked before they are sent", () => {
   assert.equal(fileSize(34 * 1024), "34 KB");
   assert.equal(fileSize(1.25 * 1024 * 1024), "1.3 MB");
 });
+
+test("a stored plan of the wrong shape draws as a safe plan with a notice, never throws", () => {
+  // As `o lead show` may print a refused plan: the policy stored it with its violations as it came.
+  const raw = [
+    { t: "lead.plan", at: "1", planId: "th-p1", plan: { title: 42, cards: [null, { id: "ui", provider: "codex", task: "버튼", model: 5 }, 7, "x"] }, ok: false, violations: [{ rule: "plan-shape", message: "제목" }, null, { rule: 3 }] },
+    { t: "lead.plan", at: "2", planId: "th-p2", plan: "not an object", ok: true, violations: "none" },
+    { t: "lead.plan", at: "3", planId: "th-p3", plan: { title: "  ", cards: { id: "x" } }, ok: true, violations: [] },
+    { t: "lead.plan", at: "4", planId: "th-p4", plan: { title: "카드 모양만 이상", cards: [{ id: 1, provider: null, task: ["a"] }] }, ok: true, violations: [] },
+  ];
+  const items = leadItems(raw);
+  assert.equal(items.length, 4);
+  const [first, second, third, fourth] = items;
+  assert.ok(first.kind === "plan" && second.kind === "plan" && third.kind === "plan" && fourth.kind === "plan");
+  assert.equal(first.title, "제목 없는 계획");
+  assert.deepEqual(first.cards, [{ id: "ui", provider: "codex", task: "버튼" }]);
+  assert.deepEqual(first.violations, [{ rule: "plan-shape", message: "제목" }]);
+  assert.ok(first.problems.length > 0);
+  // A plan whose shape is wrong is never offered to run, whatever `ok` says.
+  for (const plan of [second, third, fourth]) {
+    assert.equal(plan.ok, false, plan.planId);
+    assert.ok(plan.problems.length > 0, plan.planId);
+  }
+  assert.deepEqual(second.cards, []);
+  assert.deepEqual(second.violations, []);
+  assert.equal(third.title, "제목 없는 계획");
+  assert.deepEqual(fourth.cards, []);
+  // A well-formed plan has no problems.
+  const stored: LeadEvent = { t: "lead.plan", at: "5", planId: "th-p5", plan: { title: "README", cards: [{ id: "docs", provider: "claude", task: "한 줄" }] }, ok: true, violations: [] };
+  const good = leadItems([stored]);
+  assert.ok(good[0].kind === "plan" && good[0].ok && good[0].problems.length === 0);
+});

@@ -188,6 +188,19 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
           </table>
         </div>
       )}
+      {plan.problems.length > 0 && (
+        <div role="note" className="border-t px-4 py-3 text-xs" aria-label="계획 형식 위반">
+          <p className="flex items-center gap-1.5 font-medium text-destructive">
+            <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+            계획의 형식이 올바르지 않아 일부를 보이지 않습니다. 실행할 수 없습니다.
+          </p>
+          <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-muted-foreground">
+            {plan.problems.map((p, i) => (
+              <li key={i}>{p}</li>
+            ))}
+          </ul>
+        </div>
+      )}
       {!plan.ok && plan.violations.length > 0 && (
         <ul className="space-y-1 border-t px-4 py-3 text-xs" aria-label="정책 위반">
           {plan.violations.map((v, i) => (
@@ -221,7 +234,10 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
             </p>
           </>
         ) : (
-          <p className="text-xs text-muted-foreground">정책에 막힌 계획은 실행하지 않습니다. 총괄에게 사유를 알려 다시 계획해 달라고 하세요.</p>
+          <p className="text-xs text-muted-foreground">
+            {plan.problems.length > 0 && plan.violations.length === 0 ? "형식이 올바르지 않은 계획" : "정책에 막힌 계획"}은 실행하지 않습니다. 총괄에게 사유를 알려 다시
+            계획해 달라고 하세요.
+          </p>
         )}
         {state.error && (
           <p role="alert" className="w-full text-xs whitespace-pre-wrap text-destructive">
