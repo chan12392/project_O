@@ -31,6 +31,18 @@ export interface ActionResult {
   log?: string;
 }
 
+/** What `o review <pr> --post --detach` answers: the review run started in the background. */
+export interface ReviewStarted {
+  ok: boolean;
+  message: string;
+  runId?: string;
+  pr?: number;
+  provider?: AgentId;
+}
+
+/** A PR number or a github.com pull address: the only forms `o review` takes. */
+export const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
+
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
@@ -43,6 +55,12 @@ export interface Backend {
   openExternal(url: string): Promise<void>;
   /** App version and where O keeps its state, for Settings → About. */
   about(): Promise<{ version: string; home: string; agentsHome: string }>;
+  /**
+   * Asks an agent to review a PR of the project folder and comment the review on it
+   * (`o review <pr> --post` there). It never approves or merges. Rejects with the
+   * reason (gh failed, policy refused) when the review did not start.
+   */
+  review(project: string, pr: string): Promise<ReviewStarted>;
 }
 
 declare global {
@@ -59,6 +77,7 @@ function tauriBackend(invoke: (cmd: string, args?: Record<string, unknown>) => P
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
     openExternal: (url) => invoke("open_external", { url }) as Promise<void>,
     about: () => invoke("about") as Promise<{ version: string; home: string; agentsHome: string }>,
+    review: (project, pr) => invoke("review", { project, pr }) as Promise<ReviewStarted>,
   };
 }
 
@@ -74,6 +93,12 @@ const devBackend: Backend = {
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: () => fetch("/api/about").then((r) => json<{ version: string; home: string; agentsHome: string }>(r)),
+  review: async (project, pr) => {
+    const res = await fetch(`/api/review?${new URLSearchParams({ project, pr })}`, { method: "POST" });
+    const body = (await res.json().catch(() => undefined)) as (ReviewStarted & { error?: string }) | undefined;
+    if (!res.ok || !body) throw new Error(body?.error ?? `HTTP ${res.status}`);
+    return body;
+  },
 };
 
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
@@ -88,6 +113,7 @@ const demoBackend: Backend = {
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: async () => ({ version: "preview", home: "", agentsHome: "" }),
+  review: async () => ({ ok: false, message: "미리보기에서는 검토를 요청하지 않습니다" }),
 };
 
 /** The desktop app when Tauri is present, the dev server's /api otherwise; `demo` forces the recorded preview. */

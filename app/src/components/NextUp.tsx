@@ -8,7 +8,7 @@ import { Rail, Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket, type StampTone } fro
 
 const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
   answer: { label: "답하기", tone: "rush" },
-  review: { label: "PR 검토", tone: "info" },
+  review: { label: "사람 검토 필요", tone: "info" },
   check: { label: "결과 확인", tone: "done" },
   queued: { label: "곧 시작", tone: "heat" },
   failed: { label: "실패", tone: "rush" },

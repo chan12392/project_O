@@ -8,6 +8,7 @@ import { readStored, writeStored } from "../storage.ts";
 import { AgentBoard } from "./AgentBoard.tsx";
 import { CardTranscript } from "./CardTranscript.tsx";
 import { NextUp, useHandled } from "./NextUp.tsx";
+import { ReviewRequestForm } from "./ReviewRequest.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
 
 type Sub = "dashboard" | "next" | "board";
@@ -114,10 +115,12 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
             onBoard={() => choose("board")}
             onCard={(run, card) => onCard({ run, card })}
           />
-        ) : sub === "next" ? (
-          <NextUp todo={todo} stopped={stopped} now={now} handled={handled} onToggle={toggle} onOpen={openItem} />
         ) : (
-          <AgentBoard runs={runs} onOpen={onCard} />
+          <>
+            {/* Every run here shares one project folder: a person's PR can be handed to an agent from it. */}
+            <ReviewRequestForm project={runs[0].project} />
+            {sub === "next" ? <NextUp todo={todo} stopped={stopped} now={now} handled={handled} onToggle={toggle} onOpen={openItem} /> : <AgentBoard runs={runs} onOpen={onCard} />}
+          </>
         )}
       </div>
     </div>
