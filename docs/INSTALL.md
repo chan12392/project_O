@@ -24,6 +24,7 @@ project_O 데스크톱 앱(`project_O.exe`)과 `o` CLI(`o.exe`)를 설치 파일
 | `%LOCALAPPDATA%\Programs\project_O` | 앱 폴더: `project_O.exe`, `o.exe`, `uninstall.exe` | 삭제 |
 | `%LOCALAPPDATA%\project_O` | O 상태 폴더(실행 기록·`o.db`·설정·하위 첨부, `store::default_home()`) | 데이터 삭제 선택 시만 삭제 |
 | `%LOCALAPPDATA%\project_O-agents` | 깨끗한 에이전트 프로필과 그 CLI의 로그인(`clean::default_root()`) | 데이터 삭제 선택 시만 삭제 |
+| `%LOCALAPPDATA%\project_O-lead` | 총괄 채팅에 첨부한 이미지·문서 (ADR-0008) | 데이터 삭제 선택 시만 삭제 |
 | `%LOCALAPPDATA%\local.project-o.desktop`, `%APPDATA%\local.project-o.desktop` | 창(WebView2) 데이터·앱 설정 | 데이터 삭제 선택 시만 삭제 |
 
 - Tauri의 사용자별 기본 설치 폴더는 `%LOCALAPPDATA%\<제품 이름>` = `%LOCALAPPDATA%\project_O`로, O 상태 폴더와 겹친다. 그래서 설치 파일이 기본 폴더를 `%LOCALAPPDATA%\Programs\project_O`로 옮긴다(`scripts/installer/hooks.nsh`). 설치 화면에서 상태 폴더를 직접 골라도 같은 곳으로 바꾼다.
