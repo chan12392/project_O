@@ -111,6 +111,10 @@ agy 1.4.12 `--help`에 `--mode plan`, `--sandbox`, `--settings`(세션 한정 �
 - Codex는 신뢰한 프로젝트의 `.codex/`에서 훅을 싣는다. `--disable hooks`(`codex exec --help`: `-c features.hooks=false`와 같음, 모든 설정 층보다 우선)로 끈다.
 - agy는 프로젝트 `.agents/hooks.json`을 싣고(antigravity.google/docs/hooks) 한 번만 훅을 끄는 공식 옵션이 없다. 그 파일이 있는 프로젝트에서는 agy 총괄을 거절하고 Claude Code·Codex를 고르게 한다.
 
+### 첨부 경로
+
+- 경로로 받은 파일은 열기 전에 위쪽 폴더를 하나씩 확인해 링크(심볼릭 링크·정션)가 하나라도 있으면 거절하고, 실제 경로(`canonicalize`)를 다시 로그인 정보 폴더·파일 이름 규칙으로 검사한 뒤 그 실제 경로를 연다. `.claude`를 가리키는 별칭 폴더 아래의 평범한 파일이 통과하던 문제를 막는다.
+
 ## 영향
 
 - 총괄은 파일을 고치거나 명령을 실행할 수 없다. 카드 권한(ADR-0002)·정책 상한·예산(ADR-0004)은 바뀌지 않고, 계획은 `o dispatch`와 같은 길로만 실행된다.

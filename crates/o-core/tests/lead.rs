@@ -27,7 +27,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 14] = [
+    let tests: [(&str, fn()); 15] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -42,6 +42,7 @@ fn main() {
         ("bad requests start nothing", refused_requests),
         ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
         ("no project hook runs before a plan is approved, first turn or resumed", project_hooks_off),
+        ("an attachment reached through a linked parent folder is refused", attachment_parent_links),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -404,6 +405,60 @@ fn api_keys_removed() {
     assert_eq!(claude.as_deref(), Some("keys:CODEX_API_KEY"));
     let codex = codex.unwrap();
     assert!(codex.contains("anthropic_api_key") && codex.contains("ANTHROPIC_AUTH_TOKEN") && !codex.contains("CODEX_API_KEY"), "{codex}");
+}
+
+/// A Windows junction (no special rights needed), made with the system's own mklink.
+#[cfg(windows)]
+fn junction(target: &Path, link: &Path) -> bool {
+    Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(link).arg(target).output().is_ok_and(|o| o.status.success())
+}
+
+/// A folder link to a sign-in folder hides `.claude` from the path as written: an ordinary
+/// file under it must still be refused, whether the alias is a symlink or a junction.
+fn attachment_parent_links() {
+    let (home, project) = setup("parents");
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let private = PathBuf::from(&project).join(".claude");
+    std::fs::create_dir_all(&private).unwrap();
+    std::fs::write(private.join("notes.txt"), "private").unwrap();
+    // The same file named directly is refused already.
+    assert!(files::import(&home, &thread, &private.join("notes.txt")).is_err());
+
+    let mut aliases = Vec::new();
+    let symlink = PathBuf::from(&project).join("alias-link");
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(&private, &symlink).is_ok();
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(&private, &symlink).is_ok();
+    if made {
+        aliases.push(symlink);
+    } else {
+        println!("  (symlinks not permitted here: symlink case skipped)");
+    }
+    #[cfg(windows)]
+    {
+        let joined = PathBuf::from(&project).join("alias-junction");
+        assert!(junction(&private, &joined), "mklink /J failed");
+        aliases.push(joined);
+    }
+    for alias in aliases {
+        let through = alias.join("notes.txt");
+        assert_eq!(std::fs::read_to_string(&through).unwrap(), "private", "the alias reaches the file");
+        let refused = files::import(&home, &thread, &through);
+        assert!(refused.is_err(), "{} was attached: {refused:?}", through.display());
+    }
+    // A plain nested folder still works.
+    let plain = PathBuf::from(&project).join("docs");
+    std::fs::create_dir_all(&plain).unwrap();
+    std::fs::write(plain.join("spec.md"), "# spec").unwrap();
+    assert!(files::import(&home, &thread, &plain.join("spec.md")).is_ok());
+    // Any link on the way is refused, even one to an ordinary folder.
+    #[cfg(windows)]
+    {
+        let to_plain = PathBuf::from(&project).join("docs-junction");
+        assert!(junction(&plain, &to_plain));
+        assert!(files::import(&home, &thread, &to_plain.join("spec.md")).unwrap_err().contains("링크"));
+    }
 }
 
 /// The value after `flag` in an argv, if the flag is there.
