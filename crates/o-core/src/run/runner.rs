@@ -3,7 +3,7 @@
 //! whose provider hits a limit mid-run stops its queued siblings on that
 //! provider instead of retrying them.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
@@ -21,7 +21,7 @@ use crate::run::events::{CardInfo, CardStatus, OEvent, StreamSignal};
 use crate::run::mode::Profile;
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
-use crate::run::plan::{Card, Plan};
+use crate::run::plan::{Card, Plan, ProviderId};
 use crate::policy::{check_plan, Violation, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
@@ -72,6 +72,20 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
 
 /// `run_plan` with the folder the policy check passed (see `Workdir`).
 pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>, workdir: Workdir) -> io::Result<CardStatus> {
+    run_plan_with(home, run_id, plan, clean, spawner, workdir, &HashMap::new())
+}
+
+/// `run_plan_in` with the providers that must not start (`clean::not_ready`: no project_O
+/// profile possible, or signed out there): their cards end failed with the reason, unstarted.
+pub fn run_plan_with(
+    home: &Path,
+    run_id: &str,
+    plan: &Plan,
+    clean: Option<&Path>,
+    spawner: Arc<Spawner>,
+    workdir: Workdir,
+    not_ready: &HashMap<ProviderId, String>,
+) -> io::Result<CardStatus> {
     let workdir = Arc::new(workdir);
     // YOLO 모드 (ADR-0014): chosen at dispatch, saved with the run.
     let yolo = is_yolo(home, run_id);
@@ -129,7 +143,13 @@ pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>,
         }
         for card in pending.clone() {
             let take = |pending: &mut Vec<Card>| pending.retain(|c| c.id != card.id);
-            if let Some(until) = cooldown_times(home)?.get(&card.provider) {
+            if let Some(reason) = not_ready.get(&card.provider) {
+                take(&mut pending);
+                emit(ended(&card, CardStatus::Failed, Some(reason.clone())))?;
+                results.push(CardStatus::Failed);
+                continue;
+            }
+            if let Some(until)= cooldown_times(home)?.get(&card.provider) {
                 if parse_time(until).is_some_and(|t| t > Utc::now()) {
                     take(&mut pending);
                     emit(ended(&card, CardStatus::Failed, Some(format!("{} 사용량 한도로 {until}까지 차단됨", card.provider))))?;
@@ -297,6 +317,8 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         // A clean card sees nothing of this process's environment but the kept system variables.
         if let Some(root) = clean {
             command.env_clear().envs(clean::environment(root, card.provider)?);
+        } else if card.provider == ProviderId::OpenCode {
+            command.env_clear().envs(clean::own_profile_environment());
         }
         remove_inherited(&mut command, &spec.env_remove);
         command.envs(&spec.env);
@@ -471,7 +493,16 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
         let clean = is_clean(home, run_id).then(clean::default_root);
         // The folder the check above passed, links resolved: the cards run there (see `Workdir`).
         let workdir = Workdir { checked: (ctx.resolve)(&plan.project), resolve: Arc::new(resolved_path) };
-        run_plan_in(home, run_id, &plan, clean.as_deref(), Arc::new(official_command), workdir).map_err(|e| e.to_string())?;
+        // project_O 프로필 사용 (ADR-0015): each CLI's profile is made if missing, and one that cannot
+        // have a profile or is signed out there starts no card.
+        let providers: Vec<ProviderId> = plan.cards.iter().map(|c| c.provider).collect();
+        let mut not_ready = clean.as_deref().map(|root| clean::not_ready(root, &providers)).unwrap_or_default();
+        if providers.contains(&ProviderId::OpenCode) && !not_ready.contains_key(&ProviderId::OpenCode) {
+            if let Err(reason) = crate::providers::opencode::check_auth(clean.as_deref()) {
+                not_ready.insert(ProviderId::OpenCode, reason);
+            }
+        }
+        run_plan_with(home, run_id, &plan, clean.as_deref(), Arc::new(official_command), workdir, &not_ready).map_err(|e| e.to_string())?;
         Ok(())
     }))
     .unwrap_or_else(|panic| {

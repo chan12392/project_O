@@ -4,7 +4,7 @@
 use std::path::Path;
 use std::process::Command as Process;
 
-use o_core::agents::{self, clean, ActionResult};
+use o_core::agents::{self, catalog, clean, ActionResult};
 use o_core::providers;
 use o_core::run::plan::ProviderId;
 use o_core::run::store;
@@ -15,19 +15,21 @@ use super::{fail, help, Command};
 pub const AGENTS: Command = Command {
     name: "agents",
     usage: "  o agents path              깨끗한 에이전트 프로필(개인 훅·스킬·MCP·전역 지시 없음) 위치
-  o agents login <claude|codex|agy>   그 프로필로 공식 로그인 (CLI마다 한 번)
-  o agents shell <claude|codex|agy> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행
+  o agents login <claude|codex|agy|opencode>   그 프로필로 공식 로그인 (CLI마다 한 번)
+  o agents shell <claude|codex|agy|opencode> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행
   o agents doctor [--json]   로그인 상태와 프로필 오염 검사 (깨끗하면 종료 코드 0)
   o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
-  o agents install <claude|codex|agy> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
-  o agents open-login <claude|codex|agy> [--clean] [--json]   새 콘솔 창에서 공식 로그인",
+  o agents install <claude|codex|agy|opencode> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
+  o agents open-login <claude|codex|agy|opencode> [--clean] [--json]   새 콘솔 창에서 공식 로그인
+  o agents list [--all] [--json]   다른 에이전트 CLI 목록과 이 PC 감지(--version만 실행). --all 없이는 연결된 것만
+  o agents models <opencode> [--json]   그 CLI의 모델 목록 (작업카드 model 값)",
     run: |_, args| run(args),
 };
 
 fn provider_arg(value: Option<&String>) -> Option<ProviderId> {
     let found = value.and_then(|v| ProviderId::parse(v));
     if found.is_none() {
-        eprintln!("에이전트를 claude, codex, agy 중에서 지정하세요\n\n{}", help());
+        eprintln!("에이전트를 claude, codex, agy, opencode 중에서 지정하세요\n\n{}", help());
     }
     found
 }
@@ -96,6 +98,46 @@ fn run(args: &[String]) -> i32 {
         "open-login" => {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
             action(agents::open_login(&root, provider, rest.iter().any(|a| a == "--clean")), rest)
+        }
+        "list" => {
+            let all = rest.iter().any(|a| a == "--all");
+            let list: Vec<_> = catalog::list().into_iter().filter(|e| all || e.status == "connected").collect();
+            if rest.iter().any(|a| a == "--json") {
+                println!("{}", json!(list));
+            } else {
+                for e in &list {
+                    let found = match (&e.version, e.detected) {
+                        (Some(v), _) => v.clone(),
+                        (None, true) => "감지됨".into(),
+                        (None, false) => "-".into(),
+                    };
+                    let status = match e.status {
+                        "connected" => "연결됨".to_string(),
+                        "planned" => format!("연결 예정({})", e.order.unwrap_or_default()),
+                        _ => format!("지원 안 함 — {}", e.reason),
+                    };
+                    let profile = if e.profile_supported { "" } else { " · 프로필 미지원" };
+                    println!("{:<10} {:<24} {:<28} {status}{profile}", e.id, e.name, found);
+                }
+            }
+            0
+        }
+        "models" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            match providers::get(provider).card_models() {
+                None => fail(&format!("{provider}는 모델 목록 명령이 없습니다 (model을 비우면 CLI 기본 모델)")),
+                Some(Err(error)) => fail(&error),
+                Some(Ok(models)) => {
+                    if rest.iter().any(|a| a == "--json") {
+                        println!("{}", json!(models));
+                    } else {
+                        for m in &models {
+                            println!("{}", m.id);
+                        }
+                    }
+                    0
+                }
+            }
         }
         _ => fail(help()),
     }

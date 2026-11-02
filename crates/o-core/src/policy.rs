@@ -32,6 +32,8 @@ impl Limits {
             ProviderId::Claude => 3,
             ProviderId::Codex => 3,
             ProviderId::Agy => 2,
+            // ADR-0015: no usage probe or daily budget, so no more than Antigravity.
+            ProviderId::OpenCode => 2,
         }
     }
 }

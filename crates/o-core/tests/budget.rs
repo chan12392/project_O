@@ -269,7 +269,21 @@ fn an_exhausted_day_blocks_only_while_the_budget_is_on() {
     assert_eq!(off.spent, Some(14.0));
     assert!(off.message.contains("예산 꺼짐"), "{}", off.message);
     let r = report(&home, now).unwrap();
-    assert!(!r.enabled && r.providers.iter().all(|p| p.state == Pace::Off));
+    assert!(!r.enabled && r.providers.iter().all(|p| p.state == Pace::Off || (p.provider == ProviderId::OpenCode && p.state == Pace::NotApplied)));
+}
+
+#[test]
+fn opencode_has_no_budget_on_or_off() {
+    let home = temp_home("opencode-not-applied");
+    let now = Utc::now();
+    seed_over(&home, now);
+    for enabled in [true, false] {
+        write_enabled(&home, enabled).unwrap();
+        let b = assess_now(&home, ProviderId::OpenCode, now).unwrap();
+        assert_eq!((b.state, b.steps_down, b.efforts.len(), b.spent), (Pace::NotApplied, 0, 0, None));
+        assert!(b.message.contains("예산 적용 안 됨"), "{}", b.message);
+        assert!(!over_budget(&home, now).unwrap().contains_key(&ProviderId::OpenCode));
+    }
 }
 
 #[test]

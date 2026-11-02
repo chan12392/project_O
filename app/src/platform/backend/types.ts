@@ -5,7 +5,18 @@ import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates
 
 export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
 
-export type AgentId = "claude" | "codex" | "agy";
+export type AgentId = "claude" | "codex" | "agy" | "opencode";
+
+export interface AgentCatalogEntry {
+  id: string;
+  name: string;
+  detected: boolean;
+  version?: string;
+  status: "connected" | "planned" | "unsupported";
+  installUrl?: string;
+  profileSupported: boolean;
+  note: string;
+}
 
 export interface AgentStatus {
   id: AgentId;
@@ -48,7 +59,7 @@ export interface ReviewStarted {
 export const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
 
 /** How a provider's spend today compares with how much of the day is left (ADR-0004); "off" while the daily budget is switched off (ADR-0013). */
-export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over" | "off";
+export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over" | "off" | "notApplied";
 
 /** One provider in `o budget --json`: shares are 0 to 1, weeklyUsed/allowance/spent percent points of the weekly window. */
 export interface ProviderBudget {
@@ -118,6 +129,7 @@ export interface Backend {
   kind: "tauri" | "dev" | "demo";
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;
+  agentsCatalog(): Promise<AgentCatalogEntry[]>;
   /** Runs the official installer for one CLI and returns when it finishes. */
   install(id: AgentId): Promise<ActionResult>;
   /** Opens the official sign-in for one CLI (a console window and/or the browser). */

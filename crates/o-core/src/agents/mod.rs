@@ -4,6 +4,7 @@
 //! vendors' install scripts are shown to the person, never fetched and run here.
 //! Sign-in opens the CLI's own login in a console window the person drives.
 
+pub mod catalog;
 pub mod clean;
 
 use std::path::{Path, PathBuf};
@@ -36,6 +37,9 @@ pub struct AgentStatus {
     pub install_hint: String,
     pub can_install: bool,
     pub install_url: String,
+    /// Checked with the project_O profile: that profile's state (ADR-0015). Absent for the person's own setup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<clean::ProfileState>,
 }
 
 /// What an install or sign-in did (`ActionResult` in app/src/platform/backend/types.ts).
@@ -112,7 +116,8 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
     let npm_ready = o.npm_package.is_some() && npm().is_some();
     let install_hint = match o.npm_package {
         Some(package) if npm_ready => format!("npm install -g {package}"),
-        _ => format!("PowerShell: {}", o.script),
+        _ if o.script.starts_with("irm ") => format!("PowerShell: {}", o.script),
+        _ => o.script.to_string(),
     };
     let found: Option<PathBuf> = which(provider.as_str());
     let cli = resolve_cli(provider.as_str());
@@ -134,10 +139,11 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
         install_hint,
         can_install: npm_ready,
         install_url: o.url.into(),
+        profile: (clean && cli.is_some()).then(|| clean::ProfileState::of(provider, logged_in)),
     }
 }
 
-/// Every CLI at once (each status check may take a while), in the order claude, codex, agy.
+/// Every CLI at once (each status check may take a while), in the order claude, codex, agy, opencode.
 pub fn status(root: &Path, clean: bool) -> Vec<AgentStatus> {
     thread::scope(|s| {
         let checks: Vec<_> = ProviderId::ALL.into_iter().map(|p| s.spawn(move || status_of(root, p, clean))).collect();

@@ -26,14 +26,20 @@ fn missing_clis_show_the_official_installers() {
     let list = status(&root, false);
     let value = json!(list);
     let ids: Vec<&str> = value.as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["claude", "codex", "agy"]);
+    assert_eq!(ids, ["claude", "codex", "agy", "opencode"]);
     for agent in value.as_array().unwrap() {
         assert_eq!(agent["installed"], false);
         assert_eq!(agent["loggedIn"], Value::Null, "unknown, not false: {agent}");
-        assert!(agent.get("version").is_none() && agent.get("path").is_none());
+        assert!(agent.get("version").is_none() && agent.get("path").is_none() && agent.get("profile").is_none());
         // Without npm nothing installs in-app; the hint is the vendor's own installer.
         assert_eq!(agent["canInstall"], false);
-        assert!(agent["installHint"].as_str().unwrap().starts_with("PowerShell: irm https://"), "{agent}");
+        let hint = agent["installHint"].as_str().unwrap();
+        if agent["id"] == "opencode" {
+            // OpenCode v2 has no Windows installer script: its page's zip, or npm.
+            assert!(hint.contains("https://opencode.ai/v2/docs/") && hint.contains("npm install -g @opencode/cli"), "{agent}");
+        } else {
+            assert!(hint.starts_with("PowerShell: irm https://"), "{agent}");
+        }
         assert!(agent["installUrl"].as_str().unwrap().starts_with("https://"));
     }
     assert_eq!(value[0]["name"], "Claude Code");

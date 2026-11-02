@@ -17,15 +17,28 @@ pub struct CliCommand {
 }
 
 static SHIM_SCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)"%dp0%\\([^"%]+\.(?:js|mjs|cjs))""#).unwrap());
+/// A shim that runs a program its package ships, not a script (OpenCode v2). Only read when the
+/// shim names no script: a script shim also names `%dp0%\node.exe`, the interpreter it prefers.
+static SHIM_PROGRAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)"%dp0%\\(node_modules\\[^"%]+\.exe)""#).unwrap());
 
 pub fn resolve_cli(bin: &str) -> Option<CliCommand> {
     let found = which(bin)?;
     if !is_script_shim(&found) {
         return Some(CliCommand { command: found, prefix: Vec::new() });
     }
-    let text = String::from_utf8_lossy(&fs::read(&found).ok()?).into_owned();
-    let script = SHIM_SCRIPT.captures(&text)?.get(1)?.as_str().to_string();
-    let path = found.parent()?.join(script);
+    shim_target(&found)
+}
+
+/// What an npm `.cmd` shim runs: a script started with node, or a native program the
+/// package ships (OpenCode's shim calls `node_modules\@opencode\cli\bin\opencode.exe`),
+/// started directly. Either way no argument passes through cmd.exe.
+pub fn shim_target(shim: &std::path::Path) -> Option<CliCommand> {
+    let text = String::from_utf8_lossy(&fs::read(shim).ok()?).into_owned();
+    let Some(script) = SHIM_SCRIPT.captures(&text).and_then(|c| c.get(1)) else {
+        let program = shim.parent()?.join(SHIM_PROGRAM.captures(&text)?.get(1)?.as_str());
+        return program.is_file().then(|| CliCommand { command: program, prefix: Vec::new() });
+    };
+    let path = shim.parent()?.join(script.as_str());
     if !path.exists() {
         return None;
     }

@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 
 use o_core::agents::clean::{ancestor_instructions, clean_env_from, ensure_profile, inspect, profile_home, read_login, root_in};
 use o_core::run::plan::ProviderId;
-use serde_json::Value;
+use serde_json::{json, Value};
 
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("o-clean-{name}-{}", std::process::id()));
@@ -86,8 +86,38 @@ fn a_new_profile_holds_only_the_claude_settings() {
         ensure_profile(&root, provider, &real_home).unwrap();
     }
     let settings = profile_home(&root, ProviderId::Claude).join(".claude").join("settings.json");
-    assert_eq!(files_under(&root), vec![settings.clone()]);
+    let opencode = profile_home(&root, ProviderId::OpenCode).join(".config").join("opencode").join("opencode.json");
+    let mut expected = vec![settings.clone(), opencode.clone()];
+    expected.sort();
+    let mut found = files_under(&root);
+    found.sort();
+    assert_eq!(found, expected);
     assert!(profile_home(&root, ProviderId::Codex).join(".codex").is_dir());
+
+    // OpenCode's only file is O's permission rules: deny first, edits in, the team and context
+    // commands with nothing joined to them, no plugin and no MCP server (ADR-0015).
+    let config: Value = serde_json::from_str(&fs::read_to_string(&opencode).unwrap()).unwrap();
+    let keys: Vec<&String> = config.as_object().unwrap().keys().collect();
+    assert_eq!(keys, ["$schema", "permissions", "plugins"]);
+    assert_eq!(config["plugins"], json!([]));
+    let rules: Vec<(String, String, String)> = config["permissions"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|r| (r["action"].as_str().unwrap().into(), r["resource"].as_str().unwrap().into(), r["effect"].as_str().unwrap().into()))
+        .collect();
+    let rule = |a: &str, r: &str, e: &str| (a.to_string(), r.to_string(), e.to_string());
+    assert_eq!(rules[0], rule("*", "*", "deny"));
+    for allowed in [rule("edit", "*", "allow"), rule("shell", "o msg *", "allow"), rule("shell", "o context *", "allow")] {
+        assert!(rules.contains(&allowed), "{allowed:?}");
+    }
+    // OpenCode applies the last matching rule: every chain or redirect comes after the allows.
+    let last_allow = rules.iter().rposition(|r| r.2 == "allow").unwrap();
+    for join in ["*&*", "*|*", "*;*", "*>*"] {
+        let at = rules.iter().position(|r| *r == rule("shell", join, "deny")).unwrap();
+        assert!(at > last_allow, "{join}");
+    }
+    assert!(!rules.iter().any(|r| r.0 == "shell" && r.1 == "*" && r.2 == "allow"));
 
     let value: Value = serde_json::from_str(&fs::read_to_string(&settings).unwrap()).unwrap();
     let keys: Vec<&String> = value.as_object().unwrap().keys().collect();
@@ -133,6 +163,18 @@ fn doctor_flags_planted_hooks_skills_and_mcp_servers() {
     write(&gemini.join("skills").join("x").join("SKILL.md"), "x");
     let issues = inspect(&root, ProviderId::Agy);
     assert_eq!(issues.len(), 2, "{issues:?}");
+
+    // OpenCode: the person's own config copied in (allow-all rule, a plugin, an MCP server),
+    // a global instruction file and a skill.
+    let opencode = profile_home(&root, ProviderId::OpenCode).join(".config").join("opencode");
+    write(
+        &opencode.join("opencode.json"),
+        r#"{ "permissions": [{ "action": "*", "resource": "*", "effect": "allow" }], "plugins": ["p"], "mcp": { "servers": { "m": { "type": "local", "command": ["m"] } } } }"#,
+    );
+    write(&opencode.join("AGENTS.md"), "x");
+    write(&opencode.join("skills").join("x").join("SKILL.md"), "x");
+    let issues = inspect(&root, ProviderId::OpenCode);
+    assert_eq!(issues.len(), 5, "{issues:?}");
 }
 
 #[test]
@@ -160,4 +202,45 @@ fn login_state_keeps_only_yes_or_no() {
     assert_eq!(read_login(ProviderId::Agy, true, usage, "").logged_in, Some(true));
     assert_eq!(read_login(ProviderId::Agy, true, "{}", "").logged_in, None);
     assert_eq!(read_login(ProviderId::Agy, false, "", "boom").logged_in, None);
+
+    // OpenCode `auth list --format json`: only the count of connections is kept, never a name or label.
+    let empty = read_login(ProviderId::OpenCode, true, "[]", "");
+    assert_eq!((empty.logged_in, empty.detail.as_str()), (Some(false), "로그인 안 됨 — o agents login opencode"));
+    let list = r#"[{"id":"opencode","name":"Secret Person","connections":[{"type":"credential","id":"cred_1","label":"me@example.com","method":"oauth"}]},
+        {"id":"openrouter","name":"OpenRouter","connections":[{"type":"credential","id":"cred_2","label":"key","method":"key"}]}]"#;
+    let signed_in = read_login(ProviderId::OpenCode, true, list, "");
+    assert_eq!((signed_in.logged_in, signed_in.detail.as_str()), (Some(true), "로그인됨 (OpenCode 연결 2개)"));
+    assert!(!signed_in.detail.contains("example.com") && !signed_in.detail.contains("Secret"));
+    // A Claude sign-in connected to OpenCode is named: Anthropic does not allow it in third-party apps.
+    let claude = read_login(ProviderId::OpenCode, true, r#"[{"id":"anthropic","connections":[{"method":"oauth"}]}]"#, "");
+    assert!(claude.logged_in == Some(true) && claude.detail.contains("약관"), "{}", claude.detail);
+    assert_eq!(read_login(ProviderId::OpenCode, false, "", "boom").logged_in, None);
+    use o_core::providers::opencode::check_auth_list;
+    assert!(check_auth_list(r#"[{"id":"anthropic","connections":[{"method":"oauth"}]}]"#).is_err());
+    assert!(check_auth_list(r#"[{"id":"anthropic","connections":[{"method":"key"}]}]"#).is_ok());
+    assert!(check_auth_list(r#"[{"id":"opencode","connections":[]}]"#).is_ok());
+    assert!(check_auth_list("invalid").is_err());
+}
+
+#[test]
+fn opencode_profile_env_moves_every_folder_into_the_profile() {
+    let home = Path::new("C:/agents/opencode/home");
+    let env = clean_env_from([("PATH".to_string(), "C:/bin".to_string()), ("XDG_DATA_HOME".to_string(), "C:/real".to_string())], home, ProviderId::OpenCode);
+    assert_eq!(env.get("USERPROFILE").map(String::as_str), Some("C:/agents/opencode/home"));
+    assert_eq!(env.get("XDG_CONFIG_HOME"), Some(&home.join(".config").to_string_lossy().into_owned()));
+    // A parent's XDG folder never leaks in: OpenCode's data then follows HOME into the profile.
+    assert!(!env.contains_key("XDG_DATA_HOME"));
+}
+
+#[test]
+fn every_connected_cli_can_have_a_profile_and_unsupported_ones_are_named() {
+    use o_core::agents::catalog::{entry, profile_support, Profile};
+    for provider in ProviderId::ALL.into_iter().filter(|p| entry(p.as_str()).is_none_or(|e| matches!(e.profile, Profile::Relocatable(_)))) {
+        assert!(profile_support(provider).is_ok(), "{provider}");
+    }
+    // Devin's config cannot move (research §2.2): the profile layer says "프로필 미지원" for it.
+    assert!(matches!(entry("devin").map(|e| e.profile), Some(Profile::Unsupported(_))));
+    let text = o_core::agents::clean::unsupported(ProviderId::OpenCode, "이유");
+    assert!(text.starts_with("프로필 미지원(opencode):") && text.contains("이유"));
+    assert!(o_core::agents::clean::login_needed(ProviderId::OpenCode).starts_with("로그인 필요(opencode):"));
 }

@@ -107,7 +107,7 @@ function sameOrigin(req: IncomingMessage): boolean {
 }
 
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
-const AGENT_ACTION = /^\/agents\/(claude|codex|agy)\/(install|login)$/;
+const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode)\/(install|login)$/;
 
 /** A PR number or github.com pull address, as `o review` takes it (platform/backend PR_SELECTOR). */
 const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
@@ -354,6 +354,7 @@ export function liveRuns(): Plugin {
           }
         const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "GET" && path === "/agents/catalog") return void o(["agents", "list", "--all", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, JSON.stringify({ ...JSON.parse(out), commit: "", builtAt: "" })), error(res));
         if (req.method === "GET" && path === "/updates") return send(res, 200, JSON.stringify({ release: null, message: DESKTOP_UPDATES_ONLY }));
         if (req.method === "POST" && path === "/review") {

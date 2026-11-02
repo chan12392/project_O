@@ -36,8 +36,10 @@ fn budget_json_lists_every_provider_with_the_setting_and_today_s_numbers() {
     assert_eq!(empty["usageAt"], "");
     let providers = empty["providers"].as_array().unwrap();
     let ids: Vec<&str> = providers.iter().map(|p| p["provider"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["claude", "codex", "agy"]);
-    assert!(providers.iter().all(|p| p["state"] == "unknown" && p["spent"].is_null() && p["stepsDown"] == 0));
+    assert_eq!(ids, ["claude", "codex", "agy", "opencode"]);
+    assert!(providers[..3].iter().all(|p| p["state"] == "unknown" && p["spent"].is_null() && p["stepsDown"] == 0));
+    // ADR-0015: no usage probe, so the budget never applies to OpenCode.
+    assert_eq!((providers[3]["state"].as_str(), providers[3]["stepsDown"].as_u64()), (Some("notApplied"), Some(0)));
 
     let now = Utc::now();
     let weekly = |used: f64| UsageWindow { provider: ProviderId::Codex, window: "seven_day".into(), group: None, used, resets_at: iso(now + Duration::days(3)) };
@@ -69,7 +71,8 @@ fn budget_on_and_off_are_saved_and_shown() {
     assert_eq!(json(&base, &["budget", "--json", "--cached"])["enabled"], true);
     let off = json(&base, &["budget", "--json", "--cached", "--off"]);
     assert_eq!(off["enabled"], false);
-    assert!(off["providers"].as_array().unwrap().iter().all(|p| p["state"] == "off"));
+    let states: Vec<&str> = off["providers"].as_array().unwrap().iter().map(|p| p["state"].as_str().unwrap()).collect();
+    assert_eq!(states, ["off", "off", "off", "notApplied"]);
     let settings: Value = serde_json::from_str(&fs::read_to_string(home.join("settings.json")).unwrap()).unwrap();
     assert_eq!(settings["dailyBudgetEnabled"], false);
     let text = String::from_utf8_lossy(&o(&base, &["budget", "--cached"]).stdout).into_owned();
