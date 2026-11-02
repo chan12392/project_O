@@ -10,12 +10,14 @@
 //! - `context`: shared session context and token report (ADR-0005)
 //! - `lead`: the lead chat — a read-only lead CLI proposes plans, the person dispatches (ADR-0008)
 //! - `review`, `sessions`: `o review` and Claude Code sessions as runs
+//! - `projects`: the projects root and registered folders the app lists (ADR-0009)
 //! - `sys`: processes, CLI lookup, JS-compatible formats, mirror sync
 
 pub mod agents;
 pub mod context;
 pub mod lead;
 pub mod policy;
+pub mod projects;
 pub mod providers;
 pub mod review;
 pub mod run;

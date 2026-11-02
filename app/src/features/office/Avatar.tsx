@@ -30,10 +30,10 @@ export function spriteUrl(speaker: Speaker): string {
  * look it's that card's composed character; until that is drawn (or if it can't be)
  * the provider's portrait, and the initials if the art is missing.
  */
-export function Avatar({ speaker, size = "md", look }: { speaker: Speaker; size?: "sm" | "md"; look?: Look }) {
+export function Avatar({ speaker, size = "md", look }: { speaker: Speaker; size?: "xs" | "sm" | "md"; look?: Look }) {
   const [missing, setMissing] = useState(false);
   const sheet = useCharacterSheet(look);
-  const box = size === "sm" ? "size-6" : "size-8";
+  const box = size === "xs" ? "size-4" : size === "sm" ? "size-6" : "size-8";
   return (
     <span className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted ring-1 ${RING[speaker]} ${box}`}>
       {sheet ? (
