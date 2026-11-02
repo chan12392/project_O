@@ -56,7 +56,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\project_O').UninstallString.Trim('"')) -ArgumentList '/S /PURGE' -WindowStyle Hidden -Wait
 ```
 
-`/PURGE`는 설치 위치 기억 키와 `project_O mirror sync (test|test_1|test_2|main)`이라는 정확한 이름의 예약 작업도 제거한다. 거울 git 저장소는 남긴다. 평소 CLI 폴더(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`), 프로젝트와 저장소, 공유 WebView2 런타임에는 손대지 않는다. 별도 첨부 루트는 현재 없으며 O 상태 폴더 안의 첨부만 함께 지운다. 데이터 루트가 비었거나 링크·junction이면 중단한다. 하위 링크는 대상까지 따라가지 않는다. 제거 중 오류가 나면 앱은 남아 있어 다시 시도할 수 있지만, 앞서 지운 데이터는 복구되지 않는다.
+`/PURGE`는 설치 위치 기억 키와 `project_O mirror sync (test|test_1|test_2|main)`이라는 정확한 이름의 예약 작업도 제거한다. 거울 git 저장소는 남긴다. 평소 CLI 폴더(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`), 프로젝트와 저장소, 공유 WebView2 런타임에는 손대지 않는다. 별도 첨부 루트는 현재 없으며 O 상태 폴더 안의 첨부만 함께 지운다. 데이터 루트가 비었거나 링크·junction이면 중단한다. 하위 링크는 대상까지 따라가지 않는다. 예약 작업은 위 이름으로 하나씩 확인하므로 PC의 다른 예약 작업이 손상돼 있어도 멈추지 않는다. 사용 중이라 지우지 못한 폴더는 건너뛰고 나머지를 지운 뒤, 남은 폴더를 함께 알려 준다. 제거 중 오류가 나면 앱은 남아 있어 다시 시도할 수 있지만, 앞서 지운 데이터는 복구되지 않는다.
 
 ## 업데이트 알림
 
