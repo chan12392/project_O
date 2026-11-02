@@ -8,7 +8,8 @@
 //! injected and no flag that disables approvals is ever added. The one opening
 //! is narrow: each CLI may run `o msg`, the run's team channel, and the
 //! read-only `o context` search (ADR-0005; Antigravity only gets the section
-//! injected into its prompt), and nothing more.
+//! injected into its prompt), and nothing more. A lead chat turn (`Provider::lead`,
+//! ADR-0008) gets less: reading the project, nothing else.
 
 pub mod agy;
 pub mod claude;
@@ -56,7 +57,19 @@ pub trait Provider: Sync {
     /// A fresh reader for one card's stdout, one JSON object per line.
     fn stream_reader(&self) -> ReadLine;
 
-    // Lead chat (headless prompt, session resume, attachments per CLI) goes here.
+    // Lead chat (`lead`, ADR-0008): a read-only headless turn that may resume the CLI's session.
+
+    /// The effort values a lead turn of this CLI takes. Empty: the CLI cannot be a lead
+    /// (no headless read-only mode with session resume that O can rely on).
+    fn lead_efforts(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// The lead's launch: read-only (it reads the project, never edits or runs commands),
+    /// no flag that turns approvals off, resumed when the turn names a session.
+    /// `None` when the CLI cannot be a lead.
+    fn lead(&self, _turn: &LeadTurn) -> Option<LaunchSpec> {
+        None
+    }
 
     // Install and sign-in (`agents`).
 
@@ -151,6 +164,27 @@ pub fn remove_inherited(command: &mut Command, names: &[String]) {
 /// with the person's own environment, so it sees the sign-in a card would.
 pub fn without_api_keys(command: &mut Command, provider: ProviderId) {
     remove_inherited(command, &strings(get(provider).api_key_vars()));
+}
+
+/// One lead chat turn as a provider launches it.
+#[derive(Clone, Debug, Default)]
+pub struct LeadTurn<'a> {
+    /// The thread's project, where the CLI starts and what it reads.
+    pub project: &'a str,
+    pub prompt: String,
+    /// The CLI's own session id from an earlier turn of this thread, to resume.
+    pub session: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    /// The thread's attachment folder (outside O's state folder), opened for reading.
+    pub files_dir: Option<&'a str>,
+    /// Image attachments, for CLIs that take images natively.
+    pub images: &'a [String],
+}
+
+/// Whether a provider can be the lead (`Provider::lead_efforts` is not empty).
+pub fn can_lead(id: ProviderId) -> bool {
+    !get(id).lead_efforts().is_empty()
 }
 
 pub struct TeamChannel<'a> {

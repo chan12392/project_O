@@ -8,11 +8,13 @@
 //! - `agents`: CLI install/sign-in status and clean test profiles
 //! - `usage`: subscription windows, their probes and the daily budget
 //! - `context`: shared session context and token report (ADR-0005)
+//! - `lead`: the lead chat — a read-only lead CLI proposes plans, the person dispatches (ADR-0008)
 //! - `review`, `sessions`: `o review` and Claude Code sessions as runs
 //! - `sys`: processes, CLI lookup, JS-compatible formats, mirror sync
 
 pub mod agents;
 pub mod context;
+pub mod lead;
 pub mod policy;
 pub mod providers;
 pub mod review;

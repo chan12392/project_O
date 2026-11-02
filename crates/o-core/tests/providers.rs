@@ -5,7 +5,7 @@ use std::ffi::OsString;
 use o_core::run::events::StreamSignal;
 use o_core::sys::js::iso_from_secs;
 use o_core::run::plan::{Card, Plan, ProviderId};
-use o_core::providers::{card_prompt, is_limit_text, launch_spec, names_to_remove, unwrap_shell, LaunchSpec, StreamReader, TeamChannel};
+use o_core::providers::{card_prompt, is_limit_text, launch_spec, names_to_remove, unwrap_shell, LaunchSpec, LeadTurn, StreamReader, TeamChannel};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
 use serde_json::{json, Value};
@@ -247,6 +247,61 @@ fn cards_drop_api_key_variables_so_each_cli_uses_its_own_sign_in() {
     }
 }
 
+fn lead_spec(provider: ProviderId, session: Option<&str>, effort: Option<&str>, images: &[String]) -> Option<LaunchSpec> {
+    o_core::providers::get(provider).lead(&LeadTurn {
+        project: "C:/work/demo",
+        prompt: "계획해 줘".into(),
+        session,
+        model: None,
+        effort,
+        files_dir: Some("C:/o-lead/t1"),
+        images,
+    })
+}
+
+#[test]
+fn the_claude_lead_reads_only_and_resumes_its_session() {
+    let first = lead_spec(ProviderId::Claude, None, Some("low"), &[]).unwrap();
+    assert_eq!(first.bin, "claude");
+    let expected = [
+        "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
+        "--strict-mcp-config", "--effort", "low", "--add-dir", "C:/o-lead/t1",
+    ];
+    assert_eq!(first.args, expected);
+    assert_eq!(first.stdin.as_deref(), Some("계획해 줘"));
+    let next = lead_spec(ProviderId::Claude, Some("s-1"), None, &[]).unwrap();
+    assert_eq!(after(&next.args, "--resume"), "s-1");
+    assert!(!has(&next.args, "--effort"));
+}
+
+#[test]
+fn the_codex_lead_runs_in_a_read_only_sandbox_and_resumes_with_exec_resume() {
+    let images = vec!["C:/o-lead/t1/01-a.png".to_string()];
+    let first = lead_spec(ProviderId::Codex, None, Some("high"), &images).unwrap();
+    let expected = [
+        "exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "-i", "C:/o-lead/t1/01-a.png", "--json", "-c", "model_reasoning_effort=high", "-",
+    ];
+    assert_eq!(first.args, expected);
+    let next = lead_spec(ProviderId::Codex, Some("th-9"), None, &images).unwrap();
+    let expected = ["exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "resume", "-i", "C:/o-lead/t1/01-a.png", "--json", "th-9", "-"];
+    assert_eq!(next.args, expected);
+    assert_eq!(next.stdin.as_deref(), Some("계획해 줘"));
+}
+
+#[test]
+fn lead_launches_never_write_and_never_turn_approvals_off() {
+    for provider in ProviderId::ALL {
+        for session in [None, Some("s")] {
+            let Some(spec) = lead_spec(provider, session, Some("high"), &[]) else { continue };
+            let line = spec.args.join(" ");
+            assert!(find_hits(&line, code_rules()).is_empty(), "{provider}: {line}");
+            for word in ["acceptEdits", "auto", "workspace-write", "danger-full-access", "Bash", "Edit", "Write", "NotebookEdit"] {
+                assert!(!spec.args.iter().any(|a| a.split(',').any(|part| part == word)), "{provider}: {word}");
+            }
+        }
+    }
+}
+
 #[test]
 fn inherited_spellings_in_another_case_are_dropped_too() {
     let inherited = ["Path", "anthropic_api_key", "ANTHROPIC_API_KEY_HELPER", "Anthropic_Auth_Token"].map(OsString::from);
@@ -291,4 +346,12 @@ fn a_claude_limit_shows_in_its_error_text_too_but_one_limit_per_card_keeps_the_e
         [StreamSignal::Limit { until: "2026-11-01T09:40:00.000Z".into() }]
     );
     assert!(matches!(r.read(failed).as_slice(), [StreamSignal::Final { ok: false, .. }]));
+}
+
+#[test]
+fn only_clis_with_a_read_only_resumable_mode_can_lead() {
+    assert!(o_core::providers::can_lead(ProviderId::Claude));
+    assert!(o_core::providers::can_lead(ProviderId::Codex));
+    assert!(!o_core::providers::can_lead(ProviderId::Agy));
+    assert!(lead_spec(ProviderId::Agy, None, None, &[]).is_none());
 }

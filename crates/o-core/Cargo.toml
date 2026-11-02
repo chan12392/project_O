@@ -25,6 +25,11 @@ windows-sys = { version = "0.61", features = [
 ] }
 
 [[test]]
+name = "lead"
+# Its own main: the test binary doubles as the fake lead CLI (see tests/lead.rs).
+harness = false
+
+[[test]]
 name = "runner"
 # Its own main: the test binary doubles as the fake provider CLI (see tests/runner.rs).
 harness = false

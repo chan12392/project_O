@@ -71,6 +71,10 @@ fn n(value: u64) -> String {
 }
 
 fn print_report(report: &Report) {
+    let lead = &report.lead;
+    if lead.turns > 0 {
+        println!("총괄 대화(계획 부대 비용) {}회  {} / {} / {} = {}\n", lead.turns, n(lead.input), n(lead.cached), n(lead.output), n(lead.total));
+    }
     if report.runs.is_empty() {
         println!("토큰 기록이 있는 실행이 없습니다.");
         return;

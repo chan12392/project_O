@@ -21,9 +21,9 @@ $fixture = Join-Path $env:LOCALAPPDATA "project_O-uninstall-tests\$id"
 $installDir = Join-Path $env:TEMP "project_O-installer-$id\Installed app"
 Assert-That ([IO.Path]::GetFullPath($fixture).StartsWith([IO.Path]::GetFullPath((Join-Path $env:LOCALAPPDATA 'project_O-uninstall-tests')) + '\')) 'Fixture containment'
 Assert-That ([IO.Path]::GetFullPath($installDir).StartsWith([IO.Path]::GetFullPath($env:TEMP).TrimEnd('\') + '\project_O-installer-')) 'Install containment'
-$data = @('project_O', 'project_O-agents', 'local.project-o.desktop') | ForEach-Object { Join-Path $fixture "Local\$_" }
+$data = @('project_O', 'project_O-agents', 'project_O-lead', 'local.project-o.desktop') | ForEach-Object { Join-Path $fixture "Local\$_" }
 $data += Join-Path $fixture 'Roaming\local.project-o.desktop'
-$realData = @('project_O', 'project_O-agents', 'local.project-o.desktop') | ForEach-Object { Join-Path $env:LOCALAPPDATA $_ }
+$realData = @('project_O', 'project_O-agents', 'project_O-lead', 'local.project-o.desktop') | ForEach-Object { Join-Path $env:LOCALAPPDATA $_ }
 $realData += Join-Path $env:APPDATA 'local.project-o.desktop'
 $existingRealData = @($realData | Where-Object { Test-Path -LiteralPath $_ })
 foreach ($path in $data) {

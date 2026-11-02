@@ -889,5 +889,8 @@ pub fn with_sessions_for(runs: Vec<RunRecord>, sessions: Vec<RunRecord>, query: 
 pub fn read_runs_with_sessions(home: &Path, query: &RunQuery, since: Duration) -> io::Result<Vec<RunRecord>> {
     let runs = store::read_runs(home, query)?;
     let sessions = read_sessions(&default_roots(), Some(&cache_path(home)), Utc::now(), since);
+    // The lead chat's own Claude sessions are O's lead, not someone's separate work (ADR-0008).
+    let leads: HashSet<String> = crate::lead::session_ids(home).into_iter().map(|id| format!("{SESSION_PREFIX}{id}")).collect();
+    let sessions = sessions.into_iter().filter(|s| !leads.contains(&s.run_id)).collect();
     Ok(with_sessions_for(runs, sessions, query))
 }

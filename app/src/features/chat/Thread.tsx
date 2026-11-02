@@ -74,7 +74,7 @@ export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }:
 
 const RUN_WORD: Record<RunView["status"], string> = { running: "진행 중", done: "모두 완료", failed: "실패한 카드 있음", stopped: "중지됨" };
 
-function RunCard({ run, onOpenCard }: { run: RunView; onOpenCard: (id: string) => void }) {
+export function RunCard({ run, onOpenCard }: { run: RunView; onOpenCard: (id: string) => void }) {
   return (
     <section className="overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby="run-title">
       <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
@@ -113,7 +113,7 @@ function RunCard({ run, onOpenCard }: { run: RunView; onOpenCard: (id: string) =
   );
 }
 
-function Notice({ title, action, onAction, children }: { title: string; action: string; onAction: () => void; children: React.ReactNode }) {
+export function Notice({ title, action, onAction, children }: { title: string; action: string; onAction: () => void; children: React.ReactNode }) {
   return (
     <section className="rounded-xl border bg-card p-6 text-card-foreground">
       <h2 className="text-sm font-medium">{title}</h2>

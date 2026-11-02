@@ -1,19 +1,12 @@
 //! "에이전트 검토 요청" (ADR-0006): `o review <pr> --post --detach`, dev `/api/review`.
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Command, Stdio};
 
 use o_core::review;
-use o_core::sys::{proc, resolve};
+use o_core::sys::proc;
 
-use super::blocking;
-
-/// The `o` built beside this app (target/release), else the one on PATH.
-fn o_binary() -> Option<PathBuf> {
-    let name = if cfg!(windows) { "o.exe" } else { "o" };
-    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(name))).filter(|p| p.is_file());
-    beside.or_else(|| resolve::which("o"))
-}
+use super::{blocking, o_binary};
 
 /// Checks the request before anything runs: a PR number or github.com pull address, and an existing absolute folder.
 pub fn review_request(project: &str, pr: &str) -> Result<(), String> {

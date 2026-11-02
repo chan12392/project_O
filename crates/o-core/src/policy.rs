@@ -10,7 +10,7 @@ use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::sys::js::{js_len, parse_time};
@@ -51,12 +51,12 @@ static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Violation {
     pub rule: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_id: Option<String>,
 }
 
@@ -153,26 +153,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
         found.add("plan-shape", "title이 필요합니다", None);
     }
     let project = object.get("project").and_then(Value::as_str);
-    match project {
-        Some(project) if is_absolute(project) => {
-            if !(ctx.project_exists)(project) {
-                found.add("plan-shape", format!("project 폴더가 없습니다: {project}"), None);
-            } else if (ctx.is_mirror)(project) {
-                found.add(
-                    "read-only-project",
-                    format!("{project}는 project_O의 보호 브랜치(test_1·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
-                    None,
-                );
-            } else if reaches_protected(project, ctx) {
-                found.add(
-                    "protected-project",
-                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
-                    None,
-                );
-            }
-        }
-        _ => found.add("plan-shape", "project는 절대 경로여야 합니다", None),
-    }
+    found.0.extend(check_project(project, ctx));
     let cards = match object.get("cards").and_then(Value::as_array) {
         Some(cards) if !cards.is_empty() => cards,
         _ => {
@@ -242,6 +223,34 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     }
     let plan = Plan { title: title.unwrap_or_default().trim().to_string(), project: project.unwrap_or_default().to_string(), cards: valid };
     Checked { plan: Some(plan), violations: Vec::new() }
+}
+
+/// Whether a folder may be a project: absolute, existing, not a protected mirror, and
+/// neither inside nor around O's state folder or the home folder. A plan's check and the
+/// lead chat (which reads the project) both use it.
+pub fn check_project(project: Option<&str>, ctx: &PolicyContext) -> Vec<Violation> {
+    let mut found = Found::default();
+    match project {
+        Some(project) if is_absolute(project) => {
+            if !(ctx.project_exists)(project) {
+                found.add("plan-shape", format!("project 폴더가 없습니다: {project}"), None);
+            } else if (ctx.is_mirror)(project) {
+                found.add(
+                    "read-only-project",
+                    format!("{project}는 project_O의 보호 브랜치(test_1·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
+                    None,
+                );
+            } else if reaches_protected(project, ctx) {
+                found.add(
+                    "protected-project",
+                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
+                    None,
+                );
+            }
+        }
+        _ => found.add("plan-shape", "project는 절대 경로여야 합니다", None),
+    }
+    found.0
 }
 
 fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {

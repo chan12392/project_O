@@ -68,6 +68,10 @@ impl Provider for Agy {
         false
     }
 
+    // No lead (`lead_efforts` stays empty): agy 1.4 can resume (`--conversation`), but none
+    // of its modes (accept-edits, auto, plan) is documented as read-only, so O cannot promise
+    // a lead that never edits. See ADR-0008.
+
     fn stream_reader(&self) -> ReadLine {
         let mut text = String::new();
         Box::new(move |data| read_stream(&mut text, data))

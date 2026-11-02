@@ -102,6 +102,8 @@ pub struct Report {
     pub compare: Compare,
     /// Newest first.
     pub runs: Vec<RunTokens>,
+    /// What lead chat turns spent planning (ADR-0008): overhead, not in any card or group.
+    pub lead: crate::lead::LeadTokens,
 }
 
 #[derive(Default)]
@@ -213,7 +215,8 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
     let groups: Vec<Group> = GROUPS.iter().filter_map(|&(clean, context, key, label)| group(&runs, clean, context, key, label)).collect();
     let pick = |key: &str| groups.iter().find(|g| g.key == key).cloned();
     let compare = Compare { baseline: pick("normal"), shared: pick("clean+context") };
-    Ok(Report { groups, compare, runs })
+    let lead = crate::lead::tokens(home, query.project, query.since);
+    Ok(Report { groups, compare, runs, lead })
 }
 
 fn group(runs: &[RunTokens], clean: bool, context: bool, key: &str, label: &str) -> Option<Group> {
