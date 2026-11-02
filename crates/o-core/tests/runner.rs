@@ -22,6 +22,8 @@ use o_core::run::store::{
 };
 
 const FAKE: &str = "O_FAKE_CLI_LINES";
+/// Milliseconds the fake waits before printing: a CLI that is still working.
+const FAKE_SLEEP: &str = "O_FAKE_CLI_SLEEP_MS";
 /// `--dump-env <file>`: the fake writes its environment there as JSON and succeeds.
 const DUMP_ENV: &str = "--dump-env";
 
@@ -34,13 +36,17 @@ fn main() {
         return;
     }
     if let Ok(lines) = std::env::var(FAKE) {
+        if let Some(ms) = std::env::var(FAKE_SLEEP).ok().and_then(|ms| ms.parse().ok()) {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
         for line in lines {
             println!("{line}");
         }
         return;
     }
-    let tests: [(&str, fn()); 13] = [
+    let tests: [(&str, fn()); 14] = [
+        ("a stop that comes while a card's CLI is starting still ends it", stop_while_starting),
         ("runs dispatched together never take more slots than the caps between them", runners_share_slots),
         ("runs dispatched together never start more cards than the day allows", runners_share_the_days_last_start),
         ("a card whose CLI cannot start gives back its slot and its start", failed_start_gives_back),
@@ -353,6 +359,26 @@ fn failed_start_gives_back() {
     assert_eq!(run_plan(&home, "re", &p, None, spawner).unwrap(), CardStatus::Failed);
     assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
     assert!(o_core::run::store::policy_context(&home, Utc::now()).unwrap().active_by_provider.values().all(|n| *n == 0));
+}
+
+/// `o stop` arrives while a card's CLI is being started (slot taken, no marker yet): the stop
+/// kills nothing it can see, so the runner must stop the CLI itself as soon as it is up.
+fn stop_while_starting() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    create_run(&home, "rs", &p).unwrap();
+    let stopping = home.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        assert!(o_core::run::runner::stop_run(&stopping, "rs").unwrap());
+        let mut command = quiet()(spec, cwd)?;
+        command.env(FAKE_SLEEP, "20000");
+        Ok(command)
+    });
+    let started = std::time::Instant::now();
+    assert_eq!(run_plan(&home, "rs", &p, None, spawner).unwrap(), CardStatus::Stopped);
+    assert!(started.elapsed() < Duration::from_secs(10), "the CLI ran on for {:?} after the stop", started.elapsed());
+    assert_eq!(ends_of(&home, "rs"), BTreeMap::from([("a".into(), CardStatus::Stopped)]));
+    assert!(active_markers(&home).is_empty());
 }
 
 /// A key left in the person's environment must not reach the card's CLI, in any case spelling.

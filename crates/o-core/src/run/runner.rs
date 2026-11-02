@@ -228,6 +228,12 @@ fn run_card(
         exit_code,
     };
 
+    // Stopped while waiting for its thread: never start it.
+    if stop_requested(home, run_id) {
+        drop(slot);
+        emit(end(CardStatus::Stopped, None, None))?;
+        return Ok(CardStatus::Stopped);
+    }
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
     let spawned = spawner(&spec, &plan.project).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
@@ -256,6 +262,12 @@ fn run_card(
     slot.marked = true;
     mark_active(home, &ActiveMarker { run_id: run_id.to_string(), card_id: card.id.clone(), provider: card.provider, pid })?;
     emit(OEvent::CardStart { at: now_iso(), card_id: card.id.clone(), pid: Some(pid) })?;
+    // An `o stop` that ran while the CLI was starting found no marker to kill: stop it here.
+    // (A stop from now on finds the marker written above.)
+    if stop_requested(home, run_id) {
+        proc::kill_tree(pid);
+        let _ = child.kill();
+    }
 
     if let Some(mut stdin) = child.stdin.take() {
         let text = spec.stdin.clone().unwrap_or_default();
