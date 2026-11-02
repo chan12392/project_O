@@ -2,10 +2,9 @@ import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { Look } from "../characters.ts";
 import { clip } from "../format.ts";
+import { useReducedMotion } from "../settings.ts";
 import type { Speaker } from "./Avatar.tsx";
 import { Sprite, type Action } from "./Sprite.tsx";
-
-export const REDUCED = typeof matchMedia !== "undefined" && matchMedia("(prefers-reduced-motion: reduce)").matches;
 
 /** A place in the office, in percent of the room. */
 export type Point = { x: number; y: number };
@@ -45,6 +44,7 @@ export function Person({ speaker, look, label, spot, roam, held, mood, line, sel
   const last = useRef(spot);
   const lastMood = useRef(mood);
   const alert = mood === "fail";
+  const reduced = useReducedMotion();
 
   // Finishing earns a short cheer; after that a done agent sips coffee now and then.
   useEffect(() => {
@@ -74,11 +74,11 @@ export function Person({ speaker, look, label, spot, roam, held, mood, line, sel
       setFacingLeft(across < 0);
       setStride(Math.abs(down) > Math.abs(across) ? (down > 0 ? "walkDown" : "walkUp") : "walk");
       // Held or with reduced motion there is no glide (and no transitionend), so no walk either.
-      setWalking(!held && !REDUCED);
+      setWalking(!held && !reduced);
       last.current = next;
       setPos(next);
     },
-    [nudge, held],
+    [nudge, held, reduced],
   );
 
   useEffect(() => goTo(spot), [spot.x, spot.y, goTo]);

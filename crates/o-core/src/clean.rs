@@ -143,7 +143,8 @@ pub fn login_args(provider: ProviderId) -> Option<&'static [&'static str]> {
     }
 }
 
-fn status_args(provider: ProviderId) -> &'static [&'static str] {
+/// The CLI's own sign-in status check (agy: its quota report, empty when signed out).
+pub fn status_args(provider: ProviderId) -> &'static [&'static str] {
     match provider {
         ProviderId::Claude => &["auth", "status"],
         ProviderId::Codex => &["login", "status"],

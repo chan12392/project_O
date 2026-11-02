@@ -56,6 +56,9 @@ progress (`AgentBoard`) and activity rings (`UsagePanel`) follow patterns 074, 0
 of the beakho-design reference library (lucian-code-141). Only the patterns were used; the code
 is written for this app.
 
+The settings page (`app/src/components/Settings.tsx`) follows the section structure and layout
+of Orca's settings (MIT, see the Orca section above); the code is written for this app.
+
 ## Generated art
 
 `app/public/office/*.png` (사무실 배경, 캐릭터 4종) were generated for this project on 2026-11-02
@@ -74,7 +77,7 @@ sheets for composed characters) were generated the same way (runs `20261101-1642
 ## Rust crates
 
 The `o` command (`crates/`) builds on crates from crates.io under permissive licenses:
-serde, serde_json, regex, chrono and windows-sys (MIT or Apache-2.0), rusqlite (MIT) with
+serde, serde_json, regex, chrono, windows-sys and Tauri 2 for the desktop shell `project_O.exe` (MIT or Apache-2.0), rusqlite (MIT) with
 SQLite compiled in (public domain). `cargo tree` lists the full set; their license texts
 ship in each crate's source.
 

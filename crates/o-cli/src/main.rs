@@ -43,6 +43,10 @@ const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬
   o agents login <claude|codex|agy>   그 프로필로 공식 로그인 (CLI마다 한 번)
   o agents shell <claude|codex|agy> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행
   o agents doctor [--json]   로그인 상태와 프로필 오염 검사 (깨끗하면 종료 코드 0)
+  o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
+  o agents install <claude|codex|agy> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
+  o agents open-login <claude|codex|agy> [--clean] [--json]   새 콘솔 창에서 공식 로그인
+  o about [--json]           버전과 상태·프로필 폴더 위치
 
 정책 위반이 하나라도 있으면 계획 전체를 실행하지 않고 종료 코드 2로 끝납니다.";
 
@@ -63,6 +67,7 @@ fn run(args: &[String]) -> i32 {
         Some("check") => check(&home, plan_arg(rest), false, false),
         Some("dispatch") => check(&home, plan_arg(rest), true, has("--clean")),
         Some("agents") => agents(rest),
+        Some("about") => about(&home, has("--json")),
         Some("status") => match first {
             None => status(&home, None),
             Some(id) => run_id_arg(Some(id)).map_or(1, |id| status(&home, Some(id))),
@@ -200,8 +205,60 @@ fn agents(args: &[String]) -> i32 {
             attached(clean::command(&root, provider, &args))
         }
         "doctor" => doctor(&root, rest.iter().any(|a| a == "--json")),
+        "status" => {
+            let list = o_core::agents::status(&root, rest.iter().any(|a| a == "--clean"));
+            if rest.iter().any(|a| a == "--json") {
+                println!("{}", json!(list));
+            } else {
+                for a in &list {
+                    let state = match (a.installed, a.logged_in) {
+                        (false, _) => format!("설치 안 됨 — {}", a.install_hint),
+                        (true, Some(true)) => "로그인됨".into(),
+                        (true, Some(false)) => "로그인 안 됨".into(),
+                        (true, None) => "로그인 상태 모름".into(),
+                    };
+                    println!("{:<6} {:<12} {}  {}", a.id.as_str(), a.version.as_deref().unwrap_or("-"), state, a.path.as_deref().unwrap_or(""));
+                }
+            }
+            0
+        }
+        "install" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            action(o_core::agents::install(provider), rest)
+        }
+        "open-login" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            action(o_core::agents::open_login(&root, provider, rest.iter().any(|a| a == "--clean")), rest)
+        }
         _ => fail(USAGE),
     }
+}
+
+/// Prints an install or sign-in result: JSON for the app (exit 0 once printed), or words.
+fn action(result: o_core::agents::ActionResult, args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--json") {
+        println!("{}", json!(result));
+        return 0;
+    }
+    println!("{}", result.message);
+    if !result.ok {
+        if let Some(log) = &result.log {
+            eprintln!("{log}");
+        }
+    }
+    i32::from(!result.ok)
+}
+
+/// `o about [--json]`: this build's version and where O keeps its state.
+fn about(home: &Path, as_json: bool) -> i32 {
+    let version = env!("CARGO_PKG_VERSION");
+    let agents_home = clean::default_root();
+    if as_json {
+        println!("{}", json!({ "version": version, "home": home.to_string_lossy(), "agentsHome": agents_home.to_string_lossy() }));
+    } else {
+        println!("o {version}\n상태 폴더   {}\n에이전트 프로필 {}", home.to_string_lossy(), agents_home.to_string_lossy());
+    }
+    0
 }
 
 fn doctor(root: &Path, as_json: bool) -> i32 {

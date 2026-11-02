@@ -22,8 +22,9 @@ jobs:
         run: cargo run --quiet --release -p o-cli -- scan --all
       - name: Rust 테스트·lint
         run: |
-          cargo test --workspace --release
-          cargo clippy --workspace --release -- -D warnings
+          # The desktop shell (crate project-o) needs WebView system libraries that the CI image lacks.
+          cargo test --workspace --release --exclude project-o
+          cargo clippy --workspace --release --exclude project-o -- -D warnings
       - uses: actions/setup-node@v4
         with:
           node-version: 24

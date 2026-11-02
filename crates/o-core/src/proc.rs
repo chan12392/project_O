@@ -2,6 +2,10 @@
 //! objects, liveness checks and tree kills. Windows first; elsewhere the
 //! nearest equivalent.
 
+use std::collections::BTreeMap;
+use std::ffi::OsStr;
+use std::io;
+use std::path::Path;
 use std::process::{Child, Command, Stdio};
 
 #[cfg(windows)]
@@ -131,4 +135,122 @@ pub fn kill_tree(pid: u32) {
 pub fn exit_code(status: std::process::ExitStatus) -> Option<i64> {
     let code = status.code()?;
     Some(if cfg!(windows) { i64::from(code as u32) } else { i64::from(code) })
+}
+
+/// Appends one argument to a Windows command line the way the C runtime reads it back.
+fn quote_arg(arg: &str, line: &mut String) {
+    if !arg.is_empty() && !arg.contains([' ', '\t', '\n', '\x0b', '"']) {
+        line.push_str(arg);
+        return;
+    }
+    line.push('"');
+    let mut backslashes = 0;
+    for c in arg.chars() {
+        if c == '\\' {
+            backslashes += 1;
+        } else {
+            if c == '"' {
+                // Backslashes before a quote are doubled, and the quote escaped.
+                line.extend(std::iter::repeat_n('\\', backslashes + 1));
+            }
+            backslashes = 0;
+        }
+        line.push(c);
+    }
+    line.extend(std::iter::repeat_n('\\', backslashes));
+    line.push('"');
+}
+
+/// The command line `CreateProcessW` gets: the program in quotes, then each argument.
+pub fn command_line(program: &Path, args: &[String]) -> String {
+    let mut line = format!("\"{}\"", program.to_string_lossy());
+    for arg in args {
+        line.push(' ');
+        quote_arg(arg, &mut line);
+    }
+    line
+}
+
+/// Starts a program in a visible console window of its own and does not wait:
+/// for sign-ins a person runs. The program gets that console's input and output
+/// (never this process's pipes), inherits no handles, and gets `env` as its whole
+/// environment when one is given.
+#[cfg(windows)]
+pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<String, String>>, cwd: Option<&Path>) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{CreateProcessW, CREATE_NEW_CONSOLE, CREATE_UNICODE_ENVIRONMENT, PROCESS_INFORMATION, STARTUPINFOW};
+
+    let wide = |text: &OsStr| text.encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let application = wide(program.as_os_str());
+    let mut line = wide(OsStr::new(&command_line(program, args)));
+    let block = env.map(|vars| {
+        let mut block: Vec<u16> = vars.iter().flat_map(|(name, value)| wide(OsStr::new(&format!("{name}={value}")))).collect();
+        block.push(0);
+        if block.len() == 1 {
+            block.push(0);
+        }
+        block
+    });
+    let cwd = cwd.map(|dir| wide(dir.as_os_str()));
+    unsafe {
+        let mut startup: STARTUPINFOW = std::mem::zeroed();
+        startup.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+        let mut info: PROCESS_INFORMATION = std::mem::zeroed();
+        let ok = CreateProcessW(
+            application.as_ptr(),
+            line.as_mut_ptr(),
+            std::ptr::null(),
+            std::ptr::null(),
+            0,
+            CREATE_NEW_CONSOLE | CREATE_UNICODE_ENVIRONMENT,
+            block.as_ref().map_or(std::ptr::null(), |b| b.as_ptr().cast()),
+            cwd.as_ref().map_or(std::ptr::null(), |c| c.as_ptr()),
+            &startup,
+            &mut info,
+        );
+        if ok == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        CloseHandle(info.hThread);
+        CloseHandle(info.hProcess);
+    }
+    Ok(())
+}
+
+#[cfg(not(windows))]
+pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<String, String>>, cwd: Option<&Path>) -> io::Result<()> {
+    let mut command = Command::new(program);
+    command.args(args);
+    if let Some(env) = env {
+        command.env_clear().envs(env);
+    }
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    command.spawn().map(drop)
+}
+
+/// Opens a web page in the person's default browser.
+#[cfg(windows)]
+pub fn open_url(url: &str) -> io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    let wide = |text: &str| OsStr::new(text).encode_wide().chain(Some(0)).collect::<Vec<u16>>();
+    let (verb, target) = (wide("open"), wide(url));
+    let code = unsafe { ShellExecuteW(std::ptr::null_mut(), verb.as_ptr(), target.as_ptr(), std::ptr::null(), std::ptr::null(), SW_SHOWNORMAL) };
+    // Values above 32 mean success.
+    if code as isize > 32 {
+        Ok(())
+    } else {
+        Err(io::Error::other(format!("브라우저를 열지 못했습니다 (코드 {})", code as isize)))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn open_url(url: &str) -> io::Result<()> {
+    let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
+    Command::new(opener).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(drop)
 }

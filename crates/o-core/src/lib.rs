@@ -5,6 +5,7 @@
 //! state folder, the profiles and processes. The `o` binary and a desktop shell
 //! both sit on top of this.
 
+pub mod agents;
 pub mod clean;
 pub mod events;
 pub mod index;

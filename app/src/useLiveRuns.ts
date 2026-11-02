@@ -21,6 +21,34 @@ interface UsageReading {
 }
 
 const POLL_MS = 2_000;
+/** As many runs as `o runs --json` lists by default. */
+const RUN_LIMIT = 50;
+
+/**
+ * The desktop app (project_O.exe) answers through Tauri commands with the same JSON text
+ * the dev server's /api sends (`o runs --json`, `o usage --cached --json`, `o usage --json`).
+ */
+async function readRuns(): Promise<{ runsText: string; usageText: string }> {
+  const tauri = window.__TAURI_INTERNALS__;
+  if (tauri) {
+    const [runsText, usageText] = await Promise.all([
+      tauri.invoke("runs", { limit: RUN_LIMIT }) as Promise<string>,
+      (tauri.invoke("usage") as Promise<string>).catch(() => ""),
+    ]);
+    return { runsText, usageText };
+  }
+  const [runsRes, usageRes] = await Promise.all([fetch("/api/runs"), fetch("/api/usage")]);
+  if (!runsRes.ok) throw new Error(`/api/runs ${runsRes.status}`);
+  return { runsText: await runsRes.text(), usageText: usageRes.ok ? await usageRes.text() : "" };
+}
+
+/** Asks the official CLIs again; undefined when the reading failed. */
+async function readFreshUsage(): Promise<UsageReading | undefined> {
+  const tauri = window.__TAURI_INTERNALS__;
+  if (tauri) return JSON.parse((await tauri.invoke("usage_refresh")) as string) as UsageReading;
+  const res = await fetch("/api/usage/refresh", { method: "POST" });
+  return res.ok ? ((await res.json()) as UsageReading) : undefined;
+}
 
 function requestedSource(): Source | undefined {
   const source = new URLSearchParams(window.location.search).get("source");
@@ -28,7 +56,7 @@ function requestedSource(): Source | undefined {
 }
 
 /**
- * Runs and usage from the dev server's /api (app/dev/liveRuns.ts), polled while
+ * Runs and usage from project_O.exe's Tauri commands or the dev server's /api (app/dev/liveRuns.ts), polled while
  * the page is visible. Lead chat transcripts are not stored by O yet, so messages stay empty.
  * `runs` is undefined until the first answer; a failed first answer counts as no runs.
  */
@@ -57,10 +85,7 @@ function useLiveRuns(enabled: boolean) {
       if (inflight) return;
       inflight = true;
       try {
-        const [runsRes, usageRes] = await Promise.all([fetch("/api/runs"), fetch("/api/usage")]);
-        if (!runsRes.ok) throw new Error(`/api/runs ${runsRes.status}`);
-        const runsText = await runsRes.text();
-        const usageText = usageRes.ok ? await usageRes.text() : "";
+        const { runsText, usageText } = await readRuns();
         if (stopped) return;
         if (runsText !== lastRuns) {
           lastRuns = runsText;
@@ -109,8 +134,8 @@ function useLiveRuns(enabled: boolean) {
   const refreshUsage = useCallback(async () => {
     setRefreshing(true);
     try {
-      const res = await fetch("/api/usage/refresh", { method: "POST" });
-      if (res.ok) setUsage((await res.json()) as UsageReading);
+      const fresh = await readFreshUsage();
+      if (fresh) setUsage(fresh);
     } catch {
       // The status bar keeps the last reading and its time.
     } finally {

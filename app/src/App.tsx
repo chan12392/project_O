@@ -2,8 +2,12 @@ import { PanelRightOpen, SquareArrowOutUpRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import type { RunView } from "../../src/core/snapshot.ts";
+import { backend } from "./backend.ts";
+import { AccountMenu, SETTINGS_BUTTON_ID } from "./components/AccountMenu.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { LeadGate } from "./components/LeadGate.tsx";
+import { Onboarding } from "./components/Onboarding.tsx";
+import { Settings, type SettingsSection } from "./components/Settings.tsx";
 import { SidePanel } from "./components/SidePanel.tsx";
 import { Sidebar } from "./components/Sidebar.tsx";
 import { StatusBar } from "./components/StatusBar.tsx";
@@ -14,8 +18,13 @@ import { usePanelLayout, usePopoutChannel, type Selection } from "./panelLayout.
 import { LEAD_WORD, projectsOf, useLeads, useProjectGroups, type Project } from "./projects.ts";
 import { useRunSource } from "./useLiveRuns.ts";
 import { readParams, writeParam, type PanelView, type ScreenState } from "./useRun.ts";
+import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow } from "./settings.ts";
 
 const initial = readParams();
+/** The machine side (agents, about): the recorded demo answers with fixed data. */
+const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
+
+type Screen = "app" | "onboarding" | "settings";
 
 export function App() {
   return initial.popout ? <PopoutPanel /> : <MainWindow />;
@@ -28,7 +37,13 @@ export function App() {
  * what the other window sent without echoing it back.
  */
 function useSelection(send: (selection: Selection) => void) {
-  const [selection, setSelection] = useState<Selection>({ project: initial.project, run: initial.run, view: initial.view, card: initial.card });
+  // Without a project in the link, the main window opens the one looked at last (Settings → 일반).
+  const [selection, setSelection] = useState<Selection>(() => ({
+    project: initial.project ?? (!initial.popout && settingsNow().start === "last" ? lastProject() : undefined),
+    run: initial.run,
+    view: initial.view,
+    card: initial.card,
+  }));
   const latest = useRef(selection);
   const apply = (next: Partial<Selection>) => {
     const merged = { ...latest.current, ...next };
@@ -82,6 +97,28 @@ function MainWindow() {
   const current = state === "full" ? resolved.current : undefined;
   const lead = project ? leads.stateOf(project.path) : "ready";
   const announced = useAnnouncer(current?.view);
+  useEffect(() => rememberProject(project?.path), [project?.path]);
+
+  // First launch (or the "에이전트 연결 화면" start screen) shows agent onboarding instead of the chat.
+  const [screen, setScreen] = useState<Screen>(() => (!onboardingDone() || settingsNow().start === "onboarding" ? "onboarding" : "app"));
+  const [section, setSection] = useState<SettingsSection>("general");
+  const settingsFrom = useRef<Screen>("app");
+  const openSettings = (target: SettingsSection = "general") => {
+    if (screen !== "settings") settingsFrom.current = screen;
+    setSection(target);
+    setScreen("settings");
+  };
+  const closeSettings = () => {
+    setScreen(settingsFrom.current);
+    // Back on the app, focus returns to the footer button that opened Settings.
+    if (settingsFrom.current === "app") requestAnimationFrame(() => document.getElementById(SETTINGS_BUTTON_ID)?.focus());
+  };
+  const finishOnboarding = () => {
+    markOnboardingDone();
+    setScreen("app");
+    compose();
+  };
+  const source = data.pending ? "pending" : data.live ? "live" : "demo";
 
   const projectOf = (run: string) => runs.find((r) => r.view.runId === run)?.view.project;
   const openCard = (run: string, card: string) => {
@@ -103,7 +140,11 @@ function MainWindow() {
 
   return (
     <div className="grid h-full grid-cols-[16rem_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] max-md:grid-cols-[minmax(0,1fr)]">
-      <div className="contents max-md:hidden">
+      {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
+      {screen === "settings" && (
+        <Settings api={api} section={section} source={source} onSection={setSection} onBack={closeSettings} onOnboarding={() => setScreen("onboarding")} />
+      )}
+      <div className="contents max-md:hidden" hidden={screen === "settings"}>
         <Sidebar
           state={state}
           projects={projects}
@@ -112,17 +153,40 @@ function MainWindow() {
           project={project?.path}
           run={current?.view.runId}
           card={selection.card}
-          onProject={(path) => select({ project: path, run: undefined, card: undefined })}
-          onWake={wake}
+          // Picking something in the sidebar leaves onboarding for the chat (onboarding stays unfinished).
+          onProject={(path) => {
+            setScreen("app");
+            select({ project: path, run: undefined, card: undefined });
+          }}
+          onWake={(path) => {
+            setScreen("app");
+            wake(path);
+          }}
           onRun={(path, run) => {
+            setScreen("app");
             select({ project: path, run, card: undefined });
             leads.wake(path);
           }}
-          onCard={openCard}
-          onCompose={compose}
+          onCard={(run, card) => {
+            setScreen("app");
+            openCard(run, card);
+          }}
+          onCompose={() => {
+            setScreen("app");
+            compose();
+          }}
+          footer={
+            <AccountMenu
+              onSettings={() => openSettings()}
+              onAbout={() => openSettings("about")}
+              onAgents={() => setScreen("onboarding")}
+              onRefreshUsage={data.live ? data.live.refreshUsage : undefined}
+            />
+          }
         />
       </div>
-      <main ref={layout.container} className="flex min-h-0 min-w-0 max-lg:flex-col">
+      {screen === "onboarding" && <Onboarding api={api} onDone={finishOnboarding} onSettings={() => openSettings("agents")} />}
+      <main ref={layout.container} hidden={screen !== "app"} className="flex min-h-0 min-w-0 max-lg:flex-col">
         <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
           <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs">
             <span className="shrink-0 font-medium text-tab-active-foreground">{project ? `${project.name} 총괄` : "총괄"}</span>
@@ -233,7 +297,17 @@ function PopoutPanel() {
   );
 }
 
-/** Says out loud when a card finishes while its run is watched; cards that had already finished stay quiet. */
+/** Settings → 알림: a desktop notification for a finished card while the window is in the background. */
+function notify(title: string, body: string) {
+  if (!settingsNow().notify || typeof Notification === "undefined" || Notification.permission !== "granted" || document.hasFocus()) return;
+  try {
+    new Notification(title, { body });
+  } catch {
+    // Some webviews only allow notifications from a service worker; the screen reader line still speaks.
+  }
+}
+
+/** Says out loud (and, if enabled, notifies) when a card finishes while its run is watched; cards that had already finished stay quiet. */
 function useAnnouncer(run: RunView | undefined) {
   const [text, setText] = useState("");
   const seen = useRef(new Set<string>());
@@ -246,7 +320,10 @@ function useAnnouncer(run: RunView | undefined) {
       const key = `${run.runId}/${card.id}`;
       if (card.endedAt && !seen.current.has(key)) {
         seen.current.add(key);
-        if (!first) setText(`${card.label} 카드 ${STATE_WORD[card.state]}`);
+        if (first) continue;
+        const said = `${card.label} 카드 ${STATE_WORD[card.state]}`;
+        setText(said);
+        notify(run.title, said);
       }
     }
   }, [run]);

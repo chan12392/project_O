@@ -2,7 +2,7 @@
 
 여러 AI 코딩 에이전트와 구독 계정을 한 데스크톱 앱에서 실행하고(작업대), 돌고 있는 세션을 한 화면에서 관측하는(관제탑) 개인용 로컬 앱. 비유하면 Orca의 채팅 UI 버전.
 
-> 상태: O CLI(작업카드 분배)·정책 자동 차단은 Rust(`o.exe`)로 동작. 화면은 Orca 디자인 시스템을 따른 React 앱으로, 개발 서버에서 이 PC의 실제 실행 기록을 보여 준다. Tauri 셸은 다음 단계([ADR-0001](docs/decisions/0001-stack-tauri-rust-core.md)).
+> 상태: O CLI(작업카드 분배)·정책 자동 차단은 Rust(`o.exe`)로 동작. 화면은 Orca 디자인 시스템을 따른 React 앱으로, 개발 서버나 데스크톱 앱(`project_O.exe`, Tauri 2 셸)에서 이 PC의 실제 실행 기록을 보여 준다([ADR-0001](docs/decisions/0001-stack-tauri-rust-core.md)).
 
 ![작업 환경](docs/screenshots/01-overview.png)
 
@@ -44,6 +44,21 @@ npm install
 npm run dev        # http://localhost:1430 — 이 PC의 O 실행 기록(없으면 기록 재생 데모)
 npm run check      # TypeScript
 ```
+
+### 데스크톱 앱 (project_O.exe)
+
+`app/src-tauri`의 Tauri 2 셸. 같은 화면을 창 하나로 띄우고, 실행 기록·사용량·에이전트 CLI 상태를 `o-core`로 직접 읽는다(개발 서버의 `/api` 대신 Tauri 명령: `runs`, `usage`, `usage_refresh`, `agents_status`, `agent_install`, `agent_login`, `open_external`, `about`).
+
+```sh
+cd app
+npm install
+npm run tauri build -- --no-bundle   # 화면 빌드(dist) 후 target/release/project_O.exe
+npm run tauri dev                    # 개발: http://localhost:1430 + 창
+```
+
+- 설치는 공식 npm 패키지(`npm install -g @anthropic-ai/claude-code`, `npm install -g @openai/codex`)가 있고 npm이 PATH에 있을 때만 앱에서 실행한다. Antigravity와 npm이 없을 때는 각 회사의 공식 설치 안내를 보여 준다(인터넷 스크립트를 앱이 받아 실행하지 않음).
+- 로그인은 새 콘솔 창에서 공식 명령(`claude auth login`, `codex login`)을 띄운다. Antigravity는 시스템 로그인을 그대로 쓴다.
+- 같은 동작을 CLI로: `o agents status [--clean] --json`, `o agents install <id>`, `o agents open-login <id> [--clean]`, `o about --json`.
 
 `?source=demo`로 기록 재생, `?source=live`로 실시간을 고른다. 개발 서버의 `/api`는 `o runs --json`·`o usage`를 불러 쓰며 이 PC 주소·같은 출처 요청만 받는다.
 

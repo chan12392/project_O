@@ -1,5 +1,5 @@
 import { ChevronRight, Coffee, Folder, FolderPlus, MoreHorizontal, Pencil, SquarePen, X } from "lucide-react";
-import { useCallback, useId, useRef, useState } from "react";
+import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../dismiss.ts";
@@ -23,10 +23,12 @@ interface Props {
   onRun: (path: string, runId: string) => void;
   onCard: (runId: string, cardId: string) => void;
   onCompose: () => void;
+  /** The account footer pinned under the project list. */
+  footer?: ReactNode;
 }
 
 /** Orca's repo sidebar: projects, optionally in groups, each with its lead and its runs. */
-export function Sidebar({ state, projects, groups, leadState, project, run, card, onProject, onWake, onRun, onCard, onCompose }: Props) {
+export function Sidebar({ state, projects, groups, leadState, project, run, card, onProject, onWake, onRun, onCard, onCompose, footer }: Props) {
   const shown = state === "full" ? projects : [];
   const [naming, setNaming] = useState<{ project?: string } | undefined>();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(project ? [project] : []));
@@ -118,6 +120,7 @@ export function Sidebar({ state, projects, groups, leadState, project, run, card
         {groups.groups.length > 0 && loose.length > 0 && <h2 className="mt-2 px-2 py-1.5 text-2xs font-semibold text-muted-foreground">그룹 없음</h2>}
         {loose.map(row)}
       </div>
+      {footer}
     </aside>
   );
 }
