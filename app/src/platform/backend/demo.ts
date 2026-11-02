@@ -37,6 +37,8 @@ function demoBudget(percent: number): BudgetReport {
 
 let demoPercent = 13;
 
+export const LEAD_REFUSED = "미리보기에서는 총괄에 보내지 않습니다";
+
 const demoTokens = (input: number, cached: number, output: number): TokenCounts => ({ input, cached, output, total: input + cached + output });
 const demoGroup = (key: TokenGroup["key"], label: string, runs: number, cards: number, perCard: TokenCounts): TokenGroup => ({
   key,
@@ -68,4 +70,11 @@ export const demoBackend: Backend = {
   budget: async () => demoBudget(demoPercent),
   setBudgetPercent: async (percent) => demoBudget((demoPercent = percent)),
   tokens: async () => ({ groups: [DEMO_BASELINE, DEMO_SHARED], compare: { baseline: DEMO_BASELINE, shared: DEMO_SHARED } }),
+  // The recorded preview shows the demo's own transcripts; nothing reaches a lead.
+  leadShow: async () => ({ thread: null, projects: [] }),
+  leadNew: () => Promise.reject(new Error(LEAD_REFUSED)),
+  leadAttach: () => Promise.reject(new Error(LEAD_REFUSED)),
+  leadSend: () => Promise.reject(new Error(LEAD_REFUSED)),
+  leadDispatch: () => Promise.reject(new Error(LEAD_REFUSED)),
+  leadStop: async () => ({ stopped: false }),
 };

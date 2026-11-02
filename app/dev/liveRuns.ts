@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
@@ -22,6 +22,47 @@ function o(args: string[], timeout = 60_000, cwd?: string): Promise<string> {
       error ? reject(new Error(stderr.trim() || error.message)) : resolve(stdout),
     ),
   );
+}
+
+/** `o` with bytes on stdin (lead messages and attachments), no shell. */
+function oWithInput(args: string[], input: Buffer, timeout: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(oBinary(), args, { windowsHide: true, stdio: ["pipe", "pipe", "pipe"] });
+    const out: Buffer[] = [];
+    const err: Buffer[] = [];
+    const timer = setTimeout(() => child.kill(), timeout);
+    child.stdout.on("data", (b: Buffer) => out.push(b));
+    child.stderr.on("data", (b: Buffer) => err.push(b));
+    child.on("error", (e) => {
+      clearTimeout(timer);
+      reject(e);
+    });
+    child.on("close", (code) => {
+      clearTimeout(timer);
+      const stdout = Buffer.concat(out).toString("utf8");
+      const stderr = Buffer.concat(err).toString("utf8").trim();
+      if (code === 0) resolve(stdout);
+      else reject(Object.assign(new Error(stderr || `o exited with ${code}`), { code }));
+    });
+    child.stdin.end(input);
+  });
+}
+
+/** A request body up to `limit` bytes; larger ones are refused before they are read in full. */
+function body(req: IncomingMessage, limit: number): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const parts: Buffer[] = [];
+    let size = 0;
+    req.on("data", (b: Buffer) => {
+      size += b.length;
+      if (size > limit) {
+        reject(new Error("첨부 파일은 하나에 10MB까지입니다"));
+        req.destroy();
+      } else parts.push(b);
+    });
+    req.on("end", () => resolve(Buffer.concat(parts)));
+    req.on("error", reject);
+  });
 }
 
 function send(res: ServerResponse, status: number, body: string) {
@@ -61,6 +102,89 @@ const BUDGET_PERCENT = /^1[234]$/;
 
 /** npm installs can take minutes. */
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
+/** A lead turn reads the project before it answers. */
+const LEAD_TIMEOUT_MS = 15 * 60_000;
+/** One attachment (10MB), with room for nothing else. */
+const ATTACH_LIMIT = 10 * 1024 * 1024;
+/** Lead ids, efforts and plan ids as `o lead` takes them; it checks every one again. */
+const LEAD_PROVIDER = /^(claude|codex)$/;
+const LEAD_EFFORT = /^(minimal|low|medium|high|xhigh|max)$/;
+const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
+
+/** The lead chat's twins of the Tauri lead_* commands (app/src-tauri/src/commands/lead.rs). */
+async function lead(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
+  const fail = (status: number, message: string) => send(res, status, JSON.stringify({ error: message }));
+  const run = (p: Promise<string>) =>
+    void p.then(
+      (out) => send(res, 200, out),
+      // Exit code 2 is a policy refusal: its reasons are the answer.
+      (e: Error & { code?: number }) => fail(e.code === 2 ? 409 : 500, e.message),
+    );
+  const project = query.get("project") ?? "";
+  const projectOk = ABSOLUTE.test(project) && existsSync(project);
+  if (req.method === "GET" && path === "/lead/show") {
+    run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : [])]));
+    return true;
+  }
+  if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
+  if (path === "/lead/stop") {
+    run(o(["lead", "stop", ...(projectOk ? ["--project", project] : [])]));
+    return true;
+  }
+  if (path === "/lead/dispatch") {
+    const plan = query.get("plan") ?? "";
+    if (!PLAN_ID.test(plan)) {
+    fail(400, "계획 id 형식이 아닙니다");
+    return true;
+  }
+    run(oWithInput(["lead", "dispatch", plan, ...(query.get("clean") === "1" ? ["--clean"] : [])], Buffer.alloc(0), 60_000));
+    return true;
+  }
+  if (!projectOk) {
+    fail(400, "프로젝트 폴더가 필요합니다");
+    return true;
+  }
+  if (path === "/lead/new") {
+    run(o(["lead", "new", "--project", project]));
+    return true;
+  }
+  if (path === "/lead/attach") {
+    const name = query.get("name") ?? "";
+    if (!name) {
+    fail(400, "파일 이름이 필요합니다");
+    return true;
+  }
+    try {
+      const bytes = await body(req, ATTACH_LIMIT);
+      run(oWithInput(["lead", "attach", "--project", project, "--name", name, "-"], bytes, 60_000));
+    } catch (e) {
+      fail(413, (e as Error).message);
+    }
+    return true;
+  }
+  if (path === "/lead/send") {
+    let input: { provider?: unknown; effort?: unknown; text?: unknown; attachments?: unknown; clean?: unknown };
+    try {
+      input = JSON.parse((await body(req, 256 * 1024)).toString("utf8"));
+    } catch {
+      {
+    fail(400, "요청 본문이 JSON이 아닙니다");
+    return true;
+  }
+    }
+    const provider = typeof input.provider === "string" && LEAD_PROVIDER.test(input.provider) ? input.provider : "";
+    const effort = typeof input.effort === "string" && LEAD_EFFORT.test(input.effort) ? ["--effort", input.effort] : [];
+    const files = Array.isArray(input.attachments) ? input.attachments.filter((a): a is string => typeof a === "string" && ABSOLUTE.test(a)) : [];
+    if (!provider || typeof input.text !== "string" || !input.text.trim()) {
+    fail(400, "에이전트와 보낼 내용이 필요합니다");
+    return true;
+  }
+    const args = ["lead", "send", "--project", project, "--provider", provider, ...effort, ...files.flatMap((f) => ["--attach", f])];
+    run(oWithInput([...args, ...(input.clean === true ? ["--clean"] : []), "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
+    return true;
+  }
+  return false;
+}
 
 /**
  * Dev-server stand-in for the desktop shell (src/platform/backend, src/data/useLiveRuns.ts): runs, usage,
@@ -108,6 +232,9 @@ export function liveRuns(): Plugin {
         if (req.method === "GET" && path === "/tokens") {
           const project = query.get("project");
           return void o(["tokens", "--json", ...(project ? ["--project", project] : [])]).then((out) => send(res, 200, out), error(res));
+        }
+        if (path?.startsWith("/lead/")) {
+          return void lead(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
         const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
         if (action) {
