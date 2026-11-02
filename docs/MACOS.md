@@ -60,3 +60,7 @@ cargo clippy --workspace --release -- -D warnings
 실제 앱의 시작·설정·프로젝트 전환과 실제 AI 로그인/실행을 각각 기록합니다. 브라우저의 `?source=demo`는 예시 재생이므로 실제 실행 검증을 대신하지 않습니다.
 
 현재 macOS 프로세스 종료 처리는 Windows의 job object와 동등한 보장을 제공하지 않습니다. 비정상 종료 뒤 모든 하위 프로세스가 함께 종료되는지는 별도 검증이 필요합니다.
+
+### 2026-11-02 확인 결과
+
+Apple Silicon 맥에서 `.app` 빌드, 앱 시작, 설정·정보 화면, 설치된 CLI 탐색, Windows 업데이트 차단을 확인했습니다. 화면 테스트 65개, 타입 검사, Rust 전체 테스트와 clippy를 통과했습니다. 실제 AI 로그인·작업 실행, Terminal 로그인 창, Intel 맥, DMG 설치·서명·공증은 미검증입니다.
