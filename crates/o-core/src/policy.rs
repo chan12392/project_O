@@ -49,6 +49,8 @@ pub const LIMITS: Limits = Limits {
 pub const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
+/// Team-channel names a card must not take: its messages would read as the lead's or as a broadcast.
+const RESERVED_CARD_IDS: [&str; 2] = ["lead", "all"];
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -272,6 +274,8 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
     }
     if !CARD_ID.is_match(&id) {
         fail(found, "plan-shape".into(), "카드 id는 영문 소문자·숫자·하이픈 32자 이내입니다".into());
+    } else if RESERVED_CARD_IDS.contains(&id.as_str()) {
+        fail(found, "plan-shape".into(), format!("카드 id {id}는 팀 대화의 총괄(lead)·전체 방송(all)용으로 예약돼 있어 쓸 수 없습니다"));
     }
     let provider = raw.get("provider").and_then(Value::as_str).and_then(ProviderId::parse);
     if provider.is_none() {
