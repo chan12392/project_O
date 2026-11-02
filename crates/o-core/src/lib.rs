@@ -12,6 +12,9 @@
 //! - `review`, `sessions`: `o review` and Claude Code sessions as runs
 //! - `sys`: processes, CLI lookup, JS-compatible formats, mirror sync
 
+/// This build's O version (`o about`); the desktop app shows it beside its own.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod agents;
 pub mod context;
 pub mod lead;

@@ -12,7 +12,10 @@ export interface UpdateCheck {
 }
 
 export interface About {
+  /** The desktop app's version; under the dev server, the `o` CLI's (`o about`). */
   version: string;
+  /** The desktop app only: the O CLI it ships, versioned apart from the app. */
+  cliVersion?: string;
   home: string;
   agentsHome: string;
   commit: string;
