@@ -152,11 +152,11 @@ mod tests {
 
     #[test]
     fn about_names_version_and_folders() {
-        let about = about_info(Path::new("C:/state/project_O"), Path::new("C:/state/project_O/agents"));
+        let about = about_info(Path::new("C:/state/project_O"), Path::new("C:/state/project_O-agents"));
         let value = json!(about);
         assert_eq!(value["version"], env!("CARGO_PKG_VERSION"));
         assert_eq!(value["home"], "C:/state/project_O");
-        assert_eq!(value["agentsHome"], "C:/state/project_O/agents");
+        assert_eq!(value["agentsHome"], "C:/state/project_O-agents");
     }
 
     #[test]

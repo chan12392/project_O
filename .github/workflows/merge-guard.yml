@@ -1,0 +1,34 @@
+name: merge-guard
+
+# Only the owner (member A) merges into test_1 and main; test_2 is free for both.
+#
+# The repository is private on GitHub's free plan, which has no branch protection
+# or rulesets, so nothing on GitHub can stop someone else from merging. This job
+# runs after the fact: a merge or push by anyone else turns red and names the
+# actor, so the owner can see it and revert. The agent hook (`o hook`) and the
+# git hooks (`o scan`) are what stop it beforehand on members' PCs.
+
+# Read-only token: this job only reads the event.
+permissions:
+  contents: read
+
+on:
+  push:
+    branches: [test_1, main]
+
+jobs:
+  owner-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 병합한 사람 확인
+        env:
+          ACTOR: ${{ github.actor }}
+          BRANCH: ${{ github.ref_name }}
+          # Keep in sync with OWNER in crates/o-guard/src/rules.rs.
+          OWNER: chan12392
+        run: |
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::$BRANCH에 $ACTOR가 병합·push했습니다. $BRANCH 병합은 대표($OWNER)만 합니다. 대표에게 알리고 되돌리세요."
+            exit 1
+          fi
+          echo "ok: $ACTOR -> $BRANCH"

@@ -3,7 +3,7 @@
 //! memories, settings), without touching his normal setup.
 //!
 //! ```text
-//! %LOCALAPPDATA%/project_O/agents/<provider>/home   the CLI's home (USERPROFILE/HOME)
+//! %LOCALAPPDATA%/project_O-agents/<provider>/home   the CLI's home (USERPROFILE/HOME)
 //!   claude: .claude/settings.json            CLAUDE_CONFIG_DIR; only claudeMdExcludes
 //!   codex:  .codex/                          CODEX_HOME
 //!   agy:    .gemini/                         made by agy itself
@@ -31,11 +31,16 @@ use crate::resolve::resolve_cli;
 use crate::store::{to_pretty, user_home};
 use crate::usage::parse_agy_usage;
 
-/// `%LOCALAPPDATA%/project_O/agents`, or `~/.local/state/project_O/agents` elsewhere. Kept out of
-/// %TEMP%: Codex refuses to set up its helpers there.
+/// `%LOCALAPPDATA%/project_O-agents`, or `~/.local/state/project_O-agents` elsewhere. Kept out of
+/// %TEMP% (Codex refuses to set up its helpers there) and out of O's state folder, which is protected.
 pub fn default_root() -> PathBuf {
     let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).unwrap_or_else(|| user_home().join(".local").join("state"));
-    base.join("project_O").join("agents")
+    root_in(&base)
+}
+
+/// The profile root inside `base`, next to O's state folder (`<base>/project_O`), never in it.
+pub fn root_in(base: &Path) -> PathBuf {
+    base.join("project_O-agents")
 }
 
 pub fn profile_home(root: &Path, provider: ProviderId) -> PathBuf {

@@ -19,20 +19,31 @@ jobs:
           # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
           PERSONAL: "younchan yongwoo"
         run: |
+          # 개인·작업 브랜치 ──PR──▶ test_2 ──PR──▶ test_1 ──PR──▶ main
           fail() { echo "::error::$1 (head=$HEAD, base=$BASE). AGENTS.md의 병합 흐름을 확인하세요."; exit 1; }
           is_personal() { for p in $PERSONAL; do [ "$1" = "$p" ] && return 0; done; return 1; }
+          # A personal branch or <personal>-<topic> (no "/").
+          is_member_branch() {
+            case "$1" in */*) return 1 ;; esac
+            for p in $PERSONAL; do
+              case "$1" in "$p" | "$p"-?*) return 0 ;; esac
+            done
+            return 1
+          }
           if [ "$BASE" = "main" ]; then
-            [ "$HEAD" = "test" ] || fail "main에는 test만 병합할 수 있습니다"
-          elif [ "$BASE" = "test" ]; then
-            is_personal "$HEAD" || fail "test에는 개인 브랜치($PERSONAL)만 병합할 수 있습니다"
+            [ "$HEAD" = "test_1" ] || fail "main에는 test_1만 병합할 수 있습니다"
+          elif [ "$BASE" = "test_1" ]; then
+            [ "$HEAD" = "test_2" ] || fail "test_1에는 test_2만 병합할 수 있습니다"
+          elif [ "$BASE" = "test_2" ]; then
+            is_member_branch "$HEAD" || fail "test_2에는 개인 브랜치($PERSONAL)나 <개인>-<주제> 브랜치만 병합할 수 있습니다"
           elif is_personal "$BASE"; then
             case "$HEAD" in
-              main) ;;  # main 동기화
+              main | test_1) ;;  # 동기화
               */*) fail "작업 브랜치 이름에는 /를 쓰지 않습니다" ;;
-              "$BASE"-*) ;;
-              *) fail "$BASE에는 $BASE-<주제> 브랜치만 병합할 수 있습니다" ;;
+              "$BASE"-?*) ;;
+              *) fail "$BASE에는 $BASE-<주제> 브랜치나 main·test_1 동기화만 병합할 수 있습니다" ;;
             esac
           else
-            fail "PR 대상은 main, test, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
+            fail "PR 대상은 main, test_1, test_2, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
           fi
           echo "ok: $HEAD -> $BASE"

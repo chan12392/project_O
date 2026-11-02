@@ -17,7 +17,7 @@ function Avatar({ size = "size-7" }: { size?: string }) {
 
 /**
  * The sidebar footer, after Orca's: the local profile (sign-in comes later) with
- * a small menu above it (beakho-design lucian-074 dropdown), and a settings button.
+ * a small menu above it, and a settings button.
  */
 export function AccountMenu({ onSettings, onAbout, onAgents, onRefreshUsage }: { onSettings: () => void; onAbout: () => void; onAgents: () => void; onRefreshUsage?: () => void }) {
   const [open, setOpen] = useState(false);

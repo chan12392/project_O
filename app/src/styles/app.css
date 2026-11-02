@@ -60,7 +60,7 @@
 }
 :root[data-motion="reduce"] .sprite-sheet { animation: none; }
 
-/* Indeterminate progress (beakho-design lucian-083) and a loading shimmer (lucian-079). */
+/* Indeterminate progress and a loading shimmer. */
 @keyframes progress-flow { from { left: -40%; } to { left: 100%; } }
 .progress-flow { animation: progress-flow 1.2s ease-in-out infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }

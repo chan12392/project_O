@@ -94,7 +94,7 @@ function BoardCard({ card, run, onOpen }: { card: CardView; run: RunView; onOpen
   );
 }
 
-/** Pattern from beakho-design lucian-083: a flowing bar while work is in flight, a full one when it lands. */
+/** A flowing bar while work is in flight, a full one when it lands. */
 function Progress({ state }: { state: CardView["state"] }) {
   const running = state === "running";
   const fill = state === "done" ? "w-full bg-emerald-500" : state === "failed" ? "w-full bg-red-500/70" : state === "stopped" ? "w-full bg-muted-foreground/50" : "w-0";

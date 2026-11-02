@@ -14,7 +14,7 @@ interface NavItem {
   icon: LucideIcon;
 }
 
-/** Orca's settings navigation, cut down to what this app has: groups of sections. */
+/** Settings navigation: groups of sections. */
 const GROUPS: { title: string; items: NavItem[] }[] = [
   {
     title: "기본",
@@ -457,14 +457,6 @@ function ShortcutsSection() {
   );
 }
 
-const NOTICES: { name: string; license: string; use: string }[] = [
-  { name: "Orca (stablyai/orca)", license: "MIT · Lovecast Inc.", use: "디자인 토큰, 사이드바·탭·채팅·상태 표시줄·설정 화면의 레이아웃" },
-  { name: "Kibo UI", license: "MIT · shadcnblocks", use: "칸반 열과 카드 구조" },
-  { name: "Geist, Pretendard", license: "SIL Open Font License 1.1", use: "글꼴" },
-  { name: "Rust crates (serde, regex, chrono, rusqlite 등)", license: "MIT 또는 Apache-2.0, SQLite는 퍼블릭 도메인", use: "o 명령" },
-  { name: "사무실 그림", license: "이 프로젝트용으로 생성", use: "사무실 배경과 캐릭터" },
-];
-
 function AboutSection({ api, about, source }: { api: Backend; about: { data?: About; error?: string }; source: Props["source"] }) {
   const value = (text: string | undefined) => (about.error ? "확인할 수 없습니다" : text === undefined ? "확인하는 중" : text || "이 화면에는 없습니다");
   const sourceWord = source === "live" ? "실시간 · 이 PC의 O 실행 기록" : source === "demo" ? "데모 · 기록 재생" : "확인하는 중";
@@ -477,7 +469,7 @@ function AboutSection({ api, about, source }: { api: Backend; about: { data?: Ab
     ["에이전트 프로필 폴더", about.data?.agentsHome ? <Path path={about.data.agentsHome} /> : value(about.data?.agentsHome)],
   ];
   return (
-    <Section title="정보" description="이 앱의 버전과 데이터가 있는 곳, 함께 쓰는 오픈 소스입니다.">
+    <Section title="정보" description="이 앱의 버전과 데이터가 있는 곳입니다.">
       <dl className="divide-y">
         {info.map(([label, text]) => (
           <div key={label} className="grid grid-cols-[10rem_minmax(0,1fr)] gap-4 py-3 text-[13px]">
@@ -487,19 +479,6 @@ function AboutSection({ api, about, source }: { api: Backend; about: { data?: Ab
         ))}
       </dl>
       {about.error && <p className="text-xs text-muted-foreground">버전과 폴더는 데스크톱 앱이나 개발 서버의 /api/about이 알려 줍니다.</p>}
-      <div>
-        <SubHeading title="오픈 소스 고지" description="전체 문구와 라이선스 원문은 저장소의 THIRD_PARTY_NOTICES.md에 있습니다." />
-        <ul className="mt-2 divide-y">
-          {NOTICES.map((n) => (
-            <li key={n.name} className="py-2.5">
-              <p className="text-[13px] font-medium">{n.name}</p>
-              <p className="text-xs text-muted-foreground">
-                {n.license} · {n.use}
-              </p>
-            </li>
-          ))}
-        </ul>
-      </div>
     </Section>
   );
 }

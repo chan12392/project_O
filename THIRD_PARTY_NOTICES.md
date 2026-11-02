@@ -49,16 +49,6 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## Interaction patterns
-
-The header dropdown (`WhoIsWorking`, project menu), skeleton bloom (`LeadGate`), indeterminate
-progress (`AgentBoard`) and activity rings (`UsagePanel`) follow patterns 074, 079, 083 and 099
-of the beakho-design reference library (lucian-code-141). Only the patterns were used; the code
-is written for this app.
-
-The settings page (`app/src/components/Settings.tsx`) follows the section structure and layout
-of Orca's settings (MIT, see the Orca section above); the code is written for this app.
-
 ## Generated art
 
 `app/public/office/*.png` (사무실 배경, 캐릭터 4종) were generated for this project on 2026-11-02

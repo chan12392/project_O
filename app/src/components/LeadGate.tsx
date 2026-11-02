@@ -8,7 +8,7 @@ import { Sprite } from "./Sprite.tsx";
 export function LeadGate({ project, loading, onWake }: { project: Project; loading: boolean; onWake: () => void }) {
   const last = project.runs[0];
   if (loading) {
-    // Pattern from beakho-design lucian-079 (skeleton bloom): placeholders shaped like the chat, then the real thing blooms in.
+    // Placeholders shaped like the chat while loading, then the real thing fades in.
     return (
       <div className="min-h-0 flex-1 overflow-hidden bg-chat-canvas" aria-busy="true">
         <div className="mx-auto flex max-w-3xl flex-col gap-4 px-6 py-6">

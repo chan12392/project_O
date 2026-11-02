@@ -252,7 +252,7 @@ function ProjectRow({ project, groups, lead, current, open, run, card, onSelect,
   );
 }
 
-/** Pattern from beakho-design lucian-074 (header dropdown): a small menu panel under its button. */
+/** A small menu panel under its button. */
 function ProjectMenu({ project, groups, onNewGroup }: { project: Project; groups: Groups; onNewGroup: () => void }) {
   const [open, setOpen] = useState(false);
   const panel = useRef<HTMLDivElement>(null);

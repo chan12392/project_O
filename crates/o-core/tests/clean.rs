@@ -3,7 +3,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use o_core::clean::{ancestor_instructions, clean_env_from, ensure_profile, inspect, profile_home, read_login};
+use o_core::clean::{ancestor_instructions, clean_env_from, ensure_profile, inspect, profile_home, read_login, root_in};
 use o_core::plan::ProviderId;
 use serde_json::Value;
 
@@ -67,6 +67,15 @@ fn clean_env_keeps_system_variables_and_points_home_at_the_profile() {
     assert!(!codex.contains_key("CLAUDE_CONFIG_DIR"));
     let agy = clean_env_from(parent, home, ProviderId::Agy);
     assert_eq!(agy["AGY_CLI_DISABLE_AUTO_UPDATE"], "true");
+}
+
+#[test]
+fn profiles_live_next_to_the_state_folder_not_inside_it() {
+    let base = Path::new("C:/Users/me/AppData/Local");
+    let root = root_in(base);
+    assert_eq!(root, base.join("project_O-agents"));
+    assert!(!root.starts_with(base.join("project_O")));
+    assert_eq!(profile_home(&root, ProviderId::Codex), base.join("project_O-agents").join("codex").join("home"));
 }
 
 #[test]

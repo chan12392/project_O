@@ -38,7 +38,7 @@ const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬
                              실행별 이벤트(최근 시작 순, 기본 50개) — 앱 화면용
   o hook                     에이전트 PreToolUse 훅 (도구 호출 JSON을 stdin으로 받음)
   o scan [--all|--staged|--pre-push]   저장소 정책 검사 (git 훅·CI용)
-  o sync-mirror <거울 폴더>   test·main 거울 폴더를 fast-forward (예약 작업용)
+  o sync-mirror <거울 폴더>   거울 폴더(test_2, test_1, main)를 fast-forward (예약 작업용)
   o agents path              깨끗한 에이전트 프로필(개인 훅·스킬·MCP·전역 지시 없음) 위치
   o agents login <claude|codex|agy>   그 프로필로 공식 로그인 (CLI마다 한 번)
   o agents shell <claude|codex|agy> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행

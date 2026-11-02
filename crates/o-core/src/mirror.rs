@@ -1,4 +1,5 @@
-//! `o sync-mirror <dir>`: brings a test/main mirror checkout up to its remote
+//! `o sync-mirror <dir>`: brings a mirror checkout (the team runs one on test_2;
+//! test_1 and main are allowed too) up to its remote
 //! branch. Fast-forward only. A mirror with local changes is left alone and
 //! logged: mirrors should never have any, and discarding someone's edits
 //! silently would be worse than a stale mirror.
@@ -11,7 +12,8 @@ use std::process::{Command, Stdio};
 use crate::js::now_iso;
 use crate::proc;
 
-const MIRROR_BRANCHES: [&str; 2] = ["test", "main"];
+/// The protected branches; sync refuses any other checkout.
+pub const MIRROR_BRANCHES: [&str; 3] = o_guard::rules::READ_ONLY_BRANCHES;
 
 /// Runs one sync and logs to `<home>/mirror-sync.log`; returns the exit code.
 pub fn sync_mirror(home: &Path, mirror: Option<&str>) -> i32 {
@@ -38,7 +40,7 @@ pub fn sync_mirror(home: &Path, mirror: Option<&str>) -> i32 {
 fn sync(home: &Path, mirror: Option<&str>) -> Result<Option<String>, String> {
     let mirror = mirror.ok_or("사용법: o sync-mirror <mirror 폴더>")?;
     // No repository hooks: this runs unattended every few minutes, and a hook merged into
-    // test would otherwise run here unseen. Pointing hooksPath at a missing folder disables them.
+    // test_2 would otherwise run here unseen. Pointing hooksPath at a missing folder disables them.
     let no_hooks = home.join("no-hooks");
     let git = |args: &[&str]| -> Result<String, String> {
         let mut command = Command::new("git");
@@ -72,4 +74,35 @@ fn sync(home: &Path, mirror: Option<&str>) -> Result<Option<String>, String> {
     }
     git(&["merge", "--ff-only", &format!("origin/{branch}")])?;
     Ok(Some(format!("updated {before} → {target}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A fresh repository with no remote, checked out on `branch`.
+    fn repo_on(branch: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("o-mirror-{branch}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let status = Command::new("git").args(["init", "-q", "-b", branch]).current_dir(&dir).status().unwrap();
+        assert!(status.success());
+        dir
+    }
+
+    #[test]
+    fn only_protected_branch_checkouts_are_synced() {
+        let home = std::env::temp_dir().join(format!("o-mirror-home-{}", std::process::id()));
+        for branch in ["younchan", "test"] {
+            let dir = repo_on(branch);
+            let error = sync(&home, Some(&dir.to_string_lossy())).unwrap_err();
+            assert_eq!(error, format!("거울 브랜치(test_1, test_2, main)가 아닙니다: {branch}"));
+        }
+        // A protected branch passes the check and goes on to fetch (which fails here: no origin).
+        for branch in MIRROR_BRANCHES {
+            let dir = repo_on(branch);
+            let error = sync(&home, Some(&dir.to_string_lossy())).unwrap_err();
+            assert!(error.starts_with("Command failed: git fetch"), "{branch}: {error}");
+        }
+    }
 }
