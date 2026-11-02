@@ -13,7 +13,6 @@ use chrono::{Duration as Span, Utc};
 use o_core::run::events::{CardStatus, OEvent};
 use o_core::sys::js::{iso, parse_time};
 use o_core::run::plan::{Card, Plan, ProviderId};
-use o_core::run::mode::{Efficiency, RunMode};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
 use o_core::run::runner::{run_detached, run_plan, run_plan_in, Spawner, Workdir};
@@ -48,7 +47,7 @@ fn main() {
     }
     let tests: [(&str, fn()); 18] = [
         ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
-        ("efficiency off keeps effort and still enforces budget", efficiency_off_keeps_effort),
+        ("budget off keeps effort and refuses nothing", budget_off_keeps_effort_and_refuses_nothing),
         ("cards start in the folder the policy checked, not the link the plan names", cards_run_in_the_checked_folder),
         ("a project link pointed elsewhere after the check refuses the card", a_link_swapped_after_the_check_is_refused),
         ("a stop that comes while a card's CLI is starting still ends it", stop_while_starting),
@@ -561,13 +560,13 @@ fn budget_over_refuses() {
     assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
 }
 
-fn efficiency_off_keeps_effort() {
+fn budget_off_keeps_effort_and_refuses_nothing() {
     let home = temp_home();
     seed_codex_spent(&home, 0.1299);
+    o_core::usage::budget::write_enabled(&home, false).unwrap();
     let mut p = plan(vec![card("a", ProviderId::Codex, "x")]);
     p.cards[0].effort = Some("xhigh".into());
     create_run(&home, "off", &p).unwrap();
-    o_core::run::store::mark_mode(&home, "off", &RunMode::of(Efficiency::Off)).unwrap();
     let launched = Arc::new(Mutex::new(Vec::new()));
     let seen = Arc::clone(&launched);
     let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
@@ -580,9 +579,11 @@ fn efficiency_off_keeps_effort() {
     assert!(launched.lock().unwrap().iter().any(|a| a == "model_reasoning_effort=xhigh"));
     assert!(!read_events(&home, "off").iter().any(|e| matches!(e, OEvent::CardBudget { .. })));
 
-    let blocked_home = temp_home();
-    seed_codex_spent(&blocked_home, 0.14);
-    create_run(&blocked_home, "blocked", &p).unwrap();
-    o_core::run::store::mark_mode(&blocked_home, "blocked", &RunMode::of(Efficiency::Off)).unwrap();
-    assert_eq!(run_plan(&blocked_home, "blocked", &p, None, quiet()).unwrap(), CardStatus::Failed);
+    // The day's budget used up: with the switch off the card still starts.
+    let spent_home = temp_home();
+    seed_codex_spent(&spent_home, 0.14);
+    o_core::usage::budget::write_enabled(&spent_home, false).unwrap();
+    create_run(&spent_home, "spent", &p).unwrap();
+    let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
+    assert_eq!(run_plan(&spent_home, "spent", &p, None, inner).unwrap(), CardStatus::Done, "{:?}", read_events(&spent_home, "spent"));
 }

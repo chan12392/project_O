@@ -33,7 +33,9 @@ export function UsagePanel({ runs, windows }: Props) {
   const providers = ORDER.filter((p) => runs.some((r) => r.cards.some((c) => c.provider === p)) || all.some((w) => w.provider === p));
   if (providers.length === 0) return null;
 
-  const meta = `고리 숫자는 쓴 % · 토큰은 작업 ${runs.length}개 합계${budget ? ` · 오늘 예산은 주간의 ${budget.percent}%` : ""}`;
+  // With the daily budget off (ADR-0013) the 오늘 ring stays, measured against the same share, but nothing acts on it.
+  const today = !budget ? "" : budget.enabled === false ? ` · 하루 예산 꺼짐 (오늘 고리는 주간의 ${budget.percent}% 기준)` : ` · 오늘 예산은 주간의 ${budget.percent}%`;
+  const meta = `고리 숫자는 쓴 % · 토큰은 작업 ${runs.length}개 합계${today}`;
   return (
     <section aria-labelledby="usage-title" className="px-5">
       <h3 id="usage-title" className="mb-2 flex min-w-0 items-baseline gap-2 text-2xs font-semibold tracking-wider text-muted-foreground uppercase">
@@ -66,7 +68,7 @@ export function UsagePanel({ runs, windows }: Props) {
                   </Captioned>
                 ))}
                 {budget && (
-                  <Captioned caption="오늘">
+                  <Captioned caption={budget.enabled === false ? "오늘 · 예산 꺼짐" : "오늘"}>
                     <TodayRing name={`${PROVIDER_NAME[provider]} 오늘 예산`} budget={budget.providers.find((b) => b.provider === provider)} />
                   </Captioned>
                 )}
@@ -149,15 +151,18 @@ const TODAY_TONE: Record<ProviderBudget["state"], string> = {
   behind: "stroke-amber-500",
   farBehind: "stroke-amber-500",
   over: "stroke-red-500",
+  off: "stroke-muted-foreground",
 };
 
 /** Today's spend against the day's allowance (percent points of the weekly window). */
 function TodayRing({ name, budget }: { name: string; budget: ProviderBudget | undefined }) {
-  if (!budget || budget.spent === null) return <EmptyRing name={name} title={`${name}: 주간 사용량 기록이 없어 조절하지 않음`} />;
+  if (!budget || budget.spent === null) return <EmptyRing name={name} title={`${name}: 주간 사용량 기록이 없어 조절하지 않음${budget?.state === "off" ? " · 예산 꺼짐" : ""}`} />;
   const lines = [
     `${name}: 주간의 ${budget.spent}%p / ${budget.allowance}%p 사용`,
     budget.remainingHours !== null ? `남은 시간 ${budget.remainingHours}시간` : "",
-    budget.state === "over"
+    budget.state === "off"
+      ? "예산 꺼짐: 막거나 effort를 낮추지 않음"
+      : budget.state === "over"
       ? "새 작업을 보내지 않음"
       : budget.efforts.length > 0
         ? `effort ${budget.stepsDown}단계 낮춤: ${budget.efforts.map((e) => `${e.from ?? "기본"}→${e.to}`).join(", ")}`

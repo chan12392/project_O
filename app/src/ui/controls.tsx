@@ -55,19 +55,20 @@ export interface Option<T extends string> {
 }
 
 /** Orca's segmented control: a radio group of small buttons; options not ready stay visible but inert. */
-export function Segmented<T extends string>({ value, options, onChange, label }: { value: T; options: Option<T>[]; onChange?: (value: T) => void; label: string }) {
+/** `disabled` greys the whole group out while the setting it picks has no effect; the choice stays shown. */
+export function Segmented<T extends string>({ value, options, onChange, label, disabled }: { value: T; options: Option<T>[]; onChange?: (value: T) => void; label: string; disabled?: boolean }) {
   return (
-    <div role="radiogroup" aria-label={label} className="inline-flex items-center rounded-md border bg-background/50 p-0.5">
+    <div role="radiogroup" aria-label={label} aria-disabled={disabled || undefined} className={`inline-flex items-center rounded-md border bg-background/50 p-0.5 ${disabled ? "opacity-50" : ""}`}>
       {options.map((o) => {
         const active = o.value === value;
-        const inert = o.soon || !onChange;
+        const inert = o.soon || !onChange || disabled;
         return (
           <button
             key={o.value}
             type="button"
             role="radio"
             aria-checked={active}
-            aria-disabled={inert && !active ? true : undefined}
+            aria-disabled={inert && (!active || disabled) ? true : undefined}
             title={o.soon ? "준비 중" : undefined}
             onClick={() => !inert && onChange?.(o.value)}
             className={`rounded-sm px-3 py-1 text-xs whitespace-nowrap transition-colors focus-ring ${

@@ -2,8 +2,8 @@ import type { AgentId, Backend, BudgetReport, BudgetState, LeadModel, LeadProvid
 import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS } from "../updates.ts";
 
-/** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread. */
-function demoBudget(percent: number): BudgetReport {
+/** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread; all "off" while switched off. */
+function demoBudget(percent: number, enabled: boolean): BudgetReport {
   const at = new Date().toISOString();
   const known = (provider: AgentId, spent: number, state: BudgetState, stepsDown: number, efforts: ProviderBudget["efforts"], message: string): ProviderBudget => ({
     provider,
@@ -25,19 +25,23 @@ function demoBudget(percent: number): BudgetReport {
     readAt: at,
     message,
   });
-  return {
-    at,
-    percent,
-    usageAt: at,
-    providers: [
-      { ...known("claude", 0, "unknown", 0, [], "claude 주간 사용량 기록이 없어 예산을 조절하지 않습니다"), weeklyUsed: null, spent: null, remaining: null, pace: null, countedFrom: null },
-      known("codex", 4.2, "ok", 0, [], `codex 오늘 주간의 4.2%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 여유 있음`),
-      known("agy", 9.1, "behind", 1, [{ from: null, to: "low" }, { from: "high", to: "medium" }], `agy 오늘 주간의 9.1%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 쓰는 속도가 빨라 effort를 한 단계 낮춥니다`),
-    ],
-  };
+  const providers = [
+    { ...known("claude", 0, "unknown", 0, [], "claude 주간 사용량 기록이 없어 예산을 조절하지 않습니다"), weeklyUsed: null, spent: null, remaining: null, pace: null, countedFrom: null },
+    known("codex", 4.2, "ok", 0, [], `codex 오늘 주간의 4.2%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 여유 있음`),
+    known("agy", 9.1, "behind", 1, [{ from: null, to: "low" }, { from: "high", to: "medium" }], `agy 오늘 주간의 9.1%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 쓰는 속도가 빨라 effort를 한 단계 낮춥니다`),
+  ];
+  const off = (b: ProviderBudget): ProviderBudget => ({
+    ...b,
+    state: "off",
+    stepsDown: 0,
+    efforts: [],
+    message: `${b.provider} 하루 사용 예산 꺼짐${b.spent === null ? "" : ` — 오늘 주간의 ${b.spent}%p 사용`} (막거나 effort를 낮추지 않음)`,
+  });
+  return { at, enabled, percent, usageAt: at, providers: enabled ? providers : providers.map(off) };
 }
 
 let demoPercent = 13;
+let demoEnabled = true;
 
 export const LEAD_REFUSED = "미리보기에서는 총괄에 보내지 않습니다";
 
@@ -115,8 +119,9 @@ export const demoBackend: Backend = {
   cancelUpdate: async () => {},
   updateStatus: async () => NO_UPDATE_STATUS,
   review: async () => ({ ok: false, message: "미리보기에서는 검토를 요청하지 않습니다" }),
-  budget: async () => demoBudget(demoPercent),
-  setBudgetPercent: async (percent) => demoBudget((demoPercent = percent)),
+  budget: async () => demoBudget(demoPercent, demoEnabled),
+  setBudgetPercent: async (percent) => demoBudget((demoPercent = percent), demoEnabled),
+  setBudgetEnabled: async (enabled) => demoBudget(demoPercent, (demoEnabled = enabled)),
   tokens: async () => ({ groups: [DEMO_BASELINE, DEMO_SHARED], compare: { baseline: DEMO_BASELINE, shared: DEMO_SHARED } }),
   // The recorded preview shows the demo's own transcripts; nothing reaches a lead.
   leadShow: async () => ({ thread: null, projects: [] }),

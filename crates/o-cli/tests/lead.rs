@@ -83,5 +83,11 @@ fn show_attach_send_and_stop_through_the_cli() {
     assert_ne!(fresh["threadId"], sent["threadId"]);
 
     assert_eq!(o(&base, &["lead", "dispatch", "not-a-plan"], b"").status.code(), Some(1));
+    // The profile flag is checked before anything else; the removed switch is an unknown argument.
+    let bad = o(&base, &["lead", "dispatch", "not-a-plan", "--profile", "clean"], b"");
+    assert!(String::from_utf8_lossy(&bad.stderr).contains("--profile은 project-o 또는 own"));
+    let removed = o(&base, &["dispatch", "--efficiency", "on", "-"], b"{}");
+    assert_eq!(removed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&removed.stderr).contains("알 수 없는 인자: --efficiency"));
     assert_eq!(json_of(&o(&base, &["lead", "stop"], b""))["stopped"], false);
 }

@@ -39,6 +39,12 @@ pub fn set_budget_percent(home: &Path, percent: &Value) -> Result<String, String
     budget_json(home)
 }
 
+/// Turns the daily budget on or off (ADR-0013) and returns the new report.
+pub fn set_budget_enabled(home: &Path, enabled: bool) -> Result<String, String> {
+    budget::write_enabled(home, enabled)?;
+    budget_json(home)
+}
+
 /// The last saved usage reading as JSON text, without asking any CLI.
 #[tauri::command]
 pub async fn usage() -> Result<String, String> {
@@ -63,6 +69,12 @@ pub async fn budget_set_percent(percent: Value) -> Result<String, String> {
     blocking(move || set_budget_percent(&store::default_home(), &percent)).await?
 }
 
+/// Settings → 에이전트 → 하루 사용 예산 켜기·끄기 (`o budget --on|--off`).
+#[tauri::command]
+pub async fn budget_set_enabled(enabled: bool) -> Result<String, String> {
+    blocking(move || set_budget_enabled(&store::default_home(), enabled)).await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -85,5 +97,17 @@ mod tests {
         assert!(set_budget_percent(&home, &json!("14")).is_err());
         let saved: Value = serde_json::from_str(&set_budget_percent(&home, &json!(14)).unwrap()).unwrap();
         assert_eq!(saved["percent"], 14);
+    }
+
+    #[test]
+    fn budget_switch_is_saved_and_reported() {
+        let home = temp("budget-switch");
+        let on: Value = serde_json::from_str(&budget_json(&home).unwrap()).unwrap();
+        assert_eq!(on["enabled"], true);
+        let off: Value = serde_json::from_str(&set_budget_enabled(&home, false).unwrap()).unwrap();
+        assert_eq!(off["enabled"], false);
+        assert!(off["providers"].as_array().unwrap().iter().all(|p| p["state"] == "off"));
+        let again: Value = serde_json::from_str(&budget_json(&home).unwrap()).unwrap();
+        assert_eq!((again["enabled"].clone(), again["percent"].clone()), (json!(false), json!(13)));
     }
 }

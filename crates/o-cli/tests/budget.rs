@@ -62,3 +62,24 @@ fn budget_json_lists_every_provider_with_the_setting_and_today_s_numbers() {
     let text = o(&base, &["budget", "--cached"]);
     assert!(String::from_utf8_lossy(&text.stdout).contains("주간 한도의 12%"));
 }
+
+#[test]
+fn budget_on_and_off_are_saved_and_shown() {
+    let (base, home) = setup("switch");
+    assert_eq!(json(&base, &["budget", "--json", "--cached"])["enabled"], true);
+    let off = json(&base, &["budget", "--json", "--cached", "--off"]);
+    assert_eq!(off["enabled"], false);
+    assert!(off["providers"].as_array().unwrap().iter().all(|p| p["state"] == "off"));
+    let settings: Value = serde_json::from_str(&fs::read_to_string(home.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["dailyBudgetEnabled"], false);
+    let text = String::from_utf8_lossy(&o(&base, &["budget", "--cached"]).stdout).into_owned();
+    assert!(text.contains("하루 사용 예산: 꺼짐"), "{text}");
+    assert_eq!(json(&base, &["budget", "--json", "--cached", "--on"])["enabled"], true);
+}
+
+#[test]
+fn about_prints_the_same_version_as_the_app() {
+    let (base, _) = setup("about");
+    let app: Value = serde_json::from_str(&fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/package.json")).unwrap()).unwrap();
+    assert_eq!(json(&base, &["about", "--json"])["version"], app["version"]);
+}

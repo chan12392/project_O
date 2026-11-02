@@ -33,6 +33,12 @@ import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 const MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
 const SEND_KEY = MAC ? "⌘Enter" : "Ctrl+Enter";
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
+/** The run profile chip (project_O 프로필 사용, ADR-0013): short words, the tooltip says what each means. */
+const PROFILE_CHIP = { clean: "project_O 프로필", own: "내 설정" } as const;
+const PROFILE_TIP = {
+  clean: "project_O 프로필: 카드와 총괄을 O의 깨끗한 에이전트 프로필로 실행합니다 (개인 스킬·훅·메모리 없음). 이전 작업 컨텍스트는 그대로 넣습니다.",
+  own: "내 설정: 카드와 총괄을 이 PC의 평소 CLI 설정(스킬·훅·메모리)으로 실행합니다. 이전 작업 컨텍스트는 그대로 넣습니다.",
+} as const;
 /** The model menu's "type an id" row; a leading space never starts a model id. */
 const TYPE_MODEL = " 직접 입력";
 
@@ -328,23 +334,24 @@ export function Composer({
             <Plus className="size-4" aria-hidden="true" />
           </button>
           <ChoiceMenu
-            label={`토큰 효율: ${settings.clean ? "켜짐" : "꺼짐"}`}
+            label={`실행 프로필: ${settings.clean ? PROFILE_CHIP.clean : PROFILE_CHIP.own}`}
+            title={settings.clean ? PROFILE_TIP.clean : PROFILE_TIP.own}
             triggerClass={quiet}
             trigger={
               <>
                 <ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />
                 {/* Narrow: the icon alone; the menu's label still names the profile. */}
-                <span className="@max-md:sr-only">토큰 효율 {settings.clean ? "켜짐" : "꺼짐"}</span>
+                <span className="@max-md:sr-only">{settings.clean ? PROFILE_CHIP.clean : PROFILE_CHIP.own}</span>
               </>
             }
             groups={[
               {
-                label: "토큰 효율 (설정 → 에이전트와 같음)",
-                value: settings.clean ? "clean" : "normal",
+                label: "project_O 프로필 사용 (설정 → 에이전트와 같음)",
+                value: settings.clean ? "clean" : "own",
                 onChoose: (v) => updateSettings({ clean: v === "clean" }),
                 choices: [
-                  { value: "clean", label: "켜짐", hint: "깨끗한 프로필 · 컨텍스트 공유 · 노력 조정" },
-                  { value: "normal", label: "꺼짐", hint: "평소 프로필 · 컨텍스트 없이 · 선택한 노력 유지" },
+                  { value: "clean", label: "project_O 프로필", hint: "개인 스킬·훅·메모리 없이 공식 CLI만 (기본)" },
+                  { value: "own", label: "내 설정", hint: "이 PC의 평소 CLI 설정(스킬·훅·메모리) 그대로" },
                 ],
               },
             ]}

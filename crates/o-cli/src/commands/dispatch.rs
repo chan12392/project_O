@@ -17,27 +17,37 @@ use super::{fail, print_violations, run_id_arg, Command};
 pub const CHECK: Command = Command {
     name: "check",
     usage: "  o check [plan.json|-]      정책 검사만 (실행 안 함)",
-    run: |home, args| match take_flags(args) {
-        Ok((mode, rest)) => check(home, rest.first().map(String::as_str), false, mode),
+    run: |home, args| match plan_flags(args) {
+        Ok((mode, plan)) => check(home, plan.as_deref(), false, mode),
         Err(error) => fail(&error),
     },
 };
 
 pub const DISPATCH: Command = Command {
     name: "dispatch",
-    usage: "  o dispatch [--efficiency on|off] [--clean] [--no-context] [plan.json|-]
+    usage: "  o dispatch [--profile project-o|own] [--no-context] [plan.json|-]
                              정책 검사 후 백그라운드 실행, runId 출력
-                             --efficiency (토큰 효율, 기본 on — ADR-0010):
-                               on : 깨끗한 프로필 + 세션 공유 컨텍스트 + 하루 예산 effort 자동 낮춤
-                               off: 평소 하네스 + 컨텍스트 없음 + 계획의 effort 그대로
-                               어느 쪽이든 예산 소진 차단·LIMITS·가드 규칙은 같음
-                             --clean: 깨끗한 프로필만 켬 (off와 함께 쓰는 세부 조정)
-                             --no-context: 컨텍스트만 끔 (on과 함께 쓰는 세부 조정)",
-    run: |home, args| match take_flags(args) {
-        Ok((mode, rest)) => check(home, rest.first().map(String::as_str), true, mode),
+                             --profile (project_O 프로필 사용, 기본 project-o — ADR-0013):
+                               project-o: 카드를 O의 깨끗한 에이전트 프로필로 실행 (o agents)
+                               own      : 이 PC의 평소 CLI 설정(스킬·훅·메모리) 그대로
+                             --clean: --profile project-o와 같음
+                             --no-context: 이전 작업 컨텍스트를 카드에 넣지 않음 (토큰 A/B 기준선)
+                             하루 사용 예산(차단·effort 낮춤)은 o budget --on|--off로 따로 정함",
+    run: |home, args| match plan_flags(args) {
+        Ok((mode, plan)) => check(home, plan.as_deref(), true, mode),
         Err(error) => fail(&error),
     },
 };
+
+/// The run mode and the plan file among `check`/`dispatch` arguments; any other flag is refused
+/// (a removed or misspelled one included, so it never reads as a plan file name).
+fn plan_flags(args: &[String]) -> Result<(RunMode, Option<String>), String> {
+    let (mode, rest) = take_flags(args)?;
+    if let Some(flag) = rest.iter().find(|a| a.starts_with("--")) {
+        return Err(format!("알 수 없는 인자: {flag}"));
+    }
+    Ok((mode, rest.into_iter().next()))
+}
 
 /// `o _run <runId>`: the runner `o dispatch` starts in the background.
 pub const RUN: Command = Command {
@@ -106,7 +116,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
     let cards: Vec<&str> = plan.cards.iter().map(|c| c.id.as_str()).collect();
     println!(
         "{}",
-        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "efficiency": mode.efficiency, "clean": mode.clean, "context": mode.context, "lowerEffort": mode.lower_effort })
+        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "profile": mode.profile, "clean": mode.clean(), "context": mode.context })
     );
     0
 }

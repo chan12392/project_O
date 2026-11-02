@@ -18,6 +18,7 @@ use serde_json::Value;
 
 use crate::usage::budget::{self, Pace};
 use crate::run::events::{CardInfo, CardStatus, OEvent, StreamSignal};
+use crate::run::mode::Profile;
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
 use crate::run::plan::{Card, Plan};
@@ -27,7 +28,7 @@ use crate::sys::proc;
 use crate::providers::{launch_spec_with, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
-    active_markers, append_event, clear_active, cooldown_times, is_clean, link_slot, mark_active, policy_context, read_events, read_mode, read_plan, release_slot,
+    active_markers, append_event, clear_active, cooldown_times, is_clean, link_slot, mark_active, policy_context, read_events, read_plan, release_slot,
     reserve_slot, resolved_path, run_dir, set_cooldown, stop_requested, ActiveMarker, Reservation, Reserved,
 };
 
@@ -91,16 +92,12 @@ pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>,
             })
             .collect(),
     })?;
-    // 토큰 효율 (ADR-0010): what the dispatch chose, for the record and for `o tokens`.
-    let mode = read_mode(home, run_id);
-    let lower_effort = mode.is_none_or(|m| m.lower_effort);
+    // project_O 프로필 사용 (ADR-0013): what the dispatch chose, for the record and for `o tokens`.
     emit(OEvent::RunMode {
         at: now_iso(),
         run_id: run_id.to_string(),
-        efficiency: mode.map(|m| m.efficiency),
-        clean: clean.is_some(),
+        profile: Profile::of_clean(clean.is_some()),
         context: crate::context::enabled(home, run_id),
-        lower_effort,
     })?;
 
     // What earlier work of the project each card gets (ADR-0005); empty with `--no-context`.
@@ -171,8 +168,8 @@ pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>,
             }
             take(&mut pending);
             let mut card = card.clone();
-            // With 토큰 효율 off the card keeps the effort the plan chose; the budget still blocks above.
-            if let Some(to) = budget::lower_effort(card.effort.as_deref(), budget.steps_down).filter(|_| lower_effort) {
+            // With the daily budget off (`Pace::Off`) nothing is refused above and `steps_down` is 0.
+            if let Some(to) = budget::lower_effort(card.effort.as_deref(), budget.steps_down) {
                 emit(OEvent::CardBudget {
                     at: now_iso(),
                     card_id: card.id.clone(),
