@@ -4,6 +4,7 @@ import { useState, useSyncExternalStore } from "react";
 import { ticketCommand, type NextItem, type StoppedKind, type TodoKind } from "../../../../src/core/attention.ts";
 import { PROVIDER_SHORT, clip } from "../../lib/format.ts";
 import { readStored, writeStored } from "../../lib/storage.ts";
+import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { Rail, Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket, type StampTone } from "./Ticket.tsx";
 
 export const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
@@ -90,10 +91,10 @@ export function NextTicket({ item, now, onOpen, onDone, done }: { item: NextItem
       {!done && (
         <div className="mt-1 flex flex-wrap items-center gap-1">
           {item.pr ? (
-            <a href={item.pr} target="_blank" rel="noreferrer" className={TICKET_PRIMARY}>
+            <ExternalAnchor href={item.pr} className={TICKET_PRIMARY}>
               <ExternalLink className="size-3.5" aria-hidden="true" />
               PR 열기
-            </a>
+            </ExternalAnchor>
           ) : (
             <button type="button" onClick={() => onOpen(item)} className={TICKET_PRIMARY}>
               {OPEN_LABEL[item.kind] ?? "기록 열기"}

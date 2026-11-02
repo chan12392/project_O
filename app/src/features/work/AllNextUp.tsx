@@ -4,6 +4,7 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import { isSessionRun, nextUpByProject, projectName, recommend, type NextItem, type ProjectNext, type Suggestion } from "../../../../src/core/attention.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { clip } from "../../lib/format.ts";
+import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { NextTicket, STAMP, useHandled } from "./NextUp.tsx";
 import { Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
 
@@ -117,10 +118,10 @@ function PickTicket({ pick, now, onOpen, onProject, onSkip }: { pick: Suggestion
       {item?.detail && <p className="text-xs leading-relaxed text-[var(--ink-dim)] [overflow-wrap:anywhere]">{clip(item.detail, 140)}</p>}
       <div className="mt-1 flex flex-wrap items-center gap-1">
         {item?.pr ? (
-          <a href={item.pr} target="_blank" rel="noreferrer" className={TICKET_PRIMARY}>
+          <ExternalAnchor href={item.pr} className={TICKET_PRIMARY}>
             <ExternalLink className="size-3.5" aria-hidden="true" />
             PR 열기
-          </a>
+          </ExternalAnchor>
         ) : item ? (
           <button type="button" onClick={() => onOpen(item)} className={TICKET_PRIMARY}>
             {item.kind === "answer" ? "대화 보기" : "기록 열기"}

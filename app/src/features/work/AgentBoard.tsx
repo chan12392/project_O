@@ -3,6 +3,7 @@ import { GitPullRequest } from "lucide-react";
 import { prOf, tokensOf } from "../../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, STATE_WORD, clip, compact, modelLine, timeOf } from "../../lib/format.ts";
+import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { lookOf } from "../office/characters.ts";
 import { Avatar } from "../office/Avatar.tsx";
 import { KanbanBoard, KanbanCard, KanbanCards, KanbanHeader, KanbanProvider, type KanbanColumn } from "./Kanban.tsx";
@@ -92,10 +93,10 @@ function BoardCard({ card, run, onOpen }: { card: CardView; run: RunView; onOpen
       {pr && (
         <div className="flex flex-col gap-1 px-1 pb-1">
           <span className="flex min-w-0 items-center gap-2 text-2xs">
-            <a href={pr} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1 truncate text-sky-400 hover:underline focus-ring">
+            <ExternalAnchor href={pr} className="flex min-w-0 items-center gap-1 truncate text-sky-400 hover:underline focus-ring">
               <GitPullRequest className="size-3 shrink-0" aria-hidden="true" />
               {pr.replace("https://github.com/", "")}
-            </a>
+            </ExternalAnchor>
             <span className="shrink-0 text-muted-foreground">{reviewer ? "에이전트 검토 완료 · 사람 판단" : "사람 검토 필요"}</span>
           </span>
           {!reviewer && <ReviewButton project={run.project} pr={pr} />}

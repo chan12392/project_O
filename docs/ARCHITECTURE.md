@@ -68,7 +68,7 @@
 | `data/` | 실행 출처 `useLiveRuns.ts`(실제, 데스크톱 앱은 데모로 넘어가지 않음)·`useRun.ts`(데모·URL 상태), 총괄 스레드 `useLead.ts`, `projects.ts`, `settings.ts`(이 브라우저의 설정), 데모 기록 JSON |
 | `platform/backend/` | `Backend` 계약 `types.ts`와 구현 셋: `tauri.ts`, `dev.ts`, `demo.ts`. `index.ts`의 `backend()`가 고른다 |
 | `lib/` | `format`, `storage`, `timeScale`, `dismiss` |
-| `ui/` | 여러 기능이 쓰는 컨트롤(`controls.tsx`), 위로 열리는 선택 메뉴 `Menu.tsx`, `AgentStateDot` |
+| `ui/` | 여러 기능이 쓰는 컨트롤(`controls.tsx`), 위로 열리는 선택 메뉴 `Menu.tsx`, `AgentStateDot`, 바깥 링크 `ExternalAnchor`(데스크톱은 `open_external`, 브라우저는 noopener 새 탭 — 채팅 Markdown 밖의 모든 바깥 링크) |
 
 저장소 루트의 `src/core/*.ts`(기록 접기 `snapshot`, 다음 할 일 `attention`, 이벤트 타입, 한도 표시값, 총괄 스레드 접기·노력 수준·첨부 검사 `lead`, 프로젝트 소속·첫 실행 후보·카드 칩 요약 `projects`)는 화면과 `tests/`가 같이 쓰는 순수 로직이다. 화면은 판단하지 않고 이 함수의 결과를 그린다.
 
