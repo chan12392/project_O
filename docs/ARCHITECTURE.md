@@ -50,13 +50,13 @@
 
 ### `app/src-tauri/src`
 
-`main.rs`는 창을 띄우고 `commands::handler()`를 등록한다. `commands/{runs,usage,agents,review,tokens,about,lead,update}.rs`가 도메인별 명령과 테스트를 가진다. 모든 명령은 막히는 일을 별도 스레드에서 하고 셸을 쓰지 않는다. `lead`는 총괄 채팅(ADR-0008)이다. `update`는 데스크톱 전용으로 고정 저장소의 릴리스를 `gh`로 확인하며, 사람의 클릭 후에만 설치기를 연다. `uninstall.rs`는 NSIS가 쓰는 별도 데이터 제거 실행 파일이고 `installer_paths.rs`의 경로 검사를 공유한다.
+`main.rs`는 `commands::handler()`를 등록하고 `commands::window::open_main`으로 메인 창을 띄운다(`tauri.conf.json`의 `create: false`). `commands/{runs,usage,agents,review,tokens,about,lead,update,window}.rs`가 도메인별 명령과 테스트를 가진다. `window`는 데스크톱 전용이다: 새 창을 여는 링크(`target="_blank"`, `window.open`)는 웹뷰 창을 만들지 않고 https만 `open_external`과 같은 경로로 브라우저에서 열며, 나머지는 막고 화면에 `project-o:link-blocked` 이벤트로 이유를 알린다(`shell/LinkNotice.tsx`). 팝아웃은 `popout_open`이 고정된 앱 주소(`index.html?popout=panel&source=live…`)로 Tauri 창을 만든다. 모든 명령은 막히는 일을 별도 스레드에서 하고 셸을 쓰지 않는다. `lead`는 총괄 채팅(ADR-0008)이다. `update`는 데스크톱 전용으로 고정 저장소의 릴리스를 `gh`로 확인하며, 사람의 클릭 후에만 설치기를 연다. `uninstall.rs`는 NSIS가 쓰는 별도 데이터 제거 실행 파일이고 `installer_paths.rs`의 경로 검사를 공유한다.
 
 ## 화면 `app/src`
 
 | 폴더 | 내용 |
 |---|---|
-| `shell/` | `App.tsx`(메인 창·팝아웃), `Sidebar`, `SidePanel`(오른쪽 패널과 보기 목록), `StatusBar`, `panelLayout.ts`, `announcer.ts` |
+| `shell/` | `App.tsx`(메인 창·팝아웃), `Sidebar`, `SidePanel`(오른쪽 패널과 보기 목록), `StatusBar`, `panelLayout.ts`, `announcer.ts`, 막힌 링크 안내 `LinkNotice`(`main.tsx`에 마운트) |
 | `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 이미지는 불러오지 않음, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(하위 보기 목록 `SUBS`), `WorkDashboard`, `NextUp`, `AllNextUp`, `AgentBoard`, `Kanban`, `Ticket`, `ReviewRequest` |

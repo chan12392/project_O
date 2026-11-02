@@ -22,7 +22,11 @@ fn own_folder_first_on_path() {
 fn main() {
     own_folder_first_on_path();
     tauri::Builder::default()
-        .setup(|_| { commands::update::start_checks(); Ok(()) })
+        .setup(|app| {
+            commands::window::open_main(app.handle())?;
+            commands::update::start_checks();
+            Ok(())
+        })
         .invoke_handler(commands::handler())
         .run(tauri::generate_context!())
         .expect("Project O 창을 열지 못했습니다");
