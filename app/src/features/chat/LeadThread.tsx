@@ -6,6 +6,7 @@ import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.t
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useSettings } from "../../data/settings.ts";
+import { useBudget } from "../../data/useBudget.ts";
 import { BUTTON_PRIMARY } from "../../ui/controls.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
@@ -122,6 +123,8 @@ function Item({ item, lead, runOf, onOpenCard }: { item: LeadItem; lead: LeadSta
 /** A proposed plan: its cards, what the policy said, and 실행 (once). */
 function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: Props["onOpenCard"] }) {
   const { clean } = useSettings();
+  const budget = useBudget();
+  const over = budget?.providers.filter((entry) => entry.state === "over" && plan.cards.some((card) => card.provider === entry.provider)) ?? [];
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
   const titleId = `plan-${plan.planId}`;
   // Passed when saved, then refused by the runner's own check right before the start.
@@ -231,6 +234,10 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
           ))}
         </ul>
       )}
+      {!plan.runId && over.length > 0 && <div role="note" className="border-t px-4 py-3 text-xs text-destructive">
+        <p>최근 확인한 예산이 소진되어 실행이 차단될 수 있습니다. 실행 직전에 다시 검사합니다.</p>
+        {over.map((entry) => <p key={entry.provider} className="mt-1">{entry.message}</p>)}
+      </div>}
       <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
         {plan.runId ? (
           run && failedBeforeCards(run) ? (
