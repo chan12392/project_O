@@ -1,5 +1,5 @@
 import type { ActionResult, AgentStatus, Backend, BudgetReport, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ReviewStarted, TokenReport } from "./types.ts";
-import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
+import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
 /** project_O.exe: the shell's Tauri commands (app/src-tauri/src/commands), JSON text parsed here. */
 export function tauriBackend(invoke: Invoke): Backend {
@@ -14,6 +14,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     pendingUpdate: () => invoke("update_pending") as Promise<UpdateRelease | null>,
     installUpdate: (tag) => invoke("update_install", { tag }) as Promise<void>,
     cancelUpdate: () => invoke("update_cancel") as Promise<void>,
+    updateStatus: () => invoke("update_status") as Promise<UpdateStatus>,
     review: (project, pr, clean) => invoke("review", { project, pr, clean }) as Promise<ReviewStarted>,
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,

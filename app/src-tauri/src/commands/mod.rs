@@ -42,6 +42,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         update::update_install,
         update::update_pending,
         update::update_cancel,
+        update::update_status,
         window::popout_open,
         window::popout_close,
     ]

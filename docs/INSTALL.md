@@ -62,7 +62,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 
 릴리스 빌드는 커밋 SHA와 UTC 빌드 시각을 포함하며 설정 → 정보에 표시한다. 앱 시작 10초 뒤와 이후 6시간마다 사용자 PC의 `gh`로 고정 저장소 `chan12392/project_O`의 최근 릴리스 20개를 확인한다. `test_1-<yyyyMMdd>-<소문자 sha7>` 프리릴리스 중 릴리스 워크플로(`github-actions[bot]`)가 태그의 커밋으로 올렸고, GitHub가 SHA-256 digest를 준 유효한 `project_O_<숫자.숫자.숫자>_x64-setup.exe`가 있는 가장 최근 게시본을 고른다. 그 커밋이 `test_1`에 포함됐는지(`gh api …/compare/test_1...<sha>`가 identical·behind) 확인하지 못하면 제안하지 않는다. **커밋이 다르고 게시 시각이 현재 빌드보다 나중일 때** 알림을 띄운다. 로컬 빌드는 자동 확인하지 않고 정보 화면에서만 확인한다.
 
-`gh`가 없거나 로그인·권한·네트워크 문제면 자동 확인은 조용히 끝난다. 수동 **업데이트 확인**은 `gh auth login --hostname github.com` 안내와 [릴리스 다운로드 페이지](https://github.com/chan12392/project_O/releases)를 보여 준다. 개발 서버와 데모는 데스크톱 앱에서만 확인 가능하다고 안내한다.
+`gh`가 없거나 로그인·권한·네트워크 문제면 자동 확인은 팝업 없이 끝나고, **설정 → 정보 → 앱 업데이트**에 gh 필요 안내와 마지막 자동 확인 시각·실패 이유가 남는다(`update_status`). 수동 **업데이트 확인**은 `gh auth login --hostname github.com` 안내와 [릴리스 다운로드 페이지](https://github.com/chan12392/project_O/releases)를 보여 준다. 개발 서버와 데모는 데스크톱 앱에서만 확인 가능하다고 안내한다.
 
 **지금 업데이트**를 눌러야 다운로드한다. `gh release download`가 새 임시 폴더에 받은 설치 파일의 이름·크기와 릴리스 자산의 SHA-256 digest를 검증한 후 대화형 설치기를 열고 앱을 종료한다. 설치 완료 화면에서 앱을 다시 열 수 있다. 기존 설치 위치와 데이터는 유지된다. 다운로드 중 나중에/Esc를 누르면 다운로드(`gh`)를 바로 멈추고 설치하지 않는다. 다운로드 중에 다시 누른 "지금 업데이트"는 앞선 취소를 되돌리지 않는다. 오류는 팝업에 표시하고 재시도할 수 있다. **이 버전 건너뛰기**는 이 PC의 앱 설정에 태그를 기억하며, 수동 확인은 건너뛴 버전도 보여 준다.
 

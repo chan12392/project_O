@@ -36,7 +36,9 @@ pub fn start_checks() {
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(10));
         loop {
-            if let Ok(release) = latest() { *PENDING.lock().unwrap() = release; }
+            let result = latest();
+            *LAST_CHECK.lock().unwrap() = Some(last_check(&result, chrono::Utc::now().to_rfc3339()));
+            if let Ok(release) = result { *PENDING.lock().unwrap() = release; }
             std::thread::sleep(Duration::from_secs(6 * 60 * 60));
         }
     });
@@ -45,6 +47,42 @@ pub fn start_checks() {
 #[tauri::command]
 pub fn update_pending() -> Option<Update> {
     PENDING.lock().unwrap().take()
+}
+
+/// The last background check, kept so Settings → 정보 can say why updates are not arriving
+/// (no gh, not signed in) instead of the check failing silently.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastCheck {
+    at: String,
+    /// The release it found, if any.
+    tag: Option<String>,
+    error: Option<String>,
+}
+
+static LAST_CHECK: Mutex<Option<LastCheck>> = Mutex::new(None);
+
+fn last_check(result: &Result<Option<Update>, String>, at: String) -> LastCheck {
+    match result {
+        Ok(release) => LastCheck { at, tag: release.as_ref().map(|u| u.tag.clone()), error: None },
+        Err(error) => LastCheck { at, tag: None, error: Some(error.clone()) },
+    }
+}
+
+/// What Settings → 정보 shows before anyone presses "업데이트 확인".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    /// Release builds check by themselves; local builds only on the button.
+    automatic: bool,
+    /// Whether a usable `gh` is on PATH (updates need it, signed in).
+    gh: bool,
+    last_check: Option<LastCheck>,
+}
+
+#[tauri::command]
+pub fn update_status() -> UpdateStatus {
+    UpdateStatus { automatic: !BUILD_SHA.is_empty(), gh: gh_command(&[]).is_ok(), last_check: LAST_CHECK.lock().unwrap().clone() }
 }
 
 #[tauri::command]
@@ -320,6 +358,16 @@ mod tests {
         assert!(verify_download(&first, &update).is_err());
         fs::write(first.join(&update.asset), vec![0; update.size as usize]).unwrap();
         assert!(verify_download(&first, &update).is_ok());
+    }
+
+    #[test]
+    fn a_failed_background_check_is_kept_with_its_reason() {
+        let found = select_release(FIXTURE, "", "").unwrap();
+        assert_eq!(last_check(&Ok(found), "t".into()), LastCheck { at: "t".into(), tag: Some("test_1-20261102-1234567".into()), error: None });
+        assert_eq!(last_check(&Ok(None), "t".into()).tag, None);
+        let failed = last_check(&Err(HELP.into()), "t".into());
+        assert_eq!(failed.error.as_deref(), Some(HELP));
+        assert!(HELP.contains("gh auth login"));
     }
 
     /// "나중에" during a download ends it at once, and a second install click while the first is

@@ -1,5 +1,5 @@
 import type { ActionResult, AgentStatus, Backend, BudgetReport, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ReviewStarted, TokenReport } from "./types.ts";
-import { DESKTOP_UPDATES_ONLY, type About, type UpdateCheck } from "../updates.ts";
+import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS, type About, type UpdateCheck } from "../updates.ts";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -28,6 +28,7 @@ export const devBackend: Backend = {
   pendingUpdate: async () => null,
   installUpdate: async () => { throw new Error(DESKTOP_UPDATES_ONLY); },
   cancelUpdate: async () => {},
+  updateStatus: async () => NO_UPDATE_STATUS,
   review: async (project, pr, clean) => {
     const res = await fetch(`/api/review?${new URLSearchParams({ project, pr, clean: clean ? "1" : "0" })}`, { method: "POST" });
     const body = (await res.json().catch(() => undefined)) as (ReviewStarted & { error?: string }) | undefined;
