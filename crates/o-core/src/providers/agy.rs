@@ -13,6 +13,7 @@ use serde_json::{json, Map, Value};
 use super::stream::{limit_from_text, num, short, tool_summary};
 use super::{list_command, opt, outbox_path, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
+use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
 use crate::sys::js::{coalesce, js_string};
@@ -37,9 +38,11 @@ impl Provider for Agy {
         // agy allow-rules match whole commands only, so it gets two fixed ones and
         // writes what it sends to its outbox file first (see `o msg post`).
         let settings = json!({ "permissions": { "allow": [format!("command({TEAM_COMMAND} read)"), format!("command({TEAM_COMMAND} post)")] } });
-        let mut args = strings(&["--output-format", "stream-json", "--mode", "accept-edits", "--add-dir", team.run_dir, "--settings"]);
+        let spec = connection("agy").headless;
+        let mut args = strings(spec.fixed);
+        args.extend(strings(&["--add-dir", team.run_dir, "--settings"]));
         args.push(settings.to_string());
-        args.extend(opt("--model", card.model.as_deref()));
+        args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         args.push("-p".into());
         args.push(prompt);
@@ -127,7 +130,7 @@ impl Provider for Agy {
 
     /// `agy models` lists the models this sign-in may use, one `id<TAB>name` per line.
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
-        list_command("agy", &["models"], ProviderId::Agy, &[NO_UPDATE]).map(|out| parse_agy_models(&out))
+        list_command("agy", connection("agy").models, ProviderId::Agy, &[NO_UPDATE]).map(|out| parse_agy_models(&out))
     }
 
     fn stream_reader(&self) -> ReadLine {
