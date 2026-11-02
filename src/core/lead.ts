@@ -45,7 +45,7 @@ export interface LeadShow {
 
 /** One thing the chat draws, in order. */
 export type LeadItem =
-  | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; effort?: string }
+  | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string }
   | { kind: "plan"; at: string; planId: string; title: string; cards: PlanCard[]; ok: boolean; violations: LeadViolation[]; runId?: string }
   | { kind: "error"; at: string; text: string };
@@ -57,7 +57,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
     const e = raw as LeadEvent;
     switch (e.t) {
       case "lead.user":
-        items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, effort: e.effort });
+        items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
         break;
       case "lead.reply":
         items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text });
@@ -91,13 +91,31 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
 export const LEAD_EFFORTS = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["minimal", "low", "medium", "high", "xhigh"],
+  agy: ["low", "medium", "high", "xhigh", "max"],
 } as const satisfies Partial<Record<ProviderId, readonly string[]>>;
 
 export type LeadProvider = keyof typeof LEAD_EFFORTS;
 export const LEAD_PROVIDERS = Object.keys(LEAD_EFFORTS) as LeadProvider[];
 
+export const LEAD_NAME: Record<LeadProvider, string> = { claude: "Claude Code", codex: "Codex", agy: "Antigravity" };
+
 export function isLeadProvider(id: string): id is LeadProvider {
   return id in LEAD_EFFORTS;
+}
+
+/** One model a lead may run with (`o lead models`): the id passed as `--model`, and its name. */
+export interface LeadModel {
+  id: string;
+  label: string;
+}
+
+/** The model id shape a card's `model` takes and `o lead send --model` checks (crates/o-core/src/policy.rs `MODEL`). */
+export const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:\-/[\]]{0,79}$/;
+
+/** The name shown for a model: its listed label, else the id itself (a typed-in one); none for the CLI's default. */
+export function modelLabel(models: readonly LeadModel[], id: string | undefined): string | undefined {
+  if (!id) return undefined;
+  return models.find((m) => m.id === id)?.label ?? id;
 }
 
 export const EFFORT_WORD: Record<string, string> = { minimal: "최소", low: "낮음", medium: "보통", high: "높음", xhigh: "매우 높음", max: "최대" };

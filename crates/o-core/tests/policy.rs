@@ -99,6 +99,35 @@ fn cards_cannot_name_a_binary_args_env_or_account() {
     }
 }
 
+/// `lead` speaks for the supervisor and `all` is the broadcast address on the team channel:
+/// a card with either id would pass its words off as the lead's or everyone's.
+#[test]
+fn lead_and_all_are_reserved_card_ids() {
+    for reserved in ["lead", "all"] {
+        let checked = check_plan(&plan(vec![with(code_card(), "id", json!(reserved))]), &ctx());
+        assert!(checked.plan.is_none(), "{reserved}");
+        assert!(checked.violations.iter().any(|v| v.rule == "plan-shape" && v.message.contains("예약")), "{reserved}: {:?}", checked.violations);
+    }
+    for fine in ["leader", "all-tests", "lead-2"] {
+        assert!(check_plan(&plan(vec![with(code_card(), "id", json!(fine))]), &ctx()).plan.is_some(), "{fine}");
+    }
+}
+
+/// `o _run` checks the saved plan.json again: a hand-written one with a reserved id runs nothing.
+#[test]
+fn the_runner_refuses_a_saved_plan_with_a_reserved_card_id() {
+    let root = std::env::temp_dir().join(format!("o-policy-reserved-{}-{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap()));
+    let (home, project) = (root.join("home"), root.join("project"));
+    std::fs::create_dir_all(home.join("runs").join("r1")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    // Claude: a Codex card would make the runner ask Codex for a usage reading first.
+    let saved = json!({ "title": "t", "project": project.to_string_lossy(), "cards": [{ "id": "lead", "provider": "claude", "task": "x" }] });
+    std::fs::write(home.join("runs").join("r1").join("plan.json"), saved.to_string()).unwrap();
+    let error = o_core::run::runner::run_detached(&home, "r1").unwrap_err();
+    assert!(error.contains("정책 위반") && error.contains("예약"), "{error}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
 #[test]
 fn unknown_providers_are_refused() {
     let checked = check_plan(&plan(vec![with(code_card(), "provider", json!("openclaw"))]), &ctx());

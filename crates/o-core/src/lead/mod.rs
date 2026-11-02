@@ -32,7 +32,7 @@ use serde_json::{json, Value};
 
 use crate::agents::clean;
 use crate::context::normalize_project;
-use crate::policy::{check_plan, check_project, Violation, LIMITS};
+use crate::policy::{check_plan, check_project, is_model_id, Violation, LIMITS};
 use crate::providers::{self, LeadTurn, StreamReader};
 use crate::run::events::StreamSignal;
 use crate::run::plan::ProviderId;
@@ -235,7 +235,7 @@ pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
         }
     }
     if let Some(model) = req.model.filter(|m| !m.is_empty()) {
-        if !model.chars().all(|c| c.is_ascii_alphanumeric() || "._:-/[]".contains(c)) || model.len() > 80 {
+        if !is_model_id(model) {
             return Err("model 이름 형식이 올바르지 않습니다".into());
         }
     }

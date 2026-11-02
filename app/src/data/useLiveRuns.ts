@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { OEvent } from "../../../src/core/events.ts";
-import { snapshot, type RunView } from "../../../src/core/snapshot.ts";
+import { foldRuns, type FoldedRun, type RunView } from "../../../src/core/snapshot.ts";
 import { isSessionRun } from "../../../src/core/attention.ts";
 import type { UsageWindow } from "../../../src/core/usage.ts";
 import { sessionsShown, useSettings } from "./settings.ts";
@@ -79,9 +79,10 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
     // Unchanged answers keep the same objects, so a quiet poll re-renders nothing.
     let lastRuns = "";
     let lastUsage = "";
-    // Events are append-only: a run whose event count did not change keeps its RunView,
-    // so memoised readers and the components showing it skip the poll.
-    let known = new Map<string, { count: number; entry: RunEntry }>();
+    // A run whose events did not change keeps its RunView and entry, so memoised readers and the
+    // components showing it skip the poll. Content, not count: capped Claude Code sessions keep their length.
+    let known = new Map<string, FoldedRun>();
+    let entries = new Map<RunView, RunEntry>();
     const schedule = () => {
       window.clearTimeout(timer);
       if (!stopped && !document.hidden) timer = window.setTimeout(poll, POLL_MS);
@@ -95,21 +96,15 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
         if (runsText !== lastRuns) {
           lastRuns = runsText;
           const body = JSON.parse(runsText) as { runs: { runId: string; events: OEvent[] }[] };
-          const next = new Map<string, { count: number; entry: RunEntry }>();
-          const entries = body.runs.flatMap((r) => {
-            const hit = known.get(r.runId);
-            if (hit && hit.count === r.events.length) {
-              next.set(r.runId, hit);
-              return [hit.entry];
-            }
-            const view = snapshot(r.events);
-            if (!view) return [];
-            const entry = { view, messages: [] };
-            next.set(r.runId, { count: r.events.length, entry });
-            return [entry];
+          known = foldRuns(body.runs, known);
+          const nextEntries = new Map<RunView, RunEntry>();
+          const list = [...known.values()].map(({ view }) => {
+            const entry = entries.get(view) ?? { view, messages: [] };
+            nextEntries.set(view, entry);
+            return entry;
           });
-          known = next;
-          setRuns((prev) => (prev && prev.length === entries.length && prev.every((e, i) => e === entries[i]) ? prev : entries));
+          entries = nextEntries;
+          setRuns((prev) => (prev && prev.length === list.length && prev.every((e, i) => e === list[i]) ? prev : list));
         }
         if (usageText && usageText !== lastUsage) {
           lastUsage = usageText;

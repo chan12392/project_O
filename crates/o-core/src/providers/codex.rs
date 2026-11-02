@@ -15,7 +15,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, short, short_value};
-use super::{opt, strings, LaunchSpec, LeadTurn, Official, Provider, ReadLine, TeamChannel};
+use super::{list_command, opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel};
 use crate::agents::clean::LoginState;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -82,6 +82,11 @@ impl Provider for Codex {
         }
         args.push("-".into());
         Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// `codex debug models` (in `codex --help`) prints the CLI's model catalog as JSON.
+    fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
+        list_command("codex", &["debug", "models"], ProviderId::Codex, &[]).map(|out| parse_codex_models(&out))
     }
 
     // https://github.com/openai/codex (npm, Homebrew, Windows installer)
@@ -231,6 +236,24 @@ pub fn parse_codex_rate_limits(result: &Value) -> Vec<UsageWindow> {
             })
         })
         .collect()
+}
+
+/// The `codex debug models` catalog: the models it lists in its own picker
+/// (`visibility: "list"`), in its order (`priority`, lowest first).
+pub fn parse_codex_models(stdout: &str) -> Vec<ModelChoice> {
+    let Ok(data) = serde_json::from_str::<Value>(stdout) else { return Vec::new() };
+    let Some(models) = data.get("models").and_then(Value::as_array) else { return Vec::new() };
+    let mut listed: Vec<(f64, ModelChoice)> = models
+        .iter()
+        .filter(|m| m.get("visibility").and_then(Value::as_str) == Some("list"))
+        .filter_map(|m| {
+            let id = m.get("slug").and_then(Value::as_str)?.to_string();
+            let label = m.get("display_name").and_then(Value::as_str).filter(|l| !l.trim().is_empty()).unwrap_or(&id).trim().to_string();
+            Some((m.get("priority").and_then(Value::as_f64).unwrap_or(f64::MAX), ModelChoice { id, label }))
+        })
+        .collect();
+    listed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    listed.into_iter().map(|(_, m)| m).collect()
 }
 
 static PATH_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\/]+").unwrap());

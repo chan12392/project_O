@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, LeadAttachment, LeadDispatched, LeadEvent, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
 import { DESKTOP_UPDATES_ONLY, type About, type UpdateCheck } from "../updates.ts";
 
 async function json<T>(res: Response): Promise<T> {
@@ -48,6 +48,7 @@ export const devBackend: Backend = {
   leadDispatch: (planId, clean) =>
     fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
   leadStop: (project) => fetch(`/api/lead/stop${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "POST" }).then((r) => json<{ stopped: boolean }>(r)),
+  leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
   projects: () => fetch("/api/projects").then((r) => json<ProjectList>(r)),
   projectsAdd: (path) => fetch(`/api/projects/add?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),
   projectsRemove: (path) => fetch(`/api/projects/remove?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),

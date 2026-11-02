@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
 import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
 
 /** project_O.exe: the shell's Tauri commands (app/src-tauri/src/commands), JSON text parsed here. */
@@ -26,12 +26,21 @@ export function tauriBackend(invoke: Invoke): Backend {
         headers: { "x-project": encodeURIComponent(project), "x-name": encodeURIComponent(file.name) },
       }) as Promise<LeadAttachment>,
     leadSend: (r) =>
-      invoke("lead_send", { project: r.project, provider: r.provider, effort: r.effort ?? null, text: r.text, attachments: r.attachments, clean: r.clean }) as Promise<{
+      invoke("lead_send", {
+        project: r.project,
+        provider: r.provider,
+        model: r.model ?? null,
+        effort: r.effort ?? null,
+        text: r.text,
+        attachments: r.attachments,
+        clean: r.clean,
+      }) as Promise<{
         threadId: string | null;
         events: LeadEvent[];
       }>,
     leadDispatch: (planId, clean) => invoke("lead_dispatch", { planId, clean }) as Promise<LeadDispatched>,
     leadStop: (project) => invoke("lead_stop", { project: project ?? null }) as Promise<{ stopped: boolean }>,
+    leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
     projects: () => invoke("projects_list") as Promise<ProjectList>,
     projectsAdd: (path) => invoke("projects_add", { path }) as Promise<ProjectList>,
     projectsRemove: (path) => invoke("projects_remove", { path }) as Promise<ProjectList>,

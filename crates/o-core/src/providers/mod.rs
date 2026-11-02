@@ -27,6 +27,7 @@ use serde_json::{Map, Value};
 use crate::agents::clean::LoginState;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
+use crate::sys;
 use crate::usage::UsageWindow;
 
 pub use codex::unwrap_shell;
@@ -69,6 +70,11 @@ pub trait Provider: Sync {
     /// `None` when the CLI cannot be a lead.
     fn lead(&self, _turn: &LeadTurn) -> Option<LaunchSpec> {
         None
+    }
+    /// The models a lead turn may name, from the CLI's own source (its model list command
+    /// or its documented aliases). Empty: only the CLI's default (no `--model`).
+    fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
+        Ok(Vec::new())
     }
 
     // Install and sign-in (`agents`).
@@ -185,6 +191,39 @@ pub struct LeadTurn<'a> {
 /// Whether a provider can be the lead (`Provider::lead_efforts` is not empty).
 pub fn can_lead(id: ProviderId) -> bool {
     !get(id).lead_efforts().is_empty()
+}
+
+/// One model a lead may run with: the id the CLI takes after `--model`, and its name for people.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
+pub struct ModelChoice {
+    pub id: String,
+    pub label: String,
+}
+
+/// The lead's model list for a provider, keeping only ids a card's `model` field would take
+/// (`policy::is_model_id`). Asks the CLI each time; the shells cache the answer.
+pub fn lead_models(id: ProviderId) -> Result<Vec<ModelChoice>, String> {
+    if !can_lead(id) {
+        return Err(format!("{id}는 총괄로 쓸 수 없습니다"));
+    }
+    let mut models = get(id).lead_models()?;
+    models.retain(|m| crate::policy::is_model_id(&m.id));
+    Ok(models)
+}
+
+/// Runs one of the CLI's own read-only listing commands (no model turn): argv only, no shell,
+/// no window, its API key variables taken out. Returns stdout.
+fn list_command(bin: &str, args: &[&str], provider: ProviderId, env: &[(&str, &str)]) -> Result<String, String> {
+    let cli = sys::resolve::resolve_cli(bin).ok_or_else(|| format!("{bin} CLI를 찾지 못했습니다"))?;
+    let mut command = Command::new(&cli.command);
+    command.args(&cli.prefix).args(args).envs(env.iter().copied());
+    without_api_keys(&mut command, provider);
+    let (status, out, err) = sys::proc::capture(&mut command, std::time::Duration::from_secs(30)).map_err(|e| format!("{bin} {}: {e}", args.join(" ")))?;
+    if !status.success() {
+        let why = err.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("시간 초과 또는 실패").to_string();
+        return Err(format!("{bin} {} 실패: {why}", args.join(" ")));
+    }
+    Ok(out)
 }
 
 pub struct TeamChannel<'a> {

@@ -36,6 +36,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_send,
         lead::lead_dispatch,
         lead::lead_stop,
+        lead::lead_models,
         projects::projects_list,
         projects::projects_add,
         projects::projects_remove,

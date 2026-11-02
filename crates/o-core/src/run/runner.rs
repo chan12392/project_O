@@ -20,15 +20,15 @@ use crate::usage::budget::{self, Pace};
 use crate::run::events::{CardInfo, CardStatus, OEvent, StreamSignal};
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
-use crate::run::plan::{Card, Plan, ProviderId};
+use crate::run::plan::{Card, Plan};
 use crate::policy::{check_plan, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
 use crate::providers::{launch_spec_with, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
-    active_markers, append_event, clear_active, cooldown_times, is_clean, mark_active, policy_context, read_events, read_plan, record_start, run_dir,
-    set_cooldown, started_on, stop_requested, ActiveMarker,
+    active_markers, append_event, clear_active, cooldown_times, is_clean, link_slot, mark_active, policy_context, read_events, read_plan, release_slot,
+    reserve_slot, resolved_path, run_dir, set_cooldown, stop_requested, ActiveMarker, Reservation, Reserved,
 };
 
 /// Builds the command for a card's CLI. The runner adds the environment, pipes,
@@ -37,8 +37,41 @@ pub type Spawner = dyn Fn(&LaunchSpec, &str) -> io::Result<Command> + Send + Syn
 
 const WAIT_FOR_SLOT: Duration = Duration::from_millis(2_000);
 
+/// Where a run's cards work. `checked` is the folder the policy check passed: the plan's
+/// project with links, junctions and short names resolved. Cards start there, and each
+/// card first resolves the plan's path again (`resolve`): a link pointed elsewhere since
+/// the check refuses the card.
+pub struct Workdir {
+    pub checked: String,
+    pub resolve: Arc<dyn Fn(&str) -> String + Send + Sync>,
+}
+
+impl Workdir {
+    /// The plan's project as it resolves on disk now.
+    pub fn of(project: &str) -> Workdir {
+        Workdir { checked: resolved_path(project), resolve: Arc::new(resolved_path) }
+    }
+}
+
+/// The same folder, spelled as Windows compares it (any slash; any case on Windows).
+fn same_folder(a: &str, b: &str) -> bool {
+    let plain = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let (a, b) = (plain(a), plain(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
 /// `clean` is the profile root when the run uses clean agent profiles (`o dispatch --clean`).
 pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>) -> io::Result<CardStatus> {
+    run_plan_in(home, run_id, plan, clean, spawner, Workdir::of(&plan.project))
+}
+
+/// `run_plan` with the folder the policy check passed (see `Workdir`).
+pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>, workdir: Workdir) -> io::Result<CardStatus> {
+    let workdir = Arc::new(workdir);
     let emit = |event: OEvent| append_event(home, run_id, &event);
     emit(OEvent::RunStart {
         at: now_iso(),
@@ -64,8 +97,8 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
     let shared_plan = Arc::new(plan.clone());
     let mut pending: Vec<Card> = plan.cards.clone();
     let mut queued: HashSet<String> = HashSet::new();
-    // This run's cards started and not yet ended, with their providers.
-    let mut running: Vec<(String, ProviderId)> = Vec::new();
+    // This run's cards handed to a thread and not yet ended.
+    let mut running: Vec<String> = Vec::new();
     let mut results: Vec<CardStatus> = Vec::new();
     let (done_tx, done_rx) = mpsc::channel::<(String, io::Result<CardStatus>)>();
     let ended = |card: &Card, status: CardStatus, result: Option<String>| OEvent::CardEnd {
@@ -93,23 +126,33 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
                     continue;
                 }
             }
-            // Dispatch checked the day's cap, but plans dispatched back to back all see the same count.
-            if started_on(home, Utc::now())? >= LIMITS.max_cards_per_day {
-                take(&mut pending);
-                emit(ended(&card, CardStatus::Failed, Some(format!("오늘 실행 상한 {}개에 닿아 시작하지 않음", LIMITS.max_cards_per_day))))?;
-                results.push(CardStatus::Failed);
-                continue;
-            }
-            let mine: Vec<ProviderId> = running.iter().map(|(_, p)| *p).collect();
-            if let Some(reason) = slot_blocker(home, run_id, card.provider, &mine) {
-                if queued.insert(card.id.clone()) {
-                    emit(OEvent::CardQueued { at: now_iso(), card_id: card.id.clone(), reason })?;
+            // Dispatch checked the caps, but runs dispatched together all saw the same counts: the slot
+            // and the day's start are taken here, in o.db, before the CLI starts (see `reserve_slot`).
+            let reservation = match reserve_slot(home, run_id, &card.id, card.provider, Utc::now())? {
+                Reserved::Granted(reservation) => reservation,
+                Reserved::DayFull => {
+                    take(&mut pending);
+                    emit(ended(&card, CardStatus::Failed, Some(format!("오늘 실행 상한 {}개에 닿아 시작하지 않음", LIMITS.max_cards_per_day))))?;
+                    results.push(CardStatus::Failed);
+                    continue;
                 }
-                continue;
-            }
+                Reserved::Busy(reason) => {
+                    if queued.insert(card.id.clone()) {
+                        emit(OEvent::CardQueued { at: now_iso(), card_id: card.id.clone(), reason })?;
+                    }
+                    continue;
+                }
+            };
             // Today's usage budget, read the moment the card would start (ADR-0004).
-            let budget = budget::assess_now(home, card.provider, Utc::now())?;
+            let budget = match budget::assess_now(home, card.provider, Utc::now()) {
+                Ok(budget) => budget,
+                Err(error) => {
+                    release_slot(home, &reservation, false)?;
+                    return Err(error);
+                }
+            };
             if budget.state == Pace::Over {
+                release_slot(home, &reservation, false)?;
                 take(&mut pending);
                 emit(ended(&card, CardStatus::Failed, Some(budget.message)))?;
                 results.push(CardStatus::Failed);
@@ -131,18 +174,20 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
             }
             let (home, run_id, plan, clean, spawner, done) =
                 (home.to_path_buf(), run_id.to_string(), Arc::clone(&shared_plan), clean.map(Path::to_path_buf), Arc::clone(&spawner), done_tx.clone());
-            let contexts = Arc::clone(&contexts);
-            running.push((card.id.clone(), card.provider));
+            let (contexts, workdir) = (Arc::clone(&contexts), Arc::clone(&workdir));
+            running.push(card.id.clone());
             thread::spawn(move || {
                 let context = contexts.get(&card.id).map(String::as_str);
-                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, context, clean.as_deref(), spawner.as_ref())))
+                let slot = Slot { home: &home, reservation, started: false, marked: false };
+                let start = Start { slot, workdir: &workdir, context, clean: clean.as_deref(), spawner: spawner.as_ref() };
+                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, start)))
                     .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))));
                 let _ = done.send((card.id, outcome));
             });
         }
         if !running.is_empty() {
             let mut ended_card = |(card_id, outcome): (String, io::Result<CardStatus>)| -> io::Result<()> {
-                running.retain(|(id, _)| *id != card_id);
+                running.retain(|id| *id != card_id);
                 results.push(outcome?);
                 Ok(())
             };
@@ -166,33 +211,23 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
     Ok(status)
 }
 
-/// `mine` are the providers of this run's cards started and not yet ended. They
-/// count from the moment the runner starts them: their own markers are written
-/// only once the CLI is up, so other runs' markers are read from disk and this
-/// run's cards from `mine`.
-fn slot_blocker(home: &Path, run_id: &str, provider: ProviderId, mine: &[ProviderId]) -> Option<String> {
-    let mut active: Vec<ProviderId> = active_markers(home).into_iter().filter(|m| m.run_id != run_id).map(|m| m.provider).collect();
-    active.extend_from_slice(mine);
-    if active.len() >= LIMITS.max_active_total {
-        return Some(format!("전체 동시 실행 {}개가 차서 대기", LIMITS.max_active_total));
-    }
-    let max = LIMITS.max_active_per_provider(provider);
-    if active.iter().filter(|p| **p == provider).count() >= max {
-        return Some(format!("{provider} 동시 실행 {max}개가 차서 대기"));
-    }
-    None
-}
-
-/// Clears the card's active marker however the card ends.
+/// The card's reserved slot. However the card ends (or panics) the marker is cleared and
+/// the slot given back, with the day's start too when the CLI never ran.
 struct Slot<'a> {
     home: &'a Path,
-    run_id: &'a str,
-    card_id: &'a str,
+    reservation: Reservation,
+    started: bool,
+    marked: bool,
 }
 
 impl Drop for Slot<'_> {
     fn drop(&mut self) {
-        clear_active(self.home, self.run_id, self.card_id);
+        let r = &self.reservation;
+        if self.marked {
+            clear_active(self.home, &r.run_id, &r.card_id);
+        }
+        // A runner that cannot reach o.db is about to fail; its slot goes stale when it exits.
+        let _ = release_slot(self.home, r, self.started);
     }
 }
 
@@ -202,13 +237,23 @@ fn append_bytes(path: &Path, bytes: &[u8]) {
     }
 }
 
-fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, context: Option<&str>, clean: Option<&Path>, spawner: &Spawner) -> io::Result<CardStatus> {
+/// What a card starts with besides its plan: the slot it holds, the checked folder, its
+/// context section, the clean profile root and the spawner.
+struct Start<'a> {
+    slot: Slot<'a>,
+    workdir: &'a Workdir,
+    context: Option<&'a str>,
+    clean: Option<&'a Path>,
+    spawner: &'a Spawner,
+}
+
+fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -> io::Result<CardStatus> {
+    let Start { mut slot, workdir, context, clean, spawner } = start;
     let emit = |event: OEvent| append_event(home, run_id, &event);
     let dir = run_dir(home, run_id);
     let cards_dir = dir.join("cards");
     let dir_text = dir.to_string_lossy().into_owned();
-    let spec = launch_spec_with(card, plan, &TeamChannel { run_id, run_dir: &dir_text }, context);
-    let end = |status: CardStatus, result: Option<String>, exit_code: Option<i64>| OEvent::CardEnd {
+    let end =|status: CardStatus, result: Option<String>, exit_code: Option<i64>| OEvent::CardEnd {
         at: now_iso(),
         card_id: card.id.clone(),
         status,
@@ -216,8 +261,26 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, context: Option
         exit_code,
     };
 
-    // A program that never started (not found, refused) holds no slot and counts nothing.
-    let spawned = spawner(&spec, &plan.project).and_then(|mut command| {
+    // Stopped while waiting for its thread: never start it.
+    if stop_requested(home, run_id) {
+        drop(slot);
+        emit(end(CardStatus::Stopped, None, None))?;
+        return Ok(CardStatus::Stopped);
+    }
+    // The project is resolved again right before the start: a link or junction pointed
+    // elsewhere since the policy check would take the card out of the folder it allowed.
+    let now = (workdir.resolve)(&plan.project);
+    if !same_folder(&now, &workdir.checked) {
+        drop(slot);
+        let reason = format!("작업 폴더 {}가 정책 검사 뒤 다른 곳({now})을 가리켜 시작하지 않음 (검사한 폴더: {})", plan.project, workdir.checked);
+        emit(end(CardStatus::Failed, Some(reason), None))?;
+        return Ok(CardStatus::Failed);
+    }
+    // The card works in the checked folder itself, never through the link.
+    let checked_plan = Plan { project: workdir.checked.clone(), ..plan.clone() };
+    let spec = launch_spec_with(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context);
+    // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
+    let spawned = spawner(&spec, &workdir.checked).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
         if let Some(root) = clean {
             command.env_clear().envs(clean::environment(root, card.provider)?);
@@ -229,6 +292,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, context: Option
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
+            drop(slot);
             emit(end(CardStatus::Failed, Some(format!("실행 실패: {error}")), None))?;
             return Ok(CardStatus::Failed);
         }
@@ -236,11 +300,19 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, context: Option
     let _tree = proc::contain(&child);
     let pid = child.id();
 
-    // Count the card the moment it holds a slot, so a parallel dispatch sees it.
-    let _slot = Slot { home, run_id, card_id: &card.id };
+    // The reservation already counts the card; the slot now lives as long as the CLI, and the
+    // marker lets `o stop` find its process.
+    slot.started = true;
+    link_slot(home, &slot.reservation, pid)?;
+    slot.marked = true;
     mark_active(home, &ActiveMarker { run_id: run_id.to_string(), card_id: card.id.clone(), provider: card.provider, pid })?;
-    record_start(home, run_id, &card.id, card.provider, Utc::now())?;
     emit(OEvent::CardStart { at: now_iso(), card_id: card.id.clone(), pid: Some(pid) })?;
+    // An `o stop` that ran while the CLI was starting found no marker to kill: stop it here.
+    // (A stop from now on finds the marker written above.)
+    if stop_requested(home, run_id) {
+        proc::kill_tree(pid);
+        let _ = child.kill();
+    }
 
     if let Some(mut stdin) = child.stdin.take() {
         let text = spec.stdin.clone().unwrap_or_default();
@@ -332,7 +404,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, context: Option
         .into_iter()
         .find(|text| !text.is_empty())
     });
-    drop(_slot);
+    drop(slot);
     emit(end(status, result, exit_code))?;
     Ok(status)
 }
@@ -379,7 +451,9 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
             return Err(format!("정책 위반: {}", reasons.join(" / ")));
         };
         let clean = is_clean(home, run_id).then(clean::default_root);
-        run_plan(home, run_id, &plan, clean.as_deref(), Arc::new(official_command)).map_err(|e| e.to_string())?;
+        // The folder the check above passed, links resolved: the cards run there (see `Workdir`).
+        let workdir = Workdir { checked: (ctx.resolve)(&plan.project), resolve: Arc::new(resolved_path) };
+        run_plan_in(home, run_id, &plan, clean.as_deref(), Arc::new(official_command), workdir).map_err(|e| e.to_string())?;
         Ok(())
     }))
     .unwrap_or_else(|panic| {

@@ -187,9 +187,12 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 ended_at: None,
                 status: RunStatus::Running,
                 // Runs recorded before labels existed carry only a role.
+                // A repeated card id is one card: the first keeps it (as src/core/snapshot.ts does).
                 cards: cards
                     .iter()
-                    .map(|c| CardView {
+                    .enumerate()
+                    .filter(|(i, c)| !cards[..*i].iter().any(|earlier| earlier.id == c.id))
+                    .map(|(_, c)| CardView {
                         id: c.id.clone(),
                         provider: c.provider,
                         label: c.label.clone().unwrap_or_else(|| card_label(&c.id, c.role.as_deref())),

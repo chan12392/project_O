@@ -17,8 +17,9 @@ use super::{fail, print_violations, Command};
 
 pub const LEAD: Command = Command {
     name: "lead",
-    usage: "  o lead send --project <폴더> [--provider claude|codex] [--model M] [--effort E] [--attach <파일>]... [--new] [--clean] <메시지|->
+    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--clean] <메시지|->
                              총괄에게 메시지 (읽기 전용으로 프로젝트를 읽고 계획을 제안), 새 이벤트 JSON 출력
+  o lead models --provider claude|codex|agy  총괄이 쓸 수 있는 모델 목록 JSON (CLI의 공식 목록·별칭)
   o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
   o lead new --project <폴더>               새 대화 시작
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
@@ -36,7 +37,23 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("attach") => attach(home, rest),
         Some("dispatch") => dispatch(home, rest),
         Some("stop") => stop(home, rest),
+        Some("models") => models(rest),
         _ => fail(LEAD.usage),
+    }
+}
+
+fn models(args: &[String]) -> i32 {
+    let a = match parse(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let Some(provider) = a.provider.as_deref().and_then(ProviderId::parse) else { return fail("--provider claude|codex|agy가 필요합니다") };
+    match o_core::providers::lead_models(provider) {
+        Ok(models) => {
+            println!("{}", json!({ "provider": provider, "models": models }));
+            0
+        }
+        Err(e) => fail(&e),
     }
 }
 

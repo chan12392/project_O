@@ -1,9 +1,9 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
-import type { LeadAttachment, LeadEvent, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
+import type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
 import type { ListedProject, ProjectCheck, ProjectList } from "../../../../src/core/projects.ts";
 import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
 
-export type { LeadAttachment, LeadEvent, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
+export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
 
 export type AgentId = "claude" | "codex" | "agy";
 
@@ -155,6 +155,8 @@ export interface Backend {
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
   /** Stops the project's lead while it answers. */
   leadStop(project?: string): Promise<{ stopped: boolean }>;
+  /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
+  leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
 
   // The project list (ADR-0009). Nothing here deletes a folder; refusals reject with the reason.
 
@@ -177,6 +179,8 @@ export interface Backend {
 export interface LeadSendRequest {
   project: string;
   provider: LeadProvider;
+  /** A model id (`--model`); none for the CLI's default. */
+  model?: string;
   effort?: string;
   text: string;
   /** Paths `leadAttach` returned. */

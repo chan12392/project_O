@@ -5,7 +5,9 @@ use std::ffi::OsString;
 use o_core::run::events::StreamSignal;
 use o_core::sys::js::iso_from_secs;
 use o_core::run::plan::{Card, Plan, ProviderId};
-use o_core::providers::{card_prompt, is_limit_text, launch_spec, names_to_remove, unwrap_shell, LaunchSpec, LeadTurn, StreamReader, TeamChannel};
+use o_core::providers::agy::parse_agy_models;
+use o_core::providers::codex::parse_codex_models;
+use o_core::providers::{card_prompt, is_limit_text, launch_spec, names_to_remove, unwrap_shell, LaunchSpec, LeadTurn, ModelChoice, StreamReader, TeamChannel};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
 use serde_json::{json, Value};
@@ -289,17 +291,80 @@ fn the_codex_lead_runs_in_a_read_only_sandbox_and_resumes_with_exec_resume() {
 }
 
 #[test]
+fn the_agy_lead_plans_with_every_change_denied_and_resumes_its_conversation() {
+    let first = lead_spec(ProviderId::Agy, None, Some("low"), &["C:/o-lead/t1/01-a.png".to_string()]).unwrap();
+    assert_eq!(first.bin, "agy");
+    let deny = r#"{"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}}"#;
+    let expected = [
+        "--output-format", "stream-json", "--mode", "plan", "--sandbox", "--settings", deny, "--add-dir", "C:/o-lead/t1", "--effort", "low", "-p", "계획해 줘",
+    ];
+    assert_eq!(first.args, expected);
+    // agy takes no image flag: the attachment is named in the prompt and its folder added.
+    assert!(first.stdin.is_none());
+    assert_eq!(first.env.get("AGY_CLI_DISABLE_AUTO_UPDATE").map(String::as_str), Some("true"));
+    let next = o_core::providers::get(ProviderId::Agy)
+        .lead(&LeadTurn { project: "C:/work/demo", prompt: "또".into(), session: Some("c-1"), model: Some("gemini-3.8-flash-high"), effort: None, files_dir: None, images: &[] })
+        .unwrap();
+    assert_eq!(after(&next.args, "--conversation"), "c-1");
+    assert_eq!(after(&next.args, "--model"), "gemini-3.8-flash-high");
+    assert!(!has(&next.args, "--effort") && !has(&next.args, "--add-dir"));
+    assert_eq!(next.args[next.args.len() - 2..], ["-p", "또"]);
+}
+
+#[test]
+fn every_lead_takes_the_model_it_is_given() {
+    for (provider, flag) in [(ProviderId::Claude, "--model"), (ProviderId::Codex, "-m"), (ProviderId::Agy, "--model")] {
+        for session in [None, Some("s")] {
+            let turn = LeadTurn { project: "C:/work/demo", prompt: "p".into(), session, model: Some("m-1"), effort: None, files_dir: None, images: &[] };
+            let spec = o_core::providers::get(provider).lead(&turn).unwrap();
+            assert_eq!(after(&spec.args, flag), "m-1", "{provider} {session:?}");
+        }
+    }
+}
+
+#[test]
 fn lead_launches_never_write_and_never_turn_approvals_off() {
     for provider in ProviderId::ALL {
         for session in [None, Some("s")] {
-            let Some(spec) = lead_spec(provider, session, Some("high"), &[]) else { continue };
+            let spec = lead_spec(provider, session, Some("high"), &[]).unwrap_or_else(|| panic!("{provider} cannot lead"));
             let line = spec.args.join(" ");
             assert!(find_hits(&line, code_rules()).is_empty(), "{provider}: {line}");
-            for word in ["acceptEdits", "auto", "workspace-write", "danger-full-access", "Bash", "Edit", "Write", "NotebookEdit"] {
+            for word in ["acceptEdits", "accept-edits", "auto", "workspace-write", "danger-full-access", "Bash", "Edit", "Write", "NotebookEdit"] {
                 assert!(!spec.args.iter().any(|a| a.split(',').any(|part| part == word)), "{provider}: {word}");
             }
         }
     }
+    // agy's mode is plan, and its session settings deny every change rather than allow any.
+    let agy = lead_spec(ProviderId::Agy, None, None, &[]).unwrap();
+    assert_eq!(after(&agy.args, "--mode"), "plan");
+    let settings: Value = serde_json::from_str(after(&agy.args, "--settings")).unwrap();
+    assert!(settings["permissions"].get("allow").is_none());
+    let deny: Vec<&str> = settings["permissions"]["deny"].as_array().unwrap().iter().filter_map(Value::as_str).collect();
+    for rule in ["write_file(*)", "command(*)", "mcp(*)"] {
+        assert!(deny.contains(&rule), "{rule}");
+    }
+}
+
+#[test]
+fn lead_model_lists_come_from_each_cli() {
+    let claude: Vec<String> = o_core::providers::lead_models(ProviderId::Claude).unwrap().into_iter().map(|m| m.id).collect();
+    assert_eq!(claude, ["fable", "opus", "sonnet", "haiku"]);
+    let agy = "Fetching available models...\ngemini-4-argon-high\tGemini 4 Argon (High)\nclaude-opus-5-5-low\tClaude Opus 5.5 (Low)\n\n";
+    assert_eq!(
+        parse_agy_models(agy),
+        [
+            ModelChoice { id: "gemini-4-argon-high".into(), label: "Gemini 4 Argon (High)".into() },
+            ModelChoice { id: "claude-opus-5-5-low".into(), label: "Claude Opus 5.5 (Low)".into() },
+        ]
+    );
+    let codex = json!({ "models": [
+        { "slug": "gpt-6-luna", "display_name": "GPT-6-Luna", "visibility": "list", "priority": 5 },
+        { "slug": "gpt-reserve", "display_name": "GPT-Reserve", "visibility": "hide", "priority": 4 },
+        { "slug": "gpt-6.1-sol", "display_name": "GPT-6.1-Sol", "visibility": "list", "priority": 1 },
+    ] });
+    let ids: Vec<String> = parse_codex_models(&codex.to_string()).into_iter().map(|m| m.id).collect();
+    assert_eq!(ids, ["gpt-6.1-sol", "gpt-6-luna"]);
+    assert!(parse_codex_models("not json").is_empty());
 }
 
 #[test]
@@ -349,9 +414,8 @@ fn a_claude_limit_shows_in_its_error_text_too_but_one_limit_per_card_keeps_the_e
 }
 
 #[test]
-fn only_clis_with_a_read_only_resumable_mode_can_lead() {
-    assert!(o_core::providers::can_lead(ProviderId::Claude));
-    assert!(o_core::providers::can_lead(ProviderId::Codex));
-    assert!(!o_core::providers::can_lead(ProviderId::Agy));
-    assert!(lead_spec(ProviderId::Agy, None, None, &[]).is_none());
+fn every_cli_with_a_read_only_resumable_mode_can_lead() {
+    for provider in ProviderId::ALL {
+        assert!(o_core::providers::can_lead(provider), "{provider}");
+    }
 }

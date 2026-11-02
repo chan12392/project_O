@@ -460,7 +460,8 @@ impl Fold {
                 kind: field("subagent_type").into(),
                 description: head(field("description"), LABEL_CAP),
                 prompt: head(field("prompt"), PROMPT_HEAD),
-                agent_id: None,
+                // A call that resumes a subagent names it before its result does.
+                agent_id: Some(field("resume")).filter(|id| plain_id(id)).map(str::to_string),
                 end: None,
             });
         }
@@ -646,6 +647,8 @@ struct Card {
     end: Option<End>,
     /// Claude Code marked its thread finished.
     finished: bool,
+    /// The tool-use id and time of the latest call that started or resumed it.
+    call: Option<(String, String)>,
 }
 
 /// `C:\work\app` → `C:/work/app`; a worktree session belongs to its repository.
@@ -675,39 +678,63 @@ impl Session {
     fn cards(&self) -> Vec<Card> {
         let main = &self.main;
         let mut used: HashSet<&str> = HashSet::new();
-        let mut cards = Vec::new();
-        let call_for = |agent: Option<&str>, tool_use: Option<&str>, prompt: &str| {
-            main.calls.iter().find(|c| {
+        let mut cards: Vec<Card> = Vec::new();
+        // Every call of one subagent, oldest first: the call that started it (by tool-use id, agentId or
+        // prompt) and the calls that resumed it (their results report the same agentId).
+        let calls_for = |agent: Option<&str>, tool_use: Option<&str>, prompt: &str| -> Vec<&Call> {
+            let first = main.calls.iter().find(|c| {
                 tool_use.is_some_and(|t| t == c.id)
                     || (agent.is_some() && c.agent_id.as_deref() == agent)
                     || (!prompt.is_empty() && c.prompt == prompt)
-            })
+            });
+            let agent = agent.or_else(|| first.and_then(|c| c.agent_id.as_deref()));
+            main.calls
+                .iter()
+                .filter(|c| first.is_some_and(|f| std::ptr::eq(f, *c)) || (agent.is_some() && c.agent_id.as_deref() == agent))
+                .collect()
         };
-        let card = |id: String, call: Option<&Call>, fold_first: &str, fold_last: &str, steps: Vec<Step>, kind: Option<String>, description: Option<String>, model: Option<String>, finished: bool| {
-            let role = kind.or_else(|| call.and_then(|c| non_empty(&c.kind)));
-            let label = description.or_else(|| call.and_then(|c| non_empty(&c.description))).or_else(|| role.clone()).unwrap_or_else(|| "서브에이전트".into());
-            let start = non_empty(fold_first).or_else(|| call.map(|c| c.at.clone())).unwrap_or_default();
-            let last = [fold_last, &start, call.and_then(|c| c.end.as_ref()).map_or("", |e| e.at.as_str())].into_iter().max().unwrap_or_default().to_string();
-            Card { id, label: head(&label, LABEL_CAP), role, model, start, last, steps, end: call.and_then(|c| c.end.clone()), finished }
+        // The first call names the card; the latest one says whether it is running or how it ended.
+        let card = |id: String, calls: &[&Call], fold_first: &str, fold_last: &str, steps: Vec<Step>, kind: Option<String>, description: Option<String>, model: Option<String>, finished: bool| {
+            let (first, latest) = (calls.first().copied(), calls.last().copied());
+            let role = kind.or_else(|| first.and_then(|c| non_empty(&c.kind)));
+            let label = description.or_else(|| first.and_then(|c| non_empty(&c.description))).or_else(|| role.clone()).unwrap_or_else(|| "서브에이전트".into());
+            let start = non_empty(fold_first).or_else(|| first.map(|c| c.at.clone())).unwrap_or_default();
+            let call_times = calls.iter().flat_map(|c| [c.at.as_str(), c.end.as_ref().map_or("", |e| e.at.as_str())]);
+            let last = [fold_last, &start].into_iter().chain(call_times).max().unwrap_or_default().to_string();
+            let end = latest.and_then(|c| c.end.clone());
+            // A thread marked finished and then resumed is open again until the resuming call ends.
+            let finished = finished && (calls.len() < 2 || end.is_some());
+            Card { id, label: head(&label, LABEL_CAP), role, model, start, last, steps, end, finished, call: latest.map(|c| (c.id.clone(), c.at.clone())) }
         };
         for sub in &self.subagents {
-            let call = call_for(Some(&sub.agent_id), sub.meta.tool_use_id.as_deref(), "");
-            used.extend(call.map(|c| c.id.as_str()));
+            let calls = calls_for(Some(&sub.agent_id), sub.meta.tool_use_id.as_deref(), "");
+            used.extend(calls.iter().map(|c| c.id.as_str()));
             let meta = &sub.meta;
             let description = meta.description.as_deref().and_then(non_empty);
             let kind = meta.agent_type.as_deref().and_then(non_empty);
-            cards.push(card(sub.agent_id.clone(), call, &sub.fold.first_at, &sub.fold.last_at, sub.fold.steps.clone(), kind, description, meta.model.clone(), meta.finished == Some(true)));
+            cards.push(card(sub.agent_id.clone(), &calls, &sub.fold.first_at, &sub.fold.last_at, sub.fold.steps.clone(), kind, description, meta.model.clone(), meta.finished == Some(true)));
         }
         for (i, (key, chain)) in main.chains.iter().enumerate() {
-            let call = call_for(chain.agent_id.as_deref(), None, &chain.prompt);
-            used.extend(call.map(|c| c.id.as_str()));
+            let calls = calls_for(chain.agent_id.as_deref(), None, &chain.prompt);
+            used.extend(calls.iter().map(|c| c.id.as_str()));
             let id = chain.agent_id.clone().filter(|a| plain_id(a)).unwrap_or_else(|| if plain_id(key) { key.clone() } else { format!("chain{}", i + 1) });
-            cards.push(card(id, call, &chain.first_at, &chain.last_at, chain.steps.clone(), None, None, None, false));
+            cards.push(card(id, &calls, &chain.first_at, &chain.last_at, chain.steps.clone(), None, None, None, false));
         }
-        // Calls whose thread is not on disk (yet) still put a person in the office.
-        for call in main.calls.iter().filter(|c| !used.contains(c.id.as_str())) {
+        // Calls whose thread is not on disk (yet) still put a person in the office: one per agent.
+        for call in &main.calls {
+            if used.contains(call.id.as_str()) {
+                continue;
+            }
+            let calls: Vec<&Call> = match call.agent_id.as_deref() {
+                Some(agent) => main.calls.iter().filter(|c| c.agent_id.as_deref() == Some(agent) && !used.contains(c.id.as_str())).collect(),
+                None => vec![call],
+            };
+            used.extend(calls.iter().map(|c| c.id.as_str()));
             let id = call.agent_id.clone().or_else(|| non_empty(&call.id)).filter(|i| plain_id(i)).unwrap_or_else(|| format!("call{}", cards.len() + 1));
-            cards.push(card(id, Some(call), "", "", Vec::new(), None, None, None, false));
+            if cards.iter().any(|c| c.id == id) {
+                continue;
+            }
+            cards.push(card(id, &calls, "", "", Vec::new(), None, None, None, false));
         }
         cards.sort_by(|a, b| a.start.cmp(&b.start));
         cards
@@ -726,8 +753,11 @@ impl Session {
             if card.end.is_some() {
                 continue;
             }
-            let call = self.main.calls.iter().find(|c| c.agent_id.as_deref() == Some(card.id.as_str()) || c.id == card.id);
-            let notice = self.main.notices.iter().rev().find(|n| n.task_id == card.id || call.is_some_and(|c| !n.tool_use_id.is_empty() && n.tool_use_id == c.id));
+            // Only a notice about the latest call: one from before a resume is about the earlier run.
+            let (call_id, call_at) = card.call.as_ref().map_or(("", ""), |(id, at)| (id.as_str(), at.as_str()));
+            let notice = self.main.notices.iter().rev().find(|n| {
+                (n.at.is_empty() || n.at.as_str() >= call_at) && (n.task_id == card.id || (!n.tool_use_id.is_empty() && n.tool_use_id == call_id))
+            });
             card.end = match notice {
                 Some(n) => Some(End { at: n.at.clone(), status: end_status(&n.status).as_str().into(), result: n.summary.clone() }),
                 None if card.finished => Some(End { at: card.last.clone(), status: "done".into(), result: String::new() }),
