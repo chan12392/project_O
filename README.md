@@ -88,27 +88,28 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | 명령 | 하는 일 |
 |---|---|
 | `o check plan.json` | 정책 검사만 |
-| `o dispatch plan.json` | 검사 후 백그라운드 실행, runId 출력 |
+| `o dispatch [--profile project-o\|own] [--no-context] plan.json` | 검사 후 백그라운드 실행, runId 출력. 기본은 project_O 프로필(깨끗한 에이전트), `own`은 이 PC의 평소 CLI 설정 ([ADR-0013](docs/decisions/0013-profile-and-budget-switches.md)) |
 | `o status [runId]` | 카드별 상태 |
 | `o events <runId> [--follow]` | 정규화 이벤트(JSONL) |
 | `o stop <runId>` | 중지 |
 | `o msg send / read / post` | 팀 대화: 카드끼리, 카드와 총괄(`lead`)이 메시지를 주고받음 |
-| `o review <PR 번호\|주소> [--provider P] [--model M] [--effort E] [--clean] [--post] [--dry-run]` | 지금 폴더 저장소의 PR을 `gh`로 읽어 카드 하나로 검토(파일 변경 없음). `--post`는 검토문을 PR 댓글로 게시 — 승인·병합은 하지 않음 ([ADR-0006](docs/decisions/0006-pr-cross-review.md)) |
+| `o review <PR 번호\|주소> [--provider P] [--model M] [--effort E] [--profile project-o\|own] [--post] [--dry-run]` | 지금 폴더 저장소의 PR을 `gh`로 읽어 카드 하나로 검토(파일 변경 없음). `--post`는 검토문을 PR 댓글로 게시 — 승인·병합은 하지 않음 ([ADR-0006](docs/decisions/0006-pr-cross-review.md)) |
 | `o usage [--json] [--cached]` | Codex·Antigravity 구독 한도를 각 CLI로 조회 |
-| `o budget [--json] [--cached] [--percent 12\|13\|14]` | 에이전트별 오늘 사용 예산(주간 한도의 12~14%)·속도·effort 조절 (아래) |
+| `o budget [--json] [--cached] [--percent 12\|13\|14] [--on\|--off]` | 에이전트별 오늘 사용 예산(주간 한도의 12~14%)·속도·effort 조절, 예산 켜기·끄기 (아래) |
 | `o runs --json` | 모든 실행 기록(화면용) |
 | `o hook` / `o scan --all\|--staged\|--pre-push` | 에이전트 훅 / 정책 검사 |
 | `o sync-mirror <폴더>` | 거울(팀은 `test_2`, `test_1`·`main`도 가능) fast-forward (예약 작업용) |
 | `o agents path\|login\|shell\|doctor` | 깨끗한 에이전트 프로필 (아래) |
 | `o agents status\|install\|open-login` / `o about` | 에이전트 CLI 설치·로그인 상태, 공식 설치·로그인 창 / 버전과 폴더 위치 (데스크톱 앱과 같은 동작) |
 
-### 하루 사용 예산 ([ADR-0004](docs/decisions/0004-daily-usage-budget.md))
+### 하루 사용 예산 ([ADR-0004](docs/decisions/0004-daily-usage-budget.md), [ADR-0013](docs/decisions/0013-profile-and-budget-switches.md))
 
 에이전트(프로바이더)마다 하루에 주간(`seven_day`) 한도의 13%(설정 → 에이전트, 또는 `o budget --percent 12|13|14`; `%LOCALAPPDATA%/project_O/settings.json`의 `dailyBudgetPercent`)만 쓴다.
 
 - 오늘 쓴 양 = 지금 주간 사용률 − 오늘 0시의 주간 사용률. 사용량을 읽을 때마다(`o usage`, 앱의 새로 고침, `o budget`, 실행 직전 조회, Claude 실행 중 보고) `o.db`의 `usage_snapshots`에 남긴 기록으로 계산한다. 주간 한도가 오늘 초기화됐으면 초기화 시점부터 센다.
 - 카드를 시작하기 직전에 속도를 본다. 남은 예산 비율이 남은 시간 비율(자정, 또는 그 전에 오는 주간 초기화까지)보다 작으면 effort를 한 단계, 절반보다 작으면 두 단계 낮춘다(`low` 아래로는 낮추지 않고, 올리지 않는다). effort가 없는 카드는 `medium`으로 보고 낮춘다. 바꾼 내용은 `card.budget` 이벤트로 남고, plan.json은 그대로다.
 - 예산을 다 쓴 에이전트로는 새 카드를 보내지 않는다(정책 `daily-budget`). 주간 기록이 없는 에이전트는 조절하지 않는다.
+- 끌 수 있다(설정 → 에이전트 → 하루 사용 예산, `o budget --off`; `settings.json`의 `dailyBudgetEnabled`). 끄면 예산으로 막거나 effort를 낮추지 않고, 숫자와 "오늘" 고리는 "예산 꺼짐"으로 남는다. 구독 한도·쿨다운·`LIMITS`는 그대로다.
 - `o _run`은 저장된 Codex·Antigravity 기록이 10분보다 오래됐으면 먼저 다시 조회한다. `o dispatch`는 조회하지 않고 저장된 기록으로 검사한다.
 
 ### 깨끗한 에이전트 (테스트용)
@@ -121,7 +122,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | `o agents login <claude\|%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home\|agy>` | 그 프로필로 공식 로그인 (`claude auth login`, `codex login`). CLI마다 한 번. agy는 시스템 로그인을 그대로 써서 확인만 한다 |
 | `o agents shell <claude\|%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home\|agy> [인자…]` | 지금 폴더에서 깨끗한 CLI를 대화형으로 실행 |
 | `o agents doctor [--json]` | 로그인 상태와 프로필 오염(훅·스킬·MCP·전역 지시) 검사. 깨끗하면 종료 코드 0 |
-| `o dispatch --clean plan.json` | 이 실행의 카드를 깨끗한 프로필로 실행 (계획 형식은 그대로) |
+| `o dispatch plan.json` (`--profile project-o`, `--clean`과 같음) | 이 실행의 카드를 깨끗한 프로필로 실행 (계획 형식은 그대로). 앱의 "project_O 프로필 사용"과 같다 |
 
 깨끗한 실행은 환경변수를 시스템 기본값(PATH, SystemRoot, TEMP, APPDATA, LOCALAPPDATA, ProgramFiles 등)만 남기고 비운 뒤 홈(USERPROFILE/HOME)을 프로필로 바꾸고, Claude는 `CLAUDE_CONFIG_DIR`, Codex는 `CODEX_HOME`을 프로필 안으로 둔다. Claude는 시작 폴더 위의 지시 파일도 읽으므로 프로필 설정(`claudeMdExcludes`)이 홈 폴더의 AGENTS.md·CLAUDE.md를 뺀다. 그 밖의 상위 폴더 지시 파일은 `doctor`가 알려 준다 — 테스트 프로젝트는 홈 폴더 밖에 둔다. Orca 터미널은 자체 훅을 더하므로 `o agents shell`이나 일반 터미널을 쓴다.
 

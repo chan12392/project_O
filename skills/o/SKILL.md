@@ -40,8 +40,8 @@ description: Split a multi-part request into work cards and hand them to agent C
 
 ```sh
 o check plan.json      # 정책 검사만
-o dispatch plan.json   # 통과하면 백그라운드 병렬 실행, runId 출력
-o dispatch --clean plan.json   # 깨끗한 에이전트(하네스 없음) + 주입된 컨텍스트만으로 실행
+o dispatch plan.json   # 통과하면 백그라운드 병렬 실행, runId 출력 (기본: project_O 프로필 = 깨끗한 에이전트 + 주입된 컨텍스트)
+o dispatch --profile own plan.json   # 이 PC의 평소 CLI 설정(스킬·훅·메모리)으로 실행
 ```
 
 토큰은 `o tokens --compare`로 기본 하네스와 깨끗한+세션 공유를 비교한다(`docs/token-benchmark.md`).
