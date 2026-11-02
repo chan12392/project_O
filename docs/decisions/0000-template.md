@@ -1,8 +1,7 @@
 # ADR-NNNN: 제목
 
-- 상태: 제안 | 승인 | 대체됨(ADR-XXXX)
+- 상태: 제안 | 채택 | 대체됨(ADR-XXXX)
 - 날짜: YYYY-MM-DD
-- 승인: [ ] A  [ ] B
 
 ## 배경
 
