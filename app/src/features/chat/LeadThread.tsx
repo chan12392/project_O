@@ -135,7 +135,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
   };
 
   return (
-    <section className="overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby={titleId}>
+    <section className="@container overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby={titleId}>
       <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
           <h2 id={titleId} className="truncate text-sm font-medium" title={plan.title}>
@@ -169,7 +169,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
                 <th scope="col" className="px-2 py-2 font-normal">
                   에이전트
                 </th>
-                <th scope="col" className="px-2 py-2 font-normal max-sm:hidden">
+                <th scope="col" className="px-2 py-2 font-normal @max-md:hidden">
                   모델 · 노력
                 </th>
                 <th scope="col" className="px-2 py-2 pr-4 font-normal">
@@ -185,7 +185,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
                     {card.role && <span className="block text-2xs text-muted-foreground">{card.role}</span>}
                   </th>
                   <td className="px-2 py-2.5 whitespace-nowrap">{PROVIDER_NAME[card.provider as keyof typeof PROVIDER_NAME] ?? card.provider}</td>
-                  <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground max-sm:hidden">
+                  <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground @max-md:hidden">
                     {card.model || "기본 모델"}
                     {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
                   </td>
@@ -274,7 +274,7 @@ function CardTask({ task }: { task: string }) {
   const long = taskIsLong(task);
   return (
     <>
-      <p className={`whitespace-pre-wrap text-foreground/90 ${long && !open ? "line-clamp-3" : ""}`}>{task}</p>
+      <p className={`min-w-32 whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground/90 ${long && !open ? "line-clamp-3" : ""}`}>{task}</p>
       {long && (
         <button
           type="button"
