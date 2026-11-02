@@ -21,6 +21,7 @@
 
 - 작업 규칙·브랜치 흐름·정책 차단: [AGENTS.md](AGENTS.md)
 - 설계 초안: [docs/DESIGN.md](docs/DESIGN.md)
+- 제품 목표와 현재 상태: [docs/GOALS.md](docs/GOALS.md)
 - 결정 기록: [docs/decisions/](docs/decisions/)
 
 ## 시작하기
