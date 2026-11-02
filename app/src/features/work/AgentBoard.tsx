@@ -44,8 +44,9 @@ export function AgentBoard({ runs, onOpen }: { runs: RunView[]; onOpen: (target:
               {column.name}
               <span className="ml-auto rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{inColumn.length}</span>
             </KanbanHeader>
-            <KanbanCards>
-              {inColumn.length === 0 && <p className={`px-1 py-1 text-2xs text-muted-foreground ${column.id === "review" ? "" : "@max-4xl:hidden"}`}>{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
+            {/* Stacked, an empty lane is just its header; the PR lane keeps a line saying why it is empty. */}
+            <KanbanCards empty={inColumn.length === 0 && column.id !== "review"}>
+              {inColumn.length === 0 && <p className="px-1 py-1 text-2xs text-muted-foreground">{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
               {inColumn.map(({ card, run }) => (
                 <BoardCard key={`${run.runId}/${card.id}`} card={card} run={run} onOpen={() => onOpen({ run: run.runId, card: card.id })} />
               ))}
@@ -93,7 +94,7 @@ function BoardCard({ card, run, onOpen }: { card: CardView; run: RunView; onOpen
       {pr && (
         <div className="flex flex-col gap-1 px-1 pb-1">
           <span className="flex min-w-0 items-center gap-2 text-2xs">
-            <ExternalAnchor href={pr} className="flex min-w-0 items-center gap-1 truncate text-sky-400 hover:underline focus-ring">
+            <ExternalAnchor href={pr} className="flex min-w-0 items-center gap-1 truncate text-callout-note hover:underline focus-ring">
               <GitPullRequest className="size-3 shrink-0" aria-hidden="true" />
               {pr.replace("https://github.com/", "")}
             </ExternalAnchor>

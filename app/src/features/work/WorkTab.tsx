@@ -155,8 +155,9 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
               <s.icon className="size-3.5" aria-hidden="true" />
               {s.label}
               {count > 0 && (
-                <span className="rounded-full bg-red-500/90 px-1.5 text-3xs font-bold text-white tabular-nums" aria-label={`${count}건`}>
+                <span className="rounded-full bg-destructive px-1.5 text-3xs font-bold text-destructive-foreground tabular-nums">
                   {count}
+                  <span className="sr-only">건</span>
                 </span>
               )}
             </button>
