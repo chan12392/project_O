@@ -21,6 +21,7 @@ const MAX_SETUP_SIZE: u64 = 1024 * 1024 * 1024;
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Atest_1-[0-9]{8}-[0-9a-f]{7}\z").unwrap());
 static ASSET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Aproject_O_[0-9]+\.[0-9]+\.[0-9]+_x64-setup\.exe\z").unwrap());
 static COMMIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9a-f]{40}\z").unwrap());
+static SHA256: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9a-f]{64}\z").unwrap());
 /// Who publishes releases: the release workflow's token, never a person.
 const RELEASE_AUTHOR: &str = "github-actions[bot]";
 /// The approved channel: a release is offered only when its commit is already in this branch.
@@ -61,6 +62,9 @@ pub struct Update {
     /// The commit the release was built from; checked against test_1 before it is offered.
     #[serde(skip)]
     target: String,
+    /// Lowercase hex SHA-256 of the installer, from the asset's `digest` (`sha256:<hex>`).
+    #[serde(skip)]
+    sha256: String,
 }
 
 #[derive(Serialize)]
@@ -91,6 +95,12 @@ struct Asset {
     name: String,
     size: u64,
     state: String,
+    digest: Option<String>,
+}
+
+/// `sha256:<64 lowercase hex>` → the hex; anything else (missing, another algorithm) is `None`.
+fn sha256_of(digest: Option<&str>) -> Option<String> {
+    digest?.strip_prefix("sha256:").filter(|hex| SHA256.is_match(hex)).map(str::to_string)
 }
 
 fn published(value: &str) -> Option<DateTime<FixedOffset>> {
@@ -109,8 +119,13 @@ fn select_release(json: &str, sha: &str, built_at: &str) -> Result<Option<Update
         if r.author.as_ref().is_none_or(|a| a.login != RELEASE_AUTHOR) { return None; }
         let target = r.target_commitish.filter(|t| COMMIT.is_match(t) && t.starts_with(&r.tag_name[16..]))?;
         let date = r.published_at.as_deref().and_then(published)?;
-        let asset = r.assets.into_iter().find(|a| ASSET.is_match(&a.name) && a.state == "uploaded" && (1..=MAX_SETUP_SIZE).contains(&a.size))?;
-        Some((date, Update { tag: r.tag_name, published_at: r.published_at?, notes: r.body.unwrap_or_default(), asset: asset.name, size: asset.size, target }))
+        let (asset, sha256) = r.assets.into_iter().find_map(|a| {
+            let ok = ASSET.is_match(&a.name) && a.state == "uploaded" && (1..=MAX_SETUP_SIZE).contains(&a.size);
+            // Without GitHub's digest the download could not be checked, so the release is not offered.
+            let sha256 = sha256_of(a.digest.as_deref()).filter(|_| ok)?;
+            Some((a, sha256))
+        })?;
+        Some((date, Update { tag: r.tag_name, published_at: r.published_at?, notes: r.body.unwrap_or_default(), asset: asset.name, size: asset.size, target, sha256 }))
     }).max_by_key(|(date, _)| *date);
     Ok(newest.and_then(|(date, update)| {
         // A local build can only reach this path through the manual button.
@@ -165,7 +180,18 @@ fn verify_download(dir: &Path, update: &Update) -> Result<std::path::PathBuf, St
     no_links(&path)?;
     let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() != update.size { return Err("설치 파일 크기가 일치하지 않습니다. 다시 시도해 주세요".into()); }
+    if !SHA256.is_match(&update.sha256) || file_sha256(&path)? != update.sha256 {
+        return Err("설치 파일의 SHA-256이 릴리스와 일치하지 않습니다. 설치하지 않았습니다".into());
+    }
     Ok(path)
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[tauri::command]
@@ -264,5 +290,18 @@ mod tests {
         assert!(verify_download(&first, &update).is_err());
         fs::write(first.join(&update.asset), vec![0; update.size as usize]).unwrap();
         assert!(verify_download(&first, &update).is_ok());
+    }
+
+    /// A file of the right size but other bytes (a swapped or tampered asset) is refused:
+    /// the download must match the SHA-256 GitHub reports for the release asset.
+    #[test]
+    fn download_must_match_the_release_asset_digest() {
+        let dir = fresh_dir(&std::env::temp_dir(), "project_O-update-test").unwrap();
+        let update = select_release(FIXTURE, "", "").unwrap().unwrap();
+        fs::write(dir.join(&update.asset), vec![1; update.size as usize]).unwrap();
+        assert!(verify_download(&dir, &update).is_err());
+        fs::write(dir.join(&update.asset), vec![0; update.size as usize]).unwrap();
+        assert!(verify_download(&dir, &update).is_ok());
+        let _ = fs::remove_dir_all(&dir);
     }
 }
