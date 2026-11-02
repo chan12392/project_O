@@ -248,6 +248,12 @@ pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
     if req.attach.len() > files::MAX_PER_MESSAGE {
         return Err(format!("첨부는 메시지당 {}개까지입니다", files::MAX_PER_MESSAGE));
     }
+    // agy runs a project's `.agents/hooks.json` (antigravity.google/docs/hooks) and has no
+    // documented switch to turn hooks off for one run, so it does not lead such a project.
+    let agy_hooks = Path::new(req.project).join(".agents").join("hooks.json");
+    if req.provider == ProviderId::Agy && agy_hooks.exists() {
+        return Err(format!("이 프로젝트에 {}이 있어 Antigravity를 총괄로 쓰지 않습니다 (계획 승인 전에 프로젝트 훅이 실행될 수 있음). Claude Code나 Codex를 고르세요", agy_hooks.to_string_lossy()));
+    }
     check_folder(home, req.project)
 }
 

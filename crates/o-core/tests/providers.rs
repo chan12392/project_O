@@ -267,7 +267,7 @@ fn the_claude_lead_reads_only_and_resumes_its_session() {
     assert_eq!(first.bin, "claude");
     let expected = [
         "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
-        "--strict-mcp-config", "--effort", "low", "--add-dir", "C:/o-lead/t1",
+        "--strict-mcp-config", "--setting-sources", "user", "--settings", r#"{"disableAllHooks":true}"#, "--effort", "low", "--add-dir", "C:/o-lead/t1",
     ];
     assert_eq!(first.args, expected);
     assert_eq!(first.stdin.as_deref(), Some("계획해 줘"));
@@ -281,11 +281,14 @@ fn the_codex_lead_runs_in_a_read_only_sandbox_and_resumes_with_exec_resume() {
     let images = vec!["C:/o-lead/t1/01-a.png".to_string()];
     let first = lead_spec(ProviderId::Codex, None, Some("high"), &images).unwrap();
     let expected = [
-        "exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "-i", "C:/o-lead/t1/01-a.png", "--json", "-c", "model_reasoning_effort=high", "-",
+        "exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "--disable", "hooks", "-i", "C:/o-lead/t1/01-a.png", "--json", "-c",
+        "model_reasoning_effort=high", "-",
     ];
     assert_eq!(first.args, expected);
     let next = lead_spec(ProviderId::Codex, Some("th-9"), None, &images).unwrap();
-    let expected = ["exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "resume", "-i", "C:/o-lead/t1/01-a.png", "--json", "th-9", "-"];
+    let expected = [
+        "exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "--disable", "hooks", "resume", "-i", "C:/o-lead/t1/01-a.png", "--json", "th-9", "-",
+    ];
     assert_eq!(next.args, expected);
     assert_eq!(next.stdin.as_deref(), Some("계획해 줘"));
 }

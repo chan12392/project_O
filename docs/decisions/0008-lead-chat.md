@@ -36,9 +36,9 @@
 
 | CLI | 첫 턴 | 이어 말하기 | 읽기 전용 |
 |---|---|---|---|
-| Claude | `claude -p --output-format stream-json --verbose --permission-mode default --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --strict-mcp-config [--effort] [--add-dir 첨부 폴더]` | `--resume <session>` | 도구가 읽기 셋뿐이고 MCP를 싣지 않는다 |
-| Codex | `codex exec -s read-only -C <project> --skip-git-repo-check [-i 이미지]... --json [-c model_reasoning_effort=…] -` | `codex exec … resume [-i …] --json <session> -` | read-only 샌드박스 |
-| Antigravity | `agy --output-format stream-json --mode plan --sandbox --settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}} [--add-dir 첨부 폴더] [--model] [--effort] -p <프롬프트>` | `--conversation <id>` (스트림 `init`의 `conversation_id`) | 세션 설정의 거부 규칙을 agy 권한 검사가 막는다(파일 쓰기·셸·MCP·URL 동작). plan 모드만으로는 막히지 않는다(개정 1) |
+| Claude | `claude -p --output-format stream-json --verbose --permission-mode default --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --strict-mcp-config --setting-sources user --settings {"disableAllHooks":true} [--effort] [--add-dir 첨부 폴더]` | `--resume <session>` (같은 인자) | 도구가 읽기 셋뿐이고 MCP를 싣지 않는다. 프로젝트 설정을 읽지 않고 훅을 끈다(개정 2) |
+| Codex | `codex exec -s read-only -C <project> --skip-git-repo-check --disable hooks [-i 이미지]... --json [-c model_reasoning_effort=…] -` | `codex exec … --disable hooks resume [-i …] --json <session> -` | read-only 샌드박스, 훅 끔(개정 2) |
+| Antigravity | `agy --output-format stream-json --mode plan --sandbox --settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}} [--add-dir 첨부 폴더] [--model] [--effort] -p <프롬프트>` | `--conversation <id>` (스트림 `init`의 `conversation_id`) | 세션 설정의 거부 규칙을 agy 권한 검사가 막는다(파일 쓰기·셸·MCP·URL 동작). plan 모드만으로는 막히지 않는다(개정 1). 한 번만 훅을 끄는 공식 옵션이 없어 프로젝트에 `.agents/hooks.json`이 있으면 총괄을 맡지 않는다(개정 2) |
 
 - 노력 수준은 CLI가 받는 값만: Claude `low·medium·high·xhigh·max`, Codex `minimal·low·medium·high·xhigh`, Antigravity `low·medium·high·xhigh·max`. 모델은 기본이 CLI 설정이고, 사람이 고르면 `--model`(Codex `-m`)로 넘긴다(개정 1).
 - 총괄 CLI는 그 CLI의 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`, `CODEX_API_KEY`)를 대소문자 구분 없이 물려받지 않는다. 남은 키가 구독 대신 API로 과금되는 것을 막는다(B의 카드 수정과 같은 `api_key_vars`·`names_to_remove`).
@@ -102,6 +102,14 @@ agy 1.4.12 `--help`에 `--mode plan`, `--sandbox`, `--settings`(세션 한정 �
 - 결정: 읽기 전용은 plan 모드가 아니라 거부 규칙이 보장하므로, agy 총괄은 거부 규칙을 항상 넣는다. 허용(`allow`) 규칙은 넣지 않는다. 권한 확인을 끄는 옵션이나 `accept-edits`·`auto` 모드는 쓰지 않는다(`crates/o-core/tests/providers.rs`가 고정).
 - agy는 이미지 입력 옵션이 없다. 첨부는 프롬프트에 경로를 적고 첨부 폴더를 `--add-dir`로 연다(읽기만).
 - 남은 위험: 사람의 agy 사용자 설정에 넓은 `allow` 규칙이 있을 때 세션 `deny`가 이기는지는 직접 확인하지 못했다(4번). 총괄의 계획은 그대로 사람이 "실행"을 눌러야 카드가 되고 정책을 두 번 거친다.
+
+## 개정 2 (2026-11-02): 정기 코드 검토·UX 감사 반영
+
+### 프로젝트 훅
+
+- `claude -p`는 폴더 신뢰 대화상자를 띄우지 않지만 프로젝트 설정 파일의 훅은 실행한다(code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder). 그래서 총괄은 첫 턴·이어 말하기 모두 `--setting-sources user`(깨끗한 프로필이면 그 프로필 설정이 user)와 `--settings {"disableAllHooks":true}`로 띄운다. 공식 문서가 권하는 두 옵션이다.
+- Codex는 신뢰한 프로젝트의 `.codex/`에서 훅을 싣는다. `--disable hooks`(`codex exec --help`: `-c features.hooks=false`와 같음, 모든 설정 층보다 우선)로 끈다.
+- agy는 프로젝트 `.agents/hooks.json`을 싣고(antigravity.google/docs/hooks) 한 번만 훅을 끄는 공식 옵션이 없다. 그 파일이 있는 프로젝트에서는 agy 총괄을 거절하고 Claude Code·Codex를 고르게 한다.
 
 ## 영향
 

@@ -27,7 +27,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 13] = [
+    let tests: [(&str, fn()); 14] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -41,6 +41,7 @@ fn main() {
         ("a second message while the lead answers is refused", busy),
         ("bad requests start nothing", refused_requests),
         ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
+        ("no project hook runs before a plan is approved, first turn or resumed", project_hooks_off),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -403,4 +404,53 @@ fn api_keys_removed() {
     assert_eq!(claude.as_deref(), Some("keys:CODEX_API_KEY"));
     let codex = codex.unwrap();
     assert!(codex.contains("anthropic_api_key") && codex.contains("ANTHROPIC_AUTH_TOKEN") && !codex.contains("CODEX_API_KEY"), "{codex}");
+}
+
+/// The value after `flag` in an argv, if the flag is there.
+fn arg_after<'a>(args: &'a [String], flag: &str) -> Option<&'a str> {
+    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).map(String::as_str)
+}
+
+/// A repository's own settings may hold hooks that `claude -p` runs before anyone trusted it
+/// (code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder): the lead reads
+/// user settings only and turns hooks off, on the first turn and on every resumed one.
+/// Codex turns its hooks off too; agy, which has no such switch, refuses a project with hooks.
+fn project_hooks_off() {
+    let (home, project) = setup("hooks");
+    let (spawner, seen) = fake(claude_answer("sess-h", "네"));
+    lead::send(&home, &request(&project, "처음"), spawner.as_ref()).unwrap();
+    lead::send(&home, &request(&project, "이어서"), spawner.as_ref()).unwrap();
+    let specs = seen.lock().unwrap().clone();
+    assert_eq!(arg_after(&specs[1].args, "--resume"), Some("sess-h"));
+    for spec in &specs {
+        assert_eq!(arg_after(&spec.args, "--setting-sources"), Some("user"), "{:?}", spec.args);
+        let settings: Value = serde_json::from_str(arg_after(&spec.args, "--settings").expect("--settings")).unwrap();
+        assert_eq!(settings, json!({ "disableAllHooks": true }));
+    }
+
+    let codex_lines = vec![
+        json!({ "type": "thread.started", "thread_id": "th-h" }).to_string(),
+        json!({ "type": "item.completed", "item": { "type": "agent_message", "text": "네" } }).to_string(),
+        json!({ "type": "turn.completed", "usage": {} }).to_string(),
+    ];
+    let (codex, seen) = fake(codex_lines);
+    let req = SendRequest { provider: ProviderId::Codex, ..request(&project, "codex 처음") };
+    lead::send(&home, &req, codex.as_ref()).unwrap();
+    lead::send(&home, &SendRequest { text: "codex 이어서", ..req }, codex.as_ref()).unwrap();
+    let specs = seen.lock().unwrap().clone();
+    assert!(specs[1].args.contains(&"resume".to_string()), "{:?}", specs[1].args);
+    for spec in &specs {
+        // Before `resume`: an option of `codex exec`, which `-c features.hooks=false` spells out.
+        let at = spec.args.iter().position(|a| a == "--disable").expect("--disable");
+        assert_eq!(spec.args[at + 1], "hooks");
+        assert!(spec.args.iter().position(|a| a == "resume").is_none_or(|r| at < r));
+    }
+
+    let hooks = PathBuf::from(&project).join(".agents");
+    std::fs::create_dir_all(&hooks).unwrap();
+    std::fs::write(hooks.join("hooks.json"), "{}").unwrap();
+    let (agy, seen) = fake(vec![]);
+    let refused = lead::send(&home, &SendRequest { provider: ProviderId::Agy, ..request(&project, "agy") }, agy.as_ref()).unwrap_err();
+    assert!(refused.contains("hooks.json"), "{refused}");
+    assert!(seen.lock().unwrap().is_empty());
 }
