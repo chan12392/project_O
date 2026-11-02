@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type Poin
 
 import { readStored, writeStored } from "../lib/storage.ts";
 import type { PanelView } from "../data/useRun.ts";
+import { popoutUrl } from "./popoutUrl.ts";
 
 const KEY = "project-o.panel";
 const CHANNEL = "project-o-panel";
@@ -89,15 +90,9 @@ export function usePanelLayout(onRemoteSelect: (s: Selection) => void) {
     event.preventDefault();
   };
 
-  const popout = (selection: Selection) => {
-    const url = new URL(window.location.href);
-    url.search = "";
-    url.searchParams.set("popout", "panel");
-    url.searchParams.set("view", selection.view);
-    if (selection.project) url.searchParams.set("project", selection.project);
-    if (selection.run) url.searchParams.set("run", selection.run);
-    if (selection.card) url.searchParams.set("card", selection.card);
-    const win = window.open(url, "project-o-panel", "popup,width=760,height=880");
+  /** `source`: the runs the main window shows, so the pop-out shows the same ones. */
+  const popout = (selection: Selection, source?: "live" | "demo") => {
+    const win = window.open(popoutUrl(window.location.href, selection, source), "project-o-panel", "popup,width=760,height=880");
     if (win) setPopped(true);
   };
 

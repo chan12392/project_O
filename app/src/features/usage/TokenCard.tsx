@@ -15,21 +15,54 @@ function verdict({ baseline, shared }: TokenReport["compare"]): string | undefin
   return `깨끗한+세션 공유가 기본 하네스보다 카드당 ${Math.abs(pct)}% ${pct < 0 ? "적게" : "많이"} 씁니다`;
 }
 
+/** Cards finish while the dashboard stays open: read the report again this often while the page is visible. */
+const REFRESH_MS = 15_000;
+
 /**
  * Tokens per card for each way of running cards (`o tokens`), for one project:
  * the default harness against clean agents that get only the shared context.
+ * Read again every REFRESH_MS while visible (and on coming back), keeping the last report on screen meanwhile.
  */
 export function TokenCard({ project }: { project?: string }) {
   const [load, setLoad] = useState<Load>({ state: "loading" });
   useEffect(() => {
     let live = true;
+    let inflight = false;
+    let timer: number | undefined;
+    let last = "";
     setLoad({ state: "loading" });
-    api.tokens(project).then(
-      (report) => live && setLoad({ state: "ready", report }),
-      (e: unknown) => live && setLoad({ state: "error", message: e instanceof Error ? e.message : String(e) }),
-    );
+    const schedule = () => {
+      window.clearTimeout(timer);
+      if (live && !document.hidden) timer = window.setTimeout(read, REFRESH_MS);
+    };
+    const read = () => {
+      if (inflight) return;
+      inflight = true;
+      api.tokens(project).then(
+        (report) => {
+          // An unchanged report keeps the same state, so a quiet refresh re-renders nothing.
+          const text = JSON.stringify(report);
+          if (live && text !== last) {
+            last = text;
+            setLoad({ state: "ready", report });
+          }
+        },
+        (e: unknown) => {
+          last = "";
+          if (live) setLoad({ state: "error", message: e instanceof Error ? e.message : String(e) });
+        },
+      ).finally(() => {
+        inflight = false;
+        schedule();
+      });
+    };
+    const onVisibility = () => (document.hidden ? window.clearTimeout(timer) : read());
+    read();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
       live = false;
+      window.clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVisibility);
     };
   }, [project]);
 

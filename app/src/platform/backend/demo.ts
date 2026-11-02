@@ -1,4 +1,5 @@
-import type { AgentId, Backend, BudgetReport, BudgetState, LeadModel, LeadProvider, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
+import type { AgentId, Backend, BudgetReport, BudgetState, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
+import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
 import { DESKTOP_UPDATES_ONLY } from "../updates.ts";
 
 /** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread. */
@@ -55,6 +56,20 @@ const demoGroup = (key: TokenGroup["key"], label: string, runs: number, cards: n
 const DEMO_BASELINE = demoGroup("normal", "기본 하네스", 3, 9, demoTokens(18_400, 41_200, 3_100));
 const DEMO_SHARED = demoGroup("clean+context", "깨끗한+세션 공유", 3, 9, demoTokens(6_900, 12_800, 2_700));
 
+/** The preview's project list: the recorded runs' folders as a root, one test project and one registered folder. Changes last for this window only. */
+const DEMO_ROOT = "C:/projects";
+let demoProjects: ListedProject[] = [
+  { path: `${DEMO_ROOT}/blog`, name: "blog", kind: "root" },
+  { path: `${DEMO_ROOT}/project_O`, name: "project_O", kind: "root" },
+  { path: `${DEMO_ROOT}/todo-app`, name: "todo-app", kind: "root" },
+  { path: `${DEMO_ROOT}/test/o-sandbox`, name: "o-sandbox", kind: "test" },
+  { path: `${DEMO_ROOT}/test/probe`, name: "probe", kind: "test" },
+  { path: "D:/work/landing", name: "landing", kind: "registered" },
+];
+const demoList = (): ProjectList => ({ root: DEMO_ROOT, defaultRoot: true, rootExists: true, projects: demoProjects });
+const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/;
+const nameOf = (path: string) => folderKey(path).split("/").filter(Boolean).pop() ?? path;
+
 /** The preview's model lists, in the shape `o lead models` prints (Claude's are its documented aliases). */
 const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
   claude: [
@@ -101,4 +116,27 @@ export const demoBackend: Backend = {
   leadDispatch: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadStop: async () => ({ stopped: false }),
   leadModels: async (provider) => ({ provider, models: DEMO_MODELS[provider] }),
+  projects: async () => demoList(),
+  projectsAdd: async (path) => {
+    if (!ABSOLUTE.test(path)) throw new Error("project는 절대 경로여야 합니다");
+    if (demoProjects.some((p) => sameFolder(p.path, path))) throw new Error(`이미 목록에 있는 폴더입니다: ${path}`);
+    demoProjects = [...demoProjects, { path: path.replace(/\\/g, "/"), name: nameOf(path), kind: "registered" }];
+    return demoList();
+  },
+  projectsRemove: async (path) => {
+    const found = demoProjects.find((p) => sameFolder(p.path, path));
+    if (!found) throw new Error(`등록된 폴더가 아닙니다: ${path}`);
+    if (found.kind !== "registered") throw new Error("프로젝트 루트 안의 폴더는 목록에서 뺄 수 없습니다");
+    demoProjects = demoProjects.filter((p) => p !== found);
+    return demoList();
+  },
+  projectsNew: async (name) => {
+    const path = `${DEMO_ROOT}/${name.trim()}`;
+    if (!name.trim() || /[\\/:*?"<>|]/.test(name)) throw new Error("프로젝트 이름에는 글자·숫자·공백·. _ -만 쓸 수 있습니다");
+    if (demoProjects.some((p) => sameFolder(p.path, path))) throw new Error(`같은 이름의 폴더가 이미 있습니다: ${path}`);
+    demoProjects = [...demoProjects, { path, name: name.trim(), kind: "root" }];
+    return { ...demoList(), created: path };
+  },
+  projectsRoot: async () => demoList(),
+  projectsCheck: async (paths) => paths.map((path) => (ABSOLUTE.test(path) ? { path, ok: true } : { path, ok: false, reason: "project는 절대 경로여야 합니다" })),
 };

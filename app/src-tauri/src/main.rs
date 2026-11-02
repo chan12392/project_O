@@ -22,6 +22,8 @@ fn own_folder_first_on_path() {
 fn main() {
     own_folder_first_on_path();
     tauri::Builder::default()
+        // Only Rust opens the folder picker (commands::projects::pick_folder); no capability grants the screens dialog calls.
+        .plugin(tauri_plugin_dialog::init())
         .setup(|_| { commands::update::start_checks(); Ok(()) })
         .invoke_handler(commands::handler())
         .run(tauri::generate_context!())

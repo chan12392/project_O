@@ -72,13 +72,43 @@ export interface RunView {
   quotas: Quota[];
 }
 
+export interface FoldedRun {
+  /** What the view was folded from: a run with the same key folds to the same view. */
+  key: string;
+  view: RunView;
+}
+
+/**
+ * Each answer's runs folded, in the answer's order (runs without a start left out). A run whose
+ * events are the same as last time keeps its view object, so a quiet poll re-renders nothing.
+ * The key is the events' content, not their count: a long Claude Code session keeps only its
+ * newest lines, so a later answer can carry as many events with newer content.
+ */
+export function foldRuns(runs: readonly { runId: string; events: OEvent[] }[], known: ReadonlyMap<string, FoldedRun>): Map<string, FoldedRun> {
+  const next = new Map<string, FoldedRun>();
+  for (const r of runs) {
+    const key = JSON.stringify(r.events);
+    const hit = known.get(r.runId);
+    if (hit && hit.key === key) {
+      next.set(r.runId, hit);
+      continue;
+    }
+    const view = snapshot(r.events);
+    if (view) next.set(r.runId, { key, view });
+  }
+  return next;
+}
+
 export function snapshot(events: OEvent[]): RunView | undefined {
   let run: RunView | undefined;
   const byId = new Map<string, CardView>();
   for (const e of events) {
     if (e.t === "run.start") {
       run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [], messages: [], quotas: [] };
+      byId.clear();
       for (const c of e.cards) {
+        // A repeated card id is one card: the first keeps it (as run/snapshot.rs does).
+        if (byId.has(c.id)) continue;
         // Runs recorded before labels existed carry only a role.
         const card: CardView = { ...c, label: c.label ?? cardLabel(c), state: "waiting", activity: "", log: [], usage: { input: 0, cached: 0, output: 0 } };
         byId.set(c.id, card);

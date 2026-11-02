@@ -243,6 +243,54 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   return false;
 }
 
+/** A new project's folder name as `o projects new` takes it; it checks the name again. */
+const PROJECT_NAME = /^[^\\/:*?"<>|\0]{1,64}$/;
+
+/** The project list's twins of the Tauri projects_* commands (app/src-tauri/src/commands/projects.rs, ADR-0009). */
+async function projects(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
+  // `o projects` refuses with the reason on stderr; the screen shows it as it is.
+  const run = (args: string[]) => {
+    void o(["projects", ...args, "--json"]).then((out) => send(res, 200, out), (e: Error) => send(res, 400, JSON.stringify({ error: e.message })));
+    return true;
+  };
+  const fail = (message: string) => {
+    send(res, 400, JSON.stringify({ error: message }));
+    return true;
+  };
+  const folder = query.get("path") ?? "";
+  if (req.method === "GET" && path === "/projects") return run([]);
+  if (req.method !== "POST") return false;
+  if (path === "/projects/add" || path === "/projects/remove") {
+    if (!ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
+    return run([path.endsWith("add") ? "add" : "remove", folder]);
+  }
+  if (path === "/projects/new") {
+    const name = query.get("name") ?? "";
+    if (!PROJECT_NAME.test(name)) return fail("프로젝트 이름은 1~64자이고 \\ / : * ? \" < > |를 쓸 수 없습니다");
+    return run(["new", name]);
+  }
+  if (path === "/projects/root") {
+    if (folder && !ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
+    const target = query.get("reset") === "1" ? ["--default"] : folder ? [folder] : [];
+    return run(["root", ...target, ...(query.get("create") === "1" ? ["--create"] : [])]);
+  }
+  if (path === "/projects/check") {
+    let paths: unknown;
+    try {
+      paths = JSON.parse((await body(req, 256 * 1024)).toString("utf8"));
+    } catch {
+      return fail("요청 본문이 JSON이 아닙니다");
+    }
+    const folders = Array.isArray(paths) ? paths.filter((p): p is string => typeof p === "string" && ABSOLUTE.test(p)).slice(0, 200) : [];
+    if (folders.length === 0) {
+      send(res, 200, "[]");
+      return true;
+    }
+    return run(["check", ...folders]);
+  }
+  return false;
+}
+
 /**
  * Dev-server stand-in for the desktop shell (src/platform/backend, src/data/useLiveRuns.ts): runs, usage,
  * agent CLI status, the official install and sign-in, and About, each through `o`.
@@ -290,6 +338,9 @@ export function liveRuns(): Plugin {
         if (req.method === "GET" && path === "/tokens") {
           const project = query.get("project");
           return void o(["tokens", "--json", ...(project ? ["--project", project] : [])]).then((out) => send(res, 200, out), error(res));
+        }
+        if (path === "/projects" || path?.startsWith("/projects/")) {
+          return void projects(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
         if (path?.startsWith("/lead/")) {
           return void lead(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));

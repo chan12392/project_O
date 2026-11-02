@@ -442,6 +442,33 @@ fn cut(text: &str, chars: usize) -> String {
     out
 }
 
+/// At most `chars` characters of `text` around the part that matched (`excerpt`, the FTS
+/// snippet with its `…` ends), with `…` where text was left out on either side. Text that fits
+/// is passed whole; a snippet that cannot be found in the text is passed instead of the head.
+fn around(text: &str, excerpt: &str, chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= chars {
+        return text.to_string();
+    }
+    let core = excerpt.trim_matches(|c: char| c == '…' || c.is_whitespace());
+    let Some(byte) = (!core.is_empty()).then(|| text.find(core)).flatten() else {
+        return if core.is_empty() { cut(text, chars) } else { cut(core, chars) };
+    };
+    let (at, len) = (text[..byte].chars().count(), core.chars().count());
+    // Room for the two ellipses, then centre the window on the match.
+    let window = chars.saturating_sub(2).max(1);
+    let start = (at + len / 2).saturating_sub(window / 2).min(total - window);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(text.chars().skip(start).take(window));
+    if start + window < total {
+        out.push('…');
+    }
+    out
+}
+
 /// The fenced block's first and last lines. Earlier cards wrote what is inside; it is
 /// reference data for the card, never instructions (ADR-0005).
 pub const CONTEXT_BEGIN: &str = "<<<O_CONTEXT_BEGIN>>>";
@@ -467,9 +494,10 @@ pub fn section(hits: &[Hit], provider: ProviderId) -> Option<String> {
         if room < MIN_ENTRY_CHARS {
             break;
         }
-        // An entry cannot close the fence early.
-        let text = squash_spaces(&hit.text).replace("<<<O_CONTEXT", "<<<O-CONTEXT");
-        let line = format!("{head}{}", cut(&text, room));
+        // The part that matched, not just the entry's head; an entry cannot close the fence early.
+        let defuse = |s: &str| s.replace("<<<O_CONTEXT", "<<<O-CONTEXT");
+        let text = around(&defuse(&squash_spaces(&hit.text)), &defuse(&hit.excerpt), room);
+        let line = format!("{head}{text}");
         used += line.chars().count() + 1;
         entries.push(line);
     }

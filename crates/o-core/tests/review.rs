@@ -396,8 +396,51 @@ fn the_prompt_names_the_head_and_says_whether_local_files_may_fill_in() {
     assert!(at_head.text.contains(&format!("커밋: head {HEAD_A}")));
     assert!(at_head.text.contains("프로젝트 폴더의 파일을 읽어 확인하고"));
     let elsewhere = review::build_task(&pr(), &big_diff(), "n", false);
-    assert!(elsewhere.text.contains("head 커밋이 아닙니다") && elsewhere.text.contains("보충하거나 판단하지 말고"));
+    assert!(elsewhere.text.contains("head 커밋 그대로가 아닙니다") && elsewhere.text.contains("보충하거나 판단하지 말고"));
     assert!(!elsewhere.text.contains("프로젝트 폴더의 파일을 읽어 확인하고"));
+}
+
+/// `git` in `dir` for a throwaway fixture repository (no user config, hooks or signing).
+fn git(dir: &Path, args: &[&str]) -> String {
+    let out = std::process::Command::new("git")
+        .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=no-hooks"])
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    String::from_utf8_lossy(&out.stdout).trim().to_string()
+}
+
+#[test]
+fn local_files_stand_in_for_the_head_only_when_the_work_tree_is_clean() {
+    let repo = std::env::temp_dir().join(format!("o-review-tree-{}", std::process::id()));
+    let _ = fs::remove_dir_all(&repo);
+    fs::create_dir_all(&repo).unwrap();
+    git(&repo, &["init", "-q"]);
+    fs::write(repo.join(".gitignore"), "build/\n").unwrap();
+    fs::write(repo.join("a.ts"), "export const a = 1;\n").unwrap();
+    git(&repo, &["add", "."]);
+    git(&repo, &["commit", "-q", "-m", "head"]);
+    let head = git(&repo, &["rev-parse", "HEAD"]);
+
+    assert_eq!(review::local_tree(&repo, &head), review::LocalTree::Head);
+    assert_eq!(review::local_tree(&repo, HEAD_B), review::LocalTree::Other, "another commit");
+    // Ignored files are not the PR's either way.
+    fs::create_dir_all(repo.join("build")).unwrap();
+    fs::write(repo.join("build/out.js"), "x").unwrap();
+    assert_eq!(review::local_tree(&repo, &head), review::LocalTree::Head);
+
+    // Unstaged, staged and untracked changes: same HEAD, but the files are not the head commit's.
+    fs::write(repo.join("a.ts"), "export const a = 2;\n").unwrap();
+    assert_eq!(review::local_tree(&repo, &head), review::LocalTree::Dirty, "unstaged");
+    git(&repo, &["add", "a.ts"]);
+    assert_eq!(review::local_tree(&repo, &head), review::LocalTree::Dirty, "staged");
+    git(&repo, &["reset", "-q", "--hard"]);
+    assert_eq!(review::local_tree(&repo, &head), review::LocalTree::Head);
+    fs::write(repo.join("new.ts"), "x").unwrap();
+    assert_eq!(review::local_tree(&repo, &head), review::LocalTree::Dirty, "untracked");
+    let _ = fs::remove_dir_all(&repo);
 }
 
 #[test]
