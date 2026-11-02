@@ -2210,6 +2210,7 @@ name = "o-core"
 version = "0.2.0"
 dependencies = [
  "chrono",
+ "libc",
  "o-guard",
  "regex",
  "rusqlite",

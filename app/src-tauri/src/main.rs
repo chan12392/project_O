@@ -7,6 +7,8 @@
 
 mod commands;
 mod installer_paths;
+#[cfg(target_os = "macos")]
+mod macos_path;
 
 /// Puts this exe's folder first on PATH, so every child (agent CLIs, `o dispatch`, cards
 /// running `o msg`/`o context`) finds the `o.exe` installed beside project_O.exe, even when
@@ -14,6 +16,8 @@ mod installer_paths;
 fn own_folder_first_on_path() {
     let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.to_path_buf())) else { return };
     let rest: Vec<_> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).filter(|p| *p != dir).collect()).unwrap_or_default();
+    #[cfg(target_os = "macos")]
+    let rest = macos_path::paths(&o_core::run::store::user_home(), rest);
     if let Ok(path) = std::env::join_paths(std::iter::once(dir).chain(rest)) {
         std::env::set_var("PATH", path);
     }

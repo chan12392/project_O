@@ -61,8 +61,10 @@ npm run tauri dev                    # 개발: http://localhost:1430 + 창
 
 Windows 설치 파일(NSIS, `o.exe` 포함): [docs/INSTALL.md](docs/INSTALL.md) — `pwsh scripts/build-installer.ps1` 또는 `test_1` 프리릴리스.
 
-- 설치는 공식 npm 패키지(`npm install -g @anthropic-ai/claude-code`, `npm install -g @openai/%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home`)가 있고 npm이 PATH에 있을 때만 앱에서 실행한다. Antigravity와 npm이 없을 때는 각 회사의 공식 설치 안내를 보여 준다(인터넷 스크립트를 앱이 받아 실행하지 않음).
-- 로그인은 새 콘솔 창에서 공식 명령(`claude auth login`, `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home login`)을 띄운다. Antigravity는 시스템 로그인을 그대로 쓴다.
+macOS 앱(`.app`/`.dmg`, `o` 포함): [docs/MACOS.md](docs/MACOS.md). 맥에서는 `npm run tauri build -- --bundles app`으로 로컬 앱을 만듭니다. Windows 자동 업데이트는 사용하지 않습니다.
+
+- 설치는 공식 npm 패키지(`npm install -g @anthropic-ai/claude-code`, `npm install -g @openai/codex`)가 있고 npm이 PATH에 있을 때만 앱에서 실행한다. Antigravity와 npm이 없을 때는 각 회사의 공식 설치 안내를 보여 준다(인터넷 스크립트를 앱이 받아 실행하지 않음).
+- 로그인은 새 콘솔 창에서 공식 명령(`claude auth login`, `codex login`)을 띄운다. Antigravity는 시스템 로그인을 그대로 쓴다.
 - 같은 동작을 CLI로: `o agents status [--clean] --json`, `o agents install <id>`, `o agents open-login <id> [--clean]`, `o about --json`.
 
 `?source=demo`로 기록 재생, `?source=live`로 실시간을 고른다. 개발 서버의 `/api`는 `o runs --json`·`o usage`를 불러 쓰며 이 PC 주소·같은 출처 요청만 받는다.
@@ -76,7 +78,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 ```
 사용자 ─▶ 총괄 Claude ─(O 스킬)─▶ o dispatch plan.json
                                    │ 정책 검사 (위반 시 전체 차단, 종료 코드 2)
-                                   ├─▶ %LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home exec --json
+                                   ├─▶ codex exec --json
                                    ├─▶ agy -p --output-format stream-json
                                    └─▶ claude -p --output-format stream-json
                                          ▼
@@ -118,8 +120,8 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | 명령 | 하는 일 |
 |---|---|
 | `o agents path` | 프로필 위치: `%LOCALAPPDATA%/project_O-agents/<claude\|codex\|agy>/home` |
-| `o agents login <claude\|%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home\|agy>` | 그 프로필로 공식 로그인 (`claude auth login`, `codex login`). CLI마다 한 번. agy는 시스템 로그인을 그대로 써서 확인만 한다 |
-| `o agents shell <claude\|%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home\|agy> [인자…]` | 지금 폴더에서 깨끗한 CLI를 대화형으로 실행 |
+| `o agents login <claude\|codex\|agy>` | 그 프로필로 공식 로그인 (`claude auth login`, `codex login`). CLI마다 한 번. agy는 시스템 로그인을 그대로 써서 확인만 한다 |
+| `o agents shell <claude\|codex\|agy> [인자…]` | 지금 폴더에서 깨끗한 CLI를 대화형으로 실행 |
 | `o agents doctor [--json]` | 로그인 상태와 프로필 오염(훅·스킬·MCP·전역 지시) 검사. 깨끗하면 종료 코드 0 |
 | `o dispatch --clean plan.json` | 이 실행의 카드를 깨끗한 프로필로 실행 (계획 형식은 그대로) |
 

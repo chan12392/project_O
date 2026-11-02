@@ -3,7 +3,7 @@ name: guard
 on:
   pull_request:
   push:
-    branches: [test_1, test_2, younchan, yongwoo]
+    branches: [test_1, test_2, younchan, yongwoo, eunmi]
 
 # Read-only token: these jobs only check out and inspect.
 permissions:

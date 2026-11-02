@@ -117,6 +117,8 @@ fn hook_enforces_branch_names() {
     assert!(blocked(&bash("git checkout -b younchan/x"), &OnBranch("younchan")));
     assert!(blocked(&bash("git switch -c a/x"), &OnBranch("younchan")));
     assert!(passes(&bash("git switch -c yongwoo-account-vault"), &OnBranch("yongwoo")));
+    assert!(passes(&bash("git switch -c eunmi-macos"), &OnBranch("eunmi")));
+    assert!(blocked(&bash("git push origin test_2"), &OnBranch("eunmi-macos")));
     assert!(passes(&bash("git switch -c younchan"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git branch -d younchan-old"), &OnBranch("younchan")));
 }

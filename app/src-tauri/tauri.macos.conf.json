@@ -1,0 +1,10 @@
+{
+  "build": {
+    "beforeBuildCommand": "npm run build && npm run sidecar"
+  },
+  "bundle": {
+    "targets": ["app", "dmg"],
+    "externalBin": ["binaries/o"],
+    "macOS": { "minimumSystemVersion": "11.0" }
+  }
+}
