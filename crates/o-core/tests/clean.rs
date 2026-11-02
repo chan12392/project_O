@@ -3,8 +3,8 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use o_core::clean::{ancestor_instructions, clean_env_from, ensure_profile, inspect, profile_home, read_login, root_in};
-use o_core::plan::ProviderId;
+use o_core::agents::clean::{ancestor_instructions, clean_env_from, ensure_profile, inspect, profile_home, read_login, root_in};
+use o_core::run::plan::ProviderId;
 use serde_json::Value;
 
 fn temp(name: &str) -> PathBuf {

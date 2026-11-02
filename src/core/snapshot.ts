@@ -151,7 +151,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
   return run;
 }
 
-/** "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budget_text` in crates/o-core/src/snapshot.rs. */
+/** "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budget_text` in crates/o-core/src/run/snapshot.rs. */
 export function budgetText(from: string | undefined, to: string, spent: number, allowance: number): string {
   return `사용 예산: effort ${from ?? "기본"} → ${to} (오늘 ${spent}/${allowance}%p)`;
 }

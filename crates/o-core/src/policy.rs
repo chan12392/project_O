@@ -13,8 +13,8 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::js::{js_len, parse_time};
-use crate::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
+use crate::sys::js::{js_len, parse_time};
+use crate::run::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
 
 pub struct Limits {
     pub max_cards_per_plan: usize,

@@ -1,0 +1,43 @@
+//! The Tauri commands the screens call (app/src/platform/backend, app/src/data/useLiveRuns.ts),
+//! one file per domain and registered once in [`handler`]. Each runs its work on a
+//! blocking thread and calls o-core directly: no shell, and any CLI it asks runs
+//! without a window (sign-in alone opens a console the person drives). Every
+//! command has a dev-server twin under `/api` (app/dev/liveRuns.ts) and an `o`
+//! command that prints the same JSON.
+
+mod about;
+mod agents;
+mod review;
+mod runs;
+mod tokens;
+mod usage;
+
+/// Every command the screens may call.
+pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
+    tauri::generate_handler![
+        runs::runs,
+        usage::usage,
+        usage::usage_refresh,
+        usage::budget,
+        usage::budget_set_percent,
+        agents::agents_status,
+        agents::agent_install,
+        agents::agent_login,
+        agents::open_external,
+        about::about,
+        review::review,
+        tokens::tokens,
+    ]
+}
+
+async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+fn temp(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("project-o-shell-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}

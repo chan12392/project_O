@@ -4,12 +4,12 @@ use std::fs;
 use std::path::PathBuf;
 
 use chrono::{DateTime, Duration, Utc};
-use o_core::budget::{
+use o_core::usage::budget::{
     assess, local_day_of, lower_effort, over_budget, read_percent, record, weekly_snapshots, write_percent, Day, Pace, Snapshot, DEFAULT_PERCENT,
 };
-use o_core::plan::ProviderId;
-use o_core::probe::save_usage;
-use o_core::store::policy_context;
+use o_core::run::plan::ProviderId;
+use o_core::usage::probe::save_usage;
+use o_core::run::store::policy_context;
 use o_core::usage::{UsageReading, UsageWindow};
 use serde_json::{json, Value};
 
@@ -35,7 +35,7 @@ fn snap(group: &str, used: f64, resets_at: &str, at: &str) -> Snapshot {
 const NEXT_WEEK: &str = "2026-11-06T09:00:00.000Z";
 
 /// Weekly 40% at the start of the day, `today` more by 11:00; looked at noon (half the day left).
-fn noon_with(today: f64) -> o_core::budget::Budget {
+fn noon_with(today: f64) -> o_core::usage::budget::Budget {
     let snaps = [snap("", 0.40, NEXT_WEEK, "2026-11-01T23:00:00Z"), snap("", 0.40 + today, NEXT_WEEK, "2026-11-02T11:00:00Z")];
     assess(ProviderId::Codex, 13, &snaps, t("2026-11-02T12:00:00Z"), day())
 }
@@ -117,7 +117,7 @@ fn an_expired_window_is_not_over_budget_in_the_policy_context() {
     let home = temp_home("expired");
     let now = Utc::now();
     let start = local_day_of(now).start;
-    let old = |used: f64| UsageWindow { provider: ProviderId::Codex, window: "seven_day".into(), group: None, used, resets_at: o_core::js::iso(now - Duration::seconds(30)) };
+    let old = |used: f64| UsageWindow { provider: ProviderId::Codex, window: "seven_day".into(), group: None, used, resets_at: o_core::sys::js::iso(now - Duration::seconds(30)) };
     record(&home, &[old(0.20)], start - Duration::minutes(1)).unwrap();
     record(&home, &[old(0.34)], now - Duration::minutes(1)).unwrap();
     assert!(!over_budget(&home, now).unwrap().contains_key(&ProviderId::Codex));
@@ -188,7 +188,7 @@ fn the_budget_percent_is_12_to_14_and_anything_else_is_13() {
 
 fn window(provider: ProviderId, window: &str, used: f64) -> UsageWindow {
     // Against the real clock: a reset still ahead.
-    UsageWindow { provider, window: window.into(), group: None, used, resets_at: o_core::js::iso(Utc::now() + Duration::days(3)) }
+    UsageWindow { provider, window: window.into(), group: None, used, resets_at: o_core::sys::js::iso(Utc::now() + Duration::days(3)) }
 }
 
 #[test]
@@ -198,7 +198,7 @@ fn readings_are_kept_as_weekly_snapshots_and_old_ones_dropped() {
     record(&home, &[window(ProviderId::Codex, "seven_day", 0.30)], now - Duration::days(10)).unwrap();
     record(&home, &[window(ProviderId::Codex, "five_hour", 0.90), window(ProviderId::Codex, "seven_day", 0.41)], now - Duration::hours(1)).unwrap();
     // `o usage` saving a reading records it too.
-    let reading = UsageReading { at: o_core::js::iso(now), windows: vec![window(ProviderId::Codex, "seven_day", 0.42)], unavailable: Vec::new() };
+    let reading = UsageReading { at: o_core::sys::js::iso(now), windows: vec![window(ProviderId::Codex, "seven_day", 0.42)], unavailable: Vec::new() };
     save_usage(&home, &reading).unwrap();
     let kept: Vec<f64> = weekly_snapshots(&home, ProviderId::Codex).unwrap().iter().map(|s| s.used).collect();
     assert_eq!(kept, [0.41, 0.42]);

@@ -20,6 +20,7 @@
 | `skills/o/` | 총괄 에이전트가 쓰는 O 스킬 |
 
 - 작업 규칙·브랜치 흐름·정책 차단: [AGENTS.md](AGENTS.md)
+- 모듈 구조·데이터 흐름·새 기능 추가 체크리스트: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 설계 초안: [docs/DESIGN.md](docs/DESIGN.md)
 - 제품 목표와 현재 상태: [docs/GOALS.md](docs/GOALS.md)
 - 결정 기록: [docs/decisions/](docs/decisions/)

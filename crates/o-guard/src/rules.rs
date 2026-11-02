@@ -60,7 +60,7 @@ pub fn code_rules() -> impl Iterator<Item = &'static Rule> {
 /// Protected branches: they only change by merging PRs (no direct commits or
 /// pushes), and checkouts on them are mirrors agents may read and test in,
 /// never change. Keep in sync with .github/workflows/branch-flow.yml and
-/// crates/o-core/src/mirror.rs.
+/// crates/o-core/src/sys/mirror.rs.
 pub const READ_ONLY_BRANCHES: [&str; 3] = ["test_1", "test_2", "main"];
 
 /// The owner's GitHub login (member A): the only account that may merge into

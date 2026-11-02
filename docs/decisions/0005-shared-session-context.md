@@ -41,5 +41,5 @@
 ## 영향
 
 - 바뀐 공용 경계: 카드 CLI 권한(Claude 한 명령 추가), 이벤트 계약(`run.context` 추가 — 모르는 화면은 무시한다), 카드 프롬프트(절 하나).
-- 코드: `crates/o-core/src/context.rs`(+`context/tokens.rs`), `providers.rs`(허용 명령·프롬프트 절), `runner.rs`(실행 시작 시 `context::prepare`), `o context`·`o tokens`·`o dispatch --no-context`, 앱 `tokens` 명령과 대시보드 토큰 카드.
-- 되돌리기: `o.db`의 두 표를 지워도 실행 기록(events.jsonl)에서 다시 만들어진다(메모만 사라진다). 권한은 `providers.rs`의 한 줄을 빼면 된다.
+- 코드: `crates/o-core/src/context/mod.rs`(+`context/tokens.rs`), `providers/claude.rs`(허용 명령)·`providers/mod.rs`(프롬프트 절), `run/runner.rs`(실행 시작 시 `context::prepare`), `o context`·`o tokens`·`o dispatch --no-context`, 앱 `tokens` 명령과 대시보드 토큰 카드.
+- 되돌리기: `o.db`의 두 표를 지워도 실행 기록(events.jsonl)에서 다시 만들어진다(메모만 사라진다). 권한은 `providers/claude.rs`의 한 줄을 빼면 된다.

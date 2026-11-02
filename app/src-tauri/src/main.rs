@@ -9,20 +9,7 @@ mod commands;
 
 fn main() {
     tauri::Builder::default()
-        .invoke_handler(tauri::generate_handler![
-            commands::runs,
-            commands::usage,
-            commands::usage_refresh,
-            commands::budget,
-            commands::budget_set_percent,
-            commands::agents_status,
-            commands::agent_install,
-            commands::agent_login,
-            commands::open_external,
-            commands::about,
-            commands::review,
-            commands::tokens,
-        ])
+        .invoke_handler(commands::handler())
         .run(tauri::generate_context!())
         .expect("Project O 창을 열지 못했습니다");
 }
