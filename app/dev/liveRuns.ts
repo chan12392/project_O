@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 
 import type { Plugin } from "vite";
+import { DESKTOP_UPDATES_ONLY } from "../src/platform/updates.ts";
 
 /**
  * The `o` this checkout builds (`cargo build --release`), else the one on PATH.
@@ -219,7 +220,8 @@ export function liveRuns(): Plugin {
         }
         const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
-        if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, JSON.stringify({ ...JSON.parse(out), commit: "", builtAt: "" })), error(res));
+        if (req.method === "GET" && path === "/updates") return send(res, 200, JSON.stringify({ release: null, message: DESKTOP_UPDATES_ONLY }));
         if (req.method === "POST" && path === "/review") {
           // `o review <pr> --post --detach` in the project folder: reads the PR with gh, starts the review card, returns.
           const project = query.get("project") ?? "";

@@ -10,12 +10,14 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct About {
     pub version: String,
+    pub commit: String,
+    pub built_at: String,
     pub home: String,
     pub agents_home: String,
 }
 
 pub fn about_info(home: &Path, agents_home: &Path) -> About {
-    About { version: env!("CARGO_PKG_VERSION").into(), home: home.to_string_lossy().into_owned(), agents_home: agents_home.to_string_lossy().into_owned() }
+    About { version: env!("CARGO_PKG_VERSION").into(), commit: super::update::BUILD_SHA.into(), built_at: super::update::BUILD_TIME.into(), home: home.to_string_lossy().into_owned(), agents_home: agents_home.to_string_lossy().into_owned() }
 }
 
 #[tauri::command]

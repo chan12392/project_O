@@ -17,6 +17,7 @@ import { Onboarding } from "../features/settings/Onboarding.tsx";
 import type { SettingsSection } from "../features/settings/sections/index.ts";
 import { Settings } from "../features/settings/Settings.tsx";
 import { AllNextUp } from "../features/work/AllNextUp.tsx";
+import { UpdatePrompt } from "../features/updates/UpdatePrompt.tsx";
 import { useHandled } from "../features/work/NextUp.tsx";
 import { useNow } from "../features/work/WorkTab.tsx";
 import { ICON_BUTTON } from "../lib/format.ts";
@@ -177,6 +178,7 @@ function MainWindow() {
 
   return (
     <div className="grid h-full grid-cols-[16rem_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] max-md:grid-cols-[minmax(0,1fr)]">
+      <UpdatePrompt api={api} />
       {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
       {screen === "settings" && (
         <Settings api={api} section={section} source={source} onSection={setSection} onBack={closeSettings} onOnboarding={() => setScreen("onboarding")} />

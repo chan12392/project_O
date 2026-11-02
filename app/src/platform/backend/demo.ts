@@ -1,4 +1,5 @@
 import type { AgentId, Backend, BudgetReport, BudgetState, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
+import { DESKTOP_UPDATES_ONLY } from "../updates.ts";
 
 /** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread. */
 function demoBudget(percent: number): BudgetReport {
@@ -65,7 +66,11 @@ export const demoBackend: Backend = {
   install: async () => ({ ok: false, message: "미리보기에서는 설치하지 않습니다" }),
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
-  about: async () => ({ version: "preview", home: "", agentsHome: "" }),
+  about: async () => ({ version: "preview", home: "", agentsHome: "", commit: "", builtAt: "" }),
+  checkUpdate: async () => ({ release: null, message: DESKTOP_UPDATES_ONLY }),
+  pendingUpdate: async () => null,
+  installUpdate: async () => { throw new Error(DESKTOP_UPDATES_ONLY); },
+  cancelUpdate: async () => {},
   review: async () => ({ ok: false, message: "미리보기에서는 검토를 요청하지 않습니다" }),
   budget: async () => demoBudget(demoPercent),
   setBudgetPercent: async (percent) => demoBudget((demoPercent = percent)),

@@ -50,7 +50,7 @@
 
 ### `app/src-tauri/src`
 
-`main.rs`는 창을 띄우고 `commands::handler()`를 등록한다. `commands/{runs,usage,agents,review,tokens,about,lead}.rs`가 도메인별 명령과 테스트를 가진다. 모든 명령은 막히는 일을 `blocking`(별도 스레드)에서 하고 셸을 쓰지 않는다.
+`main.rs`는 창을 띄우고 `commands::handler()`를 등록한다. `commands/{runs,usage,agents,review,tokens,about,lead,update}.rs`가 도메인별 명령과 테스트를 가진다. 모든 명령은 막히는 일을 별도 스레드에서 하고 셸을 쓰지 않는다. `lead`는 총괄 채팅(ADR-0008)이다. `update`는 데스크톱 전용으로 고정 저장소의 릴리스를 `gh`로 확인하며, 사람의 클릭 후에만 설치기를 연다. `uninstall.rs`는 NSIS가 쓰는 별도 데이터 제거 실행 파일이고 `installer_paths.rs`의 경로 검사를 공유한다.
 
 ## 화면 `app/src`
 
@@ -61,6 +61,7 @@
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(하위 보기 목록 `SUBS`), `WorkDashboard`, `NextUp`, `AllNextUp`, `AgentBoard`, `Kanban`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
+| `features/updates/` | `UpdatePrompt`(shell에 한 번 마운트), 정보 항목의 `UpdateSettings`. 공용 업데이트 타입·문구·제거 명령은 `platform/updates.ts` |
 | `features/settings/` | `Settings`(틀), `Section.tsx`(항목 계약·공용 배치), `sections/*.tsx`(항목별 파일, `sections/index.ts`가 순서), `AccountMenu`, `AgentSetup`, `Onboarding` |
 | `data/` | 실행 출처 `useLiveRuns.ts`(실제, 데스크톱 앱은 데모로 넘어가지 않음)·`useRun.ts`(데모·URL 상태), 총괄 스레드 `useLead.ts`, `projects.ts`, `settings.ts`(이 브라우저의 설정), 데모 기록 JSON |
 | `platform/backend/` | `Backend` 계약 `types.ts`와 구현 셋: `tauri.ts`, `dev.ts`, `demo.ts`. `index.ts`의 `backend()`가 고른다 |
@@ -116,6 +117,8 @@
 2. 같은 동작을 `o` 명령으로도 둔다(c). 개발 서버는 `o`만 부른다: `app/dev/liveRuns.ts`에 경로 한 줄을 더한다(이 PC 주소·같은 출처 검사 뒤).
 3. 화면: `platform/backend/types.ts`의 `Backend`에 메서드를 더하면 `tauri.ts`·`dev.ts`·`demo.ts`가 각자 구현하도록 TypeScript가 강제한다. 실행 목록·사용량 폴링은 `data/useLiveRuns.ts`가 같은 명령을 직접 부른다.
 4. 명령은 고정 인자만 받고 프로세스를 직접 띄우지 않는다. 사용자 입력(경로·PR 번호 등)은 명령 쪽에서 다시 검사한다.
+
+데스크톱 앱 자체의 업데이트는 CLI 작업카드에 노출하지 않는다. `update` 명령의 개발 서버 `/api/updates`와 데모 구현은 데스크톱 전용 안내를 반환하며 `o` 하위 명령은 없다.
 
 ## 플러그인
 
