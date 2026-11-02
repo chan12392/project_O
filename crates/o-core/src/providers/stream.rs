@@ -13,11 +13,41 @@ pub(super) fn num(value: Option<&Value>) -> f64 {
     as_number(value).filter(|n| n.is_finite()).unwrap_or(0.0)
 }
 
-static LIMIT_TEXT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)usage limit|rate limit|quota|resource[_ ]exhausted|too many requests|429").unwrap());
+/// How the CLIs and APIs say a plan or rate limit stopped the turn. A bare "429"
+/// is not enough: file names, line numbers and sizes contain it too.
+static LIMIT_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)rate[ _-]?limit|usage[ _-]?limit|quota|resource[_ ]exhausted|too many requests|",
+        r"(?:http|status|error|code)[ :]*429\b|credit balance|out of credits|",
+        r"exceeded your (?:current )?(?:quota|usage|plan|limit)|hit your (?:usage )?limit|weekly limit|5-hour limit|session limit|",
+        r"사용량 한도|사용 한도|요청 한도|한도(?:를)? ?초과|한도에 (?:도달|걸)|用量上限|配额|使用上限|利用上限|レート制限",
+    ))
+    .unwrap()
+});
+
+/// Size limits say "limit" too (context window, output tokens, file size), but the
+/// same request would fail again later, so they must not rest the provider.
+static SIZE_LIMIT_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)context (?:window|length)|max[_ ]?tokens|maximum context|output tokens?|too long|file size|upload|",
+        r"크기 한도|길이 한도|파일 크기|출력 토큰|(?:^|[^사])용량 한도|업로드|컨텍스트|上下文|コンテキスト",
+    ))
+    .unwrap()
+});
+
+/// A per-minute limit ("8,000 output tokens per minute") is a rate limit even
+/// though it names output tokens.
+static PER_MINUTE_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)per[- ](?:1 |one )?min(?:ute)?\b|(?:tokens?|requests?|reqs?)\s*/\s*min(?:ute)?\b|\b[io]?tpm\b|분당|每分钟|毎分|1分あたり").unwrap()
+});
+
+/// A plan or rate limit, not a size limit.
+pub fn is_limit_text(text: &str) -> bool {
+    LIMIT_TEXT.is_match(text) && (PER_MINUTE_TEXT.is_match(text) || !SIZE_LIMIT_TEXT.is_match(text))
+}
 
 pub(super) fn limit_from_text(text: &str, ok: bool) -> Vec<StreamSignal> {
-    if ok || !LIMIT_TEXT.is_match(text) {
+    if ok || !is_limit_text(text) {
         return Vec::new();
     }
     vec![StreamSignal::Limit { until: String::new() }]

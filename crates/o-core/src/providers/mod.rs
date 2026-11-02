@@ -16,6 +16,7 @@ pub mod codex;
 mod stream;
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 
@@ -27,6 +28,7 @@ use crate::run::plan::{Card, Plan, ProviderId};
 use crate::usage::UsageWindow;
 
 pub use codex::unwrap_shell;
+pub use stream::is_limit_text;
 
 /// What O knows about one official CLI. Adding a CLI: a `ProviderId` variant, a
 /// file implementing this, and its line in [`get`] (docs/ARCHITECTURE.md).
@@ -37,6 +39,11 @@ pub trait Provider: Sync {
     /// without a prompt, and the model and effort flags. Never a flag that turns
     /// approvals off.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec;
+    /// API key variables the CLI prefers over its own sign-in when it runs headless.
+    /// Left on the PC (an old key in a shell profile or `.env`), they would quietly
+    /// bill the API instead of the subscription the card is meant to use, so a
+    /// card's launch takes them out (`LaunchSpec::env_remove`).
+    fn api_key_vars(&self) -> &'static [&'static str];
     /// A line for the card prompt on which shell commands the CLI may run headless.
     fn tool_note(&self) -> Option<String>;
     /// How a card of this CLI sends and reads team messages.
@@ -115,6 +122,21 @@ pub struct LaunchSpec {
     pub stdin: Option<String>,
     /// Run and card ids for `o msg`; never credentials.
     pub env: BTreeMap<String, String>,
+    /// Inherited variables taken out before launch (see `Provider::api_key_vars`).
+    pub env_remove: Vec<String>,
+}
+
+/// Names to take out of the inherited environment: the listed ones, plus any
+/// inherited spelling of them in another case (Windows reads names without case).
+pub fn names_to_remove(remove: &[String], inherited: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut names: Vec<OsString> = remove.iter().map(OsString::from).collect();
+    for key in inherited {
+        let listed = key.to_str().is_some_and(|k| remove.iter().any(|r| r.eq_ignore_ascii_case(k)));
+        if listed && !names.contains(&key) {
+            names.push(key);
+        }
+    }
+    names
 }
 
 pub struct TeamChannel<'a> {
@@ -192,15 +214,24 @@ fn opt(flag: &str, value: Option<&str>) -> Vec<String> {
 /// so a CLI update degrades to "less detail", never to a crash.
 pub struct StreamReader {
     read: ReadLine,
+    /// A limit was already reported for this card.
+    limited: bool,
 }
 
 impl StreamReader {
     pub fn new(provider: ProviderId) -> Self {
-        StreamReader { read: get(provider).stream_reader() }
+        StreamReader { read: get(provider).stream_reader(), limited: false }
     }
 
     pub fn read(&mut self, line: &str) -> Vec<StreamSignal> {
         let Ok(Value::Object(data)) = serde_json::from_str::<Value>(line) else { return Vec::new() };
-        (self.read)(&data)
+        let mut out = (self.read)(&data);
+        // One limit per card: a later guess from the error text (no reset time, so the
+        // default cooldown) must not stretch the reset time a limit event already gave.
+        if self.limited {
+            out.retain(|s| !matches!(s, StreamSignal::Limit { until } if until.is_empty()));
+        }
+        self.limited |= out.iter().any(|s| matches!(s, StreamSignal::Limit { .. }));
+        out
     }
 }

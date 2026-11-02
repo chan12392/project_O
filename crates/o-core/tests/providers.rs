@@ -1,9 +1,11 @@
 //! Port of tests/providers.test.ts.
 
+use std::ffi::OsString;
+
 use o_core::run::events::StreamSignal;
 use o_core::sys::js::iso_from_secs;
 use o_core::run::plan::{Card, Plan, ProviderId};
-use o_core::providers::{card_prompt, launch_spec, unwrap_shell, LaunchSpec, StreamReader, TeamChannel};
+use o_core::providers::{card_prompt, is_limit_text, launch_spec, names_to_remove, unwrap_shell, LaunchSpec, StreamReader, TeamChannel};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
 use serde_json::{json, Value};
@@ -230,4 +232,63 @@ fn card_prompt_text_is_unchanged() {
     let claude = launch_spec(&p.cards[1], &p, &TEAM);
     let expected_args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "Bash(o context *)", "--effort", "high"];
     assert_eq!(claude.args, expected_args);
+}
+
+/// A key left on the PC must not move a card from the subscription to the API bill.
+#[test]
+fn cards_drop_api_key_variables_so_each_cli_uses_its_own_sign_in() {
+    let p = plan();
+    let [codex, claude, agy] = <[LaunchSpec; 3]>::try_from(specs(&p)).unwrap();
+    assert_eq!(claude.env_remove, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
+    assert_eq!(codex.env_remove, ["CODEX_API_KEY"]);
+    assert!(agy.env_remove.is_empty());
+    for spec in [&codex, &claude, &agy] {
+        assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID"), "{:?}", spec.env);
+    }
+}
+
+#[test]
+fn inherited_spellings_in_another_case_are_dropped_too() {
+    let inherited = ["Path", "anthropic_api_key", "ANTHROPIC_API_KEY_HELPER", "Anthropic_Auth_Token"].map(OsString::from);
+    let names = names_to_remove(&["ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into()], inherited);
+    assert_eq!(names, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "anthropic_api_key", "Anthropic_Auth_Token"].map(OsString::from));
+    assert!(names_to_remove(&[], [OsString::from("ANTHROPIC_API_KEY")]).is_empty());
+}
+
+/// A wrong match rests the provider for an hour and fails the cards waiting for it.
+#[test]
+fn only_plan_and_rate_limits_count_as_limits() {
+    for text in [
+        "Claude AI usage limit reached|1793523600",
+        "You've hit your usage limit. Upgrade to Pro or try again later.",
+        "stream error: exceeded retry limit, last status: 429 Too Many Requests",
+        "RESOURCE_EXHAUSTED: Quota exceeded for quota metric 'Generate Content API requests'",
+        "This request would exceed the rate limit for your organization of 8,000 output tokens per minute.",
+        "사용량 한도에 도달했어",
+    ] {
+        assert!(is_limit_text(text), "{text}");
+    }
+    for text in [
+        "Prompt is too long: 210000 tokens > 200000 maximum",
+        "max_tokens: 64000 > 32000, which is the maximum allowed number of output tokens",
+        "upload quota exceeded for files",
+        "context window exceeded: rate limit",
+        "src/app.ts:429: unexpected token",
+        "Error: ENOENT, line 1429",
+    ] {
+        assert!(!is_limit_text(text), "{text}");
+    }
+}
+
+#[test]
+fn a_claude_limit_shows_in_its_error_text_too_but_one_limit_per_card_keeps_the_event_reset_time() {
+    let failed = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached"}"#;
+    let alone = StreamReader::new(ProviderId::Claude).read(failed);
+    assert!(matches!(alone.as_slice(), [StreamSignal::Limit { until }, StreamSignal::Final { ok: false, .. }] if until.is_empty()));
+    let mut r = StreamReader::new(ProviderId::Claude);
+    assert_eq!(
+        r.read(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1793526000}}"#),
+        [StreamSignal::Limit { until: "2026-11-01T09:40:00.000Z".into() }]
+    );
+    assert!(matches!(r.read(failed).as_slice(), [StreamSignal::Final { ok: false, .. }]));
 }

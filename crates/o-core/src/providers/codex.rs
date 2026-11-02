@@ -34,7 +34,12 @@ impl Provider for Codex {
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env }
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
+    }
+
+    /// `codex exec` puts this ahead of the saved ChatGPT login (codex-rs/login/src/auth/manager.rs).
+    fn api_key_vars(&self) -> &'static [&'static str] {
+        &["CODEX_API_KEY"]
     }
 
     fn tool_note(&self) -> Option<String> {
