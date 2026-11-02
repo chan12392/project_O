@@ -168,7 +168,8 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
         )}
       </header>
       {plan.cards.length > 0 && (
-        <div className="overflow-x-auto">
+        <div className="relative overflow-x-auto">
+          {/* relative: the sr-only caption stays inside the chat instead of stretching the page. */}
           <table className="w-full text-left text-xs">
             <caption className="sr-only">{plan.title}의 작업카드</caption>
             <thead className="text-2xs text-muted-foreground">

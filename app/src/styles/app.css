@@ -13,10 +13,22 @@
   *::after {
     @apply border-border outline-ring/50;
   }
+  /*
+   * The app fills the window exactly and only its inner panels scroll; the page never does.
+   * An absolute element inside a panel (an sr-only caption or label) whose containing block
+   * is outside that panel is not clipped by the panel, so it used to stretch the document
+   * and let the whole shell scroll away (plan-card captions, 2026-11). #root becomes the
+   * containing block and clips them without being scrollable itself (clip, not hidden).
+   */
   html,
-  body,
-  #root {
+  body {
     height: 100%;
+    overflow: hidden;
+  }
+  #root {
+    position: relative;
+    height: 100%;
+    overflow: clip;
   }
   /* Settings → 모양 → 글자 크기 (settings.ts sets the scale); rem-based sizes and spacing follow. */
   html {
