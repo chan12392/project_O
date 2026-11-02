@@ -107,8 +107,13 @@ fn pr() -> PullRequest {
         ],
         additions: 3001,
         deletions: 1,
+        head_ref_oid: HEAD_A.into(),
+        base_ref_oid: "b".repeat(40),
     }
 }
+
+const HEAD_A: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+const HEAD_B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
 /// A diff of two files, the first long enough to be cut.
 fn big_diff() -> String {
@@ -122,7 +127,7 @@ fn big_diff() -> String {
 
 #[test]
 fn the_prompt_fences_the_pr_as_data_asks_for_a_korean_review_and_fits_the_task_cap() {
-    let task = review::build_task(&pr(), &big_diff(), "abc123");
+    let task = review::build_task(&pr(), &big_diff(), "abc123", true);
     let text = &task.text;
     assert!(js_len(text) <= LIMITS.max_task_chars, "{}", js_len(text));
     assert!(task.diff_included < task.diff_chars && task.diff_included > 5_000);
@@ -144,7 +149,7 @@ fn the_prompt_fences_the_pr_as_data_asks_for_a_korean_review_and_fits_the_task_c
     assert!(text[..begin].contains("파일을 만들거나 고치거나 지우지 마세요"));
     assert!(text[..begin].contains("승인 권장") && text[..begin].contains("수정 요청"));
 
-    let small = review::build_task(&pr(), "diff --git a/a.ts b/a.ts\n+x\n", "n");
+    let small = review::build_task(&pr(), "diff --git a/a.ts b/a.ts\n+x\n", "n", true);
     assert_eq!(small.diff_included, small.diff_chars);
     assert!(small.cut_files.is_empty() && !small.text.contains("diff 잘림"));
 }
@@ -173,7 +178,7 @@ fn ctx() -> PolicyContext {
 
 #[test]
 fn the_review_plan_is_one_card_that_passes_the_policy() {
-    let task = review::build_task(&pr(), &big_diff(), "abc123");
+    let task = review::build_task(&pr(), &big_diff(), "abc123", true);
     let plan = review::build_plan("C:/Users/me/projects/app", 7, &task.text, ProviderId::Codex, Some("gpt-6.1-sol"), Some("high"));
     let checked = check_plan(&plan, &ctx());
     assert!(checked.violations.is_empty(), "{:?}", checked.violations);
@@ -190,16 +195,26 @@ fn the_review_plan_is_one_card_that_passes_the_policy() {
     assert!(check_plan(&review::build_plan("C:/Users/me/projects/app", 7, &task.text, ProviderId::Codex, None, None), &busy).plan.is_none());
 }
 
-/// Records every gh call and answers like gh would.
+/// Records every gh call and answers like gh would. `heads` is the PR head commit each
+/// `gh pr view` sees, in turn (the last one repeats): a PR pushed to while being reviewed.
 struct FakeGh {
     calls: RefCell<Vec<(PathBuf, Vec<String>)>>,
+    heads: Vec<&'static str>,
+    views: RefCell<usize>,
 }
 
 impl Gh for FakeGh {
     fn run(&self, cwd: &Path, args: &[String]) -> Result<String, String> {
         self.calls.borrow_mut().push((cwd.to_path_buf(), args.to_vec()));
         match args.get(1).map(String::as_str) {
-            Some("view") => Ok(r#"{"number":7,"title":"t","body":"","author":{"login":"someone","is_bot":false},"baseRefName":"test_2","headRefName":"h","url":"https://github.com/acme/app/pull/7","files":[{"path":"a.ts","additions":1,"deletions":0}],"additions":1,"deletions":0}"#.into()),
+            Some("view") => {
+                let n = self.views.replace_with(|n| *n + 1);
+                let head = self.heads[n.min(self.heads.len() - 1)];
+                Ok(format!(
+                    r#"{{"number":7,"title":"t","body":"","author":{{"login":"someone","is_bot":false}},"baseRefName":"test_2","headRefName":"h","url":"https://github.com/acme/app/pull/7","files":[{{"path":"a.ts","additions":1,"deletions":0}}],"additions":1,"deletions":0,"headRefOid":"{head}","baseRefOid":"{}"}}"#,
+                    "b".repeat(40)
+                ))
+            }
             Some("diff") => Ok("diff --git a/a.ts b/a.ts\n+x\n".into()),
             Some("comment") => Ok("https://github.com/acme/app/pull/7#issuecomment-1\n".into()),
             _ => Err("unexpected".into()),
@@ -208,19 +223,36 @@ impl Gh for FakeGh {
 }
 
 fn fake() -> FakeGh {
-    FakeGh { calls: RefCell::new(Vec::new()) }
+    fake_heads(vec![HEAD_A])
+}
+
+fn fake_heads(heads: Vec<&'static str>) -> FakeGh {
+    FakeGh { calls: RefCell::new(Vec::new()), heads, views: RefCell::new(0) }
+}
+
+fn verbs(gh: &FakeGh) -> Vec<String> {
+    gh.calls.borrow().iter().map(|(_, a)| a[1].clone()).collect()
 }
 
 #[test]
-fn fetch_reads_the_pr_and_its_diff_with_gh_only() {
+fn fetch_reads_the_pr_its_diff_and_its_head_again_with_gh_only() {
     let gh = fake();
     let (pr, diff) = review::fetch(&gh, Path::new("C:/work/app"), "7").unwrap();
     assert_eq!((pr.number, pr.author.as_str(), pr.files.len()), (7, "someone", 1));
+    assert_eq!(pr.head_ref_oid, HEAD_A);
     assert!(diff.starts_with("diff --git"));
     let calls = gh.calls.borrow();
-    assert_eq!(calls[0].1, args(&["pr", "view", "7", "--json", "number,title,body,author,baseRefName,headRefName,url,files,additions,deletions"]));
+    assert_eq!(calls[0].1, args(&["pr", "view", "7", "--json", "number,title,body,author,baseRefName,headRefName,url,files,additions,deletions,headRefOid,baseRefOid"]));
     assert_eq!(calls[1].1, args(&["pr", "diff", "7"]));
+    assert_eq!(calls[2].1, args(&["pr", "view", "7", "--json", "headRefOid"]));
     assert!(calls.iter().all(|(cwd, _)| cwd == Path::new("C:/work/app")));
+}
+
+#[test]
+fn a_pr_pushed_to_while_being_read_is_refused() {
+    let gh = fake_heads(vec![HEAD_A, HEAD_B]);
+    let error = review::fetch(&gh, Path::new("C:/work/app"), "7").unwrap_err();
+    assert!(error.contains("새 커밋") && error.contains("aaaaaaaaa") && error.contains("bbbbbbbbb"), "{error}");
 }
 
 fn temp_home(name: &str) -> PathBuf {
@@ -241,24 +273,47 @@ fn post_comments_the_review_with_gh_pr_comment_and_records_it() {
     record(&home, CardStatus::Done, "## 요약\n좋습니다.\n## 의견\n승인 권장");
     let gh = fake();
     let project = Path::new("C:/work/app");
-    let done = review::finish(&home, "r1", "7", 7, true, project, &gh).unwrap();
+    let done = review::finish(&home, "r1", "7", 7, Some(HEAD_A), true, project, &gh).unwrap();
 
-    let file = run_dir(&home, "r1").join(review::REVIEW_FILE);
+    // Saved in O's own folder, not the run folder a card may write to.
+    let file = review::review_path(&home, "r1");
+    assert!(file.starts_with(home.join(review::REVIEWS_DIR)));
     assert_eq!(done.review_file.as_deref(), Some(file.as_path()));
     assert_eq!(done.comment_url.as_deref(), Some("https://github.com/acme/app/pull/7#issuecomment-1"));
+    assert_eq!(done.head.as_deref(), Some(HEAD_A));
     let calls = gh.calls.borrow();
-    assert_eq!(calls.len(), 1);
-    assert_eq!(calls[0].0, project);
-    assert_eq!(calls[0].1, args(&["pr", "comment", "7", "--body-file", &file.to_string_lossy()]));
+    assert_eq!(calls.len(), 2);
+    assert_eq!(calls[0].1, review::head_args("7"), "the head is checked right before posting");
+    assert_eq!(calls[1].0, project);
+    assert_eq!(calls[1].1, args(&["pr", "comment", "7", "--body-file", &file.to_string_lossy()]));
     assert!(calls.iter().all(|(_, a)| !a.iter().any(|w| w == "review" || w == "merge" || w == "--approve")));
 
     let body = fs::read_to_string(&file).unwrap();
     assert!(body.starts_with("**에이전트 검토** (codex, `o review`)") && body.contains("승인·병합은 사람이 합니다") && body.ends_with("승인 권장"));
     let posted = read_events(&home, "r1").into_iter().find_map(|e| match e {
-        OEvent::ReviewPosted { pr, url, .. } => Some((pr, url)),
+        OEvent::ReviewPosted { pr, url, head, .. } => Some((pr, url, head)),
         _ => None,
     });
-    assert_eq!(posted, Some((7, "https://github.com/acme/app/pull/7#issuecomment-1".to_string())));
+    assert_eq!(posted, Some((7, "https://github.com/acme/app/pull/7#issuecomment-1".to_string(), Some(HEAD_A.to_string()))));
+}
+
+#[test]
+fn a_review_of_an_old_head_is_not_posted() {
+    let home = temp_home("moved");
+    record(&home, CardStatus::Done, "## 요약\n좋습니다.");
+    // The PR got a new commit while the card was reviewing HEAD_A.
+    let gh = fake_heads(vec![HEAD_B]);
+    let error = review::finish(&home, "r1", "7", 7, Some(HEAD_A), true, Path::new("C:/work/app"), &gh).unwrap_err();
+    assert!(error.contains("새 커밋") && error.contains("게시하지 않습니다"), "{error}");
+    assert_eq!(verbs(&gh), ["view"], "no comment");
+    assert!(review::review_path(&home, "r1").is_file(), "the review is still kept");
+
+    // Without a known head there is nothing to compare: not posted either.
+    let unknown = temp_home("nohead");
+    record(&unknown, CardStatus::Done, "## 요약\n좋습니다.");
+    let gh = fake();
+    assert!(review::finish(&unknown, "r1", "7", 7, None, true, Path::new("C:/work/app"), &gh).is_err());
+    assert!(gh.calls.borrow().is_empty());
 }
 
 #[test]
@@ -266,18 +321,96 @@ fn without_post_or_a_finished_review_nothing_reaches_github() {
     let home = temp_home("nopost");
     record(&home, CardStatus::Done, "## 요약\n좋습니다.");
     let gh = fake();
-    let done = review::finish(&home, "r1", "7", 7, false, Path::new("C:/work/app"), &gh).unwrap();
+    let done = review::finish(&home, "r1", "7", 7, Some(HEAD_A), false, Path::new("C:/work/app"), &gh).unwrap();
     assert!(done.review_file.is_some() && done.comment_url.is_none());
     assert!(gh.calls.borrow().is_empty());
 
     let failed = temp_home("failed");
     record(&failed, CardStatus::Failed, "한도");
-    let done = review::finish(&failed, "r1", "7", 7, true, Path::new("C:/work/app"), &gh).unwrap();
+    let done = review::finish(&failed, "r1", "7", 7, Some(HEAD_A), true, Path::new("C:/work/app"), &gh).unwrap();
     assert_eq!((done.status, done.review_file, done.comment_url), (CardStatus::Failed, None, None));
     assert!(gh.calls.borrow().is_empty());
 }
 
+/// A file link, or None where this machine does not allow making one (Windows without Developer Mode).
+fn link_file(target: &Path, link: &Path) -> Option<()> {
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    made.ok()
+}
+
 #[test]
-fn the_app_asks_for_a_posted_background_review() {
-    assert_eq!(review::request_args("7"), args(&["review", "7", "--post", "--detach"]));
+fn links_a_card_planted_are_never_written_through() {
+    let home = temp_home("link");
+    record(&home, CardStatus::Done, "## 요약\n좋습니다.");
+    // A stand-in for a protected state file (never a real one).
+    let target = home.join("fake-o.db");
+    fs::write(&target, "state").unwrap();
+
+    // A link named review.md in the run folder (card-writable) is not where the review goes.
+    if link_file(&target, &run_dir(&home, "r1").join("review.md")).is_none() {
+        eprintln!("skipped: this machine does not allow symlinks");
+        return;
+    }
+    let gh = fake();
+    let done = review::finish(&home, "r1", "7", 7, Some(HEAD_A), true, Path::new("C:/work/app"), &gh).unwrap();
+    assert_eq!(fs::read_to_string(&target).unwrap(), "state");
+    assert!(done.review_file.unwrap().starts_with(home.join(review::REVIEWS_DIR)));
+
+    // A link (or any file) already where the review would be saved is refused, not followed, and gh is not called.
+    let again = temp_home("link-again");
+    record(&again, CardStatus::Done, "## 요약\n좋습니다.");
+    let saved = review::review_path(&again, "r1");
+    fs::create_dir_all(saved.parent().unwrap()).unwrap();
+    link_file(&target, &saved).unwrap();
+    let gh = fake();
+    let error = review::finish(&again, "r1", "7", 7, Some(HEAD_A), true, Path::new("C:/work/app"), &gh).unwrap_err();
+    assert!(error.contains("새로 만들지 못했습니다"), "{error}");
+    assert_eq!(fs::read_to_string(&target).unwrap(), "state");
+    assert!(gh.calls.borrow().is_empty());
+}
+
+#[test]
+fn the_whole_task_fits_the_cap_with_long_paths_a_long_body_and_one_long_line() {
+    let mut big = pr();
+    big.files = (0..80).map(|i| review::FileStat { path: format!("{i:03}/{}", "경로😀".repeat(70)), additions: 1, deletions: 1 }).collect();
+    big.body = "본문😀 ".repeat(2_000);
+    big.title = "제목".repeat(500);
+    let diff = format!("diff --git a/x.ts b/x.ts\n+{}\n", "한😀".repeat(30_000));
+    for local in [true, false] {
+        let task = review::build_task(&big, &diff, "n0nce", local);
+        assert!(js_len(&task.text) <= LIMITS.max_task_chars, "{}", js_len(&task.text));
+        assert!(task.text.ends_with("<<<PR_DATA_END n0nce>>>"));
+        assert!(task.text.contains("- … 외 "), "files beyond the list cap are counted, not listed");
+        let checked = check_plan(&review::build_plan("C:/Users/me/projects/app", 7, &task.text, ProviderId::Codex, None, None), &ctx());
+        assert!(checked.violations.is_empty(), "{:?}", checked.violations);
+    }
+}
+
+#[test]
+fn the_prompt_names_the_head_and_says_whether_local_files_may_fill_in() {
+    let at_head = review::build_task(&pr(), &big_diff(), "n", true);
+    assert!(at_head.text.contains(&format!("커밋: head {HEAD_A}")));
+    assert!(at_head.text.contains("프로젝트 폴더의 파일을 읽어 확인하고"));
+    let elsewhere = review::build_task(&pr(), &big_diff(), "n", false);
+    assert!(elsewhere.text.contains("head 커밋이 아닙니다") && elsewhere.text.contains("보충하거나 판단하지 말고"));
+    assert!(!elsewhere.text.contains("프로젝트 폴더의 파일을 읽어 확인하고"));
+}
+
+#[test]
+fn a_review_run_gets_no_shared_context() {
+    let home = temp_home("nocontext");
+    let task = review::build_task(&pr(), "diff --git a/a.ts b/a.ts\n+x\n", "n", true);
+    let checked = check_plan(&review::build_plan("C:/Users/me/projects/app", 7, &task.text, ProviderId::Codex, None, None), &ctx());
+    review::create_run(&home, "r2", &checked.plan.unwrap(), true).unwrap();
+    assert!(!o_core::context::enabled(&home, "r2"));
+    assert!(run_dir(&home, "r2").join("clean").exists());
+}
+
+#[test]
+fn the_app_asks_for_a_posted_background_review_on_its_profile() {
+    assert_eq!(review::request_args("7", false), args(&["review", "7", "--post", "--detach"]));
+    assert_eq!(review::request_args("7", true), args(&["review", "7", "--post", "--detach", "--clean"]));
 }

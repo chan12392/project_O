@@ -158,12 +158,12 @@ pub fn review_request(project: &str, pr: &str) -> Result<(), String> {
 /// dispatch and starts it in the background; the review is posted as a PR comment, never
 /// an approval or a merge (ADR-0006).
 #[tauri::command]
-pub async fn review(project: String, pr: String) -> Result<serde_json::Value, String> {
+pub async fn review(project: String, pr: String, clean: bool) -> Result<serde_json::Value, String> {
     review_request(&project, &pr)?;
     blocking(move || {
         let o = o_binary().ok_or("o CLI를 찾지 못했습니다 (cargo install --path crates/o-cli)")?;
         let mut command = Command::new(o);
-        command.args(review::request_args(&pr)).current_dir(&project).stdin(Stdio::null());
+        command.args(review::request_args(&pr, clean)).current_dir(&project).stdin(Stdio::null());
         let out = proc::hide_window(&mut command).output().map_err(|e| e.to_string())?;
         if !out.status.success() {
             return Err(String::from_utf8_lossy(&out.stderr).trim().to_string());

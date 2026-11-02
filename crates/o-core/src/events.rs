@@ -103,7 +103,14 @@ pub enum OEvent {
     RunEnd { at: String, run_id: String, status: CardStatus },
     /// `o review --post` commented the review card's answer on the PR (ADR-0006).
     #[serde(rename = "review.posted")]
-    ReviewPosted { at: String, pr: u64, url: String },
+    ReviewPosted {
+        at: String,
+        pr: u64,
+        url: String,
+        /// The PR head commit that was reviewed (and was still the head when posted).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
+    },
     /// The runner lowered a card's effort before launching it to keep its provider within
     /// today's usage budget (ADR-0004). `spent` and `allowance` are percent points of the weekly window.
     #[serde(rename = "card.budget")]

@@ -3,6 +3,7 @@ import { useId, useState } from "react";
 
 import type { CardView } from "../../../src/core/snapshot.ts";
 import { PR_SELECTOR, backend } from "../backend.ts";
+import { useSettings } from "../settings.ts";
 
 /** The same machine side App.tsx uses: the recorded demo answers with a fixed refusal. */
 const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
@@ -17,10 +18,12 @@ type Status = { kind: "idle" } | { kind: "busy" } | { kind: "ok" | "error"; text
 /** Asks for one review and keeps what came back for the person to read. */
 function useReviewRequest(project: string) {
   const [status, setStatus] = useState<Status>({ kind: "idle" });
+  // Settings → 깨끗한 에이전트: the review card runs on the same profile as the rest of the app.
+  const { clean } = useSettings();
   const request = async (pr: string) => {
     setStatus({ kind: "busy" });
     try {
-      const started = await api.review(project, pr);
+      const started = await api.review(project, pr, clean);
       setStatus({ kind: started.ok ? "ok" : "error", text: started.message });
     } catch (e) {
       setStatus({ kind: "error", text: e instanceof Error ? e.message : String(e) });

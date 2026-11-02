@@ -38,6 +38,9 @@ export interface ReviewStarted {
   runId?: string;
   pr?: number;
   provider?: AgentId;
+  /** The PR head commit being reviewed; the comment is posted only while it is still the head. */
+  head?: string;
+  clean?: boolean;
 }
 
 /** A PR number or a github.com pull address: the only forms `o review` takes. */
@@ -125,7 +128,7 @@ export interface Backend {
    * (`o review <pr> --post` there). It never approves or merges. Rejects with the
    * reason (gh failed, policy refused) when the review did not start.
    */
-  review(project: string, pr: string): Promise<ReviewStarted>;
+  review(project: string, pr: string, clean: boolean): Promise<ReviewStarted>;
   /** Today's usage budget per provider from saved readings (`o budget --json --cached`). */
   budget(): Promise<BudgetReport>;
   /** Settings → 에이전트: saves the day's allowance (the machine refuses anything but 12–14). */
@@ -148,7 +151,7 @@ function tauriBackend(invoke: (cmd: string, args?: Record<string, unknown>) => P
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
     openExternal: (url) => invoke("open_external", { url }) as Promise<void>,
     about: () => invoke("about") as Promise<{ version: string; home: string; agentsHome: string }>,
-    review: (project, pr) => invoke("review", { project, pr }) as Promise<ReviewStarted>,
+    review: (project, pr, clean) => invoke("review", { project, pr, clean }) as Promise<ReviewStarted>,
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
     tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
@@ -167,8 +170,8 @@ const devBackend: Backend = {
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: () => fetch("/api/about").then((r) => json<{ version: string; home: string; agentsHome: string }>(r)),
-  review: async (project, pr) => {
-    const res = await fetch(`/api/review?${new URLSearchParams({ project, pr })}`, { method: "POST" });
+  review: async (project, pr, clean) => {
+    const res = await fetch(`/api/review?${new URLSearchParams({ project, pr, clean: clean ? "1" : "0" })}`, { method: "POST" });
     const body = (await res.json().catch(() => undefined)) as (ReviewStarted & { error?: string }) | undefined;
     if (!res.ok || !body) throw new Error(body?.error ?? `HTTP ${res.status}`);
     return body;

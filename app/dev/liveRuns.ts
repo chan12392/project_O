@@ -103,7 +103,7 @@ export function liveRuns(): Plugin {
           if (!PR_SELECTOR.test(pr) || !ABSOLUTE.test(project) || !existsSync(project)) {
             return send(res, 400, JSON.stringify({ error: "PR 번호(또는 github.com PR 주소)와 프로젝트 폴더가 필요합니다" }));
           }
-          return void o(["review", pr, "--post", "--detach"], 120_000, project).then((out) => send(res, 200, out), error(res));
+          return void o(["review", pr, "--post", "--detach", ...clean], 120_000, project).then((out) => send(res, 200, out), error(res));
         }
         if (req.method === "GET" && path === "/tokens") {
           const project = query.get("project");
