@@ -16,6 +16,7 @@
 | `crates/o-core` | 계획·이벤트·정책, 공식 CLI 실행과 스트림 해석, 실행 기록, 병렬 실행기, 사용량 조회 |
 | `crates/o-cli` | `o` 명령 하나(`o.exe`) |
 | `app/` | 화면 (Vite + React 19 + Tailwind 4). 기록 접기·다음 할 일 로직은 `src/core/*.ts` |
+| `app/src-tauri` | 데스크톱 셸 (Tauri 2, 크레이트 `project-o` → `project_O.exe`). `o-core`를 직접 쓴다 |
 | `skills/o/` | 총괄 에이전트가 쓰는 O 스킬 |
 
 - 작업 규칙·브랜치 흐름·정책 차단: [AGENTS.md](AGENTS.md)
@@ -93,6 +94,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | `o hook` / `o scan --all\|--staged\|--pre-push` | 에이전트 훅 / 정책 검사 |
 | `o sync-mirror <폴더>` | test·main 거울 fast-forward (예약 작업용) |
 | `o agents path\|login\|shell\|doctor` | 깨끗한 에이전트 프로필 (아래) |
+| `o agents status\|install\|open-login` / `o about` | 에이전트 CLI 설치·로그인 상태, 공식 설치·로그인 창 / 버전과 폴더 위치 (데스크톱 앱과 같은 동작) |
 
 ### 깨끗한 에이전트 (테스트용)
 

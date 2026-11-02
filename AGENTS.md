@@ -70,6 +70,13 @@ yongwoo-<주제>  ──PR──▶ yongwoo  ──PR──▶ test ─┘
 - Orca 터미널은 자체 훅을 더하므로 `o agents shell`이나 일반 터미널에서 쓴다.
 - O 코드는 로그인 파일을 만들거나 읽지 않는다. 로그인 상태는 각 CLI의 상태 명령으로만 본다.
 
+## 데스크톱 셸 (`app/src-tauri`)
+
+- Tauri 2 셸. 크레이트 `project-o`, 실행 파일 `project_O.exe`, 창 제목 "Project O". 빌드: `cd app && npm run tauri build -- --no-bundle` → `target/release/project_O.exe`. 개발: `npm run tauri dev`(Vite 1430 포트, `tauri.conf.json`의 `devUrl`·`devCsp`와 같이 고친다).
+- 화면은 프로세스를 직접 띄우지 않는다. 셸의 정해진 Tauri 명령(`app/src-tauri/src/commands.rs`)만 부르고, 그 명령은 `o-core`를 쓴다. 명령을 더하면 개발 서버 `/api`(`app/dev/liveRuns.ts`)와 `o` 명령에도 같은 동작을 둔다.
+- 에이전트 설치는 공식 npm 패키지만 앱에서 실행하고, 나머지는 공식 안내를 연다. 로그인은 새 콘솔 창의 공식 명령으로 한다.
+- Linux CI는 WebView 라이브러리가 없어 `cargo test/clippy`에서 `project-o`를 뺀다(`.github/workflows/guard.yml`). Windows 전용 코드의 import·`mut`는 `#[cfg(windows)]`로 묶어 Linux clippy가 통과하게 한다.
+
 ## 프로바이더 정책 자동 차단
 
 사람이 매번 약관을 확인하지 않도록 아래 지점에서 자동으로 막는다. 규칙 원문은 `crates/o-guard/src/rules.rs`, 근거는 `docs/DESIGN.md` §8.
