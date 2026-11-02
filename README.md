@@ -58,6 +58,8 @@ npm run tauri build -- --no-bundle   # 화면 빌드(dist) 후 target/release/pr
 npm run tauri dev                    # 개발: http://localhost:1430 + 창
 ```
 
+Windows 설치 파일(NSIS, `o.exe` 포함): [docs/INSTALL.md](docs/INSTALL.md) — `pwsh scripts/build-installer.ps1` 또는 `test_1` 프리릴리스.
+
 - 설치는 공식 npm 패키지(`npm install -g @anthropic-ai/claude-code`, `npm install -g @openai/%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home`)가 있고 npm이 PATH에 있을 때만 앱에서 실행한다. Antigravity와 npm이 없을 때는 각 회사의 공식 설치 안내를 보여 준다(인터넷 스크립트를 앱이 받아 실행하지 않음).
 - 로그인은 새 콘솔 창에서 공식 명령(`claude auth login`, `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home login`)을 띄운다. Antigravity는 시스템 로그인을 그대로 쓴다.
 - 같은 동작을 CLI로: `o agents status [--clean] --json`, `o agents install <id>`, `o agents open-login <id> [--clean]`, `o about --json`.
