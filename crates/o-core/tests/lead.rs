@@ -27,10 +27,11 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 12] = [
+    let tests: [(&str, fn()); 13] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
+        ("a Markdown reply keeps every line break from the CLI stream to the thread file", reply_keeps_lines),
         ("the plan's project is forced to the thread's", project_forced),
         ("a plan the policy refuses is stored with its violations", policy_refusal_stored),
         ("the next turn resumes the CLI session", resumes_session),
@@ -172,6 +173,23 @@ fn send_records_a_plan() {
     assert_eq!(lead::tokens(&home, Some(&project), None).total, 135);
     // Its CLI session is the lead's, not separate work for `o runs --sessions`.
     assert_eq!(lead::session_ids(&home), ["sess-1"]);
+}
+
+/// A table's rows are separate lines; joined, it shows as one line of pipes.
+fn reply_keeps_lines() {
+    let (home, project) = setup("lines");
+    let prose = "정리했습니다.\n\n## 진행 상황 요약\n\n### ✅ 끝난 것\n\n| 영역 | 내용 | 근거 |\n|---|---|---|\n| 기술 스택 | **B 확인 필요** | `docs/decisions/0001.md` |\n| Rust 이관 | 끝 | `crates/` |\n\n- 하나\n  - 둘";
+    let (spawner, _) = fake(claude_answer("sess-lines", &format!("{prose}\n\n```o-plan\n{}\n```", good_plan())));
+    lead::send(&home, &request(&project, "진행 상황"), spawner.as_ref()).unwrap();
+    let thread = lead::current_thread(&home, &project).unwrap();
+    let replies: Vec<String> = lead::read_thread(&home, &thread)
+        .into_iter()
+        .filter_map(|e| match e {
+            LeadEvent::Reply { text, .. } => Some(text),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(replies, [prose]);
 }
 
 fn project_forced() {
