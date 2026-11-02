@@ -25,8 +25,11 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           label="깨끗한 에이전트로 실행"
           description={
             <>
-              개인 훅·전역 지침·스킬·플러그인·MCP·메모리 없이 공식 CLI만으로 실행합니다. 평소 쓰는 설정은 건드리지 않습니다. 상태 확인과 연결에 쓰는 프로필이 이 선택을 따릅니다. 터미널에서 확인:{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-2xs text-foreground">o agents doctor</code>
+              개인 훅·전역 지침·스킬·플러그인·MCP·메모리 없이 공식 CLI만으로 실행합니다. 평소 쓰는 설정은 건드리지 않습니다. 아래 에이전트 CLI의 설치·로그인 확인과 연결도 이 선택의 프로필로 합니다.
+              <span className="mt-1 block text-2xs">
+                프로필에 개인 설정이 섞였는지 검사하는 기능은 아직 앱에 없습니다. 개발자는 터미널의{" "}
+                <code className="rounded bg-muted px-1 py-0.5 font-mono text-2xs text-foreground">o agents doctor</code>로 볼 수 있습니다.
+              </span>
             </>
           }
           control={<Switch checked={settings.clean} onChange={(clean) => updateSettings({ clean })} labelledBy="clean-label" />}
@@ -73,16 +76,27 @@ function BudgetRow({ api }: { api: Backend }) {
   const [percent, setPercent] = useState<number>();
   const [saving, setSaving] = useState(false);
   const [note, setNote] = useState("");
+  const [unread, setUnread] = useState(false);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let live = true;
     api.budget().then(
-      (report) => live && setPercent(report.percent),
-      () => live && setNote("지금 값을 읽지 못했습니다. 터미널에서 o budget으로 확인할 수 있습니다."),
+      (report) => {
+        if (!live) return;
+        setPercent(report.percent);
+        setUnread(false);
+        setNote("");
+      },
+      () => {
+        if (!live) return;
+        setUnread(true);
+        setNote("지금 값을 읽지 못했습니다.");
+      },
     );
     return () => {
       live = false;
     };
-  }, [api]);
+  }, [api, attempt]);
   const choose = async (value: string) => {
     const next = Number(value) as BudgetPercent;
     setSaving(true);
@@ -102,8 +116,13 @@ function BudgetRow({ api }: { api: Backend }) {
         <>
           에이전트마다 하루에 쓸 양을 주간 한도의 {percent ?? 13}%로 잡습니다. 하루가 지나는 속도보다 빨리 쓰면 작업카드의 effort를 한두 단계 낮추고(올리지는 않음), 다 쓰면 다음 날(또는 주간 초기화)까지 그 에이전트로 새 작업을 보내지 않습니다. 사용량 기록이 없는 에이전트는 조절하지 않습니다.
           {note && (
-            <span role="status" className="mt-1 block text-destructive">
+            <span role="status" className="mt-1 flex flex-wrap items-center gap-2 text-destructive">
               {note}
+              {unread && (
+                <button type="button" onClick={() => setAttempt((n) => n + 1)} className="rounded-sm text-foreground underline underline-offset-2 hover:no-underline focus-ring">
+                  다시 읽기
+                </button>
+              )}
             </span>
           )}
         </>
