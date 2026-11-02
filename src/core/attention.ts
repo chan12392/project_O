@@ -163,6 +163,8 @@ export interface Suggestion {
   since: string;
   /** The Next up ticket behind it; absent for an idle project. */
   item?: NextItem;
+  /** Other cards' review tickets for the same PR, folded into this pick so one PR takes one slot. */
+  samePr?: NextItem[];
 }
 
 /** A project with nothing new for this many days, and cards still unfinished, is worth picking back up. */
@@ -212,7 +214,7 @@ function lastActivity(run: RunView): string {
 /**
  * What to pick up next across every project, without asking a model: stopped or
  * failed work oldest first, then questions waiting for an answer, then PRs waiting
- * for review, then projects left idle for `idleDays` with cards still unfinished.
+ * for review (one pick per PR, however many cards reported it), then projects left idle for `idleDays` with cards still unfinished.
  * Each comes with a one-line reason ("3일째 멈춤 · 실패", "2시간째 답을 기다림").
  */
 export function recommend(runs: RunView[], now: Date, handled: ReadonlySet<string> = new Set(), { idleDays = IDLE_DAYS, limit = 5 } = {}): Suggestion[] {
@@ -223,7 +225,13 @@ export function recommend(runs: RunView[], now: Date, handled: ReadonlySet<strin
     const reason = reasonOf(item, now);
     const project = projectOf.get(item.runId);
     // A note waits for no answer, so it is no "답을 기다림" pick.
-    if (reason && project !== undefined && !isNote(item)) out.push({ key: item.key, kind: item.kind as SuggestionKind, project, title: item.title, reason, since: item.since, item });
+    if (!reason || project === undefined || isNote(item)) continue;
+    // Cards reporting the same PR are one review: the oldest ticket leads, the rest ride along.
+    const same = item.kind === "review" ? out.find((s) => s.kind === "review" && s.item?.pr === item.pr) : undefined;
+    if (same) {
+      same.samePr = [...(same.samePr ?? []), item];
+      same.reason = `${reasonOf(same.item!, now)} · 카드 ${same.samePr.length + 1}장`;
+    } else out.push({ key: item.key, kind: item.kind as SuggestionKind, project, title: item.title, reason, since: item.since, item });
   }
 
   // Projects nobody has touched for days, with cards that never finished and no ticket already pointing at them.
