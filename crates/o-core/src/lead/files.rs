@@ -135,9 +135,30 @@ fn in_private_folder(path: &Path) -> bool {
     path.components().any(|c| PRIVATE_FOLDERS.iter().any(|p| c.as_os_str().to_string_lossy().eq_ignore_ascii_case(p)))
 }
 
+/// Where a file given by path really is, checked before it is opened: no folder on the way
+/// (nor the file) may be a link — a symlink or a junction, which `is_symlink` reports for
+/// both — and the resolved path must not be in a sign-in folder or look like a credential.
+fn real_location(path: &Path) -> Result<PathBuf, String> {
+    let shown = path.to_string_lossy();
+    let absolute = std::path::absolute(path).map_err(|e| format!("{shown}: {e}"))?;
+    for step in absolute.ancestors().filter(|p| p.parent().is_some()) {
+        let meta = fs::symlink_metadata(step).map_err(|e| format!("{shown}: {e}"))?;
+        if meta.file_type().is_symlink() {
+            return Err(format!("링크를 거치는 경로의 파일은 첨부하지 않습니다: {shown}"));
+        }
+    }
+    let real = fs::canonicalize(&absolute).map_err(|e| format!("{shown}: {e}"))?;
+    let real_text = real.to_string_lossy();
+    if !find_hits(&real_text, CREDENTIAL_RULES.iter()).is_empty() || in_private_folder(&real) {
+        return Err(format!("로그인 정보가 있는 위치의 파일은 첨부하지 않습니다: {shown}"));
+    }
+    Ok(real)
+}
+
 /// A file given by path (`o lead send --attach`): one already in the thread's attachment
-/// folder is used as it is; any other is copied in. Links, sign-in folders and
-/// credential file names are refused, and nothing larger than the limit is read.
+/// folder is used as it is; any other is copied in. Links (the file or any folder above
+/// it), sign-in folders and credential file names are refused, and nothing larger than
+/// the limit is read.
 pub fn import(home: &Path, thread_id: &str, path: &Path) -> Result<Attachment, String> {
     let shown = path.to_string_lossy();
     if !find_hits(&shown, CREDENTIAL_RULES.iter()).is_empty() || in_private_folder(path) {
@@ -147,18 +168,17 @@ pub fn import(home: &Path, thread_id: &str, path: &Path) -> Result<Attachment, S
     if meta.file_type().is_symlink() || !meta.is_file() {
         return Err(format!("링크나 폴더는 첨부하지 않습니다: {shown}"));
     }
+    let real = real_location(path)?;
     let name = path.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
     let (_, image) = check(&name, meta.len())?;
     let dir = thread_files(home, thread_id);
-    let inside = match (fs::canonicalize(path), fs::canonicalize(&dir)) {
-        (Ok(file), Ok(dir)) => file.parent() == Some(dir.as_path()),
-        _ => false,
-    };
+    let inside = fs::canonicalize(&dir).is_ok_and(|dir| real.parent() == Some(dir.as_path()));
     if inside {
         return Ok(Attachment { name, path: path.to_string_lossy().into_owned(), size: meta.len(), image });
     }
     let mut bytes = Vec::new();
-    fs::File::open(path)
+    // The checked, resolved path: the one opened is the one checked.
+    fs::File::open(&real)
         .and_then(|f| f.take(MAX_BYTES + 1).read_to_end(&mut bytes))
         .map_err(|e| format!("{shown}: {e}"))?;
     save(home, thread_id, &name, &bytes)

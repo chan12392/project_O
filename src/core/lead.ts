@@ -35,19 +35,67 @@ export type LeadEvent =
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
-  | { t: "lead.error"; at: string; text: string };
+  | { t: "lead.error"; at: string; text: string }
+  /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
+  | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number };
 
-/** What `o lead show --json` prints. */
+/** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | null; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
+}
+
+/**
+ * What the chat knows of the lead (`useLead`): the answer for the project looked at, and,
+ * apart from it, every project with a lead thread. Switching project clears the former only:
+ * the list is how the app found a project to switch to, and emptying it on the switch made the
+ * app forget that project and look again, over and over. Each check carries a sequence number;
+ * an answer older than one already applied, or for a project no longer looked at, is dropped.
+ */
+export interface LeadView {
+  project?: string;
+  show?: LeadShow;
+  projects: LeadShow["projects"];
+  failed?: string;
+  seq: number;
+}
+
+export type LeadViewAction =
+  | { type: "project"; project?: string }
+  | { type: "answer"; project?: string; seq: number; show: LeadShow }
+  | { type: "failed"; project?: string; seq: number; error: string };
+
+export const LEAD_VIEW: LeadView = { projects: [], seq: 0 };
+
+export function leadView(state: LeadView, action: LeadViewAction): LeadView {
+  if (action.type === "project") {
+    return action.project === state.project && state.show !== undefined ? state : { ...state, project: action.project, show: undefined, failed: undefined };
+  }
+  if (action.project !== state.project || action.seq <= state.seq) return state;
+  if (action.type === "failed") return { ...state, seq: action.seq, failed: action.error };
+  // The same answer again keeps its objects, so what was drawn from it is not redrawn.
+  const same = state.show !== undefined && JSON.stringify(state.show) === JSON.stringify(action.show);
+  const show = same ? state.show : action.show;
+  const projects = JSON.stringify(state.projects) === JSON.stringify(action.show.projects) ? state.projects : action.show.projects;
+  return { ...state, seq: action.seq, show, projects, failed: undefined };
 }
 
 /** One thing the chat draws, in order. */
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string }
-  | { kind: "plan"; at: string; planId: string; title: string; cards: PlanCard[]; ok: boolean; violations: LeadViolation[]; runId?: string }
+  | {
+      kind: "plan";
+      at: string;
+      planId: string;
+      title: string;
+      cards: PlanCard[];
+      ok: boolean;
+      violations: LeadViolation[];
+      /** What was wrong with the stored plan's shape (left out of what is drawn); a plan with any never runs from here. */
+      problems: string[];
+      runId?: string;
+    }
   | { kind: "error"; at: string; text: string };
 
 /** Folds a thread's events into chat items; a dispatch marks its plan with the run it started. */
@@ -63,15 +111,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text });
         break;
       case "lead.plan":
-        items.push({
-          kind: "plan",
-          at: e.at,
-          planId: e.planId,
-          title: e.plan?.title?.trim() || "제목 없는 계획",
-          cards: Array.isArray(e.plan?.cards) ? e.plan.cards : [],
-          ok: e.ok,
-          violations: e.violations ?? [],
-        });
+        items.push(planItem(raw as Record<string, unknown>, items.length));
         break;
       case "lead.dispatch":
         for (const item of items) if (item.kind === "plan" && item.planId === e.planId) item.runId = e.runId;
@@ -80,11 +120,59 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         items.push({ kind: "error", at: e.at, text: e.text });
         break;
       default:
-        // lead.start, lead.session, lead.usage and kinds this build does not know draw nothing.
+        // lead.start, lead.session, lead.usage, lead.seen and kinds this build does not know draw nothing.
         break;
     }
   }
   return items;
+}
+
+const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+const text = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
+
+/**
+ * A stored plan as the chat can draw it. The thread keeps a refused plan as the lead wrote it,
+ * so its fields may be anything (`title: 42`, `cards: [null]`): every field is checked, what is
+ * malformed is left out and named in `problems`, and such a plan is never offered to run.
+ */
+function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, { kind: "plan" }> {
+  const problems: string[] = [];
+  const plan = isObject(e.plan) ? e.plan : undefined;
+  if (!plan) problems.push("계획이 객체가 아닙니다");
+  const title = text(plan?.title)?.trim();
+  if (plan && plan.title !== undefined && title === undefined) problems.push("계획 제목이 글자가 아닙니다");
+  if (plan && !title) problems.push("계획 제목이 없습니다");
+  const cards: PlanCard[] = [];
+  if (plan && !Array.isArray(plan.cards)) problems.push("카드 목록(cards)이 배열이 아닙니다");
+  (Array.isArray(plan?.cards) ? plan.cards : []).forEach((card: unknown, i: number) => {
+    const id = isObject(card) ? text(card.id) : undefined;
+    const provider = isObject(card) ? text(card.provider) : undefined;
+    const task = isObject(card) ? text(card.task) : undefined;
+    if (!isObject(card) || !id || !provider || task === undefined) {
+      problems.push(`카드 ${i + 1}번의 모양이 올바르지 않아 보이지 않습니다`);
+      return;
+    }
+    const kept: PlanCard = { id, provider, task };
+    for (const key of ["role", "model", "effort"] as const) {
+      const value = text(card[key]);
+      if (value) kept[key] = value;
+    }
+    cards.push(kept);
+  });
+  const violations = (Array.isArray(e.violations) ? e.violations : []).flatMap((v: unknown): LeadViolation[] => {
+    if (!isObject(v) || typeof v.rule !== "string" || typeof v.message !== "string") return [];
+    return [typeof v.cardId === "string" ? { rule: v.rule, message: v.message, cardId: v.cardId } : { rule: v.rule, message: v.message }];
+  });
+  return {
+    kind: "plan",
+    at: text(e.at) ?? "",
+    planId: text(e.planId) ?? `plan-${index}`,
+    title: title || "제목 없는 계획",
+    cards,
+    ok: e.ok === true && problems.length === 0,
+    violations,
+    problems,
+  };
 }
 
 /** The agents that can lead and the efforts each takes (crates/o-core/src/providers `lead_efforts`). */
@@ -101,6 +189,15 @@ export const LEAD_NAME: Record<LeadProvider, string> = { claude: "Claude Code", 
 
 export function isLeadProvider(id: string): id is LeadProvider {
   return id in LEAD_EFFORTS;
+}
+
+/**
+ * Whether an agent can lead now: an agent that leads, installed, and not known to be signed
+ * out (a CLI that cannot tell, like agy without its quota, may still be tried: it says so
+ * if it is not signed in). Onboarding's "시작하기" and the composer use this one rule.
+ */
+export function canLead(agent: { id: string; installed: boolean; loggedIn: boolean | null }): boolean {
+  return agent.installed && agent.loggedIn !== false && isLeadProvider(agent.id);
 }
 
 /** One model a lead may run with (`o lead models`): the id passed as `--model`, and its name. */
@@ -156,4 +253,78 @@ export function fileSize(bytes: number): string {
   if (bytes >= 1024 * 1024) return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
   if (bytes >= 1024) return `${Math.round(bytes / 1024)} KB`;
   return `${bytes} B`;
+}
+
+/** One file in the composer: uploading, saved for the thread, or refused. */
+export interface DraftFile {
+  key: string;
+  name: string;
+  size: number;
+  image: boolean;
+  saved?: LeadAttachment;
+  error?: string;
+}
+
+/**
+ * The composer's message being written for one project: its text and files, and a generation
+ * that moves on whenever the draft is sent, so an upload started before cannot land in it.
+ */
+export interface Draft {
+  text: string;
+  files: DraftFile[];
+  gen: number;
+}
+
+/** Every project's draft, by `draftKey`. */
+export type Drafts = Readonly<Record<string, Draft>>;
+
+export const EMPTY_DRAFT: Draft = { text: "", files: [], gen: 0 };
+
+/** A project's draft key: folders compare as O compares them (any slash, no trailing one, any case). */
+export function draftKey(project: string): string {
+  return project.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+
+export function draftOf(drafts: Drafts, key: string): Draft {
+  return drafts[key] ?? EMPTY_DRAFT;
+}
+
+export function editDraft(drafts: Drafts, key: string, change: (draft: Draft) => Partial<Pick<Draft, "text" | "files">>): Drafts {
+  const draft = draftOf(drafts, key);
+  return { ...drafts, [key]: { ...draft, ...change(draft) } };
+}
+
+/**
+ * An upload finished: it lands in the draft it was started from, only if that draft has not
+ * been sent since (same generation) and still has its chip. Another project's draft never gets it.
+ */
+export function uploadDone(drafts: Drafts, key: string, gen: number, fileKey: string, result: { saved?: LeadAttachment; error?: string }): Drafts {
+  const draft = drafts[key];
+  if (!draft || draft.gen !== gen || !draft.files.some((f) => f.key === fileKey)) return drafts;
+  return editDraft(drafts, key, (d) => ({ files: d.files.map((f) => (f.key === fileKey ? { ...f, ...result, image: result.saved?.image ?? f.image } : f)) }));
+}
+
+/** The draft taken to send: emptied, and its generation moved on. */
+export function takeDraft(drafts: Drafts, key: string): { drafts: Drafts; draft: Draft } {
+  const draft = draftOf(drafts, key);
+  return { drafts: { ...drafts, [key]: { text: "", files: [], gen: draft.gen + 1 } }, draft };
+}
+
+/** A send that failed (nothing recorded): its text and files come back, unless a new draft was started meanwhile. */
+export function restoreDraft(drafts: Drafts, key: string, taken: Draft): Drafts {
+  return editDraft(drafts, key, (now) => ({ text: now.text || taken.text, files: now.files.length ? now.files : taken.files }));
+}
+
+/**
+ * Why the lead thread could not be read, for the chat: the error, and when it looks like an
+ * `o` that does not know `lead` (it printed its usage, or the command failed outright), what to check.
+ */
+export function leadReadProblem(error: string): string {
+  const oldCli = /usage:|unknown command|unrecognized|Command failed|o exited with/i.test(error);
+  return oldCli ? `${error.trim()}\n\nO CLI가 총괄 명령(o lead)을 모르는 옛 버전일 수 있습니다. 앱을 업데이트하거나 O CLI를 다시 설치한 뒤 다시 시도하세요.` : error.trim();
+}
+
+/** A card task too long for the plan table's three lines: it gets a "전체 보기". */
+export function taskIsLong(task: string): boolean {
+  return task.length > 120 || task.split("\n").length > 3;
 }

@@ -173,6 +173,33 @@ pub fn is_alive(pid: u32) -> bool {
     Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
+/// When a running process started, in the system's own units (Windows: FILETIME; Linux:
+/// clock ticks since boot). With its pid it names one process: a pid the system handed to
+/// another process since has another start time. `None` when it cannot be read.
+#[cfg(windows)]
+pub fn started_at(pid: u32) -> Option<u64> {
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+    use windows_sys::Win32::System::Threading::{GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
+        CloseHandle(handle);
+        (ok != 0).then(|| (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime))
+    }
+}
+
+#[cfg(not(windows))]
+pub fn started_at(pid: u32) -> Option<u64> {
+    // Field 22 of /proc/<pid>/stat, counted after the parenthesized command name.
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
 /// Ends a process and everything it started (`taskkill /T /F` on Windows).
 pub fn kill_tree(pid: u32) {
     let mut command = if cfg!(windows) {

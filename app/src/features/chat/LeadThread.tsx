@@ -1,7 +1,7 @@
 import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
-import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, type LeadItem } from "../../../../src/core/lead.ts";
+import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadReadProblem, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -39,8 +39,8 @@ export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStar
           </div>
         )}
         {project && lead.failed && !lead.loaded && (
-          <Notice title="총괄 대화를 읽지 못했습니다" action="첫 요청 쓰기" onAction={onCompose}>
-            {lead.failed}
+          <Notice title="총괄 대화를 읽지 못했습니다" action="다시 시도" onAction={() => void lead.refresh()}>
+            <span className="whitespace-pre-wrap">{leadReadProblem(lead.failed)}</span>
           </Notice>
         )}
         {project && lead.loaded && lead.items.length === 0 && !lead.busy && (
@@ -51,6 +51,18 @@ export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStar
         {lead.items.map((item, i) => (
           <Item key={`${item.kind}-${item.at}-${i}`} item={item} lead={lead} runOf={runOf} onOpenCard={onOpenCard} />
         ))}
+        {project && lead.failed && lead.loaded && (
+          // Read once, then a check failed: what shows may be old. One line, not the whole notice.
+          <p role="status" className="flex items-center gap-2 text-xs text-status-warning-text">
+            <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+            <span className="min-w-0 truncate" title={lead.failed}>
+              최근 대화를 다시 읽지 못했습니다. 보이는 내용이 오래됐을 수 있습니다.
+            </span>
+            <button type="button" onClick={() => void lead.refresh()} className="shrink-0 rounded underline underline-offset-2 hover:text-chat-foreground focus-ring">
+              다시 시도
+            </button>
+          </p>
+        )}
         {lead.busy && (
           <p role="status" className="flex items-center gap-2 text-xs text-chat-foreground-faint">
             <span className="shimmer h-2 w-16 rounded-full" aria-hidden="true" />
@@ -123,10 +135,10 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
   };
 
   return (
-    <section className="overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby={titleId}>
+    <section className="@container overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby={titleId}>
       <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
         <div className="min-w-0">
-          <h2 id={titleId} className="truncate text-sm font-medium">
+          <h2 id={titleId} className="truncate text-sm font-medium" title={plan.title}>
             {plan.title}
           </h2>
           <p className="text-2xs text-muted-foreground">
@@ -157,7 +169,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
                 <th scope="col" className="px-2 py-2 font-normal">
                   에이전트
                 </th>
-                <th scope="col" className="px-2 py-2 font-normal max-sm:hidden">
+                <th scope="col" className="px-2 py-2 font-normal @max-md:hidden">
                   모델 · 노력
                 </th>
                 <th scope="col" className="px-2 py-2 pr-4 font-normal">
@@ -173,19 +185,30 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
                     {card.role && <span className="block text-2xs text-muted-foreground">{card.role}</span>}
                   </th>
                   <td className="px-2 py-2.5 whitespace-nowrap">{PROVIDER_NAME[card.provider as keyof typeof PROVIDER_NAME] ?? card.provider}</td>
-                  <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground max-sm:hidden">
+                  <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground @max-md:hidden">
                     {card.model || "기본 모델"}
                     {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
                   </td>
                   <td className="px-2 py-2.5 pr-4">
-                    <p className="line-clamp-3 text-foreground/90" title={card.task}>
-                      {card.task}
-                    </p>
+                    <CardTask task={card.task} />
                   </td>
                 </tr>
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+      {plan.problems.length > 0 && (
+        <div role="note" className="border-t px-4 py-3 text-xs" aria-label="계획 형식 위반">
+          <p className="flex items-center gap-1.5 font-medium text-destructive">
+            <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+            계획의 형식이 올바르지 않아 일부를 보이지 않습니다. 실행할 수 없습니다.
+          </p>
+          <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-muted-foreground">
+            {plan.problems.map((p, i) => (
+              <li key={i}>{p}</li>
+            ))}
+          </ul>
         </div>
       )}
       {!plan.ok && plan.violations.length > 0 && (
@@ -221,7 +244,10 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
             </p>
           </>
         ) : (
-          <p className="text-xs text-muted-foreground">정책에 막힌 계획은 실행하지 않습니다. 총괄에게 사유를 알려 다시 계획해 달라고 하세요.</p>
+          <p className="text-xs text-muted-foreground">
+            {plan.problems.length > 0 && plan.violations.length === 0 ? "형식이 올바르지 않은 계획" : "정책에 막힌 계획"}은 실행하지 않습니다. 총괄에게 사유를 알려 다시
+            계획해 달라고 하세요.
+          </p>
         )}
         {state.error && (
           <p role="alert" className="w-full text-xs whitespace-pre-wrap text-destructive">
@@ -238,8 +264,36 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
   );
 }
 
-/** No project yet: the folder the lead will read, typed as an absolute path. */
-function ProjectStart({ onStart }: { onStart: (path: string) => Promise<void> }) {
+/**
+ * A card's task: three lines, and for a longer one a "전체 보기" that opens it in place. The plan
+ * runs once, so the whole task must be readable before 실행 — by keyboard and touch too, not
+ * only in a mouse tooltip.
+ */
+function CardTask({ task }: { task: string }) {
+  const [open, setOpen] = useState(false);
+  const long = taskIsLong(task);
+  return (
+    <>
+      <p className={`min-w-32 whitespace-pre-wrap [overflow-wrap:anywhere] text-foreground/90 ${long && !open ? "line-clamp-3" : ""}`}>{task}</p>
+      {long && (
+        <button
+          type="button"
+          onClick={() => setOpen((o) => !o)}
+          aria-expanded={open}
+          className="mt-1 rounded text-2xs text-muted-foreground underline underline-offset-2 hover:text-foreground focus-ring"
+        >
+          {open ? "접기" : "전체 보기"}
+        </button>
+      )}
+    </>
+  );
+}
+
+/**
+ * The folder the lead will read, typed as an absolute path: shown here when there is no
+ * project yet, and exported for a "새 프로젝트" entry elsewhere (the sidebar's, not wired here).
+ */
+export function ProjectStart({ onStart }: { onStart: (path: string) => Promise<void> }) {
   const [path, setPath] = useState("");
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
   const absolute = /^(?:[A-Za-z]:[\\/]|\/)/.test(path.trim());
