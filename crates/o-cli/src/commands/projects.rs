@@ -18,10 +18,10 @@ pub const PROJECTS: Command = Command {
   o projects root [<폴더> | --default] [--create] [--json]
                              프로젝트 루트 보기·바꾸기(기본 %USERPROFILE%\\.project_o\\project), --create: 없으면 만들기
   o projects check <폴더>... --json   목록에 넣을 수 있는 폴더인지 확인",
-    run: run,
+    run: projects_command,
 };
 
-fn run(home: &Path, args: &[String]) -> i32 {
+fn projects_command(home: &Path, args: &[String]) -> i32 {
     let json_out = args.iter().any(|a| a == "--json");
     let rest: Vec<&str> = args.iter().map(String::as_str).filter(|a| *a != "--json").collect();
     let user = user_home();
