@@ -3,6 +3,7 @@
 //! nearest equivalent.
 
 use std::collections::BTreeMap;
+#[cfg(windows)]
 use std::ffi::OsStr;
 use std::io;
 use std::path::Path;
