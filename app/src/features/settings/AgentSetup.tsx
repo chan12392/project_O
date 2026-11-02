@@ -118,14 +118,16 @@ export function AgentList({ state }: { state: AgentsState }) {
 }
 
 function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState }) {
-  const connected = agent.installed && agent.loggedIn === true;
-  const unknown = agent.installed && agent.loggedIn === null;
-  const needsLogin = agent.installed && agent.loggedIn === false;
+  const connected = agent.installed && !agent.profileUnsupported && agent.loggedIn === true;
+  const unknown = agent.installed && !agent.profileUnsupported && agent.loggedIn === null;
+  const needsLogin = agent.installed && !agent.profileUnsupported && agent.loggedIn === false;
   const version = agent.version ? ` · ${agent.version}` : "";
   const status = busy === "install"
     ? "설치하는 중입니다. 몇 분 걸릴 수 있습니다."
     : busy === "login"
       ? "로그인 창을 여는 중입니다."
+      : agent.installed && agent.profileUnsupported
+        ? agent.profileUnsupported
       : connected
         ? `연결됨${version}`
         : unknown

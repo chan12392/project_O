@@ -22,7 +22,7 @@ use crate::run::mode::Profile;
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
 use crate::run::plan::{Card, Plan, ProviderId};
-use crate::policy::{check_plan, Violation, LIMITS};
+use crate::policy::{check_plan_for, Violation, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
 use crate::providers::{launch_spec_for, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
@@ -376,6 +376,31 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
     let mut reader = StreamReader::new(card.provider);
     let mut last: Option<(bool, String)> = None;
     let mut last_message = String::new();
+    let mut take = |signal: StreamSignal| -> io::Result<()> {
+        let at = now_iso();
+        let card_id = card.id.clone();
+        match signal {
+            StreamSignal::Session { session_id } => emit(OEvent::CardSession { at, card_id, session_id })?,
+            StreamSignal::Message { text } => {
+                last_message = text.clone();
+                emit(OEvent::CardMessage { at, card_id, text })?;
+            }
+            StreamSignal::Tool { name, summary } => emit(OEvent::CardTool { at, card_id, name, summary })?,
+            StreamSignal::Limit { until } => {
+                let until = set_cooldown(home, card.provider, &until, Utc::now())?;
+                emit(OEvent::CardLimit { at: now_iso(), card_id, until })?;
+            }
+            StreamSignal::Usage { input, cached, output } => emit(OEvent::CardUsage { at, card_id, input, cached, output })?,
+            StreamSignal::Quota { window, used, resets_at } => {
+                // A snapshot for the daily budget; the event stays the record either way.
+                let reading = UsageWindow { provider: card.provider, window: window.clone(), group: None, used, resets_at: resets_at.clone() };
+                let _ = budget::record(home, &[reading], Utc::now());
+                emit(OEvent::Quota { at, provider: card.provider, window, used, resets_at })?
+            }
+            StreamSignal::Final { ok, text } => last = Some((ok, text)),
+        }
+        Ok(())
+    };
     let raw_log = cards_dir.join(format!("{}.raw.jsonl", card.id));
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout);
@@ -390,28 +415,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
             let line = line.strip_suffix('\r').unwrap_or(line);
             append_bytes(&raw_log, format!("{line}\n").as_bytes());
             for signal in reader.read(line) {
-                let at = now_iso();
-                let card_id = card.id.clone();
-                match signal {
-                    StreamSignal::Session { session_id } => emit(OEvent::CardSession { at, card_id, session_id })?,
-                    StreamSignal::Message { text } => {
-                        last_message = text.clone();
-                        emit(OEvent::CardMessage { at, card_id, text })?;
-                    }
-                    StreamSignal::Tool { name, summary } => emit(OEvent::CardTool { at, card_id, name, summary })?,
-                    StreamSignal::Limit { until } => {
-                        let until = set_cooldown(home, card.provider, &until, Utc::now())?;
-                        emit(OEvent::CardLimit { at: now_iso(), card_id, until })?;
-                    }
-                    StreamSignal::Usage { input, cached, output } => emit(OEvent::CardUsage { at, card_id, input, cached, output })?,
-                    StreamSignal::Quota { window, used, resets_at } => {
-                        // A snapshot for the daily budget; the event stays the record either way.
-                        let reading = UsageWindow { provider: card.provider, window: window.clone(), group: None, used, resets_at: resets_at.clone() };
-                        let _ = budget::record(home, &[reading], Utc::now());
-                        emit(OEvent::Quota { at, provider: card.provider, window, used, resets_at })?
-                    }
-                    StreamSignal::Final { ok, text } => last = Some((ok, text)),
-                }
+                take(signal)?;
             }
         }
     }
@@ -421,7 +425,10 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         Ok(status) => (proc::exit_code(status), None),
         Err(error) => (None, Some(format!("실행 실패: {error}"))),
     };
-
+    // A plain-text CLI (Devin) is read now that it has exited: its whole answer and its transcript.
+    for signal in reader.finish(card, &TeamChannel { run_id, run_dir: &dir_text }, &stderr_tail) {
+        take(signal)?;
+    }
     let status = if stop_requested(home, run_id) {
         CardStatus::Stopped
     } else if last.as_ref().is_some_and(|(ok, _)| *ok) && exit_code == Some(0) {
@@ -483,7 +490,7 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
             budget::refresh_if_stale(home, Utc::now());
         }
         let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
-        let checked = check_plan(&plan, &ctx);
+        let checked = check_plan_for(&plan, &ctx, Profile::of_clean(is_clean(home, run_id)));
         let Some(plan) = checked.plan else {
             let reasons: Vec<&str> = checked.violations.iter().map(|v| v.message.as_str()).collect();
             let message = format!("정책 위반: {}", reasons.join(" / "));

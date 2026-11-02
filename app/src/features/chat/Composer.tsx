@@ -388,7 +388,7 @@ export function Composer({
                     value: agent,
                     onChoose: (v) => isLeadProvider(v) && setPicked({ agent: v, model: settings.leadModels[v] ?? "", effort: effortFor(v, effort) }),
                     // Every agent that can lead is listed; one that cannot be used now says why.
-                    choices: LEAD_PROVIDERS.map((id) => ({ value: id, label: LEAD_NAME[id], disabled: !usable.includes(id), hint: why(id) })),
+                    choices: [...LEAD_PROVIDERS.map((id) => ({ value: id, label: LEAD_NAME[id], disabled: !usable.includes(id), hint: why(id) })), { value: "devin", label: "Devin", disabled: true, hint: "총괄은 아직 지원하지 않음" }],
                   },
                   {
                     label: "모델",

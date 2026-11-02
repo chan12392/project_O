@@ -6,7 +6,7 @@ use o_core::run::plan::ProviderId;
 use super::blocking;
 
 fn provider(id: &str) -> Result<ProviderId, String> {
-    ProviderId::parse(id).ok_or_else(|| format!("에이전트는 claude, codex, agy 중 하나입니다: {id}"))
+    ProviderId::parse(id).ok_or_else(|| format!("에이전트는 {} 중 하나입니다: {id}", ProviderId::ALL.map(ProviderId::as_str).join(", ")))
 }
 
 #[tauri::command]

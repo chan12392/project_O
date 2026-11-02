@@ -88,7 +88,7 @@ pub fn parse_args(args: &[String]) -> Result<ReviewArgs, String> {
         match arg.as_str() {
             "--provider" => {
                 let v = value("--provider")?;
-                out.provider = Some(ProviderId::parse(&v).ok_or_else(|| format!("--provider는 claude, codex, agy 중 하나입니다: {v}"))?);
+                out.provider = Some(ProviderId::parse(&v).ok_or_else(|| format!("--provider는 {} 중 하나입니다: {v}", ProviderId::ALL.map(ProviderId::as_str).join(", ")))?);
             }
             "--model" => out.model = Some(value("--model")?),
             "--effort" => out.effort = Some(value("--effort")?),

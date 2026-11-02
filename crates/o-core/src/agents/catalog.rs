@@ -94,7 +94,7 @@ pub const CATALOG: &[Entry] = &[
         install_url: Some("https://docs.devin.ai/cli"),
         plan: Plan::Planned(2),
         profile: Profile::Unsupported("설정 폴더(%APPDATA%\\devin)를 환경변수로 옮길 수 없습니다. USERPROFILE을 바꾸면 실행이 실패합니다"),
-        note: "헤드리스 출력이 텍스트뿐이라(구조화는 ACP) 어댑터가 따로 필요합니다.",
+        note: "카드만 지원합니다. 도구 단계는 실행이 끝난 뒤 기록에서 읽으며 하루 예산은 적용되지 않습니다.",
     },
     Entry {
         id: "cursor",

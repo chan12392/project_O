@@ -1,7 +1,7 @@
 //! Each official agent CLI behind one `Provider` table: how a card launches it
 //! headless and reads its stream, how it is installed and signed in, what its
 //! clean profile holds, and how its subscription windows are read. One file per
-//! CLI (`claude`, `codex`, `agy`, `opencode`); [`get`] is the registry. Only these files know
+//! CLI (`claude`, `codex`, `agy`, `opencode`, `devin`); [`get`] is the registry. Only these files know
 //! provider flags.
 //!
 //! Every launch keeps the CLI's own sign-in: no token is injected. With YOLO off
@@ -20,6 +20,7 @@ pub mod agy;
 pub mod claude;
 pub mod codex;
 pub mod opencode;
+pub mod devin;
 mod stream;
 
 use std::collections::BTreeMap;
@@ -63,6 +64,16 @@ pub trait Provider: Sync {
     fn searches_context(&self) -> bool;
     /// A fresh reader for one card's stdout, one JSON object per line.
     fn stream_reader(&self) -> ReadLine;
+    /// Whether the CLI's headless stdout is plain text (the answer), not JSON lines (Devin `-p`).
+    /// The card's stdout is then kept whole and read by `finish_text_run` once the CLI exits.
+    fn plain_text_stdout(&self) -> bool {
+        false
+    }
+    /// For a plain-text CLI: what the card's run left — its whole stdout, the tail of its
+    /// stderr and whatever the CLI wrote next to the run (a transcript) — read into signals.
+    fn finish_text_run(&self, _card: &Card, _team: &TeamChannel, _stdout: &str, _stderr: &str) -> Vec<StreamSignal> {
+        Vec::new()
+    }
 
     // Lead chat (`lead`, ADR-0008): a read-only headless turn that may resume the CLI's session.
 
@@ -113,6 +124,12 @@ pub trait Provider: Sync {
 
     // Clean profile (`agents::clean`).
 
+    /// Why this CLI cannot run on the project_O profile (프로필 미지원), when it cannot: its cards
+    /// are then refused while the profile is on (policy rule `profile-unsupported`), and no
+    /// clean environment is made for it. `None` (the default): the clean profile works.
+    fn profile_unsupported(&self) -> Option<&'static str> {
+        None
+    }
     /// The one variable a clean launch adds: the CLI's config folder inside the
     /// profile home, or a switch when the CLI keeps its own folder there.
     fn clean_env(&self, home: &Path) -> (&'static str, String);
@@ -151,6 +168,7 @@ pub fn get(id: ProviderId) -> &'static dyn Provider {
         ProviderId::Codex => &codex::Codex,
         ProviderId::Agy => &agy::Agy,
         ProviderId::OpenCode => &opencode::OpenCode,
+        ProviderId::Devin => &devin::Devin,
     }
 }
 
@@ -352,8 +370,13 @@ fn prompt_text(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&st
         lines.push(format!("- {}: {} ({}{model})", c.id, c.label(), c.provider));
     }
     lines.push("- lead: 총괄".into());
-    lines.extend(provider.team_how_to(card, team));
-    lines.push("시작할 때 한 번 받아 보고, 다른 카드가 알아야 할 결과나 막힌 점이 생기면 짧게 보내세요.".into());
+    let how = provider.team_how_to(card, team);
+    // A CLI that cannot run the team command (Devin) is not told to read and send.
+    let talks = how.iter().any(|line| line.contains(TEAM_COMMAND));
+    lines.extend(how);
+    if talks {
+        lines.push("시작할 때 한 번 받아 보고, 다른 카드가 알아야 할 결과나 막힌 점이 생기면 짧게 보내세요.".into());
+    }
     lines.push(String::new());
     lines.push("끝나면 결과를 다섯 줄 이내로 요약하세요: 한 일, 바꾼 파일, 확인한 것, 남은 일.".into());
     lines.join("\n")
@@ -373,21 +396,42 @@ fn opt(flag: &str, value: Option<&str>) -> Vec<String> {
 /// Turns one stdout line into zero or more signals. Unknown lines are ignored
 /// so a CLI update degrades to "less detail", never to a crash.
 pub struct StreamReader {
+    provider: ProviderId,
     read: ReadLine,
     /// A limit was already reported for this card.
     limited: bool,
+    /// A plain-text CLI's stdout so far (`Provider::plain_text_stdout`); `None` for JSON lines.
+    text: Option<String>,
 }
 
 impl StreamReader {
     pub fn new(provider: ProviderId) -> Self {
-        StreamReader { read: get(provider).stream_reader(), limited: false }
+        let text = get(provider).plain_text_stdout().then(String::new);
+        StreamReader { provider, read: get(provider).stream_reader(), limited: false, text }
     }
 
     pub fn read(&mut self, line: &str) -> Vec<StreamSignal> {
+        if let Some(text) = &mut self.text {
+            text.push_str(line);
+            text.push('\n');
+            return Vec::new();
+        }
         let Ok(Value::Object(data)) = serde_json::from_str::<Value>(line) else { return Vec::new() };
-        let mut out = (self.read)(&data);
-        // One limit per card: a later guess from the error text (no reset time, so the
-        // default cooldown) must not stretch the reset time a limit event already gave.
+        let out = (self.read)(&data);
+        self.one_limit(out)
+    }
+
+    /// After the CLI exited: for a plain-text CLI, its whole stdout, the stderr tail and its
+    /// transcript read into signals (`Provider::finish_text_run`); nothing for JSON lines.
+    pub fn finish(&mut self, card: &Card, team: &TeamChannel, stderr: &str) -> Vec<StreamSignal> {
+        let Some(text) = self.text.take() else { return Vec::new() };
+        let out = get(self.provider).finish_text_run(card, team, &text, stderr);
+        self.one_limit(out)
+    }
+
+    /// One limit per card: a later guess from the error text (no reset time, so the
+    /// default cooldown) must not stretch the reset time a limit event already gave.
+    fn one_limit(&mut self, mut out: Vec<StreamSignal>) -> Vec<StreamSignal> {
         if self.limited {
             out.retain(|s| !matches!(s, StreamSignal::Limit { until } if until.is_empty()));
         }

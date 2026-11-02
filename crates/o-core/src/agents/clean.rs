@@ -9,6 +9,7 @@
 //!   agy:    .gemini/                         made by agy itself
 //!   opencode: .config/opencode/opencode.json  XDG_CONFIG_HOME; O's permission rules, no plugin or MCP
 //!   (a CLI whose config cannot move, `catalog::profile_support`, gets no profile: "프로필 미지원")
+//!   devin:  (none)                           프로필 미지원: its config folder cannot be moved
 //! ```
 //!
 //! A clean launch sees a short list of system variables plus that home, and
@@ -87,8 +88,12 @@ pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: 
     env
 }
 
-/// The clean environment for a provider, its profile made first if missing.
+/// The clean environment for a provider, its profile made first if missing. A CLI that
+/// cannot run on the profile (`Provider::profile_unsupported`) gets none: never its own setup instead.
 pub fn environment(root: &Path, provider: ProviderId) -> io::Result<BTreeMap<String, String>> {
+    if let Some(why) = providers::get(provider).profile_unsupported() {
+        return Err(io::Error::other(why));
+    }
     let home = ensure_profile(root, provider, &user_home())?;
     let parent = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
     Ok(clean_env_from(parent, &home, provider))

@@ -82,7 +82,7 @@ fn profiles_live_next_to_the_state_folder_not_inside_it() {
 fn a_new_profile_holds_only_the_claude_settings() {
     let root = temp("new");
     let real_home = temp("realhome");
-    for provider in ProviderId::ALL {
+    for provider in ProviderId::ALL.into_iter().filter(|p| *p != ProviderId::Devin) {
         ensure_profile(&root, provider, &real_home).unwrap();
     }
     let settings = profile_home(&root, ProviderId::Claude).join(".claude").join("settings.json");
@@ -136,7 +136,7 @@ fn a_new_profile_holds_only_the_claude_settings() {
 fn doctor_flags_planted_hooks_skills_and_mcp_servers() {
     let root = temp("dirty");
     let real_home = temp("realhome2");
-    for provider in ProviderId::ALL {
+    for provider in ProviderId::ALL.into_iter().filter(|p| *p != ProviderId::Devin) {
         ensure_profile(&root, provider, &real_home).unwrap();
     }
     let claude = profile_home(&root, ProviderId::Claude).join(".claude");
@@ -243,4 +243,17 @@ fn every_connected_cli_can_have_a_profile_and_unsupported_ones_are_named() {
     let text = o_core::agents::clean::unsupported(ProviderId::OpenCode, "이유");
     assert!(text.starts_with("프로필 미지원(opencode):") && text.contains("이유"));
     assert!(o_core::agents::clean::login_needed(ProviderId::OpenCode).starts_with("로그인 필요(opencode):"));
+}
+
+/// Devin's config folder cannot be moved: no clean environment is made, and nothing runs it with the person's own.
+#[test]
+fn devin_gets_no_clean_profile_and_says_why() {
+    use o_core::agents::clean::{environment, login_state};
+    let root = temp("devin");
+    let why = "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요";
+    assert_eq!(environment(&root, ProviderId::Devin).unwrap_err().to_string(), why);
+    let state = login_state(&root, ProviderId::Devin);
+    assert_eq!((state.logged_in, state.detail.as_str()), (None, why));
+    assert!(!profile_home(&root, ProviderId::Devin).exists());
+    assert!(environment(&root, ProviderId::Codex).is_ok());
 }

@@ -243,3 +243,34 @@ fn a_pr_review_leaves_out_policy_lines_instead_of_being_refused() {
     let checked = check_plan(&build_plan(PROJECT, 3, &task.text, ProviderId::Claude, None, None), &ctx());
     assert!(checked.violations.is_empty(), "{:?}", checked.violations);
 }
+
+fn devin_card() -> Value {
+    json!({ "id": "fix", "provider": "devin", "task": "README 오타 고치기", "model": "swe-2-medium" })
+}
+
+#[test]
+fn devin_cards_are_refused_on_the_project_o_profile_and_run_on_the_persons_own() {
+    use o_core::policy::check_plan_for;
+    use o_core::run::mode::Profile;
+    let refused = check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::ProjectO);
+    assert!(refused.plan.is_none());
+    let v: Vec<_> = refused.violations.iter().filter(|v| v.rule == "profile-unsupported").collect();
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].card_id.as_deref(), Some("fix"));
+    assert_eq!(v[0].message, "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요");
+    // Listed beside the plan's other problems, not only once the rest passes.
+    let both = check_plan_for(&plan(vec![with(devin_card(), "effort", json!("ultra"))]), &ctx(), Profile::ProjectO);
+    assert!(has(&both, "plan-shape") && has(&both, "profile-unsupported"));
+    assert!(check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::Own).plan.is_some());
+    assert!(check_plan_for(&plan(vec![code_card(), design_card()]), &ctx(), Profile::ProjectO).plan.is_some());
+    assert!(check_plan(&plan(vec![devin_card()]), &ctx()).plan.is_some());
+}
+
+#[test]
+fn devin_has_its_own_concurrency_cap() {
+    assert_eq!(LIMITS.max_active_per_provider(ProviderId::Devin), 2);
+    let mut full = ctx();
+    full.active_by_provider.insert(ProviderId::Devin, 2);
+    assert!(has(&check_plan(&plan(vec![devin_card()]), &full), "active-cap"));
+    assert!(check_plan(&plan(vec![code_card()]), &full).plan.is_some());
+}

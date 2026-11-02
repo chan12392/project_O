@@ -29,6 +29,11 @@ const DUMP_ENV: &str = "--dump-env";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--fake-devin") {
+        std::fs::write(&args[2], r#"{"session_id":"fake-session","steps":[{"source":"agent","tool_calls":[{"function_name":"read","arguments":{"path":"demo.txt"}}]}]}"#).unwrap();
+        println!("작업 완료");
+        return;
+    }
     if args.get(1).map(String::as_str) == Some(DUMP_ENV) {
         let env: BTreeMap<String, String> = std::env::vars().collect();
         std::fs::write(&args[2], serde_json::to_string(&env).unwrap()).unwrap();
@@ -45,7 +50,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 18] = [
+    let tests: [(&str, fn()); 19] = [
+        ("devin transcript and answer become card events", devin_transcript),
         ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
         ("budget off keeps effort and refuses nothing", budget_off_keeps_effort_and_refuses_nothing),
         ("cards start in the folder the policy checked, not the link the plan names", cards_run_in_the_checked_folder),
@@ -75,6 +81,22 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn devin_transcript() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Devin, "x")]);
+    create_run(&home, "devin", &p).unwrap();
+    let spawner: Arc<Spawner> = Arc::new(|spec, cwd| {
+        let export = spec.args.iter().position(|arg| arg == "--export").unwrap();
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).args(["--fake-devin", &spec.args[export + 1]]);
+        Ok(command)
+    });
+    assert_eq!(run_plan(&home, "devin", &p, None, spawner).unwrap(), CardStatus::Done);
+    let events = read_events(&home, "devin");
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardTool { name, .. } if name == "read")));
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(result), .. } if result == "작업 완료")));
 }
 
 /// Stands in for a provider CLI: prints the given stream lines, then exits.

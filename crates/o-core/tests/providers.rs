@@ -7,6 +7,7 @@ use o_core::sys::js::iso_from_secs;
 use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::providers::agy::parse_agy_models;
 use o_core::providers::codex::parse_codex_models;
+use o_core::providers::devin::read_run;
 use o_core::providers::{
     card_prompt, is_limit_text, launch_spec, launch_spec_for, launch_spec_with, names_to_remove, unwrap_shell, LaunchSpec, LeadTurn, ModelChoice, StreamReader, TeamChannel,
 };
@@ -504,6 +505,125 @@ fn yolo_leads_may_edit_and_run_commands_but_never_send_work() {
             assert!(!spec.args.iter().any(|a| a == gone || a.contains("disableAllHooks")), "{gone}: {:?}", spec.args);
         }
     }
+}
+
+#[test]
+fn devin_cannot_lead() {
+    // Devin leads later, through its ACP server (ADR-0016).
+    assert!(!o_core::providers::can_lead(ProviderId::Devin));
+    assert!(o_core::providers::get(ProviderId::Devin).lead(&LeadTurn::default()).is_none());
+}
+
+fn devin_card(model: Option<&str>) -> Card {
+    card("fix", ProviderId::Devin, Some("수정"), "README 오타 고치기", model, Some("high"))
+}
+
+#[test]
+fn a_devin_card_prints_headless_with_edits_approved_and_its_transcript_exported() {
+    let p = Plan { cards: vec![devin_card(Some("swe-2-medium")), plan().cards[0].clone()], ..plan() };
+    let spec = launch_spec(&p.cards[0], &p, &TEAM);
+    assert_eq!(spec.bin, "devin");
+    let prompt = card_prompt(&p.cards[0], &p, &TEAM);
+    let expected = [
+        "-p", "--permission-mode", "accept-edits", "--export", "C:/o/runs/r1/cards/fix.atif.json", "--model", "swe-2-medium", "--",
+        prompt.as_str(),
+    ];
+    assert_eq!(spec.args, expected);
+    // No effort flag exists (a Devin model id names its level), and the prompt is an argument.
+    assert!(!has(&spec.args, "high") && spec.stdin.is_none());
+    assert_eq!(spec.env_remove, ["WINDSURF_API_KEY"]);
+    assert!(find_hits(&spec.args.join(" "), code_rules()).is_empty());
+    // Nothing is allowed without a prompt, so the card is told to keep to file tools, never to read the team channel.
+    assert!(prompt.contains("셸은 쓰지 말고") && prompt.contains("팀 대화 명령을 실행할 수 없습니다"));
+    assert!(!prompt.contains("o msg") && !prompt.contains("시작할 때 한 번 받아 보고"));
+    let default_model = launch_spec(&devin_card(None), &p, &TEAM);
+    assert!(!has(&default_model.args, "--model"));
+}
+
+#[test]
+fn devin_yolo_approves_every_tool_and_changes_nothing_else() {
+    let p = Plan { cards: vec![devin_card(None)], ..plan() };
+    let normal = launch_spec(&p.cards[0], &p, &TEAM);
+    let yolo = launch_spec_for(&p.cards[0], &p, &TEAM, None, true);
+    assert_eq!(yolo.args[..3], ["-p", "--permission-mode", "dangerous"]);
+    assert!(!find_hits("devin --permission-mode dangerous", code_rules()).is_empty());
+    assert_eq!(yolo.args[3..yolo.args.len()-1], normal.args[3..normal.args.len()-1]);
+}
+
+/// Trimmed from a real `devin -p --export` transcript (3000.11.205, swe-2-medium, 2026-11-03).
+const DEVIN_ANSWERED: &str = r#"{"schema_version":"ATIF-v1.7","session_id":"merry-otter","agent":{"name":"devin","version":"3000.11.205"},
+ "steps":[
+  {"step_id":1,"source":"system","message":"You are Devin"},
+  {"step_id":8,"source":"user","message":"Run o msg read"},
+  {"step_id":10,"source":"agent","message":"","tool_calls":[{"tool_call_id":"exec:0#a1","function_name":"exec","arguments":{"command":"o msg read"}}],
+   "observation":{"results":[{"source_call_id":"exec:0#a1","content":"Output from command in shell 009f5b:\n...\nExit code: 1"}]}},
+  {"step_id":11,"source":"agent","message":"It printed: no run found.","tool_calls":[]}],
+ "final_metrics":{"total_prompt_tokens":35032,"total_completion_tokens":304,"total_cached_tokens":24704,"total_steps":11}}"#;
+
+/// The same kind of run where headless Devin refused the shell command (exit 0, empty stdout).
+const DEVIN_REFUSED: &str = r#"{"schema_version":"ATIF-v1.7","session_id":"fragrant-lamb","steps":[
+  {"step_id":13,"source":"agent","message":"","tool_calls":[
+    {"tool_call_id":"mcp_list_tools:0#b1","function_name":"mcp_list_tools","arguments":{"server_name":"m"}},
+    {"tool_call_id":"edit:1#b2","function_name":"edit","arguments":{"file_path":"C:\\work\\demo\\docs\\README.md","old_string":"teh","new_string":"the"}}],
+   "observation":{"results":[{"source_call_id":"mcp_list_tools:0#b1","content":"[]"},{"source_call_id":"edit:1#b2","content":"ok"}]}},
+  {"step_id":14,"source":"agent","message":"","tool_calls":[
+    {"tool_call_id":"mcp_call_tool:0#c1","function_name":"mcp_call_tool","arguments":{"server_name":"m","tool_name":"search","arguments":{"query":"q"}}},
+    {"tool_call_id":"exec:1#c2","function_name":"exec","arguments":{"command":"o msg read"}}],
+   "observation":{"results":[
+    {"source_call_id":"mcp_call_tool:0#c1","content":"Tool call canceled because another tool call (id=exec:1#c2) was rejected"},
+    {"source_call_id":"exec:1#c2","content":"Tool execution was rejected by the user"}]}}],
+ "final_metrics":{"total_prompt_tokens":35032,"total_completion_tokens":304,"total_cached_tokens":24704,"total_steps":14}}"#;
+
+#[test]
+fn devin_answers_come_from_stdout_and_its_steps_from_the_transcript() {
+    let signals = read_run("It printed: no run found.\n", "", Some(DEVIN_ANSWERED));
+    assert_eq!(
+        signals,
+        [
+            StreamSignal::Session { session_id: "merry-otter".into() },
+            StreamSignal::Tool { name: "exec".into(), summary: "o msg read".into() },
+            StreamSignal::Message { text: "It printed: no run found.".into() },
+            StreamSignal::Usage { input: 10328.0, cached: 24704.0, output: 304.0 },
+            StreamSignal::Final { ok: true, text: "It printed: no run found.".into() },
+        ]
+    );
+    // Without a transcript the answer still counts.
+    assert_eq!(read_run("ok", "", None), [StreamSignal::Final { ok: true, text: "ok".into() }]);
+    // A plain-text stdout is never read line by line.
+    assert_eq!(StreamReader::new(ProviderId::Devin).read(r#"{"type":"result","result":"x"}"#), []);
+}
+
+#[test]
+fn a_devin_turn_ended_by_a_refused_tool_is_a_failure_that_names_it() {
+    let warning = "warning: rejected a tool call that requires confirmation. Running in non-interactive mode. Use --permission-mode dangerous to auto-approve all tools.";
+    let signals = read_run("", warning, Some(DEVIN_REFUSED));
+    let tools: Vec<(String, String)> = signals.iter().filter_map(|s| match s {
+        StreamSignal::Tool { name, summary } => Some((name.clone(), summary.clone())),
+        _ => None,
+    }).collect();
+    assert_eq!(tools, [("mcp_list_tools".into(), String::new()), ("edit".into(), "docs/README.md".into()), ("mcp_call_tool".into(), "m/search".into()), ("exec".into(), "o msg read".into())]);
+    match signals.last() {
+        Some(StreamSignal::Final { ok: false, text }) => assert!(text.contains("권한 거부") && text.contains("exec o msg read"), "{text}"),
+        other => panic!("{other:?}"),
+    }
+    // Only the stderr warning (no transcript): still a refusal, not a silent success.
+    assert!(matches!(read_run("", warning, None).as_slice(), [StreamSignal::Final { ok: false, text }] if text.contains("권한 거부")));
+    // An empty answer for another reason says the last stderr line, and a limit there rests the provider.
+    let limited = read_run("", "Error: You have hit your usage limit.", None);
+    assert!(matches!(limited.as_slice(), [StreamSignal::Limit { .. }, StreamSignal::Final { ok: false, text }] if text.contains("usage limit")));
+}
+
+#[test]
+fn devin_sign_in_is_read_from_the_first_status_line_only() {
+    let p = o_core::providers::get(ProviderId::Devin);
+    assert_eq!(p.status_args(), ["auth", "status"]);
+    assert_eq!(p.login_args(), Some(&["auth", "login"][..]));
+    let yes = p.read_login(true, "Logged in (via Devin).\n\nUser:\n  Email: someone@example.com\n", "").unwrap();
+    assert_eq!((yes.logged_in, yes.detail.as_str()), (Some(true), "로그인됨"));
+    assert_eq!(p.read_login(false, "Not logged in.\n", "").unwrap().logged_in, Some(false));
+    assert!(p.read_login(false, "", "boom").is_none());
+    let official = p.official();
+    assert_eq!((official.name, official.npm_package, official.url), ("Devin", None, "https://docs.devin.ai/cli"));
 }
 
 #[test]

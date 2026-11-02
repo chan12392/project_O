@@ -50,7 +50,7 @@ pub const BYPASS_RULE: &str = "permission-bypass";
 static BYPASS_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     vec![rule(
         BYPASS_RULE,
-        r"dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|bypassPermissions|--yolo\b|--auto\b",
+        r"dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|bypassPermissions|--yolo\b|--auto\b|--permission-mode[^\n]{0,32}\bdangerous\b",
         "CLI의 권한 확인을 끄는 옵션은 쓸 수 없습니다",
     )]
 });
