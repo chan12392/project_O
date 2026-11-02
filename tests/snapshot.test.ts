@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import type { OEvent } from "../src/core/events.ts";
-import { describeTool, snapshot } from "../src/core/snapshot.ts";
+import { describeTool, foldRuns, snapshot } from "../src/core/snapshot.ts";
 
 // The app's demo fixture is today's real end-to-end run, paths sanitised.
 const demo = JSON.parse(readFileSync(new URL("../app/src/data/demo-runs.json", import.meta.url), "utf8")) as { runs: { events: OEvent[] }[] };
@@ -90,6 +90,25 @@ test("a repeated card id is one card, kept by the first", () => {
     { t: "card.end", at: "2026-11-02T10:00:02.000Z", cardId: "a1", status: "done", result: "결과", exitCode: null },
   ]);
   assert.deepEqual(run?.cards.map((c) => [c.id, c.label, c.state, c.result]), [["a1", "첫", "done", "결과"], ["b2", "b", "waiting", undefined]]);
+});
+
+test("a poll keeps a run's view only while its events are unchanged, not just as many", () => {
+  const start: OEvent = { t: "run.start", at: "2026-11-02T10:00:00.000Z", runId: "session-s1", title: "t", project: "C:/p", cards: [] };
+  const said = (at: string, text: string): OEvent => ({ t: "msg", at, from: "lead", to: "all", text });
+  // A long Claude Code session keeps its newest lines only: the next answer has as many events, but newer ones.
+  const first = foldRuns([{ runId: "session-s1", events: [start, said("2026-11-02T10:00:01.000Z", "하나"), said("2026-11-02T10:00:02.000Z", "둘")] }], new Map());
+  const view = first.get("session-s1")?.view;
+  assert.deepEqual(view?.messages.map((m) => m.text), ["하나", "둘"]);
+
+  const same = foldRuns([{ runId: "session-s1", events: [start, said("2026-11-02T10:00:01.000Z", "하나"), said("2026-11-02T10:00:02.000Z", "둘")] }], first);
+  assert.equal(same.get("session-s1")?.view, view, "an unchanged run keeps its view object");
+
+  const moved = foldRuns([{ runId: "session-s1", events: [start, said("2026-11-02T10:00:02.000Z", "둘"), said("2026-11-02T10:00:03.000Z", "셋")] }], same);
+  assert.deepEqual(moved.get("session-s1")?.view.messages.map((m) => m.text), ["둘", "셋"]);
+
+  // Runs without a start are left out; the order follows the answer.
+  const two = foldRuns([{ runId: "x", events: [] }, { runId: "r2", events: [{ ...start, runId: "r2" }] }, { runId: "session-s1", events: [start] }], moved);
+  assert.deepEqual([...two.keys()], ["r2", "session-s1"]);
 });
 
 test("no run.start means nothing to show", () => {

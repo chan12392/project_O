@@ -72,6 +72,33 @@ export interface RunView {
   quotas: Quota[];
 }
 
+export interface FoldedRun {
+  /** What the view was folded from: a run with the same key folds to the same view. */
+  key: string;
+  view: RunView;
+}
+
+/**
+ * Each answer's runs folded, in the answer's order (runs without a start left out). A run whose
+ * events are the same as last time keeps its view object, so a quiet poll re-renders nothing.
+ * The key is the events' content, not their count: a long Claude Code session keeps only its
+ * newest lines, so a later answer can carry as many events with newer content.
+ */
+export function foldRuns(runs: readonly { runId: string; events: OEvent[] }[], known: ReadonlyMap<string, FoldedRun>): Map<string, FoldedRun> {
+  const next = new Map<string, FoldedRun>();
+  for (const r of runs) {
+    const key = JSON.stringify(r.events);
+    const hit = known.get(r.runId);
+    if (hit && hit.key === key) {
+      next.set(r.runId, hit);
+      continue;
+    }
+    const view = snapshot(r.events);
+    if (view) next.set(r.runId, { key, view });
+  }
+  return next;
+}
+
 export function snapshot(events: OEvent[]): RunView | undefined {
   let run: RunView | undefined;
   const byId = new Map<string, CardView>();
