@@ -7,6 +7,7 @@
 
 pub mod agents;
 pub mod clean;
+pub mod context;
 pub mod events;
 pub mod index;
 pub mod js;

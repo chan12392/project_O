@@ -3,7 +3,9 @@
 //!
 //! Every launch keeps the CLI's own sign-in and permission checks: no token is
 //! injected and no flag that disables approvals is ever added. The one opening
-//! is narrow: each CLI may run `o msg`, the run's team channel, and nothing more.
+//! is narrow: each CLI may run `o msg`, the run's team channel, and the
+//! read-only `o context` search (ADR-0005; Antigravity only gets the section
+//! injected into its prompt), and nothing more.
 
 use std::collections::BTreeMap;
 use std::sync::LazyLock;
@@ -11,6 +13,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
+use crate::context::CONTEXT_COMMAND;
 use crate::events::StreamSignal;
 use crate::js::{as_number, coalesce, iso_from_secs, js_head, js_len, js_string, squash_spaces};
 use crate::plan::{Card, Plan, ProviderId};
@@ -36,13 +39,19 @@ pub struct TeamChannel<'a> {
 const TEAM_COMMAND: &str = "o msg";
 
 pub fn launch_spec(card: &Card, plan: &Plan, team: &TeamChannel) -> LaunchSpec {
-    let prompt = card_prompt(card, plan, team);
+    launch_spec_with(card, plan, team, None)
+}
+
+/// `launch_spec` with the card's shared context section (`context::prepare`), if any.
+pub fn launch_spec_with(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&str>) -> LaunchSpec {
+    let prompt = card_prompt_with(card, plan, team, context);
     let env = BTreeMap::from([("O_RUN_ID".to_string(), team.run_id.to_string()), ("O_CARD_ID".to_string(), card.id.clone())]);
     let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
     match card.provider {
         ProviderId::Claude => {
             let mut args = s(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools"]);
             args.push(format!("Bash({TEAM_COMMAND} *)"));
+            args.push(format!("Bash({CONTEXT_COMMAND} *)"));
             args.extend(opt("--model", card.model.as_deref()));
             args.extend(opt("--effort", card.effort.as_deref()));
             LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env }
@@ -74,7 +83,9 @@ pub fn launch_spec(card: &Card, plan: &Plan, team: &TeamChannel) -> LaunchSpec {
 /// the turn. Tell the agents that cannot run shell commands up front.
 fn tool_note(provider: ProviderId) -> Option<String> {
     match provider {
-        ProviderId::Claude => Some(format!("셸 명령은 승인할 사람이 없어 거부될 수 있습니다({TEAM_COMMAND}만 허용). 파일 읽기·쓰기 도구를 우선 쓰세요.")),
+        ProviderId::Claude => {
+            Some(format!("셸 명령은 승인할 사람이 없어 거부될 수 있습니다({TEAM_COMMAND}·{CONTEXT_COMMAND}만 허용). 파일 읽기·쓰기 도구를 우선 쓰세요."))
+        }
         ProviderId::Codex => None,
         ProviderId::Agy => Some(format!(
             "셸 명령은 \"{TEAM_COMMAND} read\"와 \"{TEAM_COMMAND} post\" 두 개만 그대로 실행할 수 있습니다(헤드리스 모드라 다른 명령은 승인 불가). 그 밖에는 파일 읽기·쓰기 도구만 쓰세요."
@@ -102,6 +113,11 @@ fn team_how_to(card: &Card, team: &TeamChannel) -> Vec<String> {
 
 /// The work card text a provider receives. Kept short: it is paid for on every card.
 pub fn card_prompt(card: &Card, plan: &Plan, team: &TeamChannel) -> String {
+    card_prompt_with(card, plan, team, None)
+}
+
+/// The work card text with the shared context section after the task.
+pub fn card_prompt_with(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&str>) -> String {
     let others: Vec<&Card> = plan.cards.iter().filter(|c| c.id != card.id).collect();
     let role = card.role.as_deref().filter(|r| !r.is_empty()).map(|r| format!(" · {r}")).unwrap_or_default();
     let mut lines = vec![format!("[O 작업카드] {}{role}", plan.title), format!("프로젝트: {}", plan.project)];
@@ -112,6 +128,10 @@ pub fn card_prompt(card: &Card, plan: &Plan, team: &TeamChannel) -> String {
     lines.push(String::new());
     lines.push(card.task.trim().to_string());
     lines.push(String::new());
+    if let Some(context) = context.filter(|c| !c.is_empty()) {
+        lines.push(context.to_string());
+        lines.push(String::new());
+    }
     lines.push(format!("팀 대화 (실행 {}, 내 카드 {}):", team.run_id, card.id));
     for c in &others {
         let model = c.model.as_deref().filter(|m| !m.is_empty()).map(|m| format!(" {m}")).unwrap_or_default();

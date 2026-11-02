@@ -101,6 +101,9 @@ pub enum OEvent {
     },
     #[serde(rename = "run.end")]
     RunEnd { at: String, run_id: String, status: CardStatus },
+    /// Cards whose prompt got a shared context section (`context`), and its characters in all.
+    #[serde(rename = "run.context")]
+    RunContext { at: String, run_id: String, cards: usize, chars: usize, card_ids: Vec<String> },
 }
 
 impl OEvent {
@@ -119,6 +122,7 @@ impl OEvent {
             OEvent::CardUsage { .. } => "card.usage",
             OEvent::Quota { .. } => "quota",
             OEvent::RunEnd { .. } => "run.end",
+            OEvent::RunContext { .. } => "run.context",
         }
     }
 }
