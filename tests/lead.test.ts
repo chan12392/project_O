@@ -2,7 +2,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { ATTACH, LEAD_EFFORTS, MODEL_ID, attachProblem, effortFor, fileSize, leadItems, modelLabel, type LeadEvent } from "../src/core/lead.ts";
+import { ATTACH, LEAD_EFFORTS, LEAD_VIEW, MODEL_ID, attachProblem, effortFor, fileSize, leadItems, leadView, modelLabel, type LeadEvent, type LeadShow } from "../src/core/lead.ts";
+import { createPoll } from "../src/core/poll.ts";
 
 const rust = (path: string) => readFileSync(new URL(`../crates/o-core/src/${path}`, import.meta.url), "utf8");
 /** The string list a Rust fn or const returns, e.g. `fn lead_efforts ... &["low", "medium"]`. */
@@ -111,4 +112,75 @@ test("a stored plan of the wrong shape draws as a safe plan with a notice, never
   const stored: LeadEvent = { t: "lead.plan", at: "5", planId: "th-p5", plan: { title: "README", cards: [{ id: "docs", provider: "claude", task: "한 줄" }] }, ok: true, violations: [] };
   const good = leadItems([stored]);
   assert.ok(good[0].kind === "plan" && good[0].ok && good[0].problems.length === 0);
+});
+
+const shown = (project: string, projects: string[]): LeadShow => ({
+  thread: { threadId: `t-${project}`, project, busy: null, events: [] },
+  projects: projects.map((p) => ({ project: p, threadId: `t-${p}` })),
+});
+
+test("the discovered lead projects stay while the chat switches project, so discovery cannot loop", () => {
+  // No runs, no chosen project: `o lead show` (no project) finds one, the app switches to it,
+  // and the switch must not empty the list it was found in (that sent the app back to "no project").
+  let view = leadView(LEAD_VIEW, { type: "project", project: undefined });
+  view = leadView(view, { type: "answer", project: undefined, seq: 1, show: shown("C:/a", ["C:/a"]) });
+  assert.deepEqual(view.projects.map((p) => p.project), ["C:/a"]);
+  view = leadView(view, { type: "project", project: "C:/a" });
+  assert.equal(view.show, undefined, "the thread of the folder looked at before is not shown");
+  assert.deepEqual(view.projects.map((p) => p.project), ["C:/a"], "switching emptied the discovered list");
+  view = leadView(view, { type: "answer", project: "C:/a", seq: 2, show: shown("C:/a", ["C:/a"]) });
+  assert.equal(view.show?.thread?.project, "C:/a");
+});
+
+test("only the newest lead answer lands; one for another project or an older request is dropped", () => {
+  let view = leadView(LEAD_VIEW, { type: "project", project: "C:/a" });
+  view = leadView(view, { type: "answer", project: "C:/a", seq: 3, show: shown("C:/a", ["C:/a", "C:/new"]) });
+  // The 0.4 s check after sending, answered late, must not undo the newer answer.
+  const stale = leadView(view, { type: "answer", project: "C:/a", seq: 2, show: shown("C:/a", ["C:/a"]) });
+  assert.equal(stale, view);
+  assert.equal(leadView(view, { type: "failed", project: "C:/a", seq: 1, error: "늦은 실패" }), view);
+  // An answer for the project looked at before the switch.
+  const other = leadView(leadView(view, { type: "project", project: "C:/b" }), { type: "answer", project: "C:/a", seq: 4, show: shown("C:/a", []) });
+  assert.equal(other.show, undefined);
+  // A newer failure after a good read keeps what was read and says it failed.
+  const failed = leadView(view, { type: "failed", project: "C:/a", seq: 5, error: "o lead show 실패" });
+  assert.equal(failed.show, view.show);
+  assert.equal(failed.failed, "o lead show 실패");
+  assert.equal(leadView(failed, { type: "answer", project: "C:/a", seq: 6, show: shown("C:/a", ["C:/a"]) }).failed, undefined);
+});
+
+test("the lead poll never runs two loops: a wake while a check is in flight starts nothing new", async () => {
+  const timers = new Map<number, () => void>();
+  let next = 0;
+  let hidden = false;
+  let calls = 0;
+  let release: () => void = () => {};
+  const poll = createPoll({
+    run: () => {
+      calls += 1;
+      return new Promise<void>((resolve) => (release = resolve));
+    },
+    delay: 2000,
+    hidden: () => hidden,
+    setTimer: (fn) => (timers.set(++next, fn), next),
+    clearTimer: (id) => void timers.delete(id),
+  });
+  poll.wake();
+  // Hidden and shown again, several times, while the first check is still out.
+  for (let i = 0; i < 3; i++) {
+    hidden = true;
+    poll.wake();
+    hidden = false;
+    poll.wake();
+  }
+  assert.equal(calls, 1);
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(timers.size, 1, "one loop, one timer");
+  [...timers.values()][0]();
+  assert.equal(calls, 2);
+  poll.stop();
+  release();
+  await new Promise((r) => setTimeout(r, 0));
+  assert.equal(timers.size, 0, "stopped: nothing is scheduled");
 });

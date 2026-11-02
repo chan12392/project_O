@@ -45,6 +45,41 @@ export interface LeadShow {
   projects: { project: string; threadId: string }[];
 }
 
+/**
+ * What the chat knows of the lead (`useLead`): the answer for the project looked at, and,
+ * apart from it, every project with a lead thread. Switching project clears the former only:
+ * the list is how the app found a project to switch to, and emptying it on the switch made the
+ * app forget that project and look again, over and over. Each check carries a sequence number;
+ * an answer older than one already applied, or for a project no longer looked at, is dropped.
+ */
+export interface LeadView {
+  project?: string;
+  show?: LeadShow;
+  projects: LeadShow["projects"];
+  failed?: string;
+  seq: number;
+}
+
+export type LeadViewAction =
+  | { type: "project"; project?: string }
+  | { type: "answer"; project?: string; seq: number; show: LeadShow }
+  | { type: "failed"; project?: string; seq: number; error: string };
+
+export const LEAD_VIEW: LeadView = { projects: [], seq: 0 };
+
+export function leadView(state: LeadView, action: LeadViewAction): LeadView {
+  if (action.type === "project") {
+    return action.project === state.project && state.show !== undefined ? state : { ...state, project: action.project, show: undefined, failed: undefined };
+  }
+  if (action.project !== state.project || action.seq <= state.seq) return state;
+  if (action.type === "failed") return { ...state, seq: action.seq, failed: action.error };
+  // The same answer again keeps its objects, so what was drawn from it is not redrawn.
+  const same = state.show !== undefined && JSON.stringify(state.show) === JSON.stringify(action.show);
+  const show = same ? state.show : action.show;
+  const projects = JSON.stringify(state.projects) === JSON.stringify(action.show.projects) ? state.projects : action.show.projects;
+  return { ...state, seq: action.seq, show, projects, failed: undefined };
+}
+
 /** One thing the chat draws, in order. */
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
