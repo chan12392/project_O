@@ -21,6 +21,8 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 o-core = { path = "../../crates/o-core" }
 tauri = { version = "2", features = [] }
+# The native folder picker for 프로젝트 추가 (ADR-0009), pinned exactly.
+tauri-plugin-dialog = "=2.8.4"
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 chrono.workspace = true

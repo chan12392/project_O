@@ -1,8 +1,9 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
 import type { LeadAttachment, LeadEvent, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
+import type { ListedProject, ProjectCheck, ProjectList } from "../../../../src/core/projects.ts";
 import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
 
-export type { LeadAttachment, LeadEvent, LeadProvider, LeadShow };
+export type { LeadAttachment, LeadEvent, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
 
 export type AgentId = "claude" | "codex" | "agy";
 
@@ -154,6 +155,23 @@ export interface Backend {
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
   /** Stops the project's lead while it answers. */
   leadStop(project?: string): Promise<{ stopped: boolean }>;
+
+  // The project list (ADR-0009). Nothing here deletes a folder; refusals reject with the reason.
+
+  /** The projects root, its projects and the registered folders (`o projects --json`). */
+  projects(): Promise<ProjectList>;
+  /** Registers a folder outside the root (the same rules as a card's project folder). */
+  projectsAdd(path: string): Promise<ProjectList>;
+  /** Takes a registered folder off the list; the folder stays. */
+  projectsRemove(path: string): Promise<ProjectList>;
+  /** "새 프로젝트": a new empty folder in the root. */
+  projectsNew(name: string): Promise<ProjectList & { created: string }>;
+  /** Settings → 프로젝트: another root, back to the default (`reset`), and/or make it (`create`). */
+  projectsRoot(change: { path?: string; reset?: boolean; create?: boolean }): Promise<ProjectList>;
+  /** Which of these folders may be listed, each with the reason when not. */
+  projectsCheck(paths: string[]): Promise<ProjectCheck[]>;
+  /** The native folder picker (desktop only); null when cancelled or unavailable. */
+  pickFolder?(): Promise<string | null>;
 }
 
 export interface LeadSendRequest {
