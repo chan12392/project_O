@@ -18,9 +18,17 @@ serde_json = { workspace = true, features = ["preserve_order"] }
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Storage_FileSystem",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging",
 ] }
+
+[[test]]
+name = "lead"
+# Its own main: the test binary doubles as the fake lead CLI (see tests/lead.rs).
+harness = false
 
 [[test]]
 name = "runner"

@@ -1,21 +1,29 @@
 //! O core: plans, policy, provider launch and stream reading, the run store,
-//! the runner and the usage probes. Pure modules (`plan`, `events`, `policy`,
-//! `providers`, `usage`, `snapshot`) touch nothing; `store`, `runner`,
-//! `probe`, `team` and `mirror` work on O's state folder and processes. The
-//! `o` binary and a desktop shell both sit on top of this.
+//! the runner and the usage probes. The `o` binary and the desktop shell both
+//! sit on top of this. Module map: docs/ARCHITECTURE.md.
+//!
+//! - `run`: a plan's life — plan, events, runner, store, index, snapshot, team channel
+//! - `policy`: whether a plan or a team message may go (shared boundary)
+//! - `providers`: each official agent CLI behind one `Provider` table
+//! - `agents`: CLI install/sign-in status and clean test profiles
+//! - `usage`: subscription windows, their probes and the daily budget
+//! - `context`: shared session context and token report (ADR-0005)
+//! - `lead`: the lead chat — a read-only lead CLI proposes plans, the person dispatches (ADR-0008)
+//! - `review`, `sessions`: `o review` and Claude Code sessions as runs
+//! - `projects`: the projects root and registered folders the app lists (ADR-0009)
+//! - `sys`: processes, CLI lookup, JS-compatible formats, mirror sync
 
-pub mod events;
-pub mod index;
-pub mod js;
-pub mod mirror;
-pub mod plan;
+/// This build's O version (`o about`); the desktop app shows it beside its own.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+pub mod agents;
+pub mod context;
+pub mod lead;
 pub mod policy;
-pub mod probe;
-pub mod proc;
+pub mod projects;
 pub mod providers;
-pub mod resolve;
-pub mod runner;
-pub mod snapshot;
-pub mod store;
-pub mod team;
+pub mod review;
+pub mod run;
+pub mod sessions;
+pub mod sys;
 pub mod usage;

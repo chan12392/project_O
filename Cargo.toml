@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/o-guard", "crates/o-core", "crates/o-cli"]
+members = ["crates/o-guard", "crates/o-core", "crates/o-cli", "app/src-tauri"]
 
 [workspace.package]
 edition = "2021"
-version = "0.2.0"
+version = "0.3.0"
 publish = false
 
 [workspace.dependencies]

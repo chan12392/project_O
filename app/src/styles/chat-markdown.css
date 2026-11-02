@@ -1,0 +1,192 @@
+/*
+ * Chat Markdown (features/chat/Markdown.tsx): compact type on the chat tokens. Sizes are
+ * in em so they follow the bubble's text size and Settings → 글자 크기. Selectors sit in
+ * :where() so a utility class on a wrapper still wins.
+ */
+@layer components {
+  .chat-markdown {
+    --md-border: var(--border);
+    --md-rule: color-mix(in srgb, var(--chat-source-foreground) 18%, transparent);
+    --md-head-surface: color-mix(in srgb, var(--chat-source-foreground) 4%, transparent);
+    --md-code-surface: var(--chat-code-surface);
+    --md-code-border: var(--chat-code-border);
+    --md-inline-surface: var(--chat-inline-code-surface);
+    --md-inline-border: var(--chat-inline-code-border);
+    --md-strong: var(--chat-foreground-strong);
+    --md-faint: var(--chat-foreground-faint);
+    --md-link: var(--callout-note);
+    min-width: 0;
+    line-height: 1.6;
+  }
+  /* On the primary colour everything derives from the text colour. */
+  .chat-markdown--inverse {
+    --md-border: color-mix(in srgb, currentColor 28%, transparent);
+    --md-rule: color-mix(in srgb, currentColor 40%, transparent);
+    --md-head-surface: color-mix(in srgb, currentColor 8%, transparent);
+    --md-code-surface: color-mix(in srgb, currentColor 8%, transparent);
+    --md-code-border: color-mix(in srgb, currentColor 20%, transparent);
+    --md-inline-surface: color-mix(in srgb, currentColor 10%, transparent);
+    --md-inline-border: color-mix(in srgb, currentColor 22%, transparent);
+    --md-strong: currentColor;
+    --md-faint: color-mix(in srgb, currentColor 78%, transparent);
+    --md-link: currentColor;
+  }
+
+  /* Rhythm: modest gaps between blocks, a little more above a heading than below it. */
+  :where(.chat-markdown) > :where(* + *) {
+    margin-top: 0.625em;
+  }
+  :where(.chat-markdown) :where(h1, h2, h3, h4, h5, h6) {
+    color: var(--md-strong);
+    font-weight: 600;
+    line-height: 1.35;
+    text-wrap: balance;
+  }
+  :where(.chat-markdown) > :where(* + :is(h1, h2, h3, h4, h5, h6)) {
+    margin-top: 1.1em;
+  }
+  :where(.chat-markdown) :where(h1, h2, h3, h4, h5, h6) + :where(*) {
+    margin-top: 0.375em;
+  }
+  :where(.chat-markdown) :where(h1) {
+    font-size: 1.2em;
+  }
+  :where(.chat-markdown) :where(h2) {
+    font-size: 1.12em;
+  }
+  :where(.chat-markdown) :where(h3) {
+    font-size: 1.04em;
+  }
+  :where(.chat-markdown) :where(h4, h5, h6) {
+    font-size: 1em;
+  }
+
+  :where(.chat-markdown) :where(strong) {
+    color: var(--md-strong);
+    font-weight: 600;
+  }
+
+  /* Lists, nested lists and GFM task lists. */
+  :where(.chat-markdown) :where(ul, ol) {
+    padding-left: 1.25em;
+  }
+  :where(.chat-markdown) :where(ul) {
+    list-style: disc;
+  }
+  :where(.chat-markdown) :where(ul ul) {
+    list-style: circle;
+  }
+  :where(.chat-markdown) :where(ol) {
+    list-style: decimal;
+  }
+  :where(.chat-markdown) :where(li)::marker {
+    color: var(--md-faint);
+  }
+  :where(.chat-markdown) :where(li + li, li > * + *, li > ul, li > ol) {
+    margin-top: 0.25em;
+  }
+  :where(.chat-markdown) :where(ul.contains-task-list) {
+    padding-left: 0.25em;
+    list-style: none;
+  }
+  :where(.chat-markdown) :where(.task-list-item) :where(input[type="checkbox"]) {
+    margin: 0 0.45em 0 0;
+    vertical-align: -0.1em;
+    accent-color: var(--md-link);
+  }
+
+  :where(.chat-markdown) :where(blockquote) {
+    border-left: 2px solid var(--md-rule);
+    padding-left: 0.75em;
+    color: var(--md-faint);
+  }
+  :where(.chat-markdown) :where(hr) {
+    border: 0;
+    border-top: 1px solid var(--md-border);
+    margin-block: 1em;
+  }
+
+  :where(.chat-markdown) :where(a) {
+    color: var(--md-link);
+    text-decoration: underline;
+    text-decoration-thickness: 1px;
+    text-decoration-color: color-mix(in srgb, currentColor 45%, transparent);
+    text-underline-offset: 0.2em;
+    border-radius: 2px;
+  }
+  :where(.chat-markdown) :where(a:hover) {
+    text-decoration-color: currentColor;
+  }
+  :where(.chat-markdown) :where(a:focus-visible, .md-scroll:focus-visible) {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+  .md-image-icon {
+    display: inline-block;
+    width: 1em;
+    height: 1em;
+    margin-right: 0.25em;
+    vertical-align: -0.15em;
+  }
+
+  /* Code: inline chips, and blocks that scroll sideways instead of wrapping. */
+  :where(.chat-markdown) :where(code) {
+    font-family: var(--font-mono);
+    font-size: 0.857em;
+  }
+  :where(.chat-markdown) :where(:not(pre) > code) {
+    border: 1px solid var(--md-inline-border);
+    border-radius: 4px;
+    background: var(--md-inline-surface);
+    padding: 0.05em 0.3em;
+    overflow-wrap: anywhere;
+  }
+  :where(.chat-markdown) :where(pre) {
+    border: 1px solid var(--md-code-border);
+    border-radius: 8px;
+    background: var(--md-code-surface);
+    padding: 0.625em 0.75em;
+    line-height: 1.55;
+    white-space: pre;
+    tab-size: 2;
+  }
+  :where(.chat-markdown) :where(pre code) {
+    font-size: 0.857em;
+  }
+
+  /* Tables: 1px borders, a tinted header row, sideways scroll for what cannot wrap. */
+  :where(.chat-markdown) :where(.md-scroll) {
+    max-width: 100%;
+    overflow-x: auto;
+    scrollbar-width: thin;
+    scrollbar-color: color-mix(in srgb, currentColor 22%, transparent) transparent;
+  }
+  :where(.chat-markdown) :where(table) {
+    border-collapse: collapse;
+    font-size: 0.93em;
+    line-height: 1.5;
+    font-variant-numeric: tabular-nums;
+  }
+  :where(.chat-markdown) :where(th, td) {
+    min-width: 4.5em;
+    border: 1px solid var(--md-border);
+    padding: 0.375em 0.625em;
+    text-align: left;
+    vertical-align: top;
+  }
+  /* Paths in a cell break only where they naturally can (/, -); past that the table scrolls. */
+  :where(.chat-markdown) :where(td, th) :where(code) {
+    overflow-wrap: normal;
+  }
+  :where(.chat-markdown) :where(th) {
+    background: var(--md-head-surface);
+    color: var(--md-strong);
+    font-weight: 600;
+  }
+  :where(.chat-markdown) :where(th[align="center"], td[align="center"]) {
+    text-align: center;
+  }
+  :where(.chat-markdown) :where(th[align="right"], td[align="right"]) {
+    text-align: right;
+  }
+}

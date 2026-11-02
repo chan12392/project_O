@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
-use o_core::events::OEvent;
-use o_core::snapshot::{describe_tool, snapshot, CardState, LogKind, RunStatus};
-use o_core::store::{newest_first, parse_event_values, parse_events, RunRecord};
+use o_core::run::events::OEvent;
+use o_core::run::snapshot::{describe_tool, snapshot, CardState, LogKind, RunStatus};
+use o_core::run::store::{newest_first, parse_event_values, parse_events, RunRecord};
 use serde_json::{json, Value};
 
 /// The app's demo fixture: real end-to-end runs, paths sanitised.
@@ -145,12 +145,25 @@ fn runs_come_newest_first_by_their_start_and_runs_without_a_start_are_left_out()
     );
 }
 
+/// Same events as tests/snapshot.test.ts "a repeated card id is one card, kept by the first".
+#[test]
+fn a_repeated_card_id_is_one_card_kept_by_the_first() {
+    let events = typed(&[
+        json!({ "t": "run.start", "at": "2026-11-02T10:00:00.000Z", "runId": "r", "title": "t", "project": "C:/p", "cards": [{ "id": "a1", "provider": "claude", "label": "첫" }, { "id": "b2", "provider": "claude", "label": "b" }, { "id": "a1", "provider": "claude", "label": "둘" }] }),
+        json!({ "t": "card.start", "at": "2026-11-02T10:00:01.000Z", "cardId": "a1" }),
+        json!({ "t": "card.end", "at": "2026-11-02T10:00:02.000Z", "cardId": "a1", "status": "done", "result": "결과" }),
+    ]);
+    let run = snapshot(&events).unwrap();
+    let cards: Vec<(&str, &str, CardState, Option<&str>)> = run.cards.iter().map(|c| (c.id.as_str(), c.label.as_str(), c.state, c.result.as_deref())).collect();
+    assert_eq!(cards, [("a1", "첫", CardState::Done, Some("결과")), ("b2", "b", CardState::Waiting, None)]);
+}
+
 /// Runs this machine already recorded (read only): every event line the TS port wrote is still an event.
 #[test]
 fn existing_local_runs_still_read() {
-    let home = o_core::store::default_home();
-    for run_id in o_core::store::list_runs(&home) {
-        for value in o_core::store::read_event_values(&home, &run_id) {
+    let home = o_core::run::store::default_home();
+    for run_id in o_core::run::store::list_runs(&home) {
+        for value in o_core::run::store::read_event_values(&home, &run_id) {
             let event: OEvent = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{run_id}: {e}: {value}"));
             // Written back byte for byte: same keys, same order, same numbers.
             assert_eq!(serde_json::to_string(&event).unwrap(), value.to_string(), "{run_id}");

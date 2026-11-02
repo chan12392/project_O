@@ -1,6 +1,6 @@
 # ADR-0001: Tauri 2 + Rust 코어 + React 화면
 
-- 상태: 채택 (2026-11-02 — B 승인 없이 A가 결정. 이 상태를 뼈대로 확정하고 이를 기준으로 다시 회의하기 위함. 단계 1·2 적용, 단계 3(Tauri 셸)은 다음)
+- 상태: 채택 (2026-11-02 — B 승인 없이 진행하기로 A가 결정. 단계 1·2 적용, 단계 3(Tauri 셸) 시작)
 - 날짜: 2026-11-01
 - 승인: [x] A  [ ] B (사후 확인 필요)
 - 관련: `docs/DESIGN.md` D1(기술 스택), D2(Orchestrator 코드 이관)
@@ -41,3 +41,8 @@ O CLI(작업카드 분배)와 정책 차단을 TypeScript로 먼저 만들어 �
 - `crates/o-cli`: `o.exe` 하나. 기존 명령에 `o hook`, `o scan`, `o runs --json`, `o usage --cached`, `o sync-mirror`를 더했다. 거울 동기화는 Node 스크립트 대신 `o sync-mirror`.
 - TypeScript로 남긴 것: 화면이 쓰는 기록 접기(`src/core/snapshot.ts`)·다음 할 일(`attention.ts`)·타입과 한도 표시값. 개발 서버 API는 직접 파일을 읽지 않고 `o`를 부른다.
 - 다음 단계: Tauri 셸에서 `o-core`를 직접 쓰고 개발 서버 API를 Tauri 명령·파일 감시로 바꾼다.
+
+## 단계 3 시작 (2026-11-02)
+
+- `app/src-tauri`(크레이트 `project-o`, 실행 파일 `project_O.exe`): 같은 React 화면을 창 하나로 띄우고 실행 기록·사용량·에이전트 CLI 상태를 `o-core`로 직접 읽는다. 화면은 정해진 Tauri 명령만 부르고 프로세스를 직접 띄우지 못한다.
+- 아직 남은 것: 파일 감시(지금은 주기적으로 다시 읽음), 화면에서 작업 전달(`o dispatch`)은 없다. Linux CI는 WebView 라이브러리가 없어 셸 크레이트를 빼고 검사한다.
