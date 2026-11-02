@@ -6,6 +6,7 @@
 //! both sit on top of this.
 
 pub mod agents;
+pub mod budget;
 pub mod clean;
 pub mod events;
 pub mod index;

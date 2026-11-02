@@ -53,6 +53,8 @@ pub enum LogKind {
     Limit,
     End,
     Team,
+    /// The runner lowered the card's effort for the daily usage budget.
+    Budget,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -249,7 +251,8 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
             | OEvent::CardTool { card_id, .. }
             | OEvent::CardLimit { card_id, .. }
             | OEvent::CardEnd { card_id, .. }
-            | OEvent::CardUsage { card_id, .. } => card_id,
+            | OEvent::CardUsage { card_id, .. }
+            | OEvent::CardBudget { card_id, .. } => card_id,
             _ => continue,
         };
         let Some(card) = run.cards.iter_mut().find(|c| c.id == *card_id) else { continue };
@@ -278,6 +281,11 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.activity = format!("사용량 한도: {until}까지 차단");
                 card.log.push(entry(at, LogKind::Limit, card.activity.clone()));
             }
+            OEvent::CardBudget { at, effort_from, effort_to, spent, allowance, .. } => {
+                card.activity = budget_text(effort_from.as_deref(), effort_to, *spent, *allowance);
+                card.effort = Some(effort_to.clone());
+                card.log.push(entry(at, LogKind::Budget, card.activity.clone()));
+            }
             OEvent::CardUsage { input, cached, output, .. } => {
                 card.usage.input += input;
                 card.usage.cached += cached;
@@ -296,6 +304,11 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
         }
     }
     run
+}
+
+/// "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budgetText` in src/core/snapshot.ts.
+pub fn budget_text(from: Option<&str>, to: &str, spent: f64, allowance: f64) -> String {
+    format!("사용 예산: effort {} → {to} (오늘 {}/{}%p)", from.unwrap_or("기본"), crate::js::number_text(spent), crate::js::number_text(allowance))
 }
 
 /// Tool names as each CLI reports them, grouped into what a person would call the act.

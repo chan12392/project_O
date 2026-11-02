@@ -14,6 +14,7 @@ fn ctx() -> PolicyContext {
         active_by_provider: empty_counts(),
         started_today: 0,
         cooldowns: Default::default(),
+        over_budget: Default::default(),
         project_exists: Box::new(|_| true),
         is_mirror: Box::new(|_| false),
         o_home: "C:/Users/me/AppData/Local/project_O".into(),
@@ -96,6 +97,18 @@ fn a_provider_in_cooldown_cannot_be_used_whatever_the_account() {
     let mut expired = ctx();
     expired.cooldowns.insert(ProviderId::Codex, "2026-11-01T09:00:00Z".into());
     assert!(check_plan(&plan(vec![code_card()]), &expired).violations.is_empty());
+}
+
+#[test]
+fn a_provider_over_its_daily_budget_takes_no_cards_others_still_do() {
+    let mut over = ctx();
+    over.over_budget.insert(ProviderId::Codex, "codex 오늘 사용 예산을 다 썼습니다".into());
+    let checked = check_plan(&plan(vec![code_card(), design_card()]), &over);
+    assert!(checked.plan.is_none());
+    let budget: Vec<_> = checked.violations.iter().filter(|v| v.rule == "daily-budget").collect();
+    assert_eq!(budget.len(), 1);
+    assert_eq!(budget[0].card_id.as_deref(), Some("code"));
+    assert!(check_plan(&plan(vec![design_card()]), &over).plan.is_some());
 }
 
 #[test]

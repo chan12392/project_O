@@ -262,6 +262,7 @@ pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyConte
         active_by_provider,
         started_today: started_on(home, now)?,
         cooldowns: cooldown_times(home)?,
+        over_budget: crate::budget::over_budget(home, now)?,
         project_exists: Box::new(|path| Path::new(path).exists()),
         is_mirror: Box::new(o_guard::is_mirror),
         o_home: home.to_string_lossy().into_owned(),
