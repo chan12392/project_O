@@ -24,7 +24,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::run::events::{CardStatus, OEvent};
-use crate::run::mode::{take_flags, Efficiency, RunMode};
+use crate::run::mode::{take_flags, Profile, RunMode};
 use crate::sys::js::{js_head, js_len, now_iso};
 use crate::run::plan::ProviderId;
 use crate::policy::LIMITS;
@@ -65,7 +65,7 @@ pub struct ReviewArgs {
     pub provider: Option<ProviderId>,
     pub model: Option<String>,
     pub effort: Option<String>,
-    /// 토큰 효율 with its overrides (ADR-0010). The review card never gets shared context either way.
+    /// project_O 프로필 사용 (ADR-0013): the profile. The review card never gets shared context either way.
     pub mode: RunMode,
     pub post: bool,
     /// Fetch and build the plan, print its size and provider, run nothing.
@@ -499,7 +499,7 @@ pub fn build_plan(project: &str, number: u64, task: &str, provider: ProviderId, 
 
 /// Saves a checked review plan as a new run. The review card gets the PR and nothing else:
 /// no earlier work of the project goes into its prompt (shared context is off, ADR-0005),
-/// whatever 토큰 효율 says; the switch decides the profile and effort lowering (ADR-0010).
+/// whatever the profile is (ADR-0013).
 pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, mode: RunMode) -> std::io::Result<()> {
     crate::run::store::create_run(home, run_id, plan)?;
     crate::run::store::mark_mode(home, run_id, &RunMode { context: false, ..mode })
@@ -596,7 +596,7 @@ pub fn finish(home: &Path, run_id: &str, selector: &str, number: u64, head: Opti
 
 /// `o review <pr> --post --detach` in the project folder: what the app's
 /// "에이전트 검토 요청" runs.
-/// 토큰 효율 (Settings, ADR-0010) goes along as `--efficiency on|off`.
-pub fn request_args(selector: &str, efficiency: Efficiency) -> Vec<String> {
-    strings(&["review", selector, "--post", "--detach", "--efficiency", efficiency.as_str()])
+/// project_O 프로필 사용 (Settings, ADR-0013) goes along as `--profile project-o|own`.
+pub fn request_args(selector: &str, profile: Profile) -> Vec<String> {
+    strings(&["review", selector, "--post", "--detach", "--profile", profile.as_str()])
 }

@@ -1,99 +1,115 @@
-//! 토큰 효율 (ADR-0010): one switch for how a run's cards are set up.
+//! project_O 프로필 사용 (ADR-0013): which agent profile a run's cards and the lead use.
 //!
-//! On (the default) is clean agent profiles (`agents::clean`), the shared context
-//! section (`context::prepare`, ADR-0005) and the daily budget lowering effort
-//! (ADR-0004). Off is the person's own harness, no injected context, and the effort
-//! the lead or the plan chose. `--clean` and `--no-context` stay as finer overrides.
-//! Safety never follows the switch: the daily budget still blocks a provider that used
-//! up its day, and `LIMITS` and the guard rules apply the same either way. Pure.
+//! `project-o` (the default) is Project O's clean agent profiles (`agents::clean`): no
+//! personal hooks, global instructions, skills, MCP or memory. `own` is the person's
+//! normal CLI setup. The switch decides the profile only: the shared context section
+//! (`context::prepare`, ADR-0005) goes in either way unless `--no-context` asks otherwise,
+//! and the daily budget (blocking, effort lowering) follows its own switch (`usage::budget`).
+//! `LIMITS` and the guard rules apply the same either way. Pure.
 
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Efficiency {
+#[serde(rename_all = "kebab-case")]
+pub enum Profile {
+    /// Project O's clean agent profiles.
     #[default]
-    On,
-    Off,
+    ProjectO,
+    /// The person's own CLI setup (skills, hooks, memory).
+    Own,
 }
 
-impl Efficiency {
-    pub fn parse(value: &str) -> Option<Efficiency> {
+impl Profile {
+    pub fn parse(value: &str) -> Option<Profile> {
         match value {
-            "on" => Some(Efficiency::On),
-            "off" => Some(Efficiency::Off),
+            "project-o" => Some(Profile::ProjectO),
+            "own" => Some(Profile::Own),
             _ => None,
         }
     }
 
     pub fn as_str(self) -> &'static str {
         match self {
-            Efficiency::On => "on",
-            Efficiency::Off => "off",
+            Profile::ProjectO => "project-o",
+            Profile::Own => "own",
         }
     }
 
-    /// How people read it: "토큰 효율 켜짐" / "토큰 효율 꺼짐".
+    /// How people read it: "project_O 프로필" / "내 설정".
     pub fn label(self) -> &'static str {
         match self {
-            Efficiency::On => "토큰 효율 켜짐",
-            Efficiency::Off => "토큰 효율 꺼짐",
+            Profile::ProjectO => "project_O 프로필",
+            Profile::Own => "내 설정",
         }
+    }
+
+    pub fn of_clean(clean: bool) -> Profile {
+        if clean {
+            Profile::ProjectO
+        } else {
+            Profile::Own
+        }
+    }
+
+    pub fn is_clean(self) -> bool {
+        self == Profile::ProjectO
     }
 }
 
-/// What a run's cards get. Saved in the run folder (`store::mark_mode`) and recorded as `run.mode`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
+/// What a run's cards get. Saved in the run folder as the `clean` and `no-context`
+/// markers (`store::mark_mode`) and recorded as `run.mode`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RunMode {
-    pub efficiency: Efficiency,
-    /// Clean agent profiles: no personal hooks, global instructions, skills, MCP or memory.
-    pub clean: bool,
+    pub profile: Profile,
     /// Earlier work of the project injected into each card's prompt (ADR-0005).
     pub context: bool,
-    /// The daily budget may lower a card's effort when the day runs ahead (ADR-0004).
-    pub lower_effort: bool,
 }
 
 impl RunMode {
-    /// The switch alone: on is all three, off is none.
-    pub fn of(efficiency: Efficiency) -> RunMode {
-        let on = efficiency == Efficiency::On;
-        RunMode { efficiency, clean: on, context: on, lower_effort: on }
+    /// A profile with the shared context on.
+    pub fn of(profile: Profile) -> RunMode {
+        RunMode { profile, context: true }
     }
 
-    /// The finer overrides on top of the switch: `--clean` turns clean profiles on,
-    /// `--no-context` turns the context off. Effort lowering follows the switch only.
-    pub fn with(self, clean: bool, no_context: bool) -> RunMode {
-        RunMode { clean: self.clean || clean, context: self.context && !no_context, ..self }
+    /// Clean agent profiles (no personal harness).
+    pub fn clean(self) -> bool {
+        self.profile.is_clean()
     }
 }
 
 impl Default for RunMode {
     fn default() -> RunMode {
-        RunMode::of(Efficiency::On)
+        RunMode::of(Profile::ProjectO)
     }
 }
 
-/// `--efficiency on|off` (or `--efficiency=on`), `--clean` and `--no-context` taken out of
-/// `args`: the run mode they make (on when unnamed) and the arguments left, in order.
+/// `--profile project-o|own` (or `--profile=own`), `--clean` (the same as `--profile project-o`)
+/// and `--no-context` taken out of `args`: the run mode they make (project-o with context
+/// when unnamed) and the arguments left, in order.
 pub fn take_flags(args: &[String]) -> Result<(RunMode, Vec<String>), String> {
-    let mut efficiency = None;
-    let (mut clean, mut no_context) = (false, false);
+    let mut profile = None;
+    let mut no_context = false;
     let mut rest = Vec::new();
     let mut items = args.iter();
+    fn set(parsed: Profile, profile: &mut Option<Profile>) -> Result<(), String> {
+        if profile.is_some_and(|p| p != parsed) {
+            return Err("--profile(또는 --clean)을 서로 다르게 두 번 주었습니다".into());
+        }
+        *profile = Some(parsed);
+        Ok(())
+    }
     while let Some(arg) = items.next() {
         let value = match arg.as_str() {
             "--clean" => {
-                clean = true;
+                set(Profile::ProjectO, &mut profile)?;
                 continue;
             }
             "--no-context" => {
                 no_context = true;
                 continue;
             }
-            "--efficiency" => items.next().map(String::as_str).unwrap_or_default(),
-            other => match other.strip_prefix("--efficiency=") {
+            "--profile" => items.next().map(String::as_str).unwrap_or_default(),
+            other => match other.strip_prefix("--profile=") {
                 Some(value) => value,
                 None => {
                     rest.push(arg.clone());
@@ -101,11 +117,8 @@ pub fn take_flags(args: &[String]) -> Result<(RunMode, Vec<String>), String> {
                 }
             },
         };
-        let parsed = Efficiency::parse(value).ok_or_else(|| format!("--efficiency는 on 또는 off입니다: {value}"))?;
-        if efficiency.is_some_and(|e| e != parsed) {
-            return Err("--efficiency를 서로 다르게 두 번 주었습니다".into());
-        }
-        efficiency = Some(parsed);
+        let parsed = Profile::parse(value).ok_or_else(|| format!("--profile은 project-o 또는 own입니다: {value}"))?;
+        set(parsed, &mut profile)?;
     }
-    Ok((RunMode::of(efficiency.unwrap_or_default()).with(clean, no_context), rest))
+    Ok((RunMode { profile: profile.unwrap_or_default(), context: !no_context }, rest))
 }

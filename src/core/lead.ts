@@ -201,6 +201,8 @@ export function canLead(agent: { id: string; installed: boolean; loggedIn: boole
 export interface LeadModel {
   id: string;
   label: string;
+  /** For an alias (`id`), the model it stands for now (Claude: `opus` → `claude-opus-5-5`). */
+  hint?: string;
 }
 
 /** The model id shape a card's `model` takes and `o lead send --model` checks (crates/o-core/src/policy.rs `MODEL`). */

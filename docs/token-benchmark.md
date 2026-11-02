@@ -4,10 +4,10 @@
 
 | 묶음 | 실행 방법 | 카드가 받는 컨텍스트 |
 |---|---|---|
-| A. 기본 하네스 | `o dispatch --no-context plan.json` | 각 CLI가 평소 읽는 사용자 하네스(전역 AGENTS·USER·MEMORY, 훅, 스킬, MCP) + 작업카드 |
-| B. 깨끗한 + 세션 공유 | `o dispatch --clean plan.json` | 작업카드 + 그 일과 관련된 이전 작업 조각(최대 1,500자). 더 필요하면 카드가 `o context`로 찾는다 |
+| A. 기본 하네스 | `o dispatch --profile own --no-context plan.json` | 각 CLI가 평소 읽는 사용자 하네스(전역 AGENTS·USER·MEMORY, 훅, 스킬, MCP) + 작업카드 |
+| B. 깨끗한 + 세션 공유 | `o dispatch --profile project-o plan.json` (기본, `--clean`과 같음) | 작업카드 + 그 일과 관련된 이전 작업 조각(최대 1,500자). 더 필요하면 카드가 `o context`로 찾는다 |
 
-`--no-context`를 붙이지 않은 기본 실행과 `--clean --no-context` 실행도 기록되지만 `--compare`에서는 빠진다(`o tokens`의 모드별 표에는 나온다).
+`--profile own`만 준 실행과 `--profile project-o --no-context` 실행도 기록되지만 `--compare`에서는 빠진다(`o tokens`의 모드별 표에는 나온다).
 
 ## 준비
 
@@ -18,14 +18,14 @@
 
 ## 순서 (공정하게)
 
-B를 먼저 돌린다. A를 먼저 돌리면 A 카드의 결과가 컨텍스트에 쌓여 B에 주입되므로, B가 "답을 보고" 일하게 된다. A는 `--no-context`라 B의 결과를 받지 않는다.
+B를 먼저 돌린다. A를 먼저 돌리면 A 카드의 결과가 컨텍스트에 쌓여 B에 주입되므로, B가 "답을 보고" 일하게 된다. A는 `--no-context`라 B의 결과를 받지 않는다. 두 실행 모두 하루 사용 예산이 effort를 낮추면 비교가 흔들리므로, 잴 때는 `o budget --off`로 끄고 끝나면 `o budget --on`으로 되돌린다.
 
 ```sh
 # 0. 비교 시작 시각을 적어 둔다 (예: 2026-11-02T09:00:00Z)
-o dispatch --clean C:/bench/plan.json          # B
+o dispatch --profile project-o C:/bench/plan.json   # B
 o status <runId>                               # 모든 카드가 끝날 때까지
 git -C C:/bench/project restore . ; git -C C:/bench/project clean -fd   # 프로젝트를 시작 커밋으로 (사람이 확인 후)
-o dispatch --no-context C:/bench/plan.json     # A
+o dispatch --profile own --no-context C:/bench/plan.json   # A
 o status <runId>
 o tokens --compare --project C:/bench/project --since 2026-11-02T09:00:00Z
 ```
@@ -61,4 +61,4 @@ codex 카드당 합계            62,700             22,400       -64%
 
 - `o tokens` — 모드별 카드당 평균(프로바이더별 포함)과 실행별·카드별 숫자. `+컨텍스트`는 그 카드에 컨텍스트가 주입됐다는 뜻(`run.context` 이벤트).
 - `o tokens --json` — `groups`(모드별), `compare.baseline`/`compare.shared`, `runs`(실행·카드별). 앱 대시보드의 "토큰" 카드도 같은 데이터다.
-- 묶음은 실행 폴더의 `clean` 표식(`--clean`)과 카드별 주입 여부로 정한다. 이 기능 이전의 실행은 모두 "주입 없음"으로 잡힌다.
+- 묶음은 실행 폴더의 `clean` 표식(`--profile project-o`)과 카드별 주입 여부로 정한다. 이 기능 이전의 실행은 모두 "주입 없음"으로 잡힌다.

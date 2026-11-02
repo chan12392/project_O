@@ -33,7 +33,11 @@ export interface Settings {
   motion: Motion;
   start: StartScreen;
   closeAction: CloseAction;
-  /** Agents run with Project O's clean test profiles, without the owner's personal harness. */
+  /**
+   * project_O 프로필 사용 (ADR-0013): cards and the lead run with Project O's clean agent profiles
+   * (true), or with the person's own CLI setup (false). The key is the one Settings → 깨끗한
+   *에이전트 and the token switch saved before, so each person's choice carries over unchanged.
+   */
   clean: boolean;
   /** A desktop notification when a watched card finishes while the window is in the background. */
   notify: boolean;

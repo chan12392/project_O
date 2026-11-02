@@ -409,22 +409,16 @@ pub fn is_clean(home: &Path, run_id: &str) -> bool {
     run_dir(home, run_id).join("clean").exists()
 }
 
-/// 토큰 효율 (ADR-0010): how this run's cards are set up. The `clean` and `no-context`
-/// markers stay what the runner and `o tokens` read; `mode.json` keeps the switch and
-/// whether the daily budget may lower effort.
+/// project_O 프로필 사용 (ADR-0013): how this run's cards are set up, as the `clean` and
+/// `no-context` markers the runner and `o tokens` read.
 pub fn mark_mode(home: &Path, run_id: &str, mode: &RunMode) -> io::Result<()> {
-    if mode.clean {
+    if mode.clean() {
         mark_clean(home, run_id)?;
     }
     if !mode.context {
         crate::context::mark_off(home, run_id)?;
     }
-    fs::write(run_dir(home, run_id).join("mode.json"), serde_json::to_string(mode).map_err(io::Error::other)?)
-}
-
-/// The switch a run was dispatched with; `None` for a run from before it (its effort lowering was on).
-pub fn read_mode(home: &Path, run_id: &str) -> Option<RunMode> {
-    serde_json::from_slice(&fs::read(run_dir(home, run_id).join("mode.json")).ok()?).ok()
+    Ok(())
 }
 
 /// `JSON.stringify(value, null, 2)`.

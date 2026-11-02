@@ -15,7 +15,7 @@ use super::{fail, help, print_violations, run_id_arg, Command};
 
 pub const REVIEW: Command = Command {
     name: "review",
-    usage: "  o review <PR 번호|주소> [--provider claude|codex|agy] [--model M] [--effort E] [--clean] [--post] [--dry-run] [--detach]
+    usage: "  o review <PR 번호|주소> [--provider claude|codex|agy] [--model M] [--effort E] [--profile project-o|own] [--post] [--dry-run] [--detach]
                              지금 폴더 저장소의 PR을 gh로 읽어 에이전트 카드 하나로 검토 (파일 변경 없음)
                              --post: 끝나면 검토문을 PR 댓글로 게시 (승인·병합은 하지 않음)
                              --dry-run: 실행 없이 프롬프트 크기·고른 에이전트·정책 결과만 출력
@@ -111,13 +111,13 @@ fn review(home: &Path, args: &[String]) -> i32 {
         let message = format!(
             "PR #{} 검토를 시작했습니다 · {provider}{} · 커밋 {}{}",
             pr.number,
-            if args.mode.clean { " (깨끗한 에이전트)" } else { "" },
+            if args.mode.clean() { " (project_O 프로필)" } else { " (내 설정)" },
             review::short_sha(&pr.head_ref_oid),
             if args.post { " · 끝나면 PR 댓글로 게시 (그사이 새 커밋이 오면 게시하지 않음)" } else { "" }
         );
         println!(
             "{}",
-            json!({ "ok": true, "message": message, "runId": run_id, "pr": pr.number, "head": pr.head_ref_oid, "provider": provider, "post": args.post, "clean": args.mode.clean, "events": events.to_string_lossy() })
+            json!({ "ok": true, "message": message, "runId": run_id, "pr": pr.number, "head": pr.head_ref_oid, "provider": provider, "post": args.post, "profile": args.mode.profile, "clean": args.mode.clean(), "events": events.to_string_lossy() })
         );
         return 0;
     }

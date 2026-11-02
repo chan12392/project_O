@@ -39,7 +39,7 @@ use crate::context::normalize_project;
 use crate::policy::{check_plan, check_project, is_model_id, Violation, LIMITS};
 use crate::providers::{self, LeadTurn, StreamReader};
 use crate::run::events::StreamSignal;
-use crate::run::mode::{Efficiency, RunMode};
+use crate::run::mode::{Profile, RunMode};
 use crate::run::plan::ProviderId;
 use crate::run::runner::Spawner;
 use crate::run::snapshot::snapshot;
@@ -67,9 +67,9 @@ pub enum LeadEvent {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
-        /// 토큰 효율 for this message (ADR-0010); absent in threads from before the switch.
+        /// The profile this message ran on (project_O 프로필 사용, ADR-0013); absent in threads from before the switch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        efficiency: Option<Efficiency>,
+        profile: Option<Profile>,
     },
     /// The CLI's own session id, resumed on the thread's next turn with that CLI. `clean` is
     /// the profile it lives in: a turn on the other profile cannot resume it and starts a new one.
@@ -95,7 +95,7 @@ pub enum LeadEvent {
         run_id: String,
         clean: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        efficiency: Option<Efficiency>,
+        profile: Option<Profile>,
     },
     /// Tokens one lead turn spent (`o tokens` counts them as planning overhead).
     #[serde(rename = "lead.usage")]
@@ -340,10 +340,8 @@ pub struct SendRequest<'a> {
     pub attach: &'a [PathBuf],
     /// Start a new thread first.
     pub fresh: bool,
-    /// The clean profile root when the lead runs as a clean agent (토큰 효율 on, ADR-0010).
+    /// The clean profile root when the lead runs on the project_O profile (ADR-0013); None is the person's own setup.
     pub clean: Option<&'a Path>,
-    /// 토큰 효율 this message was sent with, kept on its `lead.user` (the app dispatches its plan the same way).
-    pub efficiency: Efficiency,
 }
 
 /// Checks a request before anything is saved or started.
@@ -466,7 +464,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         provider: req.provider,
         model: req.model.filter(|m| !m.is_empty()).map(str::to_string),
         effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
-        efficiency: Some(req.efficiency),
+        profile: Some(Profile::of_clean(req.clean.is_some())),
     })?;
 
     let session = before.iter().rev().find_map(|e| match e {
@@ -720,13 +718,13 @@ pub struct Dispatched {
     pub run_id: String,
     pub events: String,
     pub cards: Vec<String>,
-    pub efficiency: Efficiency,
+    pub profile: Profile,
     pub clean: bool,
 }
 
 /// Dispatches a stored plan once: checks it again like `o dispatch`, makes the run and
 /// hands its id to `start` (which launches `o _run <runId>` in the background).
-/// `mode` is 토큰 효율 with its overrides (ADR-0010), saved with the run like `o dispatch` does.
+/// `mode` is the profile and context choice (ADR-0013), saved with the run like `o dispatch` does.
 pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
     let events = read_thread(home, thread_id);
@@ -775,15 +773,15 @@ pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) 
         let _ = fs::remove_file(&mark);
         return Err(format!("실행기를 시작하지 못했습니다: {error}").into());
     }
-    let dispatched = LeadEvent::Dispatch { at: now_iso(), plan_id: plan_id.to_string(), run_id: run_id.clone(), clean: mode.clean, efficiency: Some(mode.efficiency) };
+    let dispatched = LeadEvent::Dispatch { at: now_iso(), plan_id: plan_id.to_string(), run_id: run_id.clone(), clean: mode.clean(), profile: Some(mode.profile) };
     append(home, thread_id, &dispatched).map_err(|e| e.to_string())?;
     Ok(Dispatched {
         plan_id: plan_id.to_string(),
         events: run_dir(home, &run_id).join("events.jsonl").to_string_lossy().into_owned(),
         run_id,
         cards: plan.cards.iter().map(|c| c.id.clone()).collect(),
-        efficiency: mode.efficiency,
-        clean: mode.clean,
+        profile: mode.profile,
+        clean: mode.clean(),
     })
 }
 

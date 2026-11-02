@@ -193,11 +193,14 @@ pub fn can_lead(id: ProviderId) -> bool {
     !get(id).lead_efforts().is_empty()
 }
 
-/// One model a lead may run with: the id the CLI takes after `--model`, and its name for people.
+/// One model a lead may run with: the id the CLI takes after `--model`, its name for people,
+/// and, for an alias, the model it stands for now (Claude: `opus` → `claude-opus-5-5`).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize)]
 pub struct ModelChoice {
     pub id: String,
     pub label: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hint: Option<String>,
 }
 
 /// The lead's model list for a provider, keeping only ids a card's `model` field would take

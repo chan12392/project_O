@@ -25,8 +25,18 @@ const LEAD_TOOLS: &str = "Read,Grep,Glob";
 /// which `--setting-sources user` keeps them from doing).
 const LEAD_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
 
-/// The model aliases `claude --model` documents.
-const LEAD_MODELS: [(&str, &str); 4] = [("fable", "Fable"), ("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")];
+/// The model aliases `claude --model` documents, with the version each stands for now:
+/// (alias, family, version, model id). Claude Code prints no alias→model mapping
+/// (`claude --help` and `claude --version` name the aliases only, there is no models
+/// command), so this table is kept by hand. **Update it when Claude Code's aliases move to
+/// a new model** (code.claude.com/docs/en/model-config). `--model` still gets the alias, so
+/// a stale version here only mislabels the menu; it never picks another model.
+const LEAD_MODELS: [(&str, &str, &str, &str); 4] = [
+    ("fable", "Fable", "5.1", "claude-fable-5-1"),
+    ("opus", "Opus", "5.5", "claude-opus-5-5"),
+    ("sonnet", "Sonnet", "5.5", "claude-sonnet-5-5"),
+    ("haiku", "Haiku", "5.5", "claude-haiku-5-5"),
+];
 
 impl Provider for Claude {
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
@@ -81,7 +91,10 @@ impl Provider for Claude {
     /// Claude Code has no model list command; `--model` takes these aliases for the latest
     /// model of each family (`claude --help`, code.claude.com/docs/en/model-config).
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
-        Ok(LEAD_MODELS.iter().map(|(id, label)| ModelChoice { id: id.to_string(), label: label.to_string() }).collect())
+        Ok(LEAD_MODELS
+            .iter()
+            .map(|(alias, family, version, model)| ModelChoice { id: alias.to_string(), label: format!("{family} {version}"), hint: Some(model.to_string()) })
+            .collect())
     }
 
     // https://code.claude.com/docs/en/setup (native installer, WinGet, npm)

@@ -259,7 +259,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
               {state.busy ? "실행하는 중…" : "실행"}
             </button>
             <p id={`${titleId}-how`} className="min-w-0 flex-1 text-xs text-muted-foreground">
-              실행 직전에 예산을 포함한 정책을 다시 검사한 뒤 {clean ? "깨끗한 에이전트" : "기본 하네스"}로 카드들을 띄웁니다. 한 번만 실행할 수 있습니다.
+              실행 직전에 정책{budget?.enabled === false ? "" : "(하루 예산 포함)"}을 다시 검사한 뒤 {clean ? "project_O 프로필" : "내 설정"}로 카드들을 띄웁니다. 한 번만 실행할 수 있습니다.
             </p>
           </>
         ) : (

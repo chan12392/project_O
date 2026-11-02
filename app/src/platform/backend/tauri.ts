@@ -32,6 +32,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     review: (project, pr, clean) => invoke("review", { project, pr, clean }) as Promise<ReviewStarted>,
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
+    setBudgetEnabled: async (enabled) => JSON.parse((await invoke("budget_set_enabled", { enabled })) as string) as BudgetReport,
     tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
     leadShow: (project) => invoke("lead_show", { project: project ?? null }) as Promise<LeadShow>,
     leadNew: (project) => invoke("lead_new", { project }) as Promise<{ threadId: string }>,

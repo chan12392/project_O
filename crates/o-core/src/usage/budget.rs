@@ -17,6 +17,10 @@
 //! refused (policy rule `daily-budget`); one spending faster than the day goes
 //! gets each card's effort lowered one step (two when far behind), never
 //! raised. A provider with no weekly reading is left alone.
+//!
+//! The whole budget is a switch (`dailyBudgetEnabled`, on unless saved as false,
+//! ADR-0013): off, every provider reads `Pace::Off` — the numbers stay, nothing is
+//! refused or lowered. Subscription limits and cooldowns are not part of it.
 
 use std::collections::HashMap;
 use std::fs;
@@ -41,6 +45,8 @@ pub const MIN_PERCENT: u8 = 12;
 pub const MAX_PERCENT: u8 = 14;
 /// The key in `<O home>/settings.json`.
 pub const PERCENT_KEY: &str = "dailyBudgetPercent";
+/// The on/off switch in `<O home>/settings.json`; only `false` turns the budget off.
+pub const ENABLED_KEY: &str = "dailyBudgetEnabled";
 pub const WEEKLY: &str = "seven_day";
 /// `o budget` and `o _run` ask the CLIs again when the saved reading is older than this.
 pub const STALE_MINUTES: i64 = 10;
@@ -82,17 +88,33 @@ pub fn read_percent(home: &Path) -> u8 {
     read_settings(home).get(PERCENT_KEY).and_then(valid_percent).unwrap_or(DEFAULT_PERCENT)
 }
 
-/// Saves the daily budget percent, keeping the file's other settings. Anything but 12, 13 or 14 is refused.
-pub fn write_percent(home: &Path, value: &Value) -> Result<u8, String> {
-    let percent = valid_percent(value).ok_or_else(|| format!("하루 사용 예산은 {MIN_PERCENT}, 13, {MAX_PERCENT} 중 하나입니다: {value}"))?;
+/// Whether the daily budget is on; a missing or invalid setting is on (the default).
+pub fn read_enabled(home: &Path) -> bool {
+    read_settings(home).get(ENABLED_KEY).and_then(Value::as_bool).unwrap_or(true)
+}
+
+/// Saves one setting, keeping the file's others.
+fn write_setting(home: &Path, key: &str, value: Value) -> Result<(), String> {
     let mut settings = read_settings(home);
-    settings.insert(PERCENT_KEY.into(), Value::from(percent));
+    settings.insert(key.into(), value);
     let write = || -> io::Result<()> {
         fs::create_dir_all(home)?;
         fs::write(settings_path(home), to_pretty(&Value::Object(settings))?)
     };
-    write().map_err(|e| format!("settings.json: {e}"))?;
+    write().map_err(|e| format!("settings.json: {e}"))
+}
+
+/// Saves the daily budget percent, keeping the file's other settings. Anything but 12, 13 or 14 is refused.
+pub fn write_percent(home: &Path, value: &Value) -> Result<u8, String> {
+    let percent = valid_percent(value).ok_or_else(|| format!("하루 사용 예산은 {MIN_PERCENT}, 13, {MAX_PERCENT} 중 하나입니다: {value}"))?;
+    write_setting(home, PERCENT_KEY, Value::from(percent))?;
     Ok(percent)
+}
+
+/// Turns the daily budget on or off (`o budget --on|--off`, Settings → 에이전트), keeping the percent.
+pub fn write_enabled(home: &Path, enabled: bool) -> Result<bool, String> {
+    write_setting(home, ENABLED_KEY, Value::Bool(enabled))?;
+    Ok(enabled)
 }
 
 fn open(home: &Path) -> io::Result<Connection> {
@@ -170,6 +192,8 @@ pub enum Pace {
     FarBehind,
     /// The day's allowance is spent: new cards for this provider are refused.
     Over,
+    /// The daily budget is switched off: nothing is adjusted or refused, the numbers stay.
+    Off,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -368,9 +392,24 @@ pub fn assess(provider: ProviderId, percent: u8, snapshots: &[Snapshot], now: Da
     }
 }
 
-/// One provider's budget now, from this machine's snapshots and setting.
+impl Budget {
+    /// The same reading with the daily budget switched off: no state that refuses or lowers anything.
+    pub fn switched_off(self) -> Budget {
+        let spent = self.spent.map(|s| format!(" — 오늘 주간의 {s:.1}%p 사용")).unwrap_or_default();
+        Budget {
+            state: Pace::Off,
+            steps_down: 0,
+            efforts: Vec::new(),
+            message: format!("{} 하루 사용 예산 꺼짐{spent} (막거나 effort를 낮추지 않음)", self.provider),
+            ..self
+        }
+    }
+}
+
+/// One provider's budget now, from this machine's snapshots and settings (percent and on/off).
 pub fn assess_now(home: &Path, provider: ProviderId, now: DateTime<Utc>) -> io::Result<Budget> {
-    Ok(assess(provider, read_percent(home), &weekly_snapshots(home, provider)?, now, local_day_of(now)))
+    let budget = assess(provider, read_percent(home), &weekly_snapshots(home, provider)?, now, local_day_of(now));
+    Ok(if read_enabled(home) { budget } else { budget.switched_off() })
 }
 
 /// Provider → why it may take no more cards today (policy rule `daily-budget`).
@@ -390,6 +429,8 @@ pub fn over_budget(home: &Path, now: DateTime<Utc>) -> io::Result<HashMap<Provid
 #[serde(rename_all = "camelCase")]
 pub struct Report {
     pub at: String,
+    /// The daily budget switch; off, every provider is `Pace::Off`.
+    pub enabled: bool,
     pub percent: u8,
     /// When `o usage` last asked Codex and Antigravity (empty when never).
     pub usage_at: String,
@@ -399,7 +440,7 @@ pub struct Report {
 pub fn report(home: &Path, now: DateTime<Utc>) -> io::Result<Report> {
     let providers = ProviderId::ALL.into_iter().map(|p| assess_now(home, p, now)).collect::<io::Result<_>>()?;
     let usage_at = probe::load_usage(home).ok().flatten().and_then(|v| v.get("at").and_then(Value::as_str).map(str::to_string)).unwrap_or_default();
-    Ok(Report { at: iso(now), percent: read_percent(home), usage_at, providers })
+    Ok(Report { at: iso(now), enabled: read_enabled(home), percent: read_percent(home), usage_at, providers })
 }
 
 pub fn report_now(home: &Path) -> io::Result<Report> {

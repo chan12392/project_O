@@ -47,8 +47,8 @@ export interface ReviewStarted {
 /** A PR number or a github.com pull address: the only forms `o review` takes. */
 export const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
 
-/** How a provider's spend today compares with how much of the day is left (ADR-0004). */
-export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over";
+/** How a provider's spend today compares with how much of the day is left (ADR-0004); "off" while the daily budget is switched off (ADR-0013). */
+export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over" | "off";
 
 /** One provider in `o budget --json`: shares are 0 to 1, weeklyUsed/allowance/spent percent points of the weekly window. */
 export interface ProviderBudget {
@@ -76,6 +76,8 @@ export interface ProviderBudget {
 
 export interface BudgetReport {
   at: string;
+  /** The daily budget switch (`o budget --on|--off`); off, nothing is refused or lowered and every provider is "off". */
+  enabled: boolean;
   /** The day's allowance, percent of the weekly window (12–14). */
   percent: number;
   /** When `o usage` last asked Codex and Antigravity; empty when never. */
@@ -140,6 +142,8 @@ export interface Backend {
   budget(): Promise<BudgetReport>;
   /** Settings → 에이전트: saves the day's allowance (the machine refuses anything but 12–14). */
   setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
+  /** Turns the daily budget on or off (`o budget --on|--off`) and returns the new report. */
+  setBudgetEnabled(enabled: boolean): Promise<BudgetReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
   tokens(project?: string): Promise<TokenReport>;
 

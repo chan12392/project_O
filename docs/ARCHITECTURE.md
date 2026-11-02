@@ -77,7 +77,7 @@
 0. **총괄 채팅**(ADR-0008): 앱 입력창의 글과 첨부가 `o lead send`(Tauri `lead_send`)로 가면 `lead`가 그 프로젝트의 스레드에 남기고, 등록부의 `Provider::lead` 인자로 총괄 CLI를 읽기 전용으로 한 턴 띄운다(세션 재개, API 키 변수 제거). 답의 `o-plan` 블록은 프로젝트를 고정해 2단계와 같은 검사를 받고 `lead.plan`으로 저장된다. 사람이 계획 카드의 "실행"을 누르면 `o lead dispatch`가 다시 검사해 3단계로 넘긴다.
 1. **계획**: 총괄(앱 총괄 채팅, 또는 `skills/o`를 쓰는 터미널 에이전트)이 계획 JSON(프로젝트 하나, 카드 몇 장)을 만든다. 카드에는 데이터만 있다(`run::plan`).
 2. **정책**: `policy::check_plan`이 `run::store::policy_context`(오늘 카드 수·실행 중 카드·쿨다운·하루 예산)로 계획을 검사한다. 위반이 하나라도 있으면 아무것도 실행하지 않는다(종료 코드 2).
-3. **실행**: 통과하면 `runs/<runId>/`를 만들고 `o _run`을 백그라운드로 띄운다. `run::runner`는 카드마다 시작 직전에 상한·예산을 다시 확인하고, `context::prepare`로 관련 컨텍스트 절을 만든 뒤 `providers::launch_spec_with`의 인자로 공식 CLI를 셸 없이 띄운다(`--clean`이면 `agents::clean` 환경). Windows에서는 Job Object로 묶는다.
+3. **실행**: 통과하면 `runs/<runId>/`를 만들고 `o _run`을 백그라운드로 띄운다. `run::runner`는 카드마다 시작 직전에 상한·예산을 다시 확인하고, `context::prepare`로 관련 컨텍스트 절을 만든 뒤 `providers::launch_spec_with`의 인자로 공식 CLI를 셸 없이 띄운다(`--profile project-o`·`--clean`이면 `agents::clean` 환경, ADR-0013). Windows에서는 Job Object로 묶는다.
 4. **이벤트**: CLI 표준 출력 한 줄마다 `providers::StreamReader`가 그 CLI의 해석기로 `StreamSignal`을 만들고, 실행기가 이를 `OEvent`로 바꿔 `events.jsonl`에 덧붙인다. 팀 대화(`o msg`)도 같은 파일에 정책 검사를 거쳐 들어간다.
 5. **색인**: `run::index`가 `events.jsonl`을 `o.db`에 증분으로 넣고, `context`가 같은 DB에 검색 표를 유지한다. `events.jsonl`이 원본이며 색인은 언제든 다시 만들 수 있다.
 6. **앱**: `o runs --json`(개발 서버 `/api/runs`)이나 Tauri `runs`가 실행별 이벤트를 주면 `data/useLiveRuns.ts`가 2초마다 읽고, `src/core/snapshot.ts`로 접어 화면이 그린다. 왼쪽 목록은 `o projects --json`(Tauri `projects_list`)의 프로젝트만 보이고, 실행·세션·총괄 대화는 그 폴더 안일 때 붙는다(`data/projects.ts`, ADR-0009). `o status`는 같은 접기를 Rust `run::snapshot`으로 한다.
