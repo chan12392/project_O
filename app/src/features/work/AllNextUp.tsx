@@ -6,7 +6,7 @@ import type { RunView } from "../../../../src/core/snapshot.ts";
 import { clip } from "../../lib/format.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { DoneBox, NextTicket, STAMP, TicketGroups, actionCount, useHandled } from "./NextUp.tsx";
-import { Stamp, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
+import { Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
 
 interface Props {
   runs: RunView[];
@@ -67,7 +67,7 @@ export function AllNextUp({ runs, now, loading, onOpen, onProject }: Props) {
                     <ol className="grid gap-2.5 @2xl:grid-cols-2">
                       {picks.map((pick) => (
                         <li key={pick.key} className="min-w-0">
-                          <PickTicket pick={pick} now={now} onOpen={onOpen} onProject={onProject} onSkip={() => (pick.item ? tick(pick.item) : toggle(pick.key))} />
+                          <PickTicket pick={pick} now={now} onOpen={onOpen} onProject={onProject} onSkip={() => (pick.item ? [pick.item, ...(pick.samePr ?? [])].forEach(tick) : toggle(pick.key))} />
                         </li>
                       ))}
                     </ol>
@@ -119,6 +119,17 @@ function PickTicket({ pick, now, onOpen, onProject, onSkip }: { pick: Suggestion
       </div>
       <p className="text-xs font-semibold text-[var(--ink)]">{pick.reason}</p>
       {item?.detail && <p className="text-xs leading-relaxed text-[var(--ink-dim)] [overflow-wrap:anywhere]">{clip(item.detail, 140)}</p>}
+      {item && pick.samePr && (
+        <ul className="flex flex-col gap-0.5" aria-label={`같은 PR을 올린 카드 ${pick.samePr.length + 1}장`}>
+          {[item, ...pick.samePr].map((card) => (
+            <li key={card.key} className="min-w-0">
+              <button type="button" onClick={() => onOpen(card)} className={`max-w-full ${TICKET_GHOST}`} aria-label={`${card.title} 기록 열기`}>
+                <span className="truncate">{card.title}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
       <div className="mt-1 flex flex-wrap items-center gap-1">
         {item?.pr ? (
           <ExternalAnchor href={item.pr} className={TICKET_PRIMARY}>

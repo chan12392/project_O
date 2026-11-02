@@ -114,6 +114,19 @@ fn root_of(saved: &Saved, user_home: &Path) -> String {
 /// The checks a card's project gets (`policy::check_project`), without O's run counts:
 /// not O's state folder (nor around it), not the home folder itself or above it, no mirror.
 fn refusal(home: &Path, user_home: &Path, path: &str, must_exist: bool) -> Option<String> {
+    let folder = normalize_project(&resolved_path(path));
+    let inside = |dir: &Path| {
+        let base = normalize_project(&resolved_path(&dir.to_string_lossy()));
+        let (folder, base) = if cfg!(windows) { (folder.to_lowercase(), base.to_lowercase()) } else { (folder.clone(), base) };
+        folder == base || folder.starts_with(&format!("{base}/"))
+    };
+    if home.parent().is_some_and(|parent| inside(&parent.join("project_O-agents"))) {
+        return Some("에이전트 프로필 폴더는 프로젝트로 등록할 수 없습니다".into());
+    }
+    #[cfg(windows)]
+    if std::env::var_os("SystemRoot").is_some_and(|root| inside(Path::new(&root))) {
+        return Some("Windows 시스템 폴더는 프로젝트로 등록할 수 없습니다".into());
+    }
     let ctx = PolicyContext {
         now: Utc::now(),
         active_by_provider: empty_counts(),

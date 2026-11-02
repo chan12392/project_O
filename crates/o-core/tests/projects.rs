@@ -35,6 +35,18 @@ fn names(listing: &Listing, kind: Kind) -> Vec<&str> {
 }
 
 #[test]
+fn registration_refuses_agent_profiles_and_windows_system_folders() {
+    let f = fixture("protected");
+    let profile = f.home.parent().unwrap().join("project_O-agents").join("claude").join("home");
+    fs::create_dir_all(&profile).unwrap();
+    assert!(projects::check(&f.home, &f.user, &profile.to_string_lossy()).unwrap_err().contains("프로필"));
+    #[cfg(windows)]
+    if let Some(windows) = std::env::var_os("SystemRoot") {
+        assert!(projects::check(&f.home, &f.user, &windows.to_string_lossy()).unwrap_err().contains("시스템"));
+    }
+}
+
+#[test]
 fn the_default_root_is_inside_the_home_folder_not_the_state_folder() {
     let f = fixture("default");
     let root = default_root(&f.user);
