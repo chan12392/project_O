@@ -26,7 +26,8 @@ import {
 } from "../../../../src/core/lead.ts";
 import { updateSettings, useSettings } from "../../data/settings.ts";
 import { useLeadModels, type LeadState } from "../../data/useLead.ts";
-import type { AgentStatus, Backend } from "../../platform/backend/index.ts";
+import { useAgentCheck } from "../../data/agents.ts";
+import type { Backend } from "../../platform/backend/index.ts";
 import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
 const MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
@@ -37,20 +38,14 @@ const TYPE_MODEL = " 직접 입력";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-/** The agents that may lead right now: installed, signed in, and able to run read-only with resume. */
+/**
+ * The agents that may lead right now (`canLead`), from the check every screen shares
+ * (`data/agents.ts`). The last launch's answer counts until this one's arrives, so a lead
+ * can be picked at once instead of after the 8–10 s check.
+ */
 function useLeadAgents(api: Backend, clean: boolean) {
-  const [agents, setAgents] = useState<AgentStatus[]>();
-  useEffect(() => {
-    let current = true;
-    setAgents(undefined);
-    api.agents(clean).then(
-      (list) => current && setAgents(list),
-      () => current && setAgents([]),
-    );
-    return () => {
-      current = false;
-    };
-  }, [api, clean]);
+  const check = useAgentCheck(api, clean);
+  const agents = check.agents ?? (check.checking ? undefined : []);
   const usable = (agents ?? []).filter(canLead);
   /** Why a lead agent cannot be picked now (on the disabled row), or what to know about a usable one. */
   const why = (id: LeadProvider): string | undefined => {
