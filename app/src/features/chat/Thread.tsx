@@ -64,7 +64,7 @@ export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }:
                 <p className="mb-1 text-xs text-chat-foreground-faint">
                   {name(m.from)} → {name(m.to)} <time dateTime={m.at}>{timeOf(m.at)}</time>
                 </p>
-                <p className="whitespace-pre-wrap">{m.text}</p>
+                <Markdown text={m.text} />
               </article>
             ))}
       </div>
