@@ -149,7 +149,7 @@ function MainWindow() {
   const gateState = project ? leads.stateOf(project.path) : "ready";
   // A real lead has no resting gate: it answers when written to (the demo keeps the gate).
   const leadState = live ? (lead.busy || gateState === "working" ? "working" : "ready") : gateState;
-  const announced = useAnnouncer(current?.view);
+  const announced = useAnnouncer(data.runs, current?.view);
   useEffect(() => rememberProject(project?.path), [project?.path]);
   const [headerError, setHeaderError] = useState<string>();
   useEffect(() => setHeaderError(undefined), [project?.path]);

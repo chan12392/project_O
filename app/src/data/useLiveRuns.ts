@@ -23,6 +23,11 @@ interface UsageReading {
 }
 
 const POLL_MS = 2_000;
+/**
+ * While the window is hidden or minimised the runs are still read, more slowly, so a card
+ * that finishes meanwhile can be notified (Settings → 알림).
+ */
+const HIDDEN_POLL_MS = 15_000;
 /** As many runs as `o runs --json` lists by default. */
 const RUN_LIMIT = 50;
 
@@ -61,8 +66,8 @@ function requestedSource(): Source | undefined {
 }
 
 /**
- * Runs and usage from project_O.exe's Tauri commands or the dev server's /api (app/dev/liveRuns.ts), polled while
- * the page is visible. Lead chat threads come separately (`data/useLead.ts`), so run messages stay empty.
+ * Runs and usage from project_O.exe's Tauri commands or the dev server's /api (app/dev/liveRuns.ts), polled every
+ * 2 s while the page is visible and every 15 s while it is hidden. Lead chat threads come separately (`data/useLead.ts`), so run messages stay empty.
  * `runs` is undefined until the first answer; a failed first answer counts as no runs.
  */
 function useLiveRuns(enabled: boolean, sessions: boolean) {
@@ -85,7 +90,7 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
     let entries = new Map<RunView, RunEntry>();
     const schedule = () => {
       window.clearTimeout(timer);
-      if (!stopped && !document.hidden) timer = window.setTimeout(poll, POLL_MS);
+      if (!stopped) timer = window.setTimeout(poll, document.hidden ? HIDDEN_POLL_MS : POLL_MS);
     };
     const poll = async () => {
       if (inflight) return;
@@ -120,7 +125,8 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
         schedule();
       }
     };
-    const onVisibility = () => (document.hidden ? window.clearTimeout(timer) : void poll());
+    // Back in view: read now rather than at the slow pace. Going hidden keeps the next read and slows the one after.
+    const onVisibility = () => void (document.hidden || poll());
     void poll();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {

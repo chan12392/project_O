@@ -1,7 +1,7 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
 import type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
 import type { ListedProject, ProjectCheck, ProjectList } from "../../../../src/core/projects.ts";
-import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
+import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
 export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
 
@@ -128,6 +128,8 @@ export interface Backend {
   pendingUpdate(): Promise<UpdateRelease | null>;
   installUpdate(tag: string): Promise<void>;
   cancelUpdate(): Promise<void>;
+  /** Whether updates can be checked here (gh) and how the last background check went. */
+  updateStatus(): Promise<UpdateStatus>;
   /**
    * Asks an agent to review a PR of the project folder and comment the review on it
    * (`o review <pr> --post` there). It never approves or merges. Rejects with the

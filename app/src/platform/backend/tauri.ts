@@ -1,5 +1,14 @@
 import type { ActionResult, AgentStatus, Backend, BudgetReport, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
-import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
+import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
+
+/** Raised when the desktop app did not open a link; `shell/LinkNotice.tsx` shows it (also raised by app/src-tauri/src/commands/window.rs). */
+export const LINK_BLOCKED = "project-o:link-blocked";
+
+/** The reason a link stayed closed, in the words the shell's new-window handler uses. */
+export function linkRefusal(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.includes("https") ? "보안을 위해 https 주소만 브라우저로 엽니다. 이 링크는 열지 않았습니다." : `링크를 열지 못했습니다: ${text}`;
+}
 
 /** project_O.exe: the shell's Tauri commands (app/src-tauri/src/commands), JSON text parsed here. */
 export function tauriBackend(invoke: Invoke): Backend {
@@ -8,12 +17,18 @@ export function tauriBackend(invoke: Invoke): Backend {
     agents: (clean) => invoke("agents_status", { clean }) as Promise<AgentStatus[]>,
     install: (id) => invoke("agent_install", { id }) as Promise<ActionResult>,
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
-    openExternal: (url) => invoke("open_external", { url }) as Promise<void>,
+    // A refused link (http, or the browser failed) says why on screen even where the caller stays quiet.
+    openExternal: (url) =>
+      (invoke("open_external", { url }) as Promise<void>).catch((error: unknown) => {
+        window.dispatchEvent(new CustomEvent(LINK_BLOCKED, { detail: { url, message: linkRefusal(error) } }));
+        throw error;
+      }),
     about: () => invoke("about") as Promise<About>,
     checkUpdate: () => invoke("update_check") as Promise<UpdateCheck>,
     pendingUpdate: () => invoke("update_pending") as Promise<UpdateRelease | null>,
     installUpdate: (tag) => invoke("update_install", { tag }) as Promise<void>,
     cancelUpdate: () => invoke("update_cancel") as Promise<void>,
+    updateStatus: () => invoke("update_status") as Promise<UpdateStatus>,
     review: (project, pr, clean) => invoke("review", { project, pr, clean }) as Promise<ReviewStarted>,
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,

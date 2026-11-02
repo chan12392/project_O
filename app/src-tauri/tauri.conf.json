@@ -13,6 +13,8 @@
     "windows": [
       {
         "label": "main",
+        "create": false,
+        "dragDropEnabled": false,
         "title": "Project O",
         "width": 1360,
         "height": 880,

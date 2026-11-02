@@ -16,8 +16,14 @@ function AboutSection({ api, about, source }: { api: Backend; about: AboutState;
   const value = (text: string | undefined) => (about.error ? "확인할 수 없습니다" : text === undefined ? "확인하는 중" : text || "이 화면에는 없습니다");
   const sourceWord = source === "live" ? "실시간 · 이 PC의 O 실행 기록" : source === "demo" ? "데모 · 기록 재생" : "확인하는 중";
   const kindWord = api.kind === "tauri" ? "데스크톱 앱" : api.kind === "dev" ? "개발 서버" : "미리보기";
+  // The app and the O CLI are versioned apart; say which number is which.
+  const version = about.data?.cliVersion
+    ? `앱 ${about.data.version} · O CLI ${about.data.cliVersion}`
+    : api.kind === "dev" && about.data?.version
+      ? `O CLI ${about.data.version}`
+      : about.data?.version;
   const info: [string, ReactNode][] = [
-    ["버전", value(about.data?.version)],
+    ["버전", value(version)],
     ["커밋", about.data?.commit || "로컬 빌드"],
     ["빌드 날짜", about.data?.builtAt ? new Date(about.data.builtAt).toLocaleString("ko-KR") : "로컬 빌드"],
     ["데이터 출처", sourceWord],

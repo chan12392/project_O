@@ -181,7 +181,7 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
       )}
       {!busy && !agent.installed && !agent.canInstall && agent.installHint && (
         <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">
-          Project O가 직접 설치하지 않습니다. 공식 안내대로 설치한 뒤 다시 확인을 눌러 주세요. <span className="text-foreground/85">{agent.installHint}</span>
+          Project O가 직접 설치하지 않습니다. 공식 안내대로 설치한 뒤 다시 확인을 눌러 주세요. 앱은 켜질 때의 PATH만 읽으므로, 방금 설치한 Node.js나 CLI가 그래도 보이지 않으면 앱을 다시 시작해 주세요. <span className="text-foreground/85">{agent.installHint}</span>
         </p>
       )}
       {!busy && needsLogin && (
