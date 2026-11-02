@@ -137,6 +137,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (e.t === "review.posted") continue;
     if (e.t === "run.context") continue;
+    if (e.t === "run.mode") continue;
     const card = byId.get(e.cardId);
     if (!card) continue;
     switch (e.t) {

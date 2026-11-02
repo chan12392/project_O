@@ -43,7 +43,8 @@ export type OEvent =
    */
   | { t: "card.budget"; at: string; cardId: string; provider: ProviderId; effortFrom?: string; effortTo: string; spent: number; allowance: number }
   /** Cards whose prompt got a shared context section (ADR-0005), and its characters in all. */
-  | { t: "run.context"; at: string; runId: string; cards: number; chars: number; cardIds: string[] };
+  | { t: "run.context"; at: string; runId: string; cards: number; chars: number; cardIds: string[] }
+  | { t: "run.mode"; at: string; runId: string; efficiency?: "on" | "off"; clean: boolean; context: boolean; lowerEffort: boolean };
 
 /** What a provider stream line means, before it gets a timestamp and card id. */
 export type StreamSignal =

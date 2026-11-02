@@ -29,6 +29,7 @@ use serde_json::Value;
 
 use crate::run::events::OEvent;
 use crate::run::index::{self, sql, title_text, RunQuery};
+use crate::run::mode::RunMode;
 use crate::sys::js::{iso, local_day, parse_time};
 use crate::run::plan::{Plan, ProviderId};
 use crate::policy::{empty_counts, PolicyContext, Violation, LIMITS};
@@ -406,6 +407,24 @@ pub fn mark_clean(home: &Path, run_id: &str) -> io::Result<()> {
 
 pub fn is_clean(home: &Path, run_id: &str) -> bool {
     run_dir(home, run_id).join("clean").exists()
+}
+
+/// 토큰 효율 (ADR-0010): how this run's cards are set up. The `clean` and `no-context`
+/// markers stay what the runner and `o tokens` read; `mode.json` keeps the switch and
+/// whether the daily budget may lower effort.
+pub fn mark_mode(home: &Path, run_id: &str, mode: &RunMode) -> io::Result<()> {
+    if mode.clean {
+        mark_clean(home, run_id)?;
+    }
+    if !mode.context {
+        crate::context::mark_off(home, run_id)?;
+    }
+    fs::write(run_dir(home, run_id).join("mode.json"), serde_json::to_string(mode).map_err(io::Error::other)?)
+}
+
+/// The switch a run was dispatched with; `None` for a run from before it (its effort lowering was on).
+pub fn read_mode(home: &Path, run_id: &str) -> Option<RunMode> {
+    serde_json::from_slice(&fs::read(run_dir(home, run_id).join("mode.json")).ok()?).ok()
 }
 
 /// `JSON.stringify(value, null, 2)`.
