@@ -36,16 +36,22 @@ pub struct PromptInput<'a> {
     pub history: &'a [(String, String)],
     /// For a resumed session: the messages of turns it did not see (another agent led them).
     pub missed: &'a [(String, String)],
+    /// YOLO 모드 (ADR-0014): this turn may edit files and run commands.
+    pub yolo: bool,
 }
 
+/// What a YOLO turn is told: in the role, and again on each resumed turn (the session may
+/// have started read-only).
+const YOLO_ROLE: &str = "[O 모드] YOLO: 이번 턴은 파일을 고치고 명령을 실행할 수 있습니다. 작은 일은 직접 하고, 나눠 맡길 일은 o-plan 계획 블록으로 제안합니다. o dispatch·o lead·o review는 실행할 수 없습니다(작업은 사람이 보내거나 O가 한도 안에서 자동 실행합니다).";
+
 /// The role, rules and plan format, sent once per CLI session.
-fn role(project: &str, budget: &[String]) -> String {
+fn role(project: &str, budget: &[String], yolo: bool) -> String {
     let providers = ProviderId::ALL.map(ProviderId::as_str).join("|");
     let caps: Vec<String> = ProviderId::ALL.iter().map(|p| format!("{p} {}", LIMITS.max_active_per_provider(*p))).collect();
     let mut lines = vec![
         format!("[O 총괄] 프로젝트: {project}"),
-        "당신은 이 프로젝트의 총괄입니다. 파일은 읽기만 하고 고치거나 명령을 실행하지 않습니다.".to_string(),
-        "요청을 이해하고, 모호하면 짧게 되묻고, 일을 작업카드로 나눠 제안합니다. 실행은 사람이 '실행'을 눌러야 O가 합니다.".to_string(),
+        if yolo { YOLO_ROLE } else { "당신은 이 프로젝트의 총괄입니다. 파일은 읽기만 하고 고치거나 명령을 실행하지 않습니다." }.to_string(),
+        if yolo { "요청을 이해하고, 모호하면 짧게 되묻고, 일을 작업카드로 나눠 제안합니다. 계획은 조건이 맞으면 O가 자동 실행하고 아니면 사용자의 실행을 기다립니다." } else { "요청을 이해하고, 모호하면 짧게 되묻고, 일을 작업카드로 나눠 제안합니다. 실행은 사람이 '실행'을 눌러야 O가 합니다." }.to_string(),
         String::new(),
         "카드 나누기:".to_string(),
         format!("- 1~5장(최대 {}장), 같은 파일을 두 카드가 고치지 않게 나눕니다. task에 목표·범위(파일)·완료 기준을 씁니다.", LIMITS.max_cards_per_plan),
@@ -90,13 +96,16 @@ fn clip(text: &str, chars: usize) -> String {
 pub fn build(input: &PromptInput) -> String {
     let mut parts = Vec::new();
     if !input.resumed {
-        parts.push(role(input.project, input.budget));
+        parts.push(role(input.project, input.budget, input.yolo));
         if !input.history.is_empty() {
             let start = input.history.len().saturating_sub(HISTORY_TURNS);
             let lines: Vec<String> = input.history[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
             parts.push(format!("지금까지의 대화(요약):\n{}", lines.join("\n")));
         }
     } else {
+        if input.yolo {
+            parts.push(YOLO_ROLE.to_string());
+        }
         if !input.budget.is_empty() {
             parts.push(format!("오늘 사용 예산:\n{}", input.budget.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n")));
         }

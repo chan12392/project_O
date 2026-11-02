@@ -113,8 +113,13 @@ pub async fn lead_send(
             attach: &attach,
             fresh: false,
             clean: root.as_deref(),
+            yolo: o_core::run::yolo::read_enabled(&home),
         };
-        let events = lead::send(&home, &req, &official_command)?;
+        let start = |run_id: &str| -> std::io::Result<()> {
+            let o = o_binary().ok_or_else(|| std::io::Error::other("o CLI를 찾지 못했습니다"))?;
+            proc::spawn_detached(Command::new(o).args(["_run", run_id])).map(|_| ())
+        };
+        let events = lead::send_with_autorun(&home, &req, &official_command, &start)?;
         Ok(json!({ "threadId": lead::current_thread(&home, &project), "events": events }))
     })
     .await?
@@ -127,7 +132,9 @@ pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String
     blocking(move || {
         let o = o_binary().ok_or("o CLI를 찾지 못했습니다 (cargo install --path crates/o-cli)")?;
         let start = |run_id: &str| proc::spawn_detached(Command::new(&o).args(["_run", run_id])).map(|_| ());
-        match lead::dispatch(&store::default_home(), &plan_id, RunMode::of(Profile::of_clean(clean)), &start) {
+        let home = store::default_home();
+        let mode = RunMode { yolo: o_core::run::yolo::read_enabled(&home), ..RunMode::of(Profile::of_clean(clean)) };
+        match lead::dispatch(&home, &plan_id, mode, &start) {
             Ok(done) => Ok(json!(done)),
             Err(DispatchError::Blocked(violations)) => {
                 let lines: Vec<String> = violations.iter().map(|v| format!("[{}] {}", v.rule, v.message)).collect();
@@ -163,6 +170,11 @@ pub async fn lead_models(provider: String) -> Result<Value, String> {
 #[tauri::command]
 pub async fn lead_stop(project: Option<String>) -> Result<Value, String> {
     blocking(move || json!({ "stopped": lead::stop(&store::default_home(), project.as_deref()) })).await
+}
+
+#[tauri::command]
+pub async fn lead_stop_all(project: String) -> Result<Value, String> {
+    blocking(move || lead::stop_all(&store::default_home(), &project).map(|stopped| json!({ "stopped": stopped }))).await?
 }
 
 #[cfg(test)]

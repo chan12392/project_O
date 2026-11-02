@@ -31,6 +31,7 @@ export type LeadEvent =
   | { t: "lead.reply"; at: string; provider: ProviderId; text: string }
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
+  | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
   | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
   | { t: "lead.error"; at: string; text: string }
   /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
@@ -92,6 +93,7 @@ export type LeadItem =
       /** What was wrong with the stored plan's shape (left out of what is drawn); a plan with any never runs from here. */
       problems: string[];
       runId?: string;
+      autoRunReason?: string;
     }
   | { kind: "error"; at: string; text: string };
 
@@ -112,6 +114,9 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         break;
       case "lead.dispatch":
         for (const item of items) if (item.kind === "plan" && item.planId === e.planId) item.runId = e.runId;
+        break;
+      case "lead.autorun":
+        for (const item of items) if (item.kind === "plan" && item.planId === e.planId && e.reason) item.autoRunReason = e.reason;
         break;
       case "lead.error":
         items.push({ kind: "error", at: e.at, text: e.text });

@@ -12,3 +12,4 @@ pub mod runner;
 pub mod snapshot;
 pub mod store;
 pub mod team;
+pub mod yolo;

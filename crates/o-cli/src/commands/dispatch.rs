@@ -7,7 +7,7 @@ use std::process::Command as Process;
 use chrono::Utc;
 use o_core::policy::check_plan;
 use o_core::run::mode::{take_flags, RunMode};
-use o_core::run::runner;
+use o_core::run::{runner, yolo};
 use o_core::run::store::{self, run_dir};
 use o_core::sys::proc;
 use serde_json::{json, Value};
@@ -17,7 +17,7 @@ use super::{fail, print_violations, run_id_arg, Command};
 pub const CHECK: Command = Command {
     name: "check",
     usage: "  o check [plan.json|-]      정책 검사만 (실행 안 함)",
-    run: |home, args| match plan_flags(args) {
+    run: |home, args| match plan_flags(home, args) {
         Ok((mode, plan)) => check(home, plan.as_deref(), false, mode),
         Err(error) => fail(&error),
     },
@@ -25,15 +25,16 @@ pub const CHECK: Command = Command {
 
 pub const DISPATCH: Command = Command {
     name: "dispatch",
-    usage: "  o dispatch [--profile project-o|own] [--no-context] [plan.json|-]
+    usage: "  o dispatch [--profile project-o|own] [--no-context] [--mode yolo|normal] [plan.json|-]
                              정책 검사 후 백그라운드 실행, runId 출력
                              --profile (project_O 프로필 사용, 기본 project-o — ADR-0013):
                                project-o: 카드를 O의 깨끗한 에이전트 프로필로 실행 (o agents)
                                own      : 이 PC의 평소 CLI 설정(스킬·훅·메모리) 그대로
                              --clean: --profile project-o와 같음
                              --no-context: 이전 작업 컨텍스트를 카드에 넣지 않음 (토큰 A/B 기준선)
+                             --mode yolo|normal: 이 실행만 YOLO 모드 켜기·끄기 (주지 않으면 o yolo 설정, ADR-0014)
                              하루 사용 예산(차단·effort 낮춤)은 o budget --on|--off로 따로 정함",
-    run: |home, args| match plan_flags(args) {
+    run: |home, args| match plan_flags(home, args) {
         Ok((mode, plan)) => check(home, plan.as_deref(), true, mode),
         Err(error) => fail(&error),
     },
@@ -41,8 +42,10 @@ pub const DISPATCH: Command = Command {
 
 /// The run mode and the plan file among `check`/`dispatch` arguments; any other flag is refused
 /// (a removed or misspelled one included, so it never reads as a plan file name).
-fn plan_flags(args: &[String]) -> Result<(RunMode, Option<String>), String> {
-    let (mode, rest) = take_flags(args)?;
+fn plan_flags(home: &Path, args: &[String]) -> Result<(RunMode, Option<String>), String> {
+    let (mut mode, rest) = take_flags(args)?;
+    let (yolo, rest) = yolo::take_flag(rest)?;
+    mode.yolo = yolo::resolve(home, yolo);
     if let Some(flag) = rest.iter().find(|a| a.starts_with("--")) {
         return Err(format!("알 수 없는 인자: {flag}"));
     }
@@ -116,7 +119,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
     let cards: Vec<&str> = plan.cards.iter().map(|c| c.id.as_str()).collect();
     println!(
         "{}",
-        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "profile": mode.profile, "clean": mode.clean(), "context": mode.context })
+        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "profile": mode.profile, "clean": mode.clean(), "context": mode.context, "yolo": mode.yolo })
     );
     0
 }

@@ -122,6 +122,8 @@ export const demoBackend: Backend = {
   budget: async () => demoBudget(demoPercent, demoEnabled),
   setBudgetPercent: async (percent) => demoBudget((demoPercent = percent), demoEnabled),
   setBudgetEnabled: async (enabled) => demoBudget(demoPercent, (demoEnabled = enabled)),
+  yolo: async () => ({ enabled: false, budgetEnabled: true, autoRun: { maxCards: 3, perHour: 2, dedupeMinutes: 30 } }),
+  setYolo: async () => { throw new Error("미리보기에서는 YOLO 설정을 바꾸지 않습니다"); },
   tokens: async () => ({ groups: [DEMO_BASELINE, DEMO_SHARED], compare: { baseline: DEMO_BASELINE, shared: DEMO_SHARED } }),
   // The recorded preview shows the demo's own transcripts; nothing reaches a lead.
   leadShow: async () => ({ thread: null, projects: [] }),
@@ -130,6 +132,7 @@ export const demoBackend: Backend = {
   leadSend: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadDispatch: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadStop: async () => ({ stopped: false }),
+  leadStopAll: async () => ({ stopped: 0 }),
   leadModels: async (provider) => ({ provider, models: DEMO_MODELS[provider] }),
   projects: async () => demoList(),
   projectsAdd: async (path) => {

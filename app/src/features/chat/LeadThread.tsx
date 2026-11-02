@@ -29,9 +29,12 @@ interface Props {
 /** The real lead chat (ADR-0008): messages, the lead's answers, its plans and what they started. */
 export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStartProject }: Props) {
   const scroller = useFollowBottom([lead.items, lead.busy]);
+  const [stopError, setStopError] = useState("");
   return (
     <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6 text-sm text-chat-foreground">
+        {lead.thread && <div className="flex justify-end"><button type="button" className="rounded border px-2 py-1 text-xs focus-ring" onClick={() => void lead.stopAll().then(() => setStopError(""), (e) => setStopError(errorText(e)))}>모두 중지</button></div>}
+        {stopError && <p role="alert" className="text-xs text-destructive">모두 중지하지 못했습니다: {stopError}</p>}
         {!project && <ProjectStart onStart={onStartProject} />}
         {project && !lead.loaded && !lead.failed && (
           <div className="flex flex-col gap-4" aria-busy="true" aria-label="대화 불러오는 중">
@@ -46,7 +49,7 @@ export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStar
         )}
         {project && lead.loaded && lead.items.length === 0 && !lead.busy && (
           <Notice title="아직 총괄과 나눈 대화가 없습니다" action="첫 요청 쓰기" onAction={onCompose}>
-            할 일을 보내면 총괄이 프로젝트를 읽기만 하고 작업카드 계획을 제안합니다. 계획은 실행 버튼을 눌러야 에이전트들에게 전달됩니다.
+            할 일을 보내면 총괄이 계획을 제안합니다. YOLO가 켜져 있고 자동 실행 조건에 맞으면 계획이 바로 실행됩니다.
           </Notice>
         )}
         {lead.items.map((item, i) => (
@@ -240,6 +243,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
         {over.map((entry) => <p key={entry.provider} className="mt-1">{entry.message}</p>)}
       </div>}
       <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
+        {!plan.runId && plan.autoRunReason && <p role="status" className="w-full text-xs text-muted-foreground">{plan.autoRunReason}</p>}
         {plan.runId ? (
           run && failedBeforeCards(run) ? (
             <p role="alert" className="text-xs text-destructive">

@@ -43,6 +43,7 @@ use crate::run::mode::{Profile, RunMode};
 use crate::run::plan::ProviderId;
 use crate::run::runner::Spawner;
 use crate::run::snapshot::snapshot;
+use crate::run::yolo::{self, AutoRunFacts, PastAutoRun};
 use crate::run::store::{self, is_run_id, new_run_id, policy_context, read_events, record_blocked, run_dir};
 use crate::sys::js::{js_len, js_tail, now_iso};
 use crate::sys::proc;
@@ -70,6 +71,9 @@ pub enum LeadEvent {
         /// The profile this message ran on (project_O 프로필 사용, ADR-0013); absent in threads from before the switch.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile: Option<Profile>,
+        /// The turn ran in YOLO 모드 (ADR-0014): the lead could edit files and run commands.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        yolo: bool,
     },
     /// The CLI's own session id, resumed on the thread's next turn with that CLI. `clean` is
     /// the profile it lives in: a turn on the other profile cannot resume it and starts a new one.
@@ -96,7 +100,12 @@ pub enum LeadEvent {
         clean: bool,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         profile: Option<Profile>,
+        /// The run's cards launch in YOLO 모드 (ADR-0014).
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        yolo: bool,
     },
+    #[serde(rename = "lead.autorun")]
+    AutoRun { at: String, plan_id: String, hash: Option<String>, reason: Option<String> },
     /// Tokens one lead turn spent (`o tokens` counts them as planning overhead).
     #[serde(rename = "lead.usage")]
     Usage { at: String, provider: ProviderId, input: f64, cached: f64, output: f64 },
@@ -342,6 +351,8 @@ pub struct SendRequest<'a> {
     pub fresh: bool,
     /// The clean profile root when the lead runs on the project_O profile (ADR-0013); None is the person's own setup.
     pub clean: Option<&'a Path>,
+    /// YOLO 모드 (ADR-0014): the lead may edit files and run commands (Provider::yolo_lead).
+    pub yolo: bool,
 }
 
 /// Checks a request before anything is saved or started.
@@ -465,6 +476,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         model: req.model.filter(|m| !m.is_empty()).map(str::to_string),
         effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
         profile: Some(Profile::of_clean(req.clean.is_some())),
+        yolo: req.yolo,
     })?;
 
     let session = before.iter().rev().find_map(|e| match e {
@@ -493,6 +505,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         resumed: session.is_some(),
         history: &history,
         missed: &missed,
+        yolo: req.yolo,
     });
     let files_dir = files::thread_files(home, &thread_id);
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
@@ -506,7 +519,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         files_dir: files_dir.as_deref(),
         images: &images,
     };
-    let Some(spec) = providers::get(req.provider).lead(&turn) else {
+    let Some(spec) = providers::lead_spec(req.provider, &turn, req.yolo) else {
         return Err(format!("{}는 총괄로 쓸 수 없습니다", req.provider));
     };
 
@@ -519,6 +532,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.
         providers::remove_inherited(&mut command, &spec.env_remove);
         command.envs(&spec.env);
+        command.env("O_AGENT_ROLE", "lead");
         Ok(command)
     });
     // A stop that came while the turn set up (attachments, budget, the command) ends it here,
@@ -720,12 +734,20 @@ pub struct Dispatched {
     pub cards: Vec<String>,
     pub profile: Profile,
     pub clean: bool,
+    pub yolo: bool,
 }
 
 /// Dispatches a stored plan once: checks it again like `o dispatch`, makes the run and
 /// hands its id to `start` (which launches `o _run <runId>` in the background).
 /// `mode` is the profile and context choice (ADR-0013), saved with the run like `o dispatch` does.
 pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
+    let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
+    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
+    lock.lock().map_err(|e| e.to_string())?;
+    dispatch_locked(home, plan_id, mode, start)
+}
+
+fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
     let events = read_thread(home, thread_id);
     let project = thread_project(&events).ok_or_else(|| format!("총괄 대화가 없습니다: {thread_id}"))?;
@@ -773,7 +795,7 @@ pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) 
         let _ = fs::remove_file(&mark);
         return Err(format!("실행기를 시작하지 못했습니다: {error}").into());
     }
-    let dispatched = LeadEvent::Dispatch { at: now_iso(), plan_id: plan_id.to_string(), run_id: run_id.clone(), clean: mode.clean(), profile: Some(mode.profile) };
+    let dispatched = LeadEvent::Dispatch { at: now_iso(), plan_id: plan_id.to_string(), run_id: run_id.clone(), clean: mode.clean(), profile: Some(mode.profile), yolo: mode.yolo };
     append(home, thread_id, &dispatched).map_err(|e| e.to_string())?;
     Ok(Dispatched {
         plan_id: plan_id.to_string(),
@@ -782,7 +804,62 @@ pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) 
         cards: plan.cards.iter().map(|c| c.id.clone()).collect(),
         profile: mode.profile,
         clean: mode.clean(),
+        yolo: mode.yolo,
     })
+}
+
+/// Run a lead turn and, when allowed, hand its plan to the same checked dispatch path.
+pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+    let turn_started = Utc::now();
+    let mut added = send(home, req, spawner)?;
+    let Some((plan_id, plan, ok)) = added.iter().find_map(|e| match e {
+        LeadEvent::Plan { plan_id, plan, ok, .. } => Some((plan_id.clone(), plan.clone(), *ok)),
+        _ => None,
+    }) else { return Ok(added) };
+    let thread = plan_thread(&plan_id).ok_or("계획 id 형식이 아닙니다")?;
+    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread).join("dispatch.lock")).map_err(|e| e.to_string())?;
+    lock.lock().map_err(|e| e.to_string())?;
+    let events = read_thread(home, thread);
+    let now = Utc::now();
+    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan(&plan, &ctx));
+    let valid = checked.ok().and_then(|result| result.plan);
+    let running: Vec<String> = events.iter().filter_map(|e| match e {
+        LeadEvent::Dispatch { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),
+        _ => None,
+    }).collect();
+    let past: Vec<PastAutoRun> = events.iter().filter_map(|e| match e {
+        LeadEvent::AutoRun { at, hash: Some(hash), .. } => chrono::DateTime::parse_from_rfc3339(at).ok().map(|at| PastAutoRun { at: at.with_timezone(&Utc), hash: hash.clone() }),
+        _ => None,
+    }).collect();
+    let hash = valid.as_ref().map(yolo::plan_hash);
+    let stopped = fs::read_to_string(thread_dir(home, thread).join("stop-all-at")).ok()
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
+    let reason = if stopped { Some("모두 중지 요청으로 자동 실행을 취소했습니다".to_string()) }
+        else if !req.yolo { Some("YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) }
+        else if let (true, Some(valid_plan), Some(plan_hash)) = (ok, valid.as_ref(), hash.as_deref()) {
+            let facts = AutoRunFacts { budget_on: budget::read_enabled_for_autorun(home), cards: valid_plan.cards.len(), running: &running, past: &past, hash: plan_hash, now };
+            yolo::check_auto_run(&facts, yolo::read_limits(home)).err()
+        } else { Some("정책 검사에 통과하지 못해 실행을 기다립니다".to_string()) };
+    let run = reason.is_none();
+    let event = LeadEvent::AutoRun { at: now_iso(), plan_id: plan_id.clone(), hash: if run { hash } else { None }, reason: reason.or_else(|| Some("자동 실행을 준비 중입니다".to_string())) };
+    append(home, thread, &event).map_err(|e| e.to_string())?;
+    added.push(event);
+    if run {
+        let mode = RunMode { yolo: true, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
+        match dispatch_locked(home, &plan_id, mode, start) {
+            Ok(_) => added.extend(read_thread(home, thread).into_iter().rev().find(|e| matches!(e, LeadEvent::Dispatch { plan_id: id, .. } if id == &plan_id))),
+            Err(e) => {
+                let why = match e {
+                    DispatchError::Other(message) => message,
+                    DispatchError::Blocked(violations) => violations.into_iter().map(|v| v.message).collect::<Vec<_>>().join(" / "),
+                };
+                let event = LeadEvent::AutoRun { at: now_iso(), plan_id: plan_id.clone(), hash: None, reason: Some(format!("자동 실행을 시작하지 못했습니다: {why}")) };
+                append(home, thread, &event).map_err(|e| e.to_string())?;
+                added.push(event);
+            }
+        }
+    }
+    Ok(added)
 }
 
 /// Stops the lead turn of the project's current thread (every live turn without a
@@ -813,6 +890,21 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
         }
     }
     stopped
+}
+
+/// Stop the lead and live runs started by this project's current thread.
+pub fn stop_all(home: &Path, project: &str) -> Result<usize, String> {
+    let Some(thread) = current_thread(home, project) else { return Ok(0) };
+    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, &thread).join("dispatch.lock")).map_err(|e| e.to_string())?;
+    lock.lock().map_err(|e| e.to_string())?;
+    fs::write(thread_dir(home, &thread).join("stop-all-at"), Utc::now().to_rfc3339()).map_err(|e| e.to_string())?;
+    let mut count = usize::from(stop(home, Some(project)));
+    for event in read_thread(home, &thread) {
+        if let LeadEvent::Dispatch { run_id, .. } = event {
+            if store::run_is_live(home, &run_id) && crate::run::runner::stop_run(home, &run_id).map_err(|e| e.to_string())? { count += 1; }
+        }
+    }
+    Ok(count)
 }
 
 /// A marker whose owner is gone, cleared under the turn lock (so never a new turn's). Its

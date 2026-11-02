@@ -178,7 +178,7 @@ mod tests {
                 .to_vec();
         let problems = scan_files(&files, |_| Ok(format!("args.push(\"{BYPASS}\");\n").into_bytes())).unwrap();
         let flagged: Vec<&str> = problems.iter().map(|p| p.split(':').next().unwrap()).collect();
-        assert_eq!(flagged, ["crates/o-core/src/lead/mod.rs", "app/src/x.ts", "crates/o-core/src/providers/sub/x.rs"]);
+        assert_eq!(flagged, ["AGENTS.md", "crates/o-core/src/lead/mod.rs", "app/src/x.ts", "crates/o-core/src/providers/sub/x.rs"]);
         let credential = scan_files(&files[..1], |_| Ok(format!("env::var(\"{TOKEN}\")\n").into_bytes())).unwrap();
         assert_eq!(credential.len(), 1);
         assert!(credential[0].contains("[claude-oauth-token]"), "{}", credential[0]);

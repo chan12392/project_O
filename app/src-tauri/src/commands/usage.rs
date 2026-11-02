@@ -75,6 +75,21 @@ pub async fn budget_set_enabled(enabled: bool) -> Result<String, String> {
     blocking(move || set_budget_enabled(&store::default_home(), enabled)).await?
 }
 
+#[tauri::command]
+pub async fn yolo_get() -> Result<Value, String> {
+    blocking(|| json!(o_core::run::yolo::report(&store::default_home()))).await
+}
+
+#[tauri::command]
+pub async fn yolo_set(enabled: Option<bool>, max_cards: Option<Value>, per_hour: Option<Value>, dedupe_minutes: Option<Value>) -> Result<Value, String> {
+    blocking(move || {
+        let home = store::default_home();
+        o_core::run::yolo::write_limits(&home, max_cards.as_ref(), per_hour.as_ref(), dedupe_minutes.as_ref())?;
+        if let Some(enabled) = enabled { o_core::run::yolo::write_enabled(&home, enabled)?; }
+        Ok(json!(o_core::run::yolo::report(&home)))
+    }).await?
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

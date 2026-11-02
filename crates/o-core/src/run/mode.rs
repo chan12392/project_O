@@ -63,12 +63,16 @@ pub struct RunMode {
     pub profile: Profile,
     /// Earlier work of the project injected into each card's prompt (ADR-0005).
     pub context: bool,
+    /// YOLO 모드 (ADR-0014): the cards (and the lead turn) run without permission prompts.
+    /// Resolved from `--mode` or the saved switch (`run::yolo`), never from the plan; saved
+    /// as the run folder's `yolo` marker.
+    pub yolo: bool,
 }
 
 impl RunMode {
     /// A profile with the shared context on.
     pub fn of(profile: Profile) -> RunMode {
-        RunMode { profile, context: true }
+        RunMode { profile, context: true, yolo: false }
     }
 
     /// Clean agent profiles (no personal harness).
@@ -120,5 +124,5 @@ pub fn take_flags(args: &[String]) -> Result<(RunMode, Vec<String>), String> {
         let parsed = Profile::parse(value).ok_or_else(|| format!("--profile은 project-o 또는 own입니다: {value}"))?;
         set(parsed, &mut profile)?;
     }
-    Ok((RunMode { profile: profile.unwrap_or_default(), context: !no_context }, rest))
+    Ok((RunMode { profile: profile.unwrap_or_default(), context: !no_context, yolo: false }, rest))
 }

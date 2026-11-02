@@ -11,6 +11,7 @@ use o_core::lead::{self, DispatchError, SendRequest};
 use o_core::run::mode::{take_flags, RunMode};
 use o_core::run::plan::ProviderId;
 use o_core::run::runner::{official_command, Spawner};
+use o_core::run::yolo;
 use o_core::sys::proc;
 use serde_json::json;
 
@@ -18,16 +19,18 @@ use super::{fail, print_violations, Command};
 
 pub const LEAD: Command = Command {
     name: "lead",
-    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--profile project-o|own] <메시지|->
+    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--profile project-o|own] [--mode yolo|normal] <메시지|->
                              총괄에게 메시지 (읽기 전용으로 프로젝트를 읽고 계획을 제안), 새 이벤트 JSON 출력
                              --profile project-o(기본)면 총괄도 O의 깨끗한 프로필로, own이면 평소 CLI 설정으로 실행
+                             --mode yolo면 총괄이 파일을 고치고 명령을 실행 (주지 않으면 o yolo 설정, ADR-0014)
   o lead models --provider claude|codex|agy  총괄이 쓸 수 있는 모델 목록 JSON (CLI의 공식 목록·별칭)
   o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
   o lead new --project <폴더>               새 대화 시작
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
-  o lead dispatch <planId> [--profile project-o|own] [--no-context]
+  o lead dispatch <planId> [--profile project-o|own] [--no-context] [--mode yolo|normal]
                              제안된 계획을 정책 검사 후 한 번 실행, runId 출력 (--profile은 o dispatch와 같음)
-  o lead stop [--project <폴더>]             답하는 중인 총괄 중지",
+  o lead stop [--project <폴더>]             답하는 중인 총괄 중지
+  o lead stop-all --project <폴더>           이 대화의 총괄과 실행을 모두 중지",
     run: lead_main,
 };
 
@@ -40,6 +43,7 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("attach") => attach(home, rest),
         Some("dispatch") => dispatch(home, rest),
         Some("stop") => stop(home, rest),
+        Some("stop-all") => stop_all(home, rest),
         Some("models") => models(rest),
         _ => fail(LEAD.usage),
     }
@@ -72,13 +76,16 @@ struct Args {
     fresh: bool,
     /// The profile and context choice (`run::mode::take_flags`, ADR-0013).
     mode: RunMode,
+    /// `--mode yolo|normal` (ADR-0014); none: the saved switch.
+    yolo: Option<bool>,
     json: bool,
     words: Vec<String>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
     let (mode, args) = take_flags(args)?;
-    let mut out = Args { mode, ..Args::default() };
+    let (yolo, args) = yolo::take_flag(args)?;
+    let mut out = Args { mode, yolo, ..Args::default() };
     let mut items = args.iter();
     while let Some(arg) = items.next() {
         let mut value = |flag: &str| items.next().cloned().ok_or_else(|| format!("{flag} 뒤에 값이 필요합니다"));
@@ -133,9 +140,13 @@ fn send(home: &Path, args: &[String]) -> i32 {
         attach: &a.attach,
         fresh: a.fresh,
         clean: root.as_deref(),
+        yolo: yolo::resolve(home, a.yolo),
     };
     let spawner: Arc<Spawner> = Arc::new(official_command);
-    match lead::send(home, &req, spawner.as_ref()) {
+    let start = |run_id: &str| -> std::io::Result<()> {
+        proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
+    };
+    match lead::send_with_autorun(home, &req, spawner.as_ref(), &start) {
         Ok(events) => {
             let thread = lead::current_thread(home, project);
             // A turn that ended in lead.error is still on record: the events say what happened.
@@ -239,7 +250,8 @@ fn dispatch(home: &Path, args: &[String]) -> i32 {
         let exe = std::env::current_exe()?;
         proc::spawn_detached(Process::new(exe).args(["_run", run_id])).map(|_| ())
     };
-    match lead::dispatch(home, plan_id, a.mode, &start) {
+    let mode = RunMode { yolo: yolo::resolve(home, a.yolo), ..a.mode };
+    match lead::dispatch(home, plan_id, mode, &start) {
         Ok(done) => {
             println!("{}", json!(done));
             0
@@ -260,4 +272,13 @@ fn stop(home: &Path, args: &[String]) -> i32 {
     let stopped = lead::stop(home, a.project.as_deref());
     println!("{}", json!({ "stopped": stopped }));
     0
+}
+
+fn stop_all(home: &Path, args: &[String]) -> i32 {
+    let a = match parse(args) { Ok(a) => a, Err(e) => return fail(&e) };
+    let Some(project) = a.project.as_deref() else { return fail("--project <폴더>가 필요합니다") };
+    match lead::stop_all(home, project) {
+        Ok(stopped) => { println!("{}", json!({ "stopped": stopped })); 0 },
+        Err(error) => fail(&error),
+    }
 }

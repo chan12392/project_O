@@ -2,7 +2,7 @@ import { Bot, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { updateSettings, useSettings } from "../../../data/settings.ts";
-import { BUDGET_PERCENTS, type Backend, type BudgetPercent, type BudgetReport } from "../../../platform/backend/index.ts";
+import { BUDGET_PERCENTS, type Backend, type BudgetPercent, type BudgetReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SubHeading, Switch } from "../../../ui/controls.tsx";
 import { AgentList, useAgents } from "../AgentSetup.tsx";
 import { Path, Rows, Section, type SettingsSectionDef } from "../Section.tsx";
@@ -46,6 +46,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           control={null}
         />
         <BudgetRows api={api} />
+        <YoloRows api={api} />
       </Rows>
       <div>
         <div className="flex items-end justify-between gap-3">
@@ -66,6 +67,40 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
       </div>
     </Section>
   );
+}
+
+function YoloRows({ api }: { api: Backend }) {
+  const [report, setReport] = useState<YoloReport>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void api.yolo().then(setReport, (e) => setError(String(e))); }, [api]);
+  const save = async (change: YoloChange) => {
+    setBusy(true);
+    try { setReport(await api.setYolo(change)); setError(""); }
+    catch (e) { setError(`저장하지 못했습니다: ${String(e)}`); }
+    finally { setBusy(false); }
+  };
+  return <>
+    <SettingsRow id="yolo-label" label="YOLO 모드" description={<>
+      총괄과 카드가 승인 없이 파일을 고치고 명령을 실행합니다. 하루 예산도 켜져 있으면 조건에 맞는 계획은 자동 실행합니다.
+      같은 Windows 사용자 권한에서는 에이전트가 실행 표식을 지우거나 별도 프로세스를 이용해 직접 전달 제한을 우회할 수 있습니다.
+      {error && <span role="alert" className="block text-destructive">{error}</span>}
+    </>} control={<Switch checked={report?.enabled ?? false} disabled={!report || busy} labelledBy="yolo-label" onChange={(enabled) => {
+      if (!enabled || window.confirm("YOLO를 켜면 승인 없이 파일 수정과 명령 실행이 가능합니다. 하루 예산이 켜져 있으면 계획이 자동 실행될 수 있습니다. 켜시겠습니까?")) void save({ enabled });
+    }} />} />
+    {report && ([
+      ["maxCards", "자동 실행 카드 수", 1, 6],
+      ["perHour", "시간당 자동 실행 횟수", 1, 6],
+      ["dedupeMinutes", "같은 계획 대기 시간(분)", 10, 120],
+    ] as const).map(([key, label, min, max]) => <SettingsRow key={key} label={label} description={`${min}–${max} 사이 정수`} control={
+      <input aria-label={label} type="number" min={min} max={max} step={1} key={`${key}-${report.autoRun[key]}`} defaultValue={report.autoRun[key]} disabled={busy}
+        className="w-20 rounded border bg-background px-2 py-1 text-sm focus-ring" onBlur={(e) => {
+          const value = e.currentTarget.valueAsNumber;
+          if (!Number.isInteger(value) || value < min || value > max) { setError(`${label}: ${min}–${max} 사이 정수를 입력하세요`); e.currentTarget.value = String(report.autoRun[key]); return; }
+          if (value !== report.autoRun[key]) void save({ [key]: value });
+        }} />
+    } />)}
+  </>;
 }
 
 /**

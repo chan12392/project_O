@@ -56,12 +56,12 @@ static BYPASS_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
 });
 
 /// Files that may spell the bypass switches, and only those (every other rule still applies to
-/// them): the provider files that launch a CLI in YOLO mode, their test, and AGENTS.md, which
-/// describes them (docs/ is allowed whole above). Agent shell commands, plans, team messages
+/// them): the provider files that launch a CLI in YOLO mode and their test (docs/ is allowed
+/// whole above). Agent shell commands, plans, team messages
 /// and every other file are still checked. Changing this list is a shared-boundary change
 /// (ADR-0014).
 static BYPASS_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
-    [r"^crates/o-core/src/providers/[^/]+\.rs$", r"^crates/o-core/tests/providers\.rs$", r"^AGENTS\.md$"]
+    [r"^crates/o-core/src/providers/[^/]+\.rs$", r"^crates/o-core/tests/providers\.rs$"]
         .iter()
         .map(|p| Regex::new(p).unwrap())
         .collect()
