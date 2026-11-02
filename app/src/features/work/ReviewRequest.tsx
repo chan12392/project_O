@@ -1,5 +1,5 @@
-import { Bot, LoaderCircle } from "lucide-react";
-import { useId, useState } from "react";
+import { Bot, GitPullRequest, LoaderCircle, X } from "lucide-react";
+import { useId, useRef, useState } from "react";
 
 import type { CardView } from "../../../../src/core/snapshot.ts";
 import { PR_SELECTOR, backend } from "../../platform/backend/index.ts";
@@ -35,7 +35,7 @@ function useReviewRequest(project: string) {
 function StatusLine({ status }: { status: Status }) {
   const text = status.kind === "busy" ? "PR을 읽고 검토 카드를 보내는 중…" : status.kind === "idle" ? "" : status.text;
   return (
-    <span role="status" className={`min-w-0 text-2xs [overflow-wrap:anywhere] ${status.kind === "error" ? "text-red-400" : "text-muted-foreground"}`}>
+    <span role="status" className={`min-w-0 text-2xs [overflow-wrap:anywhere] ${status.kind === "error" ? "text-destructive" : "text-muted-foreground"}`}>
       {text}
     </span>
   );
@@ -61,13 +61,33 @@ export function ReviewButton({ project, pr }: { project: string; pr: string }) {
   );
 }
 
-/** For PRs people opened: type the number (or address) and an agent reviews it in this project's folder. */
+/**
+ * For PRs people opened: type the number (or address) and an agent reviews it in this
+ * project's folder. Folded to one button until asked for: most projects (and every
+ * folder that is no git repository) never need it, so it takes no room above the view.
+ */
 export function ReviewRequestForm({ project }: { project: string }) {
   const id = useId();
+  const [open, setOpen] = useState(false);
   const [pr, setPr] = useState("");
   const { status, request } = useReviewRequest(project);
   const value = pr.trim().replace(/\/$/, "");
   const valid = PR_SELECTOR.test(value);
+  const toggle = useRef<HTMLButtonElement>(null);
+  const close = () => {
+    setOpen(false);
+    requestAnimationFrame(() => toggle.current?.focus());
+  };
+  if (!open) {
+    return (
+      <div className="mb-3 flex justify-end">
+        <button ref={toggle} type="button" onClick={() => setOpen(true)} aria-expanded={false} className={BUTTON}>
+          <GitPullRequest className="size-3" aria-hidden="true" />
+          사람이 올린 PR 검토 맡기기
+        </button>
+      </div>
+    );
+  }
   return (
     <form
       className="mb-4 flex flex-col gap-1.5 rounded-md border bg-card p-3"
@@ -76,9 +96,20 @@ export function ReviewRequestForm({ project }: { project: string }) {
         if (valid && status.kind !== "busy") void request(value);
       }}
     >
-      <label htmlFor={id} className="text-xs font-medium">
-        사람이 올린 PR을 에이전트에게 검토 맡기기
-      </label>
+      <span className="flex items-start justify-between gap-2">
+        <label htmlFor={id} className="text-xs font-medium">
+          사람이 올린 PR을 에이전트에게 검토 맡기기
+        </label>
+        <button
+          type="button"
+          onClick={close}
+          disabled={status.kind === "busy"}
+          aria-label="PR 검토 맡기기 닫기"
+          className="-mt-1 -mr-1 grid size-6 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-ring disabled:opacity-50"
+        >
+          <X className="size-3.5" aria-hidden="true" />
+        </button>
+      </span>
       <span className="text-2xs text-muted-foreground">이 프로젝트 폴더의 저장소에서 gh로 PR을 읽고, 검토문을 PR 댓글로 남깁니다. 승인·병합은 하지 않습니다.</span>
       <span className="flex items-center gap-2">
         <input
@@ -86,10 +117,11 @@ export function ReviewRequestForm({ project }: { project: string }) {
           value={pr}
           onChange={(e) => setPr(e.target.value)}
           placeholder="PR 번호 또는 주소"
+          autoFocus
           inputMode="text"
           autoComplete="off"
           aria-invalid={pr.trim() !== "" && !valid}
-          className="h-7 w-full min-w-0 max-w-64 rounded-md border bg-background px-2 text-xs focus-ring aria-invalid:border-red-400"
+          className="h-7 w-full min-w-0 max-w-64 rounded-md border bg-background px-2 text-xs focus-ring aria-invalid:border-destructive"
         />
         <button type="submit" disabled={!valid || status.kind === "busy"} className={`${BUTTON} h-7`}>
           {status.kind === "busy" ? <LoaderCircle className="size-3 animate-spin" aria-hidden="true" /> : <Bot className="size-3" aria-hidden="true" />}
