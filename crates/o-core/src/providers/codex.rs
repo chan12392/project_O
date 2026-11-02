@@ -67,7 +67,9 @@ impl Provider for Codex {
         let mut tail = vec!["--json".to_string()];
         tail.extend(opt("-m", turn.model));
         tail.extend(opt("-c", effort.as_deref()));
-        let mut args = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check"]);
+        // A trusted project's `.codex/` may add hooks; `--disable hooks` (`-c features.hooks=false`,
+        // `codex exec --help`) outranks every config layer, so none runs before a plan is approved.
+        let mut args = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
         match turn.session.filter(|s| !s.is_empty()) {
             Some(session) => {
                 args.push("resume".into());

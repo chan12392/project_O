@@ -21,6 +21,10 @@ pub struct Claude;
 /// The lead's whole tool set: reading files and searching them.
 const LEAD_TOOLS: &str = "Read,Grep,Glob";
 
+/// The lead run's own settings: no hook runs (project settings could turn them back on,
+/// which `--setting-sources user` keeps them from doing).
+const LEAD_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+
 /// The model aliases `claude --model` documents.
 const LEAD_MODELS: [(&str, &str); 4] = [("fable", "Fable"), ("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")];
 
@@ -59,9 +63,14 @@ impl Provider for Claude {
     /// Only the read tools exist (`--tools`), they are the only ones allowed without a prompt,
     /// the permission mode is the default one (a headless run denies anything else), and no
     /// MCP server is loaded. The attachment folder is added for reading.
+    /// `claude -p` never asks to trust a folder, yet runs the hooks in its settings files
+    /// (code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder), so the
+    /// project's settings are not read (`--setting-sources user`; the clean profile's
+    /// settings are the user ones) and hooks are off for the run, first turn or resumed.
     fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
         let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default"]);
         args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
+        args.extend(strings(&["--setting-sources", "user", "--settings", LEAD_SETTINGS]));
         args.extend(opt("--resume", turn.session));
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));

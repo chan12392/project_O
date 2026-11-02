@@ -17,11 +17,21 @@ function oBinary(): string {
   return existsSync(built) ? built : "o";
 }
 
+/**
+ * Why `o` failed, for the page: its stderr, else the end of its stdout with the bare error
+ * (an `o` too old for a command prints its usage to stdout and exits 1, which said nothing).
+ */
+export function failureText(stderr: string, stdout: string, message: string): string {
+  if (stderr.trim()) return stderr.trim();
+  const tail = stdout.trim().split(/\r?\n/).slice(-4).join("\n");
+  return tail ? `${message}\n${tail}` : message;
+}
+
 /** Runs `o` with fixed arguments (no shell) and returns its stdout. */
 function o(args: string[], timeout = 60_000, cwd?: string): Promise<string> {
   return new Promise((resolve, reject) =>
     execFile(oBinary(), args, { windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout, cwd }, (error, stdout, stderr) =>
-      error ? reject(new Error(stderr.trim() || error.message)) : resolve(stdout),
+      error ? reject(new Error(failureText(stderr, stdout, error.message))) : resolve(stdout),
     ),
   );
 }
@@ -42,24 +52,28 @@ function oWithInput(args: string[], input: Buffer, timeout: number): Promise<str
     child.on("close", (code) => {
       clearTimeout(timer);
       const stdout = Buffer.concat(out).toString("utf8");
-      const stderr = Buffer.concat(err).toString("utf8").trim();
+      const stderr = Buffer.concat(err).toString("utf8");
       if (code === 0) resolve(stdout);
-      else reject(Object.assign(new Error(stderr || `o exited with ${code}`), { code }));
+      else reject(Object.assign(new Error(failureText(stderr, stdout, `o exited with ${code}`)), { code }));
     });
     child.stdin.end(input);
   });
 }
 
-/** A request body up to `limit` bytes; larger ones are refused before they are read in full. */
-function body(req: IncomingMessage, limit: number): Promise<Buffer> {
+/**
+ * A request body up to `limit` bytes. A larger one is refused as soon as it passes the limit,
+ * and the rest is read and dropped rather than cutting the connection: cut, the page saw
+ * "Failed to fetch" instead of the 413 that says why.
+ */
+export function body(req: IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const parts: Buffer[] = [];
     let size = 0;
     req.on("data", (b: Buffer) => {
       size += b.length;
       if (size > limit) {
+        parts.length = 0;
         reject(new Error("첨부 파일은 하나에 10MB까지입니다"));
-        req.destroy();
       } else parts.push(b);
     });
     req.on("end", () => resolve(Buffer.concat(parts)));
@@ -104,8 +118,8 @@ const BUDGET_PERCENT = /^1[234]$/;
 
 /** npm installs can take minutes. */
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
-/** A lead turn reads the project before it answers. */
-const LEAD_TIMEOUT_MS = 15 * 60_000;
+/** A lead turn reads the project before it answers; `o` ends it at 15 minutes (lead::TURN_LIMIT) and records why, so this waits a little longer. */
+const LEAD_TIMEOUT_MS = 16 * 60_000;
 /** One attachment (10MB), with room for nothing else. */
 const ATTACH_LIMIT = 10 * 1024 * 1024;
 /** Lead ids, efforts and plan ids as `o lead` takes them; it checks every one again. */
@@ -124,6 +138,14 @@ function cachedModels(provider: string): Promise<string> {
     leadModels.set(provider, { at: Date.now(), out });
     return out;
   });
+}
+
+/**
+ * `o lead stop` for one project; none without an existing absolute folder. Without
+ * `--project`, `o lead stop` stops every project's lead, which a page never asks for.
+ */
+export function leadStopArgs(project: string): string[] | undefined {
+  return ABSOLUTE.test(project) && existsSync(project) ? ["lead", "stop", "--project", project] : undefined;
 }
 
 /** The lead chat's twins of the Tauri lead_* commands (app/src-tauri/src/commands/lead.rs). */
@@ -152,7 +174,12 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
   if (path === "/lead/stop") {
-    run(o(["lead", "stop", ...(projectOk ? ["--project", project] : [])]));
+    const args = leadStopArgs(project);
+    if (!args) {
+      fail(400, "중지할 총괄의 프로젝트 폴더가 필요합니다");
+      return true;
+    }
+    run(o(args));
     return true;
   }
   if (path === "/lead/dispatch") {
