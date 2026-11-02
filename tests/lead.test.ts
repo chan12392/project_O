@@ -9,6 +9,7 @@ import {
   LEAD_VIEW,
   MODEL_ID,
   attachProblem,
+  canLead,
   draftKey,
   draftOf,
   editDraft,
@@ -247,4 +248,17 @@ test("a send that fails gives back the message and its attachments, not over a n
   drafts = restoreDraft(editDraft(sent, key, () => ({ text: "새 글" })), key, draft);
   assert.equal(draftOf(drafts, key).text, "새 글");
   assert.deepEqual(draftOf(drafts, key).files, files);
+});
+
+test("onboarding and the composer agree on which agents can lead", () => {
+  const agent = (id: string, installed: boolean, loggedIn: boolean | null) => ({ id, installed, loggedIn });
+  assert.ok(canLead(agent("claude", true, true)));
+  // agy reports no sign-in state when it cannot read its quota: unknown is not "signed out".
+  assert.ok(canLead(agent("agy", true, null)));
+  assert.ok(!canLead(agent("codex", true, false)));
+  assert.ok(!canLead(agent("claude", false, null)));
+  assert.ok(!canLead(agent("openclaw", true, true)));
+  // Both screens decide with this one rule (they used two, so onboarding said "ready" while the composer could not send).
+  const app = (path: string) => readFileSync(new URL(`../app/src/features/${path}`, import.meta.url), "utf8");
+  for (const screen of ["chat/Composer.tsx", "settings/AgentSetup.tsx"]) assert.match(app(screen), /\bcanLead\b/, screen);
 });

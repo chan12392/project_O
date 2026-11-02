@@ -191,6 +191,15 @@ export function isLeadProvider(id: string): id is LeadProvider {
   return id in LEAD_EFFORTS;
 }
 
+/**
+ * Whether an agent can lead now: an agent that leads, installed, and not known to be signed
+ * out (a CLI that cannot tell, like agy without its quota, may still be tried: it says so
+ * if it is not signed in). Onboarding's "시작하기" and the composer use this one rule.
+ */
+export function canLead(agent: { id: string; installed: boolean; loggedIn: boolean | null }): boolean {
+  return agent.installed && agent.loggedIn !== false && isLeadProvider(agent.id);
+}
+
 /** One model a lead may run with (`o lead models`): the id passed as `--model`, and its name. */
 export interface LeadModel {
   id: string;

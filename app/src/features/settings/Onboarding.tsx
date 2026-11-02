@@ -60,7 +60,7 @@ export function Onboarding({ api, onDone, onSettings }: { api: Backend; onDone: 
         </div>
         {!agents.ready && (
           <p id="onboarding-start-hint" className="mt-2 text-right text-2xs text-muted-foreground">
-            에이전트를 하나 이상 연결하면 시작할 수 있습니다.
+            총괄을 맡을 에이전트(Claude Code·Codex·Antigravity)를 하나 이상 연결하면 시작할 수 있습니다.
           </p>
         )}
       </div>

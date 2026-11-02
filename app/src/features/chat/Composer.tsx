@@ -9,6 +9,7 @@ import {
   LEAD_PROVIDERS,
   MODEL_ID,
   attachProblem,
+  canLead,
   draftKey,
   draftOf,
   editDraft,
@@ -50,13 +51,13 @@ function useLeadAgents(api: Backend, clean: boolean) {
       current = false;
     };
   }, [api, clean]);
-  const usable = (agents ?? []).filter((a) => a.installed && a.loggedIn === true && isLeadProvider(a.id));
-  /** Why a lead agent cannot be picked now; the menu shows it on the disabled row. */
+  const usable = (agents ?? []).filter(canLead);
+  /** Why a lead agent cannot be picked now (on the disabled row), or what to know about a usable one. */
   const why = (id: LeadProvider): string | undefined => {
     const status = agents?.find((a) => a.id === id);
     if (!status?.installed) return "설치되지 않았습니다 · 설정 → 에이전트";
     if (status.loggedIn === false) return "로그인이 필요합니다 · 설정 → 에이전트";
-    if (status.loggedIn !== true) return "로그인 상태를 확인하지 못했습니다";
+    if (status.loggedIn !== true) return "로그인 상태를 CLI가 알려 주지 않습니다";
     return undefined;
   };
   return { checking: agents === undefined, usable: usable.map((a) => a.id as LeadProvider), why };
@@ -371,7 +372,7 @@ export function Composer({
                     value: agent,
                     onChoose: (v) => isLeadProvider(v) && setPicked({ agent: v, model: settings.leadModels[v] ?? "", effort: effortFor(v, effort) }),
                     // Every agent that can lead is listed; one that cannot be used now says why.
-                    choices: LEAD_PROVIDERS.map((id) => ({ value: id, label: LEAD_NAME[id], disabled: !usable.includes(id), hint: usable.includes(id) ? undefined : why(id) })),
+                    choices: LEAD_PROVIDERS.map((id) => ({ value: id, label: LEAD_NAME[id], disabled: !usable.includes(id), hint: why(id) })),
                   },
                   {
                     label: "모델",

@@ -1,6 +1,7 @@
 import { Check, CircleAlert, CircleDashed, Download, ExternalLink, LogIn, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
+import { canLead } from "../../../../src/core/lead.ts";
 import type { ActionResult, AgentId, AgentStatus, Backend } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 
@@ -16,10 +17,8 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Installed and not known to be signed out: Project O can hand it cards. */
-export function usable(agent: AgentStatus): boolean {
-  return agent.installed && agent.loggedIn !== false;
-}
+/** Can lead now (installed, a lead agent, not known to be signed out): the composer's rule too. */
+export const usable = (agent: AgentStatus): boolean => canLead(agent);
 
 /**
  * The agent CLIs' install and sign-in state, through `backend()`: checked on
@@ -79,7 +78,7 @@ export function useAgents(api: Backend, clean: boolean) {
     install: (id: AgentId) => act(id, "install"),
     login: (id: AgentId) => act(id, "login"),
     openExternal: (url: string) => void api.openExternal(url).catch(() => window.open(url, "_blank", "noopener")),
-    /** At least one agent can take cards. */
+    /** At least one agent can lead (the composer can send). */
     ready: Boolean(agents?.some(usable)),
   };
 }
