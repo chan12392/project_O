@@ -101,6 +101,7 @@
 | Codex | 유료·원격 호스팅 앱에서 구독 사용 (별도 신청 필요) | 로컬 `codex app-server` (공식 클라이언트 프로토콜) |
 
 - 구독 한도는 일반적인 개인 사용을 전제로 한다. 계정을 돌려 가며 한도를 피하는 용도로 쓰지 않는다.
+- 카드 CLI를 띄울 때 API 키 환경변수(Claude `ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`, Codex `CODEX_API_KEY`)는 물려주지 않는다. 헤드리스 실행에서는 이 변수가 각 CLI의 로그인보다 먼저 쓰여서, PC에 남은 키가 있으면 구독 대신 API로 과금된다([Claude Code 인증 우선순위](https://code.claude.com/docs/en/authentication), Codex `codex-rs/login/src/auth/manager.rs`). 구현: 각 `crates/o-core/src/providers/<cli>.rs`의 `Provider::api_key_vars`, 실행기 `run/runner.rs`가 `LaunchSpec::env_remove`로 뺀다. 카드 밖에서 평소 환경으로 CLI를 부르는 로그인 상태 확인(`agents`)과 Codex 사용량 조회도 같은 변수를 빼서 카드가 쓸 로그인을 본다(`providers::without_api_keys`). 깨끗한 프로필은 환경변수 허용 목록이라 원래 들어가지 않는다.
 - 총괄 에이전트가 작업을 나눠 다른 CLI에 넘기는 것은 허용 범위다. 각 단계가 공식 CLI 자신의 로그인으로 실행되기 때문이다. 단, 사람이 보지 않는 대량·상시 자동 실행은 하지 않는다 — 실행 동시성과 하루 작업 수에 상한을 둔다. Anthropic 소비자 약관은 API 키나 명시 허용 외의 자동화 접근을 금지하며, `claude -p`는 공식 도움말이 허용한 경로다.
 - 출처: [Claude Code 법률·준수](https://code.claude.com/docs/en/legal-and-compliance), [Claude 플랜으로 Agent SDK 사용](https://support.claude.com/en/articles/15036540), [Gemini CLI FAQ](https://geminicli.com/docs/resources/faq/), [Gemini CLI 헤드리스](https://www.geminicli.com/docs/cli/headless), [OpenAI 토큰 공유](https://developers.openai.com/siwc/token-sharing-open-source)
 - 자동 차단 구현: `crates/o-guard`(에이전트 훅·git 훅·CI), `crates/o-core/src/policy.rs`(O CLI). 목록은 AGENTS.md "프로바이더 정책 자동 차단".

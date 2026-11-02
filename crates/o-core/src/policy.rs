@@ -10,11 +10,11 @@ use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::js::{js_len, parse_time};
-use crate::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
+use crate::sys::js::{js_len, parse_time};
+use crate::run::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
 
 pub struct Limits {
     pub max_cards_per_plan: usize,
@@ -45,17 +45,18 @@ pub const LIMITS: Limits = Limits {
     default_cooldown_ms: 60 * 60 * 1000,
 };
 
-const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+/// The effort ladder, lowest first (the daily budget lowers along it, see `budget`).
+pub const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Violation {
     pub rule: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_id: Option<String>,
 }
 
@@ -66,6 +67,8 @@ pub struct PolicyContext {
     pub started_today: usize,
     /// Provider → ISO time until which it may not be used.
     pub cooldowns: HashMap<ProviderId, String>,
+    /// Provider → why it spent today's usage budget (ADR-0004, see `budget`).
+    pub over_budget: HashMap<ProviderId, String>,
     pub project_exists: Box<dyn Fn(&str) -> bool>,
     /// Whether the folder is a project_O protected-branch (test_1/test_2/main) mirror checkout.
     pub is_mirror: Box<dyn Fn(&str) -> bool>,
@@ -73,6 +76,9 @@ pub struct PolicyContext {
     pub o_home: String,
     /// The user's home: a project may be inside it, never be it or above it.
     pub user_home: String,
+    /// The folder a path names on disk (links, junctions and short names
+    /// resolved), or the path itself when it cannot be resolved.
+    pub resolve: Box<dyn Fn(&str) -> String>,
 }
 
 pub struct Checked {
@@ -80,11 +86,42 @@ pub struct Checked {
     pub violations: Vec<Violation>,
 }
 
-/// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any case).
+/// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any
+/// case) after `.` and `..` are resolved, so `C:/Users/me/x/..` is `C:/Users/me`.
 fn within(path: &str, dir: &str) -> bool {
-    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
-    let (p, d) = (norm(path), norm(dir));
+    let (p, d) = (lexical(path), lexical(dir));
     p == d || p.starts_with(&format!("{d}/"))
+}
+
+/// A path with every slash as `/`, in lower case, with `.` and `..` resolved by
+/// text alone: no disk access, and `..` never climbs above the drive or the root.
+fn lexical(path: &str) -> String {
+    let lowered = path.replace('\\', "/").to_lowercase();
+    let mut parts: Vec<&str> = Vec::new();
+    for (i, part) in lowered.split('/').enumerate() {
+        match part {
+            "" if i > 0 => {}
+            "." => {}
+            ".." => {
+                // The first part is the root: "" for "/…" or a drive such as "c:".
+                if parts.len() > 1 || parts.first().is_some_and(|p| !p.is_empty() && !p.ends_with(':')) {
+                    parts.pop();
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
+
+/// A card may write inside its project: O's own state and the home folder (CLI
+/// settings) must stay out of reach, however either path is spelled.
+fn reaches_protected(project: &str, ctx: &PolicyContext) -> bool {
+    let o_homes = [ctx.o_home.clone(), (ctx.resolve)(&ctx.o_home)];
+    let user_homes = [ctx.user_home.clone(), (ctx.resolve)(&ctx.user_home)];
+    [project.to_string(), (ctx.resolve)(project)]
+        .iter()
+        .any(|p| o_homes.iter().any(|h| within(p, h) || within(h, p)) || user_homes.iter().any(|u| within(u, p)))
 }
 
 fn is_absolute(path: &str) -> bool {
@@ -116,27 +153,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
         found.add("plan-shape", "title이 필요합니다", None);
     }
     let project = object.get("project").and_then(Value::as_str);
-    match project {
-        Some(project) if is_absolute(project) => {
-            if !(ctx.project_exists)(project) {
-                found.add("plan-shape", format!("project 폴더가 없습니다: {project}"), None);
-            } else if (ctx.is_mirror)(project) {
-                found.add(
-                    "read-only-project",
-                    format!("{project}는 project_O의 보호 브랜치(test_1·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
-                    None,
-                );
-            } else if within(project, &ctx.o_home) || within(&ctx.o_home, project) || within(&ctx.user_home, project) {
-                // A card may write inside its project: O's own state and the home folder (CLI settings) must stay out of reach.
-                found.add(
-                    "protected-project",
-                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
-                    None,
-                );
-            }
-        }
-        _ => found.add("plan-shape", "project는 절대 경로여야 합니다", None),
-    }
+    found.0.extend(check_project(project, ctx));
     let cards = match object.get("cards").and_then(Value::as_array) {
         Some(cards) if !cards.is_empty() => cards,
         _ => {
@@ -172,6 +189,9 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
                 );
             }
         }
+        if let Some(reason) = ctx.over_budget.get(&card.provider) {
+            found.add("daily-budget", reason.clone(), Some(&card.id));
+        }
     }
 
     let active = |p: ProviderId| ctx.active_by_provider.get(&p).copied().unwrap_or(0);
@@ -203,6 +223,34 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     }
     let plan = Plan { title: title.unwrap_or_default().trim().to_string(), project: project.unwrap_or_default().to_string(), cards: valid };
     Checked { plan: Some(plan), violations: Vec::new() }
+}
+
+/// Whether a folder may be a project: absolute, existing, not a protected mirror, and
+/// neither inside nor around O's state folder or the home folder. A plan's check and the
+/// lead chat (which reads the project) both use it.
+pub fn check_project(project: Option<&str>, ctx: &PolicyContext) -> Vec<Violation> {
+    let mut found = Found::default();
+    match project {
+        Some(project) if is_absolute(project) => {
+            if !(ctx.project_exists)(project) {
+                found.add("plan-shape", format!("project 폴더가 없습니다: {project}"), None);
+            } else if (ctx.is_mirror)(project) {
+                found.add(
+                    "read-only-project",
+                    format!("{project}는 project_O의 보호 브랜치(test_1·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
+                    None,
+                );
+            } else if reaches_protected(project, ctx) {
+                found.add(
+                    "protected-project",
+                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
+                    None,
+                );
+            }
+        }
+        _ => found.add("plan-shape", "project는 절대 경로여야 합니다", None),
+    }
+    found.0
 }
 
 fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {

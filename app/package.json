@@ -1,10 +1,11 @@
 {
   "name": "project-o-app",
   "private": true,
-  "version": "0.0.1",
+  "version": "0.3.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "sidecar": "node ../scripts/prepare-sidecar.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "check": "tsc --noEmit",

@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Duration as Span, Utc};
-use o_core::events::{CardStatus, OEvent};
-use o_core::js::{iso, parse_time};
-use o_core::plan::{Card, Plan, ProviderId};
+use o_core::run::events::{CardStatus, OEvent};
+use o_core::sys::js::{iso, parse_time};
+use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
-use o_core::runner::{run_plan, Spawner};
-use o_core::store::{
+use o_core::run::runner::{run_plan, Spawner};
+use o_core::run::store::{
     active_markers, clear_active, cooldown_times, create_run, mark_active, read_events, record_start, request_stop, set_cooldown, started_on,
     ActiveMarker,
 };
@@ -40,13 +40,17 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 6] = [
+    let tests: [(&str, fn()); 10] = [
+        ("behind today's budget, cards start with lower effort and say so", budget_lowers_effort),
+        ("a provider over today's budget starts no card", budget_over_refuses),
         ("runs cards in parallel, records a limit as a provider cooldown", parallel_and_limit),
         ("a card whose provider is cooling down ends without launching", cooling_down),
         ("the day's cap is checked again when a card starts, not only at dispatch", daily_cap_at_start),
         ("a stop request ends the cards still waiting", stop_request),
         ("a card waits in the queue while its provider is full, then runs", queue_then_run),
         ("a clean run starts its cards with only the clean environment", clean_run),
+        ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
+        ("a card's CLI never inherits the API key variables it prefers over its sign-in", api_keys_dropped),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -227,4 +231,137 @@ fn clean_run() {
     assert!(get("PATH").is_some());
     assert!(get("ORCA_TERMINAL_ID").is_none() && get("BEAKHO_RELEASE").is_none());
     assert!(profile.join(".claude").join("settings.json").is_file());
+}
+
+/// One plan with more cards of a provider than its slots: the extra card waits even
+/// while the first ones are still starting (their slot markers not yet written).
+fn same_provider_slots_in_one_plan() {
+    let home = temp_home();
+    let max = LIMITS.max_active_per_provider(ProviderId::Claude);
+    let p = plan((0..=max).map(|i| card(&format!("c{i}"), ProviderId::Claude, "x")).collect());
+    create_run(&home, "r10", &p).unwrap();
+    let inner = quiet();
+    // A slow start (PATH lookup, process creation) leaves the window the runner must not miss.
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        std::thread::sleep(Duration::from_millis(300));
+        inner(spec, cwd)
+    });
+    assert_eq!(run_plan(&home, "r10", &p, None, spawner).unwrap(), CardStatus::Done);
+    let queued = read_events(&home, "r10").iter().filter(|e| matches!(e, OEvent::CardQueued { .. })).count();
+    assert_eq!(queued, 1);
+    assert!(active_markers(&home).is_empty());
+}
+
+/// A key left in the person's environment must not reach the card's CLI, in any case spelling.
+fn api_keys_dropped() {
+    let home = temp_home();
+    let vars = [("ANTHROPIC_API_KEY", "placeholder"), ("anthropic_auth_token", "placeholder"), ("CODEX_API_KEY", "placeholder"), ("ANTHROPIC_API_KEY_HELPER", "kept")];
+    for (name, value) in vars {
+        std::env::set_var(name, value);
+    }
+    let p = plan(vec![card("a", ProviderId::Claude, "x"), card("b", ProviderId::Codex, "y")]);
+    create_run(&home, "r9", &p).unwrap();
+    let dumps = home.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).arg(DUMP_ENV).arg(dumps.join(format!("{}.json", spec.bin)));
+        Ok(command)
+    });
+    // The fake answers in Claude's stream format, so only the Claude card ends done; both dump their environment.
+    run_plan(&home, "r9", &p, None, spawner).unwrap();
+    for (name, _) in vars {
+        std::env::remove_var(name);
+    }
+    assert_eq!(ends_of(&home, "r9").get("a"), Some(&CardStatus::Done));
+    let env_of = |bin: &str| -> BTreeMap<String, String> { serde_json::from_str(&std::fs::read_to_string(home.join(format!("{bin}.json"))).unwrap()).unwrap() };
+    let has = |env: &BTreeMap<String, String>, name: &str| env.keys().any(|k| k.eq_ignore_ascii_case(name));
+    let (claude, codex) = (env_of("claude"), env_of("codex"));
+    assert!(!has(&claude, "ANTHROPIC_API_KEY") && !has(&claude, "ANTHROPIC_AUTH_TOKEN"));
+    assert!(has(&claude, "ANTHROPIC_API_KEY_HELPER") && has(&claude, "CODEX_API_KEY") && has(&claude, "PATH"));
+    assert!(!has(&codex, "CODEX_API_KEY") && has(&codex, "ANTHROPIC_API_KEY"));
+    assert_eq!(claude.get("O_CARD_ID").map(String::as_str), Some("a"));
+}
+
+use std::sync::Mutex;
+
+use o_core::usage::budget::{local_day_of, record};
+use o_core::usage::UsageWindow;
+
+/// Codex's weekly window: 20% at the start of today, `today` more now.
+fn seed_codex_spent(home: &std::path::Path, today: f64) {
+    let now = Utc::now();
+    let resets_at = iso(now + Span::days(3));
+    let weekly = |used: f64| UsageWindow { provider: ProviderId::Codex, window: "seven_day".into(), group: None, used, resets_at: resets_at.clone() };
+    record(home, &[weekly(0.20)], local_day_of(now).start - Span::minutes(1)).unwrap();
+    record(home, &[weekly(0.20 + today)], now).unwrap();
+}
+
+fn budget_lowers_effort() {
+    let home = temp_home();
+    // 12.99 of 13 points spent: far behind pace until the last minutes of the day.
+    seed_codex_spent(&home, 0.1299);
+    let mut p = plan(vec![card("hi", ProviderId::Codex, "x"), card("plain", ProviderId::Codex, "y"), card("low", ProviderId::Codex, "z"), card("other", ProviderId::Claude, "w")]);
+    p.cards[0].effort = Some("xhigh".into());
+    p.cards[2].effort = Some("low".into());
+    p.cards[3].effort = Some("high".into());
+    create_run(&home, "r7", &p).unwrap();
+    let launched = Arc::new(Mutex::new(BTreeMap::<String, Vec<String>>::new()));
+    let log = Arc::clone(&launched);
+    // Claude reports its windows in the stream; the runner keeps them as budget snapshots.
+    let inner = fake_cli(|spec| {
+        let mut lines = vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#];
+        if spec.bin == "claude" {
+            lines.insert(0, r#"{"type":"rate_limit_event","rate_limit_info":{"status":"allowed","unifiedWindows":{"seven_day":{"utilization":0.31,"resetsAt":4102444800}}}}"#);
+        }
+        lines
+    });
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        log.lock().unwrap().insert(spec.env["O_CARD_ID"].clone(), spec.args.clone());
+        inner(spec, cwd)
+    });
+    run_plan(&home, "r7", &p, None, spawner).unwrap();
+
+    let adjusted: BTreeMap<String, (Option<String>, String)> = read_events(&home, "r7")
+        .into_iter()
+        .filter_map(|e| match e {
+            OEvent::CardBudget { card_id, effort_from, effort_to, spent, allowance, .. } => {
+                assert!((spent - 12.99).abs() < 0.01 && allowance == 13.0, "{spent}/{allowance}");
+                Some((card_id, (effort_from, effort_to)))
+            }
+            _ => None,
+        })
+        .collect();
+    // Two steps down, never below low; Claude has no weekly reading and is left alone.
+    assert_eq!(adjusted, BTreeMap::from([("hi".into(), (Some("xhigh".into()), "medium".into())), ("plain".into(), (None, "low".into()))]));
+    let launched = launched.lock().unwrap();
+    let has = |id: &str, arg: &str| launched[id].iter().any(|a| a == arg);
+    assert!(has("hi", "model_reasoning_effort=medium") && has("plain", "model_reasoning_effort=low") && has("low", "model_reasoning_effort=low"));
+    assert!(has("other", "high"));
+    // The plan stays as written; the run's view shows the effort the card ran with.
+    assert_eq!(o_core::run::store::read_plan(&home, "r7").unwrap()["cards"][0]["effort"], "xhigh");
+    let view = o_core::run::snapshot::snapshot(&read_events(&home, "r7")).unwrap();
+    let hi = view.cards.iter().find(|c| c.id == "hi").unwrap();
+    assert_eq!(hi.effort.as_deref(), Some("medium"));
+    assert!(hi.log.iter().any(|l| l.kind == o_core::run::snapshot::LogKind::Budget && l.text.contains("xhigh → medium")));
+    let claude: Vec<f64> = o_core::usage::budget::weekly_snapshots(&home, ProviderId::Claude).unwrap().iter().map(|s| s.used).collect();
+    assert_eq!(claude, [0.31]);
+}
+
+fn budget_over_refuses() {
+    let home = temp_home();
+    seed_codex_spent(&home, 0.14);
+    let p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    create_run(&home, "r8", &p).unwrap();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        seen.store(true, Ordering::SeqCst);
+        inner(spec, cwd)
+    });
+    assert_eq!(run_plan(&home, "r8", &p, None, spawner).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    let refused = read_events(&home, "r8").into_iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("사용 예산을 다 썼습니다")));
+    assert!(refused);
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
 }

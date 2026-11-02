@@ -2,12 +2,18 @@
 name = "project-o"
 description = "project_O desktop app: the React screens on top of o-core, as one project_O.exe."
 edition.workspace = true
-version.workspace = true
+# The desktop app (and its installer) is versioned on its own; the crates follow the workspace.
+version = "0.3.0"
 publish.workspace = true
+default-run = "project-o"
 
 [[bin]]
 name = "project-o"
 path = "src/main.rs"
+
+[[bin]]
+name = "o-uninstall-data"
+path = "src/uninstall.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -17,3 +23,5 @@ o-core = { path = "../../crates/o-core" }
 tauri = { version = "2", features = [] }
 serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
+chrono.workspace = true
+regex.workspace = true

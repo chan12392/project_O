@@ -1,0 +1,314 @@
+import { ArrowUp, FileText, Image as ImageIcon, LoaderCircle, Plus, ShieldCheck, Square, X } from "lucide-react";
+import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type RefObject } from "react";
+
+import { ATTACH_ACCEPT, EFFORT_WORD, LEAD_EFFORTS, attachProblem, effortFor, fileSize, isLeadProvider, type LeadProvider } from "../../../../src/core/lead.ts";
+import { updateSettings, useSettings } from "../../data/settings.ts";
+import type { LeadState } from "../../data/useLead.ts";
+import type { AgentStatus, Backend, LeadAttachment } from "../../platform/backend/index.ts";
+import { ChoiceMenu } from "../../ui/Menu.tsx";
+
+const MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
+const SEND_KEY = MAC ? "⌘Enter" : "Ctrl+Enter";
+const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
+const LEAD_NAME: Record<LeadProvider, string> = { claude: "Claude Code", codex: "Codex" };
+
+/** One file in the composer: uploading, saved for the thread, or refused. */
+interface Pending {
+  key: string;
+  name: string;
+  size: number;
+  image: boolean;
+  saved?: LeadAttachment;
+  error?: string;
+}
+
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** The agents that may lead right now: installed, signed in, and able to run read-only with resume. */
+function useLeadAgents(api: Backend, clean: boolean) {
+  const [agents, setAgents] = useState<AgentStatus[]>();
+  useEffect(() => {
+    let current = true;
+    setAgents(undefined);
+    api.agents(clean).then(
+      (list) => current && setAgents(list),
+      () => current && setAgents([]),
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, clean]);
+  const usable = (agents ?? []).filter((a) => a.installed && a.loggedIn === true && isLeadProvider(a.id));
+  return { checking: agents === undefined, usable: usable.map((a) => a.id as LeadProvider) };
+}
+
+/**
+ * The lead chat composer, after Orca's: one box with the attachments, the message, and a
+ * footer — attach and run profile on the left; agent·effort, the busy mark and send (stop
+ * while the lead answers) on the right. Sending goes through `useLead` (ADR-0008).
+ */
+export function Composer({
+  inputRef,
+  api,
+  project,
+  lead,
+  onAgents,
+}: {
+  inputRef: RefObject<HTMLTextAreaElement | null>;
+  api: Backend;
+  project: string | undefined;
+  lead: LeadState;
+  onAgents: () => void;
+}) {
+  const settings = useSettings();
+  const { checking, usable } = useLeadAgents(api, settings.clean);
+  const [text, setText] = useState("");
+  const [files, setFiles] = useState<Pending[]>([]);
+  const [notice, setNotice] = useState<string>();
+  const [picked, setPicked] = useState<{ agent: LeadProvider; effort: string }>();
+  const fileInput = useRef<HTMLInputElement>(null);
+
+  // The message's agent: the one picked here, else Settings → 총괄, else the first that can lead.
+  const agent: LeadProvider | undefined = [picked?.agent, settings.leadAgent, ...usable].find((a): a is LeadProvider => !!a && usable.includes(a));
+  const effort = agent ? effortFor(agent, picked?.agent === agent ? picked.effort : settings.leadEffort) : undefined;
+
+  const uploading = files.some((f) => !f.saved && !f.error);
+  const busy = lead.busy;
+  const blocker = !project
+    ? "프로젝트 폴더를 먼저 정하세요"
+    : !checking && !agent
+      ? "총괄을 맡을 에이전트가 연결되어 있지 않습니다"
+      : uploading
+        ? "첨부를 올리는 중입니다"
+        : undefined;
+  const canSend = Boolean(text.trim()) && !blocker && !busy && Boolean(agent);
+
+  const addFiles = (list: FileList | File[]) => {
+    if (!project) return setNotice("프로젝트 폴더를 먼저 정하세요");
+    let count = files.filter((f) => !f.error).length;
+    const added: Pending[] = [];
+    for (const file of Array.from(list)) {
+      const problem = attachProblem(file.name, file.size, count);
+      const item: Pending = { key: `${file.name}-${file.size}-${Date.now()}-${added.length}`, name: file.name, size: file.size, image: file.type.startsWith("image/"), error: problem };
+      added.push(item);
+      if (problem) continue;
+      count += 1;
+      api.leadAttach(project, file).then(
+        (saved) => setFiles((all) => all.map((f) => (f.key === item.key ? { ...f, saved, image: saved.image } : f))),
+        (e) => {
+          setFiles((all) => all.map((f) => (f.key === item.key ? { ...f, error: errorText(e) } : f)));
+          setNotice(`${file.name}: ${errorText(e)}`);
+        },
+      );
+    }
+    setFiles((all) => [...all, ...added]);
+    // A refused file says why out loud, not only in its chip's tooltip.
+    setNotice(added.find((f) => f.error)?.error);
+  };
+
+  const submit = async (event?: FormEvent) => {
+    event?.preventDefault();
+    if (!canSend || !agent || !project) {
+      if (text.trim() && blocker) setNotice(blocker);
+      return;
+    }
+    const message = text;
+    const attachments = files.flatMap((f) => (f.saved ? [f.saved.path] : []));
+    setText("");
+    setFiles([]);
+    setNotice(undefined);
+    try {
+      await lead.send({ provider: agent, effort, text: message, attachments, clean: settings.clean });
+    } catch (e) {
+      // Nothing was recorded: give the message back.
+      setText((now) => now || message);
+      setNotice(errorText(e));
+    }
+  };
+
+  const stop = async () => {
+    try {
+      await lead.stop();
+    } catch (e) {
+      setNotice(errorText(e));
+    }
+  };
+
+  const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key === "Enter" && (MAC ? event.metaKey : event.ctrlKey)) {
+      event.preventDefault();
+      void submit();
+    }
+  };
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    if (event.clipboardData.files.length > 0) {
+      event.preventDefault();
+      addFiles(event.clipboardData.files);
+    }
+  };
+  const onDrop = (event: DragEvent<HTMLFormElement>) => {
+    if (event.dataTransfer.files.length === 0) return;
+    event.preventDefault();
+    addFiles(event.dataTransfer.files);
+  };
+
+  const quiet =
+    "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-xs text-chat-foreground-faint hover:bg-accent hover:text-chat-foreground focus-ring disabled:cursor-not-allowed disabled:opacity-50";
+
+  return (
+    <form className="shrink-0 bg-chat-canvas px-6 pb-4" noValidate onSubmit={submit} onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()} onDrop={onDrop}>
+      <div className="mx-auto max-w-3xl rounded-xl border border-chat-composer-border bg-chat-composer-surface px-2.5 pt-2.5 pb-2 focus-within:ring-2 focus-within:ring-ring/50">
+        {files.length > 0 && (
+          <ul aria-label="첨부" className="mb-2 flex flex-wrap gap-1.5 px-0.5">
+            {files.map((f) => (
+              <li
+                key={f.key}
+                className={`flex max-w-56 items-center gap-1.5 rounded-md border py-1 pr-1 pl-2 text-xs ${f.error ? "border-destructive/50 text-destructive" : "bg-background/40 text-chat-foreground"}`}
+                title={f.error ?? f.name}
+              >
+                {f.image ? <ImageIcon className="size-3.5 shrink-0 opacity-70" aria-hidden="true" /> : <FileText className="size-3.5 shrink-0 opacity-70" aria-hidden="true" />}
+                <span className="min-w-0 truncate">{f.name}</span>
+                <span className="shrink-0 text-chat-foreground-faint tabular-nums">
+                  {f.error ? "첨부 안 됨" : f.saved ? fileSize(f.size) : <LoaderCircle className="size-3 animate-spin" aria-label="올리는 중" />}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => setFiles((all) => all.filter((x) => x.key !== f.key))}
+                  aria-label={`${f.name} 첨부 빼기`}
+                  className="flex size-5 shrink-0 items-center justify-center rounded-sm hover:bg-accent focus-ring"
+                >
+                  <X className="size-3" aria-hidden="true" />
+                </button>
+              </li>
+            ))}
+          </ul>
+        )}
+        <label htmlFor="ask" className="sr-only">
+          총괄에게 맡길 일
+        </label>
+        <textarea
+          id="ask"
+          ref={inputRef}
+          name="ask"
+          spellCheck={false}
+          rows={2}
+          value={text}
+          placeholder={PLACEHOLDER}
+          aria-describedby="ask-help"
+          onChange={(e) => {
+            setText(e.target.value);
+            if (notice) setNotice(undefined);
+          }}
+          onKeyDown={onKey}
+          onPaste={onPaste}
+          className="block max-h-48 w-full resize-none bg-transparent px-1 text-sm text-chat-foreground outline-none placeholder:text-chat-foreground-faint"
+        />
+        <div className="mt-1.5 flex items-center gap-1">
+          <input
+            ref={fileInput}
+            type="file"
+            multiple
+            accept={ATTACH_ACCEPT}
+            className="sr-only"
+            tabIndex={-1}
+            aria-hidden="true"
+            onChange={(e) => {
+              if (e.target.files) addFiles(e.target.files);
+              e.target.value = "";
+            }}
+          />
+          <button
+            type="button"
+            onClick={() => fileInput.current?.click()}
+            disabled={!project}
+            aria-label="이미지·문서 첨부"
+            title="이미지·문서 첨부 (10MB까지, 5개)"
+            className="flex size-7 shrink-0 items-center justify-center rounded-full border border-chat-composer-border text-chat-foreground hover:bg-accent focus-ring disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Plus className="size-4" aria-hidden="true" />
+          </button>
+          <ChoiceMenu
+            label={`실행 프로필: ${settings.clean ? "깨끗한 에이전트" : "기본 하네스"}`}
+            triggerClass={quiet}
+            trigger={
+              <>
+                <ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />
+                {settings.clean ? "깨끗한 에이전트" : "기본 하네스"}
+              </>
+            }
+            groups={[
+              {
+                label: "실행 프로필 (설정 → 에이전트와 같음)",
+                value: settings.clean ? "clean" : "normal",
+                onChoose: (v) => updateSettings({ clean: v === "clean" }),
+                choices: [
+                  { value: "clean", label: "깨끗한 에이전트", hint: "개인 훅·지침·스킬·MCP 없이 공식 CLI만" },
+                  { value: "normal", label: "기본 하네스", hint: "이 PC의 평소 CLI 설정 그대로" },
+                ],
+              },
+            ]}
+          />
+          <div className="ml-auto flex min-w-0 items-center gap-1.5">
+            {agent ? (
+              <ChoiceMenu
+                label={`총괄 에이전트와 노력 수준: ${LEAD_NAME[agent]} ${EFFORT_WORD[effort ?? ""] ?? ""}`}
+                align="right"
+                stayOpen={(group) => group === "에이전트"}
+                triggerClass="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-accent focus-ring disabled:opacity-50"
+                trigger={
+                  <span className="min-w-0 truncate">
+                    <span className="font-medium text-chat-foreground">{LEAD_NAME[agent]}</span>{" "}
+                    <span className="text-chat-foreground-faint">{EFFORT_WORD[effort ?? ""]}</span>
+                  </span>
+                }
+                groups={[
+                  {
+                    label: "에이전트",
+                    value: agent,
+                    onChoose: (v) => isLeadProvider(v) && setPicked({ agent: v, effort: effortFor(v, effort) }),
+                    choices: usable.map((id) => ({ value: id, label: LEAD_NAME[id] })),
+                  },
+                  {
+                    label: "노력 수준",
+                    value: effort ?? "",
+                    onChoose: (v) => setPicked({ agent, effort: v }),
+                    choices: LEAD_EFFORTS[agent].map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e })),
+                  },
+                ]}
+              />
+            ) : (
+              <button type="button" onClick={onAgents} className={quiet} disabled={checking}>
+                {checking ? "에이전트 확인 중…" : "총괄 에이전트 연결하기"}
+              </button>
+            )}
+            {busy && <LoaderCircle className="size-4 shrink-0 animate-spin text-chat-foreground-faint" aria-hidden="true" />}
+            {busy ? (
+              <button
+                type="button"
+                onClick={stop}
+                aria-label="총괄 중지"
+                title="총괄 중지"
+                className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 focus-ring"
+              >
+                <Square className="size-3 fill-current" aria-hidden="true" />
+              </button>
+            ) : (
+              <button
+                type="submit"
+                aria-label="보내기"
+                title={`보내기 (${SEND_KEY})`}
+                aria-disabled={!canSend}
+                className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 focus-ring aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-primary"
+              >
+                <ArrowUp className="size-4" aria-hidden="true" />
+              </button>
+            )}
+          </div>
+        </div>
+      </div>
+      <p id="ask-help" aria-live="polite" className={notice ? "mx-auto mt-1.5 max-w-3xl px-1 text-xs text-destructive" : "sr-only"}>
+        {notice ?? (busy ? "총괄이 프로젝트를 읽고 답하는 중입니다. 중지할 수 있습니다." : `${SEND_KEY}로 보내기. 총괄은 계획만 제안하고, 실행은 계획 카드의 실행 버튼으로 합니다.`)}
+      </p>
+    </form>
+  );
+}

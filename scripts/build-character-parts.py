@@ -4,7 +4,7 @@ A character is a body sheet (bald, faceless; one per gender and outfit) with a h
 piece and an expression laid over its head, frame by frame. Generated layers never
 line up pixel for pixel, so nothing here relies on that: every body frame gets its
 own head box (found from skin pixels), hair and faces are cut to their own pieces,
-and the app places pieces on each frame's head box at runtime (app/src/characters.ts).
+and the app places pieces on each frame's head box at runtime (app/src/features/office/characters.ts).
 
     python scripts/align-sprite-sheets.py app/public/office/parts raw- body- --scale 0.725 <bodies>
     python scripts/build-character-parts.py app/public/office/parts
