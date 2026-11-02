@@ -57,7 +57,7 @@
 | 폴더 | 내용 |
 |---|---|
 | `shell/` | `App.tsx`(메인 창·팝아웃), `Sidebar`, `SidePanel`(오른쪽 패널과 보기 목록), `StatusBar`, `panelLayout.ts`, `announcer.ts` |
-| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `Markdown`, `TeamChat` |
+| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 이미지는 불러오지 않음, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(하위 보기 목록 `SUBS`), `WorkDashboard`, `NextUp`, `AllNextUp`, `AgentBoard`, `Kanban`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
