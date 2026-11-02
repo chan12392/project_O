@@ -1,0 +1,58 @@
+name: release
+
+# Windows installer for every push to test_1 (and on demand): built with
+# scripts/build-installer.ps1, published as a GitHub pre-release and a workflow artifact.
+on:
+  push:
+    branches: [test_1]
+  workflow_dispatch:
+
+# Two pushes in a row build one after the other instead of racing for the same release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  installer:
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: 설치 파일 빌드
+        id: build
+        shell: pwsh
+        run: |
+          ./scripts/build-installer.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          "setup=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@v4
+        with:
+          name: project_O-setup
+          path: ${{ steps.build.outputs.setup }}
+          if-no-files-found: error
+      - name: 프리릴리스 게시
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SETUP: ${{ steps.build.outputs.setup }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+        run: |
+          $tag = "test_1-{0}-{1}" -f (Get-Date).ToUniversalTime().ToString('yyyyMMdd'), $env:SHA.Substring(0, 7)
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            # Re-run on the same commit and day: replace the installer on the existing release.
+            gh release upload $tag $env:SETUP --clobber
+          } else {
+            gh release create $tag $env:SETUP --prerelease --target $env:SHA --title $tag --notes "Windows 설치 파일 ($env:REF @ $env:SHA). 서명되지 않은 테스트 빌드입니다. 설치 안내: docs/INSTALL.md"
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
