@@ -8,7 +8,7 @@ import { readStored, writeStored } from "../../lib/storage.ts";
 import type { PanelViewDef } from "../../shell/SidePanel.tsx";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
 import { AgentBoard } from "./AgentBoard.tsx";
-import { NextUp, useHandled } from "./NextUp.tsx";
+import { NextUp, actionCount, useHandled } from "./NextUp.tsx";
 import { ReviewRequestForm } from "./ReviewRequest.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
 
@@ -69,7 +69,8 @@ const SUBS: SubDef[] = [
     id: "next",
     label: "다음 할 일",
     icon: ListTodo,
-    badge: (c) => c.todo.length + c.stopped.length,
+    // What waits on a person: notes to read and Claude Code sessions' tickets are not counted.
+    badge: (c) => actionCount([...c.todo, ...c.stopped]),
     reviewRequest: true,
     render: (c) => <NextUp todo={c.todo} stopped={c.stopped} now={c.now} handled={c.handled} onToggle={c.toggle} onOpen={c.openItem} />,
   },

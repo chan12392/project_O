@@ -5,7 +5,7 @@ import { isSessionRun, nextUpByProject, projectName, recommend, type NextItem, t
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { clip } from "../../lib/format.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
-import { NextTicket, STAMP, useHandled } from "./NextUp.tsx";
+import { NextTicket, STAMP, TicketGroups, actionCount, useHandled } from "./NextUp.tsx";
 import { Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
 
 interface Props {
@@ -145,12 +145,13 @@ function ProjectGroup({ group, struck, now, onOpen, onProject, onTick }: { group
   const id = useId();
   const name = projectName(group.project);
   const items = [...group.stopped, ...group.todo];
+  const grid = "grid gap-2.5 @2xl:grid-cols-2";
   return (
     <section aria-labelledby={id}>
       <GroupHead
         id={id}
         title={name}
-        count={items.length}
+        count={actionCount(items)}
         meta={group.project}
         action={
           <button type="button" onClick={() => onProject(group.project)} className="flex h-6 items-center gap-1 rounded-md px-1.5 text-2xs text-muted-foreground hover:bg-accent hover:text-foreground focus-ring">
@@ -160,13 +161,8 @@ function ProjectGroup({ group, struck, now, onOpen, onProject, onTick }: { group
         }
       />
       <div className="@container">
-        <div className="grid gap-2.5 @2xl:grid-cols-2">
-          {items.map((item) => (
-            <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={() => onTick(item)} />
-          ))}
-          {struck.map((item) => (
-            <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={() => onTick(item)} done />
-          ))}
+        <div className={grid}>
+          <TicketGroups items={items} ticked={struck} grid={grid} ticket={(item, done) => <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={() => onTick(item)} done={done} />} />
         </div>
       </div>
     </section>

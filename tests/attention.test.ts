@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { SILENT_MS, activity, fleetStats, nextUp, ticketCommand } from "../src/core/attention.ts";
+import { SILENT_MS, activity, fleetStats, isNote, needsAction, nextUp, recommend, ticketCommand } from "../src/core/attention.ts";
 import type { OEvent } from "../src/core/events.ts";
 import { snapshot, type RunView } from "../src/core/snapshot.ts";
 
@@ -58,6 +58,27 @@ test("the lead answering one card leaves the other card's question waiting", () 
     ],
   };
   assert.deepEqual(nextUp([asked], after(team.endedAt!, 60_000)).todo.filter((i) => i.kind === "answer").map((i) => i.cardId), ["a"]);
+});
+
+test("badges count what waits on a person: not a note to read, not a Claude Code session's ticket", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const told: RunView = {
+    ...team,
+    messages: [
+      { at: at(1000), from: "a", to: "lead", text: "어느 쪽으로 할까요?" },
+      { at: at(2000), from: "b", to: "lead", text: "README 정리 끝냈습니다." },
+    ],
+  };
+  const { todo } = nextUp([told], after(team.endedAt!, 60_000));
+  const answers = todo.filter((i) => i.kind === "answer");
+  assert.deepEqual(answers.map((i) => [i.cardId, isNote(i)]), [["a", false], ["b", true]]);
+  assert.deepEqual(answers.filter(needsAction).map((i) => i.cardId), ["a"]);
+  // The same tickets from a Claude Code session are read-only records.
+  const session = { ...told, runId: "session-0f3c" };
+  assert.equal(nextUp([session], after(team.endedAt!, 60_000)).todo.filter(needsAction).length, 0);
+  // A note is no "답을 기다림" recommendation either.
+  assert.deepEqual(recommend([told], after(team.endedAt!, 60_000)).filter((p) => p.kind === "answer").map((p) => p.item?.cardId), ["a"]);
 });
 
 test("fleet stats and activity read the same runs", () => {

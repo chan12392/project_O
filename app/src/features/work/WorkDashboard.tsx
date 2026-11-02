@@ -1,7 +1,7 @@
 import { CircleCheck, CircleX, GitPullRequest, MessageSquare, Play, Rocket } from "lucide-react";
 import { useState } from "react";
 
-import { activity, fleetStats, type ActivityItem, type NextItem } from "../../../../src/core/attention.ts";
+import { activity, fleetStats, needsAction, type ActivityItem, type NextItem } from "../../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_SHORT, STATE_WORD, clip, compact, timeOf } from "../../lib/format.ts";
 import { NextTicket } from "./NextUp.tsx";
@@ -31,7 +31,8 @@ interface Props {
  */
 export function WorkDashboard({ runs, todo, stopped, now, onOpen, onToggle, onNextUp, onBoard, onCard }: Props) {
   const [all, setAll] = useState(false);
-  const pass = [...todo, ...stopped].filter((i) => URGENT.has(i.kind)).sort((a, b) => a.since.localeCompare(b.since));
+  // A note only needs reading and a Claude Code session's ticket is a record: neither waits on anyone.
+  const pass = [...todo, ...stopped].filter((i) => URGENT.has(i.kind) && needsAction(i)).sort((a, b) => a.since.localeCompare(b.since));
   const shown = all ? pass : pass.slice(0, PASS_VISIBLE);
   const stats = fleetStats(runs, now);
 

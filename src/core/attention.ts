@@ -36,6 +36,22 @@ export function isSessionRun(run: Pick<RunView, "runId">): boolean {
   return run.runId.startsWith(SESSION_PREFIX);
 }
 
+/** How a message to the lead asks for something: a question mark, "~할까요", "~주세요", "알려 ~". */
+const ASKS = /[?？]|까요|할지|주세요|부탁|알려/;
+
+/** A message to the lead that asks nothing: it only needs reading, not an answer. */
+export function isNote(item: Pick<NextItem, "kind" | "detail">): boolean {
+  return item.kind === "answer" && !ASKS.test(item.detail ?? "");
+}
+
+/**
+ * Whether a ticket waits on a person: not a note that only needs reading, and not from a
+ * Claude Code session (a read-only record O cannot act on). Badges count only these.
+ */
+export function needsAction(item: Pick<NextItem, "kind" | "detail" | "runId">): boolean {
+  return !isNote(item) && !isSessionRun(item);
+}
+
 /**
  * The O command that acts on a ticket, for a person to paste into a terminal. A Claude Code
  * session is no O run (no plan, events or process of O's), so its tickets get none: they
@@ -205,7 +221,8 @@ export function recommend(runs: RunView[], now: Date, handled: ReadonlySet<strin
   for (const item of [...stopped, ...todo]) {
     const reason = reasonOf(item, now);
     const project = projectOf.get(item.runId);
-    if (reason && project !== undefined) out.push({ key: item.key, kind: item.kind as SuggestionKind, project, title: item.title, reason, since: item.since, item });
+    // A note waits for no answer, so it is no "답을 기다림" pick.
+    if (reason && project !== undefined && !isNote(item)) out.push({ key: item.key, kind: item.kind as SuggestionKind, project, title: item.title, reason, since: item.since, item });
   }
 
   // Projects nobody has touched for days, with cards that never finished and no ticket already pointing at them.

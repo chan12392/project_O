@@ -32,7 +32,7 @@ import type { SettingsSection } from "../features/settings/sections/index.ts";
 import { Settings } from "../features/settings/Settings.tsx";
 import { AllNextUp } from "../features/work/AllNextUp.tsx";
 import { UpdatePrompt } from "../features/updates/UpdatePrompt.tsx";
-import { useHandled } from "../features/work/NextUp.tsx";
+import { actionCount, useHandled } from "../features/work/NextUp.tsx";
 import { useNow } from "../features/work/WorkTab.tsx";
 import { ICON_BUTTON } from "../lib/format.ts";
 import { backend } from "../platform/backend/index.ts";
@@ -217,14 +217,14 @@ function MainWindow() {
   const { handled } = useHandled();
   const runViews = useMemo(() => runs.map((r) => r.view), [runs]);
   const views = useMemo(() => (state !== "full" ? [] : list ? listedRuns(list.projects, runViews) : runViews), [runViews, state, list]);
-  // The badge counts O's own work: a Claude Code session is a read-only record with nothing to act on (B1).
+  // The badge counts what waits on a person: not a note to read, nothing from a Claude Code session (B1, U3).
   const nextCount = useMemo(() => {
     const { todo, stopped } = nextUp(
       views.filter((v) => !isSessionRun(v)),
       now,
       handled,
     );
-    return todo.length + stopped.length;
+    return actionCount([...todo, ...stopped]);
   }, [views, now, handled]);
   const openItem = (item: NextItem) => {
     setScreen("app");
