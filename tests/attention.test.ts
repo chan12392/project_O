@@ -31,6 +31,19 @@ test("failed and stopped cards land on the stopped list, a finished run asks to 
   assert.ok(!todo.some((i) => i.kind === "check" && i.runId === todoApp.runId));
 });
 
+test("a run blocked before any card appears in stopped work and the dashboard", () => {
+  const events: OEvent[] = [
+    { t: "run.start", at: "2026-11-02T10:00:00Z", runId: "blocked", title: "작업", project: "C:/p", cards: [] },
+    { t: "run.blocked", at: "2026-11-02T10:00:01Z", runId: "blocked", violations: [{ rule: "budget", message: "오늘 예산 소진" }] },
+    { t: "run.end", at: "2026-11-02T10:00:02Z", runId: "blocked", status: "failed" },
+  ];
+  const run = snapshot(events)!;
+  const now = new Date("2026-11-02T10:01:00Z");
+  assert.equal(nextUp([run], now).stopped[0].detail, "오늘 예산 소진");
+  assert.equal(fleetStats([run], now).stopped, 1);
+  assert.match(activity([run], 10)[0].detail, /오늘 예산 소진/);
+});
+
 test("a running card that goes quiet is flagged; a ticked item stays gone", () => {
   const run = byId("20261101-162328-9p0b");
   const live: RunView = { ...run, status: "running", endedAt: undefined, cards: run.cards.map((c) => ({ ...c, state: "running", endedAt: undefined })) };

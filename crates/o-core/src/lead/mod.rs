@@ -39,6 +39,7 @@ use crate::context::normalize_project;
 use crate::policy::{check_plan, check_project, is_model_id, Violation, LIMITS};
 use crate::providers::{self, LeadTurn, StreamReader};
 use crate::run::events::StreamSignal;
+use crate::run::mode::{Efficiency, RunMode};
 use crate::run::plan::ProviderId;
 use crate::run::runner::Spawner;
 use crate::run::snapshot::snapshot;
@@ -66,10 +67,21 @@ pub enum LeadEvent {
         model: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
+        /// 토큰 효율 for this message (ADR-0010); absent in threads from before the switch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        efficiency: Option<Efficiency>,
     },
-    /// The CLI's own session id, resumed on the thread's next turn with that CLI.
+    /// The CLI's own session id, resumed on the thread's next turn with that CLI. `clean` is
+    /// the profile it lives in: a turn on the other profile cannot resume it and starts a new one.
+    /// Absent in threads from before the switch, where any turn resumes it.
     #[serde(rename = "lead.session")]
-    Session { at: String, provider: ProviderId, session_id: String },
+    Session {
+        at: String,
+        provider: ProviderId,
+        session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        clean: Option<bool>,
+    },
     /// The lead's answer as Markdown, without its plan block.
     #[serde(rename = "lead.reply")]
     Reply { at: String, provider: ProviderId, text: String },
@@ -77,7 +89,14 @@ pub enum LeadEvent {
     #[serde(rename = "lead.plan")]
     Plan { at: String, plan_id: String, plan: Value, ok: bool, violations: Vec<Violation> },
     #[serde(rename = "lead.dispatch")]
-    Dispatch { at: String, plan_id: String, run_id: String, clean: bool },
+    Dispatch {
+        at: String,
+        plan_id: String,
+        run_id: String,
+        clean: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        efficiency: Option<Efficiency>,
+    },
     /// Tokens one lead turn spent (`o tokens` counts them as planning overhead).
     #[serde(rename = "lead.usage")]
     Usage { at: String, provider: ProviderId, input: f64, cached: f64, output: f64 },
@@ -321,8 +340,10 @@ pub struct SendRequest<'a> {
     pub attach: &'a [PathBuf],
     /// Start a new thread first.
     pub fresh: bool,
-    /// The clean profile root when the lead runs as a clean agent (Settings "깨끗한 에이전트").
+    /// The clean profile root when the lead runs as a clean agent (토큰 효율 on, ADR-0010).
     pub clean: Option<&'a Path>,
+    /// 토큰 효율 this message was sent with, kept on its `lead.user` (the app dispatches its plan the same way).
+    pub efficiency: Efficiency,
 }
 
 /// Checks a request before anything is saved or started.
@@ -445,10 +466,13 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         provider: req.provider,
         model: req.model.filter(|m| !m.is_empty()).map(str::to_string),
         effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
+        efficiency: Some(req.efficiency),
     })?;
 
     let session = before.iter().rev().find_map(|e| match e {
-        LeadEvent::Session { provider, session_id, .. } if *provider == req.provider => Some(session_id.clone()),
+        LeadEvent::Session { provider, session_id, clean, .. } if *provider == req.provider && clean.is_none_or(|c| c == req.clean.is_some()) => {
+            Some(session_id.clone())
+        }
         _ => None,
     });
     let history: Vec<(String, String)> = before
@@ -585,7 +609,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
                 match signal {
                     StreamSignal::Session { session_id } => {
                         if session.as_deref() != Some(session_id.as_str()) {
-                            emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone() })?;
+                            emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone(), clean: Some(req.clean.is_some()) })?;
                             index_session(home, &thread_id, &session_id);
                         }
                         used_session = Some(session_id);
@@ -696,12 +720,14 @@ pub struct Dispatched {
     pub run_id: String,
     pub events: String,
     pub cards: Vec<String>,
+    pub efficiency: Efficiency,
     pub clean: bool,
 }
 
 /// Dispatches a stored plan once: checks it again like `o dispatch`, makes the run and
 /// hands its id to `start` (which launches `o _run <runId>` in the background).
-pub fn dispatch(home: &Path, plan_id: &str, clean: bool, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
+/// `mode` is 토큰 효율 with its overrides (ADR-0010), saved with the run like `o dispatch` does.
+pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
     let events = read_thread(home, thread_id);
     let project = thread_project(&events).ok_or_else(|| format!("총괄 대화가 없습니다: {thread_id}"))?;
@@ -742,20 +768,22 @@ pub fn dispatch(home: &Path, plan_id: &str, clean: bool, start: &dyn Fn(&str) ->
     }
     let run_id = new_run_id(now);
     let started = store::create_run(home, &run_id, &plan)
-        .and_then(|()| if clean { store::mark_clean(home, &run_id) } else { Ok(()) })
+        .and_then(|()| store::mark_mode(home, &run_id, &mode))
         .and_then(|()| start(&run_id));
     if let Err(error) = started {
         // Nothing runs: the plan may be dispatched again.
         let _ = fs::remove_file(&mark);
         return Err(format!("실행기를 시작하지 못했습니다: {error}").into());
     }
-    append(home, thread_id, &LeadEvent::Dispatch { at: now_iso(), plan_id: plan_id.to_string(), run_id: run_id.clone(), clean }).map_err(|e| e.to_string())?;
+    let dispatched = LeadEvent::Dispatch { at: now_iso(), plan_id: plan_id.to_string(), run_id: run_id.clone(), clean: mode.clean, efficiency: Some(mode.efficiency) };
+    append(home, thread_id, &dispatched).map_err(|e| e.to_string())?;
     Ok(Dispatched {
         plan_id: plan_id.to_string(),
         events: run_dir(home, &run_id).join("events.jsonl").to_string_lossy().into_owned(),
         run_id,
         cards: plan.cards.iter().map(|c| c.id.clone()).collect(),
-        clean,
+        efficiency: mode.efficiency,
+        clean: mode.clean,
     })
 }
 
@@ -857,6 +885,27 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
 fn thread_ids(home: &Path) -> Vec<String> {
     let Ok(entries) = fs::read_dir(leads_dir(home)) else { return Vec::new() };
     entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|id| is_run_id(id)).collect()
+}
+
+/// All active turns, including a thread replaced by a newer one for the same project.
+pub fn active_count(home: &Path) -> io::Result<usize> {
+    let entries = match fs::read_dir(leads_dir(home)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut count = 0;
+    for entry in entries {
+        let id = entry?.file_name().to_string_lossy().into_owned();
+        if !is_run_id(&id) { continue; }
+        let lock = turn_lock(home, &id)?;
+        match lock.try_lock() {
+            Ok(()) => {},
+            Err(fs::TryLockError::WouldBlock) => count += 1,
+            Err(fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
+    Ok(count)
 }
 
 fn sessions_path(home: &Path, thread_id: &str) -> PathBuf {

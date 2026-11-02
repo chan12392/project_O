@@ -65,6 +65,29 @@ test("recommendations honour ticked items, the idle threshold and the limit", ()
   assert.ok(!recommend(fleet(), NOW, new Set([idle.key])).some((p) => p.kind === "idle"));
 });
 
+test("cards reporting the same PR take one recommendation, with every card still reachable", () => {
+  const pr = "https://github.com/o/r/pull/27";
+  const reviewer = (id: string, endedAt: string) => card(id, "done", { endedAt, result: `${pr} 올림` });
+  const runs = [
+    run("s-1", "C:/p/graf", "2026-11-06T10:00:00.000Z", [reviewer("cli", "2026-11-07T12:00:00.000Z"), reviewer("core", "2026-11-07T11:00:00.000Z")], { endedAt: "2026-11-07T12:00:00.000Z" }),
+    run("s-2", "C:/p/graf", "2026-11-06T10:00:00.000Z", [reviewer("ask", "2026-11-07T13:00:00.000Z"), reviewer("tool", "2026-11-07T14:00:00.000Z")], { endedAt: "2026-11-07T14:00:00.000Z" }),
+    run("s-3", "C:/p/graf", "2026-11-09T10:00:00.000Z", [card("other", "done", { endedAt: "2026-11-09T12:00:00.000Z", result: "https://github.com/o/r/pull/28" })], { endedAt: "2026-11-09T12:00:00.000Z" }),
+  ];
+  const picks = recommend(runs, NOW);
+  assert.deepEqual(
+    picks.map((p) => [p.title, p.reason, p.item?.pr]),
+    [
+      ["core 카드", "PR이 3일째 검토를 기다림 · 카드 4장", pr],
+      ["other 카드", "PR이 1일째 검토를 기다림", "https://github.com/o/r/pull/28"],
+    ],
+  );
+  // The oldest card leads; the others stay reachable from the same pick, oldest first.
+  assert.deepEqual(picks[0].samePr?.map((i) => i.cardId), ["cli", "ask", "tool"]);
+  assert.equal(picks[1].samePr, undefined);
+  // The project's own list still has a ticket per card.
+  assert.equal(nextUp(runs, NOW).todo.filter((i) => i.pr === pr).length, 4);
+});
+
 test("a project with a ticket already is not also called idle; a finished idle project is left alone", () => {
   const old = fleet().map((r) => (r.runId === "alpha-1" ? { ...r, cards: [r.cards[0]], endedAt: "2026-11-07T12:00:00.000Z" } : r));
   const picks = recommend(old, NOW);

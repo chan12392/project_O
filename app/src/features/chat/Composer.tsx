@@ -327,23 +327,23 @@ export function Composer({
             <Plus className="size-4" aria-hidden="true" />
           </button>
           <ChoiceMenu
-            label={`실행 프로필: ${settings.clean ? "깨끗한 에이전트" : "기본 하네스"}`}
+            label={`토큰 효율: ${settings.clean ? "켜짐" : "꺼짐"}`}
             triggerClass={quiet}
             trigger={
               <>
                 <ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />
                 {/* Narrow: the icon alone; the menu's label still names the profile. */}
-                <span className="@max-md:sr-only">{settings.clean ? "깨끗한 에이전트" : "기본 하네스"}</span>
+                <span className="@max-md:sr-only">토큰 효율 {settings.clean ? "켜짐" : "꺼짐"}</span>
               </>
             }
             groups={[
               {
-                label: "실행 프로필 (설정 → 에이전트와 같음)",
+                label: "토큰 효율 (설정 → 에이전트와 같음)",
                 value: settings.clean ? "clean" : "normal",
                 onChoose: (v) => updateSettings({ clean: v === "clean" }),
                 choices: [
-                  { value: "clean", label: "깨끗한 에이전트", hint: "개인 훅·지침·스킬·MCP 없이 공식 CLI만" },
-                  { value: "normal", label: "기본 하네스", hint: "이 PC의 평소 CLI 설정 그대로" },
+                  { value: "clean", label: "켜짐", hint: "깨끗한 프로필 · 컨텍스트 공유 · 노력 조정" },
+                  { value: "normal", label: "꺼짐", hint: "평소 프로필 · 컨텍스트 없이 · 선택한 노력 유지" },
                 ],
               },
             ]}

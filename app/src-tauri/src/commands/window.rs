@@ -5,6 +5,8 @@
 //! `open_external`, and nothing else opens; the page is told why in a short notice.
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse};
+use tauri::menu::{Menu, MenuItem};
+use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
 use tauri::{AppHandle, LogicalSize, Manager, Runtime, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 pub const MAIN: &str = "main";
@@ -14,6 +16,71 @@ const PANEL_SIZE: (f64, f64) = (760.0, 880.0);
 /// Window events the screens listen for (app/src/shell/panelLayout.ts, app/src/shell/LinkNotice.tsx).
 const LINK_BLOCKED: &str = "project-o:link-blocked";
 const POPOUT_CLOSED: &str = "project-o:popout-closed";
+const CLOSE_REQUESTED: &str = "project-o:close-requested";
+const TRAY_ACTION: &str = "project-o:tray-action";
+
+pub fn show_main(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window(MAIN) {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+    if let Some(panel) = app.get_webview_window(PANEL) { let _ = panel.show(); }
+}
+
+pub fn setup_tray(app: &AppHandle) -> tauri::Result<()> {
+    let open = MenuItem::with_id(app, "open", "열기", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "설정", true, None::<&str>)?;
+    let about = MenuItem::with_id(app, "about", "정보", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "종료", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&open, &settings, &about, &quit])?;
+    let icon = app.default_window_icon().cloned().expect("app icon");
+    TrayIconBuilder::new().icon(icon).tooltip("Project O").menu(&menu).show_menu_on_left_click(false)
+        .on_menu_event(|app, event| {
+            show_main(app);
+            if event.id().as_ref() != "open" {
+                if let Some(window) = app.get_webview_window(MAIN) {
+                    let _ = window.eval(window_event(TRAY_ACTION, Some(serde_json::json!(event.id().as_ref()))));
+                }
+            }
+        })
+        .on_tray_icon_event(|tray, event| {
+            if matches!(event, TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. }) {
+                show_main(tray.app_handle());
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn hide_main(app: AppHandle) -> Result<(), String> {
+    if let Some(panel) = app.get_webview_window(PANEL) { panel.hide().map_err(|e| e.to_string())?; }
+    app.get_webview_window(MAIN).ok_or("메인 창이 없습니다")?.hide().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn quit_activity() -> Result<serde_json::Value, String> {
+    super::blocking(|| quit_activity_in(&o_core::run::store::default_home())).await?
+}
+
+fn quit_activity_in(home: &std::path::Path) -> Result<serde_json::Value, String> {
+    for name in ["runs", "active"] {
+        if let Err(error) = std::fs::read_dir(home.join(name)) {
+            if error.kind() != std::io::ErrorKind::NotFound { return Err(error.to_string()); }
+        }
+    }
+    let cards = o_core::run::store::active_markers(home).len();
+    let leads = o_core::lead::active_count(home).map_err(|e| e.to_string())?;
+    let runs = o_core::run::store::list_runs(home).iter().filter(|id| {
+        o_core::run::snapshot::snapshot(&o_core::run::store::read_events(home, id))
+            .is_some_and(|run| run.status == o_core::run::snapshot::RunStatus::Running)
+    }).count();
+    Ok(serde_json::json!({ "cards": cards, "leads": leads, "runs": runs }))
+}
+
+#[tauri::command]
+pub async fn quit_app(app: AppHandle) { app.exit(0); }
 
 /// What happens to a link that asks for a new window.
 #[derive(Debug, PartialEq)]
@@ -79,6 +146,12 @@ pub fn open_main(app: &AppHandle) -> tauri::Result<()> {
     // Closing the main window closes the pop-out too, so the app ends.
     let handle = app.clone();
     window.on_window_event(move |event| {
+        if let WindowEvent::CloseRequested { api, .. } = event {
+            api.prevent_close();
+            if let Some(main) = handle.get_webview_window(MAIN) {
+                let _ = main.eval(window_event(CLOSE_REQUESTED, None));
+            }
+        }
         if let WindowEvent::Destroyed = event {
             if let Some(panel) = handle.get_webview_window(PANEL) {
                 let _ = panel.destroy();
@@ -176,6 +249,27 @@ pub async fn popout_close(app: AppHandle) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quit_warning_counts_running_work_and_old_lead_threads() {
+        use o_core::run::events::OEvent;
+        use o_core::run::plan::ProviderId;
+        use o_core::run::store::{append_event, mark_active, ActiveMarker};
+        let home = crate::commands::temp("quit-activity");
+        let project = crate::commands::temp("quit-project");
+        let project = project.to_string_lossy().into_owned();
+        let thread = o_core::lead::start(&home, &project).unwrap();
+        let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+            .open(o_core::lead::thread_dir(&home, &thread).join("turn.lock")).unwrap();
+        lock.try_lock().unwrap();
+        o_core::lead::start(&home, &project).unwrap();
+        std::fs::create_dir_all(home.join("runs").join("r1")).unwrap();
+        append_event(&home, "r1", &OEvent::RunStart { at: "2026-11-02T00:00:00Z".into(), run_id: "r1".into(), title: "t".into(), project, cards: vec![] }).unwrap();
+        mark_active(&home, &ActiveMarker { run_id: "r1".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() }).unwrap();
+        assert_eq!(quit_activity_in(&home).unwrap(), serde_json::json!({ "cards": 1, "leads": 1, "runs": 1 }));
+        drop(lock);
+        assert_eq!(quit_activity_in(&home).unwrap()["leads"], 0);
+    }
 
     #[test]
     fn only_https_links_reach_the_browser() {

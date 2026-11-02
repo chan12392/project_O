@@ -1,4 +1,4 @@
-import { nextUp } from "./attention.ts";
+import { isNote, nextUp } from "./attention.ts";
 import type { ProviderId } from "./plan.ts";
 import type { CardState, CardView, RunView } from "./snapshot.ts";
 
@@ -113,11 +113,12 @@ export function chipSummary(run: RunView, now: Date): ChipSummary {
     counts.set(state, (counts.get(state) ?? 0) + 1);
   }
   // A card asking the lead, failing, gone quiet or held by a usage limit: the same signals as 다음 할 일.
+  // A message that asks nothing (a finished card's report) is a note to read, as the badges count it, not "답을 기다림".
   const { todo, stopped } = nextUp([run], now);
   const why = new Map<string, AttentionKind>();
   for (const item of [...todo, ...stopped]) {
     const kind = item.kind as AttentionKind;
-    if (!item.cardId || !ATTENTION_ORDER.includes(kind)) continue;
+    if (!item.cardId || !ATTENTION_ORDER.includes(kind) || isNote(item)) continue;
     const had = why.get(item.cardId);
     if (!had || ATTENTION_ORDER.indexOf(kind) < ATTENTION_ORDER.indexOf(had)) why.set(item.cardId, kind);
   }

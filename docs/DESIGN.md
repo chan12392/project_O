@@ -1,6 +1,6 @@
 # 설계 초안 (v0)
 
-> 상태: 초안. 아래 "결정 필요" 항목을 두 사람이 합의한 뒤 코드 뼈대를 만든다. 합의된 결정은 `docs/decisions/`에 ADR로 옮긴다.
+> 상태: 초기 설계 초안. 현재 공용 경계 결정은 `docs/decisions/`에 기록한다(승인 절차는 ADR-0012 참조).
 
 ## 0. 한 줄 정의
 
@@ -90,7 +90,7 @@
 |---|---|---|
 | Providers · Account vault · Router · Workspace 화면 | B | |
 | Sources · Policy · Control 화면 | A | Orchestrator 코드 이관 |
-| Core Session 모델 · Store · 앱 셸 | 공동 | 변경 시 ADR + 상호 승인 |
+| Core Session 모델 · Store · 앱 셸 | 공동 | 변경 시 ADR 기록 |
 
 ## 8. 프로바이더 정책 (2026-11-01 확인, 배포 전 재확인)
 

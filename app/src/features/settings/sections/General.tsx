@@ -1,6 +1,6 @@
 import { SlidersHorizontal } from "lucide-react";
 
-import { sessionsShown, updateSettings, useSettings, type StartScreen } from "../../../data/settings.ts";
+import { sessionsShown, updateSettings, useSettings, type CloseAction, type StartScreen } from "../../../data/settings.ts";
 import { Segmented, SettingsRow, Switch } from "../../../ui/controls.tsx";
 import { Rows, Section, type SettingsSectionDef } from "../Section.tsx";
 
@@ -17,6 +17,13 @@ function GeneralSection({ demo }: { demo: boolean }) {
   return (
     <Section title="일반" description="앱을 열 때의 화면과 실행 기록을 읽는 방식입니다.">
       <Rows>
+        <SettingsRow
+          label="창 닫기 (X)"
+          description="트레이로 숨기거나 앱을 완전히 종료합니다. 작업 중인 에이전트가 있으면 종료 전에 알려 드립니다."
+          control={<Segmented<CloseAction> label="창 닫기 동작" value={settings.closeAction} onChange={(closeAction) => updateSettings({ closeAction })} options={[
+            { value: "ask", label: "물어보기" }, { value: "tray", label: "트레이" }, { value: "quit", label: "완전 종료" },
+          ]} />}
+        />
         <SettingsRow
           id="sessions-label"
           label="Claude Code 세션도 보기"

@@ -11,5 +11,4 @@
 <!-- test_2 → test_1, test_1 → main PR일 때만 채운다. 병합은 대표(A)만 한다. -->
 ### test_2 → test_1 · test_1 → main
 
-- [ ] 대표(A) 확인
 - [ ] test_2에서 함께 확인한 내용:

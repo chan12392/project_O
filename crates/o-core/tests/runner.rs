@@ -13,9 +13,10 @@ use chrono::{Duration as Span, Utc};
 use o_core::run::events::{CardStatus, OEvent};
 use o_core::sys::js::{iso, parse_time};
 use o_core::run::plan::{Card, Plan, ProviderId};
+use o_core::run::mode::{Efficiency, RunMode};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
-use o_core::run::runner::{run_plan, run_plan_in, Spawner, Workdir};
+use o_core::run::runner::{run_detached, run_plan, run_plan_in, Spawner, Workdir};
 use o_core::run::store::{
     active_markers, clear_active, cooldown_times, create_run, mark_active, read_events, record_start, request_stop, set_cooldown, started_on,
     ActiveMarker,
@@ -45,7 +46,9 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 16] = [
+    let tests: [(&str, fn()); 18] = [
+        ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
+        ("efficiency off keeps effort and still enforces budget", efficiency_off_keeps_effort),
         ("cards start in the folder the policy checked, not the link the plan names", cards_run_in_the_checked_folder),
         ("a project link pointed elsewhere after the check refuses the card", a_link_swapped_after_the_check_is_refused),
         ("a stop that comes while a card's CLI is starting still ends it", stop_while_starting),
@@ -110,6 +113,16 @@ fn ends_of(home: &std::path::Path, run_id: &str) -> BTreeMap<String, CardStatus>
 
 fn quiet() -> Arc<Spawner> {
     fake_cli(|_| vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])
+}
+
+fn rejected_plan_records_reason() {
+    let home = temp_home();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "test")]);
+    p.project = home.join("missing-project").to_string_lossy().into_owned();
+    create_run(&home, "rejected", &p).unwrap();
+    assert!(run_detached(&home, "rejected").is_err());
+    let events = read_events(&home, "rejected");
+    assert!(matches!(events.as_slice(), [OEvent::RunStart { cards, .. }, OEvent::RunBlocked { violations, .. }, OEvent::RunEnd { status: CardStatus::Failed, .. }] if cards.is_empty() && !violations.is_empty()));
 }
 
 fn parallel_and_limit() {
@@ -546,4 +559,30 @@ fn budget_over_refuses() {
     let refused = read_events(&home, "r8").into_iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("사용 예산을 다 썼습니다")));
     assert!(refused);
     assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+}
+
+fn efficiency_off_keeps_effort() {
+    let home = temp_home();
+    seed_codex_spent(&home, 0.1299);
+    let mut p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    p.cards[0].effort = Some("xhigh".into());
+    create_run(&home, "off", &p).unwrap();
+    o_core::run::store::mark_mode(&home, "off", &RunMode::of(Efficiency::Off)).unwrap();
+    let launched = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&launched);
+    let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
+    let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+        *seen.lock().unwrap() = spec.args.clone();
+        inner(spec, cwd)
+    });
+    let status = run_plan(&home, "off", &p, None, spawner).unwrap();
+    assert_eq!(status, CardStatus::Done, "{:?}", read_events(&home, "off"));
+    assert!(launched.lock().unwrap().iter().any(|a| a == "model_reasoning_effort=xhigh"));
+    assert!(!read_events(&home, "off").iter().any(|e| matches!(e, OEvent::CardBudget { .. })));
+
+    let blocked_home = temp_home();
+    seed_codex_spent(&blocked_home, 0.14);
+    create_run(&blocked_home, "blocked", &p).unwrap();
+    o_core::run::store::mark_mode(&blocked_home, "blocked", &RunMode::of(Efficiency::Off)).unwrap();
+    assert_eq!(run_plan(&blocked_home, "blocked", &p, None, quiet()).unwrap(), CardStatus::Failed);
 }

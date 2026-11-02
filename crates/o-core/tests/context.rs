@@ -275,7 +275,7 @@ fn the_runner_hands_each_card_its_section() {
     assert!(prompt("c").contains(SECTION_HEADER) && prompt("c").contains(&format!("{CONTEXT_BEGIN}\n- [결과 · r1/art · ")));
     assert!(!prompt("x").contains(SECTION_HEADER));
     let kinds: Vec<String> = read_event_values(&home, "now").iter().map(|e| e["t"].as_str().unwrap().to_string()).collect();
-    assert_eq!(kinds[..2], ["run.start", "run.context"]);
+    assert_eq!(kinds[..3], ["run.start", "run.mode", "run.context"]);
 }
 
 const TEAM: TeamChannel = TeamChannel { run_id: "r9", run_dir: "C:/o/runs/r9" };

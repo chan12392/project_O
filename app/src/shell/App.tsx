@@ -42,6 +42,7 @@ import { usePanelLayout, usePopoutChannel, type Selection } from "./panelLayout.
 import { SidePanel } from "./SidePanel.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { StatusBar } from "./StatusBar.tsx";
+import { ClosePrompt } from "./ClosePrompt.tsx";
 
 const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
@@ -172,7 +173,7 @@ function MainWindow() {
   useEffect(() => {
     if (screen !== "settings") return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.key !== "Escape" || e.defaultPrevented || document.querySelector("dialog[open]")) return;
       const target = e.target as HTMLElement | null;
       // An open menu on screen closes first (the app underneath stays mounted but hidden).
       const menuOpen = [...document.querySelectorAll<HTMLElement>("[aria-expanded=true]")].some((el) => el.offsetParent !== null);
@@ -260,6 +261,7 @@ function MainWindow() {
         대화 입력으로 건너뛰기
       </a>
       <UpdatePrompt api={api} />
+      <ClosePrompt onSettings={openSettings} />
       {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
       {screen === "settings" && (
         <Settings api={api} section={section} source={source} onSection={setSection} onBack={closeSettings} onOnboarding={() => setScreen("onboarding")} />

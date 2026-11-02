@@ -3,6 +3,7 @@
  * prints (crates/o-core/src/lead), folded into what the chat draws, and the choices
  * the composer offers. Lead events are their own small type, not run events.
  */
+import type { Violation } from "./events.ts";
 import type { ProviderId } from "./plan.ts";
 
 export interface LeadAttachment {
@@ -12,11 +13,7 @@ export interface LeadAttachment {
   image: boolean;
 }
 
-export interface LeadViolation {
-  rule: string;
-  message: string;
-  cardId?: string;
-}
+export type LeadViolation = Violation;
 
 export interface PlanCard {
   id: string;

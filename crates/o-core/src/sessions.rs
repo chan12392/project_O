@@ -818,7 +818,9 @@ fn at_of(event: &OEvent) -> &str {
         | OEvent::RunEnd { at, .. }
         | OEvent::ReviewPosted { at, .. }
         | OEvent::CardBudget { at, .. }
-        | OEvent::RunContext { at, .. } => at,
+        | OEvent::RunContext { at, .. }
+        | OEvent::RunBlocked { at, .. }
+        | OEvent::RunMode { at, .. } => at,
     }
 }
 

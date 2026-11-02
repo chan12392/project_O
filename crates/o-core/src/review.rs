@@ -24,6 +24,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::run::events::{CardStatus, OEvent};
+use crate::run::mode::{take_flags, Efficiency, RunMode};
 use crate::sys::js::{js_head, js_len, now_iso};
 use crate::run::plan::ProviderId;
 use crate::policy::LIMITS;
@@ -64,7 +65,8 @@ pub struct ReviewArgs {
     pub provider: Option<ProviderId>,
     pub model: Option<String>,
     pub effort: Option<String>,
-    pub clean: bool,
+    /// 토큰 효율 with its overrides (ADR-0010). The review card never gets shared context either way.
+    pub mode: RunMode,
     pub post: bool,
     /// Fetch and build the plan, print its size and provider, run nothing.
     pub dry_run: bool,
@@ -78,7 +80,8 @@ pub fn is_selector(value: &str) -> bool {
 }
 
 pub fn parse_args(args: &[String]) -> Result<ReviewArgs, String> {
-    let mut out = ReviewArgs::default();
+    let (mode, args) = take_flags(args)?;
+    let mut out = ReviewArgs { mode, ..ReviewArgs::default() };
     let mut items = args.iter();
     while let Some(arg) = items.next() {
         let mut value = |name: &str| items.next().cloned().filter(|v| !v.starts_with("--")).ok_or_else(|| format!("{name} 뒤에 값이 필요합니다"));
@@ -89,7 +92,6 @@ pub fn parse_args(args: &[String]) -> Result<ReviewArgs, String> {
             }
             "--model" => out.model = Some(value("--model")?),
             "--effort" => out.effort = Some(value("--effort")?),
-            "--clean" => out.clean = true,
             "--post" => out.post = true,
             "--dry-run" => out.dry_run = true,
             "--detach" => out.detach = true,
@@ -496,14 +498,11 @@ pub fn build_plan(project: &str, number: u64, task: &str, provider: ProviderId, 
 }
 
 /// Saves a checked review plan as a new run. The review card gets the PR and nothing else:
-/// no earlier work of the project goes into its prompt (shared context is off, ADR-0005).
-pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, clean: bool) -> std::io::Result<()> {
+/// no earlier work of the project goes into its prompt (shared context is off, ADR-0005),
+/// whatever 토큰 효율 says; the switch decides the profile and effort lowering (ADR-0010).
+pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, mode: RunMode) -> std::io::Result<()> {
     crate::run::store::create_run(home, run_id, plan)?;
-    crate::context::mark_off(home, run_id)?;
-    if clean {
-        crate::run::store::mark_clean(home, run_id)?;
-    }
-    Ok(())
+    crate::run::store::mark_mode(home, run_id, &RunMode { context: false, ..mode })
 }
 
 /// The comment text: who wrote it and that it decides nothing, then the review.
@@ -597,11 +596,7 @@ pub fn finish(home: &Path, run_id: &str, selector: &str, number: u64, head: Opti
 
 /// `o review <pr> --post --detach` in the project folder: what the app's
 /// "에이전트 검토 요청" runs.
-/// With `clean` (Settings → 깨끗한 에이전트) the review card runs on the clean profile.
-pub fn request_args(selector: &str, clean: bool) -> Vec<String> {
-    let mut args = strings(&["review", selector, "--post", "--detach"]);
-    if clean {
-        args.push("--clean".into());
-    }
-    args
+/// 토큰 효율 (Settings, ADR-0010) goes along as `--efficiency on|off`.
+pub fn request_args(selector: &str, efficiency: Efficiency) -> Vec<String> {
+    strings(&["review", selector, "--post", "--detach", "--efficiency", efficiency.as_str()])
 }

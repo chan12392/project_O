@@ -12,6 +12,7 @@ use o_core::agents::clean;
 use o_core::lead::{self, files, DispatchError, SendRequest};
 use o_core::providers::{self, ModelChoice};
 use o_core::run::plan::ProviderId;
+use o_core::run::mode::{Efficiency, RunMode};
 use o_core::run::runner::official_command;
 use o_core::run::store;
 use o_core::sys::proc;
@@ -112,6 +113,7 @@ pub async fn lead_send(
             attach: &attach,
             fresh: false,
             clean: root.as_deref(),
+            efficiency: if clean { Efficiency::On } else { Efficiency::Off },
         };
         let events = lead::send(&home, &req, &official_command)?;
         Ok(json!({ "threadId": lead::current_thread(&home, &project), "events": events }))
@@ -126,7 +128,7 @@ pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String
     blocking(move || {
         let o = o_binary().ok_or("o CLI를 찾지 못했습니다 (cargo install --path crates/o-cli)")?;
         let start = |run_id: &str| proc::spawn_detached(Command::new(&o).args(["_run", run_id])).map(|_| ());
-        match lead::dispatch(&store::default_home(), &plan_id, clean, &start) {
+        match lead::dispatch(&store::default_home(), &plan_id, RunMode::of(if clean { Efficiency::On } else { Efficiency::Off }), &start) {
             Ok(done) => Ok(json!(done)),
             Err(DispatchError::Blocked(violations)) => {
                 let lines: Vec<String> = violations.iter().map(|v| format!("[{}] {}", v.rule, v.message)).collect();

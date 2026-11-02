@@ -11,6 +11,7 @@ use o_core::lead::prompt::{build, split_plan, PromptInput};
 use o_core::lead::{self, DispatchError, LeadEvent, SendRequest};
 use o_core::providers::LaunchSpec;
 use o_core::run::plan::ProviderId;
+use o_core::run::mode::{Efficiency, RunMode};
 use o_core::run::runner::Spawner;
 use serde_json::{json, Value};
 
@@ -138,7 +139,7 @@ fn good_plan() -> Value {
 }
 
 fn request<'a>(project: &'a str, text: &'a str) -> SendRequest<'a> {
-    SendRequest { project, provider: ProviderId::Claude, model: None, effort: Some("low"), text, attach: &[], fresh: false, clean: None }
+    SendRequest { project, provider: ProviderId::Claude, model: None, effort: Some("low"), text, attach: &[], fresh: false, clean: None, efficiency: Efficiency::Off }
 }
 
 fn plans(events: &[LeadEvent]) -> Vec<(String, Value, bool, Vec<String>)> {
@@ -245,7 +246,7 @@ fn policy_refusal_stored() {
     let (plan_id, _, ok, rules) = plans(&events).remove(0);
     assert!(!ok);
     assert!(rules.contains(&"unsupported-field".to_string()) && rules.contains(&"unknown-provider".to_string()), "{rules:?}");
-    let refused = lead::dispatch(&home, &plan_id, false, &|_| panic!("a refused plan must not start"));
+    let refused = lead::dispatch(&home, &plan_id, RunMode::of(Efficiency::Off), &|_| panic!("a refused plan must not start"));
     assert!(matches!(refused, Err(DispatchError::Blocked(v)) if !v.is_empty()));
     // A malformed block is an error on record, not a plan.
     let (spawner, _) = fake(claude_answer("s", "```o-plan\n{ broken\n```"));
@@ -288,15 +289,15 @@ fn dispatch_once() {
         started.lock().unwrap().push(run.to_string());
         Ok(())
     };
-    let done = lead::dispatch(&home, &plan_id, true, &start).ok().unwrap();
+    let done = lead::dispatch(&home, &plan_id, RunMode::of(Efficiency::On), &start).ok().unwrap();
     assert_eq!(*started.lock().unwrap(), vec![done.run_id.clone()]);
     assert_eq!(done.cards, ["docs"]);
     assert!(home.join("runs").join(&done.run_id).join("plan.json").exists());
     assert!(home.join("runs").join(&done.run_id).join("clean").exists());
-    let again = lead::dispatch(&home, &plan_id, false, &start);
+    let again = lead::dispatch(&home, &plan_id, RunMode::of(Efficiency::Off), &start);
     assert!(matches!(again, Err(DispatchError::Other(m)) if m.contains("이미 실행")));
     assert_eq!(started.lock().unwrap().len(), 1);
-    assert!(matches!(lead::dispatch(&home, "nope", false, &start), Err(DispatchError::Other(_))));
+    assert!(matches!(lead::dispatch(&home, "nope", RunMode::of(Efficiency::Off), &start), Err(DispatchError::Other(_))));
     // The next turn hears how the dispatched run is doing.
     let (spawner, seen) = fake(claude_answer("s", "확인했습니다"));
     lead::send(&home, &request(&project, "어떻게 됐어?"), spawner.as_ref()).unwrap();
@@ -373,6 +374,15 @@ fn busy() {
     // A sender that holds the turn (its OS lock on `turn.lock`) but has not finished writing
     // its marker yet: an empty or half-written marker means "starting", not "no turn".
     let (home, project) = setup("busy-mid");
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let dir = lead::thread_dir(&home, &thread);
+    let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
+    held.try_lock().unwrap();
+    assert_eq!(lead::active_count(&home).unwrap(), 1);
+    lead::start(&home, &project).unwrap();
+    assert_eq!(lead::active_count(&home).unwrap(), 1, "a superseded thread still owns its running turn");
+    // Return to the original thread for the remaining busy checks.
+    drop(held);
     let thread = lead::thread_for(&home, &project, false).unwrap();
     let dir = lead::thread_dir(&home, &thread);
     let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();

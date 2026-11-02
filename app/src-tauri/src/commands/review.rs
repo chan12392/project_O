@@ -7,6 +7,7 @@ use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
 use o_core::review;
+use o_core::run::mode::Efficiency;
 use o_core::sys::proc;
 
 use super::{blocking, o_binary};
@@ -34,7 +35,7 @@ pub async fn review(project: String, pr: String, clean: bool) -> Result<serde_js
     blocking(move || {
         let o = o_binary().ok_or("o CLI를 찾지 못했습니다 (cargo install --path crates/o-cli)")?;
         let mut command = Command::new(o);
-        command.args(review::request_args(&pr, clean)).current_dir(&project);
+        command.args(review::request_args(&pr, if clean { Efficiency::On } else { Efficiency::Off })).current_dir(&project);
         let stdout = finish(command, REVIEW_TIMEOUT)?;
         serde_json::from_slice(stdout.as_bytes()).map_err(|e| format!("o review 출력을 읽지 못했습니다: {e}"))
     })

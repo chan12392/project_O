@@ -188,7 +188,7 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     fail(400, "계획 id 형식이 아닙니다");
     return true;
   }
-    run(oWithInput(["lead", "dispatch", plan, ...(query.get("clean") === "1" ? ["--clean"] : [])], Buffer.alloc(0), 60_000));
+    run(oWithInput(["lead", "dispatch", plan, "--efficiency", query.get("clean") === "1" ? "on" : "off"], Buffer.alloc(0), 60_000));
     return true;
   }
   if (!projectOk) {
@@ -237,7 +237,7 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     }
     const model = typeof input.model === "string" && input.model ? ["--model", input.model] : [];
     const args = ["lead", "send", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
-    run(oWithInput([...args, ...(input.clean === true ? ["--clean"] : []), "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
+    run(oWithInput([...args, "--efficiency", input.clean === true ? "on" : "off", "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
     return true;
   }
   return false;
@@ -333,7 +333,7 @@ export function liveRuns(): Plugin {
           if (!PR_SELECTOR.test(pr) || !ABSOLUTE.test(project) || !existsSync(project)) {
             return send(res, 400, JSON.stringify({ error: "PR 번호(또는 github.com PR 주소)와 프로젝트 폴더가 필요합니다" }));
           }
-          return void o(["review", pr, "--post", "--detach", ...clean], 120_000, project).then((out) => send(res, 200, out), error(res));
+          return void o(["review", pr, "--post", "--detach", "--efficiency", query.get("clean") === "1" ? "on" : "off"], 120_000, project).then((out) => send(res, 200, out), error(res));
         }
         if (req.method === "GET" && path === "/tokens") {
           const project = query.get("project");
