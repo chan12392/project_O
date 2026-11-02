@@ -83,21 +83,40 @@ export function UsagePanel({ runs, windows }: Props) {
   );
 }
 
-/** Today's budget from saved readings, polled while the page is visible; undefined until the first answer or when unavailable. */
+/**
+ * Today's budget from saved readings, polled while the page is visible; undefined until the
+ * first answer or when unavailable. One read at a time: coming back to the window while a
+ * read is out does not start a second loop (as TokenCard and useLiveRuns guard theirs).
+ */
 function useBudget(): BudgetReport | undefined {
   const [report, setReport] = useState<BudgetReport>();
   useEffect(() => {
     let stopped = false;
+    let inflight = false;
     let timer: number | undefined;
+    let last = "";
+    const schedule = () => {
+      window.clearTimeout(timer);
+      if (!stopped && !document.hidden) timer = window.setTimeout(poll, BUDGET_POLL_MS);
+    };
     const poll = async () => {
+      if (inflight) return;
+      inflight = true;
       window.clearTimeout(timer);
       try {
         const next = await api.budget();
-        if (!stopped) setReport(next);
+        // The same report keeps the same state, so a quiet refresh re-renders nothing.
+        const text = JSON.stringify(next);
+        if (!stopped && text !== last) {
+          last = text;
+          setReport(next);
+        }
       } catch {
         // An older `o` without `budget`, or no machine behind the page: the row keeps its other rings.
+      } finally {
+        inflight = false;
       }
-      if (!stopped && !document.hidden) timer = window.setTimeout(poll, BUDGET_POLL_MS);
+      schedule();
     };
     const onVisibility = () => (document.hidden ? window.clearTimeout(timer) : void poll());
     void poll();
