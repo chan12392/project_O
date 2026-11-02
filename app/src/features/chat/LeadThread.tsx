@@ -1,0 +1,290 @@
+import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play } from "lucide-react";
+import { useState, type FormEvent } from "react";
+
+import { EFFORT_WORD, fileSize, type LeadItem } from "../../../../src/core/lead.ts";
+import type { RunView } from "../../../../src/core/snapshot.ts";
+import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
+import type { LeadState } from "../../data/useLead.ts";
+import { useSettings } from "../../data/settings.ts";
+import { BUTTON_PRIMARY } from "../../ui/controls.tsx";
+import { Markdown } from "./Markdown.tsx";
+import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
+
+const LEAD_NAME: Record<string, string> = { claude: "Claude Code", codex: "Codex" };
+const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+interface Props {
+  project: string | undefined;
+  lead: LeadState;
+  /** The run a dispatched plan started, once its first events are read. */
+  runOf: (runId: string) => RunView | undefined;
+  onOpenCard: (runId: string, cardId: string) => void;
+  onCompose: () => void;
+  /** A folder chosen when there is no project yet; resolves once its thread exists. */
+  onStartProject: (path: string) => Promise<void>;
+}
+
+/** The real lead chat (ADR-0008): messages, the lead's answers, its plans and what they started. */
+export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStartProject }: Props) {
+  const scroller = useFollowBottom([lead.items, lead.busy]);
+  return (
+    <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
+      <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6 text-sm text-chat-foreground">
+        {!project && <ProjectStart onStart={onStartProject} />}
+        {project && !lead.loaded && !lead.failed && (
+          <div className="flex flex-col gap-4" aria-busy="true" aria-label="대화 불러오는 중">
+            <div className="shimmer ml-auto h-14 w-3/5 rounded-lg" aria-hidden="true" />
+            <div className="shimmer h-20 w-4/5 rounded-lg" aria-hidden="true" />
+          </div>
+        )}
+        {project && lead.failed && !lead.loaded && (
+          <Notice title="총괄 대화를 읽지 못했습니다" action="첫 요청 쓰기" onAction={onCompose}>
+            {lead.failed}
+          </Notice>
+        )}
+        {project && lead.loaded && lead.items.length === 0 && !lead.busy && (
+          <Notice title="아직 총괄과 나눈 대화가 없습니다" action="첫 요청 쓰기" onAction={onCompose}>
+            할 일을 보내면 총괄이 프로젝트를 읽기만 하고 작업카드 계획을 제안합니다. 계획은 실행 버튼을 눌러야 에이전트들에게 전달됩니다.
+          </Notice>
+        )}
+        {lead.items.map((item, i) => (
+          <Item key={`${item.kind}-${item.at}-${i}`} item={item} lead={lead} runOf={runOf} onOpenCard={onOpenCard} />
+        ))}
+        {lead.busy && (
+          <p role="status" className="flex items-center gap-2 text-xs text-chat-foreground-faint">
+            <span className="shimmer h-2 w-16 rounded-full" aria-hidden="true" />
+            총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 프로젝트를 읽고 답하는 중…
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Item({ item, lead, runOf, onOpenCard }: { item: LeadItem; lead: LeadState; runOf: Props["runOf"]; onOpenCard: Props["onOpenCard"] }) {
+  switch (item.kind) {
+    case "user":
+      return (
+        <div className="ml-auto max-w-[85%] rounded-lg border border-chat-user-border bg-chat-user-surface px-3.5 py-2.5">
+          <Markdown text={item.text} />
+          {item.attachments.length > 0 && (
+            <ul aria-label="첨부" className="mt-2 flex flex-wrap gap-1.5">
+              {item.attachments.map((a) => (
+                <li key={a.path} className="flex max-w-56 items-center gap-1.5 rounded-md border bg-background/40 px-2 py-1 text-xs" title={a.path}>
+                  {a.image ? <ImageIcon className="size-3.5 shrink-0 opacity-70" aria-hidden="true" /> : <FileText className="size-3.5 shrink-0 opacity-70" aria-hidden="true" />}
+                  <span className="min-w-0 truncate">{a.name}</span>
+                  <span className="shrink-0 text-chat-foreground-faint tabular-nums">{fileSize(a.size)}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+          <p className="mt-1.5 text-right text-2xs text-chat-foreground-faint">
+            {LEAD_NAME[item.provider] ?? item.provider}
+            {item.effort ? ` · ${EFFORT_WORD[item.effort] ?? item.effort}` : ""} · <time dateTime={item.at}>{timeOf(item.at)}</time>
+          </p>
+        </div>
+      );
+    case "reply":
+      return (
+        <article aria-label="총괄의 답">
+          <p className="mb-1.5 text-xs text-chat-foreground-faint">
+            총괄 {LEAD_NAME[item.provider] ?? item.provider} <time dateTime={item.at}>{timeOf(item.at)}</time>
+          </p>
+          <Markdown text={item.text} />
+        </article>
+      );
+    case "error":
+      return (
+        <p role="alert" className="flex items-start gap-2 rounded-lg border border-destructive/40 px-3.5 py-2.5 text-sm">
+          <CircleAlert className="mt-0.5 size-4 shrink-0 text-destructive" aria-hidden="true" />
+          <span className="min-w-0 whitespace-pre-wrap">{item.text}</span>
+        </p>
+      );
+    case "plan":
+      return <PlanCard plan={item} lead={lead} run={item.runId ? runOf(item.runId) : undefined} onOpenCard={onOpenCard} />;
+  }
+}
+
+/** A proposed plan: its cards, what the policy said, and 실행 (once). */
+function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: Props["onOpenCard"] }) {
+  const { clean } = useSettings();
+  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
+  const titleId = `plan-${plan.planId}`;
+  const dispatch = async () => {
+    setState({ busy: true });
+    try {
+      await lead.dispatch(plan.planId, clean);
+      setState({});
+    } catch (e) {
+      setState({ error: errorText(e) });
+    }
+  };
+
+  return (
+    <section className="overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby={titleId}>
+      <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
+        <div className="min-w-0">
+          <h2 id={titleId} className="truncate text-sm font-medium">
+            {plan.title}
+          </h2>
+          <p className="text-2xs text-muted-foreground">
+            총괄이 제안한 계획 · 카드 {plan.cards.length}장 · <time dateTime={plan.at}>{timeOf(plan.at)}</time>
+          </p>
+        </div>
+        {plan.ok ? (
+          <span className="flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-2xs text-status-success">
+            <CircleCheck className="size-3" aria-hidden="true" />
+            정책 통과
+          </span>
+        ) : (
+          <span className="flex shrink-0 items-center gap-1 rounded-full border border-destructive/40 px-2 py-0.5 text-2xs text-destructive">
+            <OctagonX className="size-3" aria-hidden="true" />
+            정책 차단
+          </span>
+        )}
+      </header>
+      {plan.cards.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="w-full text-left text-xs">
+            <caption className="sr-only">{plan.title}의 작업카드</caption>
+            <thead className="text-2xs text-muted-foreground">
+              <tr className="border-b">
+                <th scope="col" className="px-4 py-2 font-normal">
+                  카드
+                </th>
+                <th scope="col" className="px-2 py-2 font-normal">
+                  에이전트
+                </th>
+                <th scope="col" className="px-2 py-2 font-normal max-sm:hidden">
+                  모델 · 노력
+                </th>
+                <th scope="col" className="px-2 py-2 pr-4 font-normal">
+                  할 일
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.cards.map((card) => (
+                <tr key={card.id} className="border-b align-top last:border-b-0">
+                  <th scope="row" className="px-4 py-2.5 font-normal whitespace-nowrap">
+                    <span className="block font-mono text-foreground">{card.id}</span>
+                    {card.role && <span className="block text-2xs text-muted-foreground">{card.role}</span>}
+                  </th>
+                  <td className="px-2 py-2.5 whitespace-nowrap">{PROVIDER_NAME[card.provider as keyof typeof PROVIDER_NAME] ?? card.provider}</td>
+                  <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground max-sm:hidden">
+                    {card.model || "기본 모델"}
+                    {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
+                  </td>
+                  <td className="px-2 py-2.5 pr-4">
+                    <p className="line-clamp-3 text-foreground/90" title={card.task}>
+                      {card.task}
+                    </p>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {!plan.ok && plan.violations.length > 0 && (
+        <ul className="space-y-1 border-t px-4 py-3 text-xs" aria-label="정책 위반">
+          {plan.violations.map((v, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="shrink-0 font-mono text-destructive">[{v.rule}]</span>
+              <span className="min-w-0">
+                {v.cardId && <span className="font-mono">{v.cardId}: </span>}
+                {v.message}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
+        {plan.runId ? (
+          run ? (
+            <p className="text-xs text-muted-foreground">실행 {plan.runId}를 시작했습니다. 진행은 아래와 작업 보기에서 볼 수 있습니다.</p>
+          ) : (
+            <p role="status" className="text-xs text-muted-foreground">
+              실행 {plan.runId}를 시작했습니다. 첫 기록을 기다리는 중…
+            </p>
+          )
+        ) : plan.ok ? (
+          <>
+            <button type="button" onClick={dispatch} disabled={state.busy} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
+              <Play className="size-3.5" aria-hidden="true" />
+              {state.busy ? "실행하는 중…" : "실행"}
+            </button>
+            <p id={`${titleId}-how`} className="min-w-0 flex-1 text-xs text-muted-foreground">
+              정책을 한 번 더 검사한 뒤 {clean ? "깨끗한 에이전트" : "기본 하네스"}로 카드들을 띄웁니다. 한 번만 실행할 수 있습니다.
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">정책에 막힌 계획은 실행하지 않습니다. 총괄에게 사유를 알려 다시 계획해 달라고 하세요.</p>
+        )}
+        {state.error && (
+          <p role="alert" className="w-full text-xs whitespace-pre-wrap text-destructive">
+            {state.error}
+          </p>
+        )}
+      </footer>
+      {run && (
+        <div className="border-t p-3">
+          <RunCard run={run} onOpenCard={(card) => onOpenCard(run.runId, card)} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** No project yet: the folder the lead will read, typed as an absolute path. */
+function ProjectStart({ onStart }: { onStart: (path: string) => Promise<void> }) {
+  const [path, setPath] = useState("");
+  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
+  const absolute = /^(?:[A-Za-z]:[\\/]|\/)/.test(path.trim());
+  const submit = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!absolute) return setState({ error: "C:\\work\\app 처럼 절대 경로를 적어 주세요" });
+    setState({ busy: true });
+    try {
+      await onStart(path.trim());
+      setState({});
+    } catch (err) {
+      setState({ error: errorText(err) });
+    }
+  };
+  return (
+    <section className="rounded-xl border bg-card p-6 text-card-foreground" aria-labelledby="project-start-title">
+      <h2 id="project-start-title" className="flex items-center gap-2 text-sm font-medium">
+        <FolderOpen className="size-4 text-muted-foreground" aria-hidden="true" />
+        총괄이 맡을 프로젝트 폴더
+      </h2>
+      <p className="mt-1.5 text-sm text-muted-foreground">총괄은 이 폴더를 읽기만 하고 작업카드 계획을 제안합니다. 홈 폴더 자체나 O의 상태 폴더는 쓸 수 없습니다.</p>
+      <form className="mt-4 flex gap-2 max-sm:flex-col" onSubmit={submit} noValidate>
+        <label htmlFor="project-path" className="sr-only">
+          프로젝트 폴더 경로
+        </label>
+        <input
+          id="project-path"
+          value={path}
+          onChange={(e) => {
+            setPath(e.target.value);
+            if (state.error) setState({});
+          }}
+          spellCheck={false}
+          placeholder="C:\work\my-app"
+          aria-invalid={Boolean(state.error)}
+          aria-describedby={state.error ? "project-path-error" : undefined}
+          className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2.5 font-mono text-xs outline-none focus-ring placeholder:text-muted-foreground"
+        />
+        <button type="submit" disabled={state.busy || !path.trim()} className={BUTTON_PRIMARY}>
+          {state.busy ? "여는 중…" : "이 폴더로 시작"}
+        </button>
+      </form>
+      {state.error && (
+        <p id="project-path-error" role="alert" className="mt-2 text-xs text-destructive">
+          {state.error}
+        </p>
+      )}
+    </section>
+  );
+}

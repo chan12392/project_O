@@ -54,13 +54,15 @@ async function readFreshUsage(): Promise<UsageReading | undefined> {
 }
 
 function requestedSource(): Source | undefined {
+  // The desktop app shows only this machine's real runs: no recorded demo, not even as a fallback.
+  if (window.__TAURI_INTERNALS__) return "live";
   const source = new URLSearchParams(window.location.search).get("source");
   return source === "live" || source === "demo" ? source : undefined;
 }
 
 /**
  * Runs and usage from project_O.exe's Tauri commands or the dev server's /api (app/dev/liveRuns.ts), polled while
- * the page is visible. Lead chat transcripts are not stored by O yet, so messages stay empty.
+ * the page is visible. Lead chat threads come separately (`data/useLead.ts`), so run messages stay empty.
  * `runs` is undefined until the first answer; a failed first answer counts as no runs.
  */
 function useLiveRuns(enabled: boolean, sessions: boolean) {
@@ -150,7 +152,7 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
 }
 
 /**
- * The screen's data: `?source=live` or `?source=demo`, otherwise live when this
+ * The screen's data: always live in the desktop app; in the browser `?source=live` or `?source=demo`, otherwise live when this
  * machine has at least one O run and demo when it has none (decided once).
  * Same shape as useDemoRuns, plus the usage windows and what live mode needs.
  */

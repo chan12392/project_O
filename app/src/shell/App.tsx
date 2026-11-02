@@ -1,13 +1,15 @@
-import { PanelRightOpen, SquareArrowOutUpRight } from "lucide-react";
+import { MessageSquarePlus, PanelRightOpen, SquareArrowOutUpRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { nextUp, type NextItem } from "../../../src/core/attention.ts";
 import { LEAD_WORD, projectsOf, useLeads, useProjectGroups, type Project } from "../data/projects.ts";
 import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow } from "../data/settings.ts";
+import { sameFolder, useLead } from "../data/useLead.ts";
 import { useRunSource } from "../data/useLiveRuns.ts";
 import { readParams, writeParam, type PanelView, type ScreenState } from "../data/useRun.ts";
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
+import { LeadThread } from "../features/chat/LeadThread.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { AccountMenu, SETTINGS_BUTTON_ID } from "../features/settings/AccountMenu.tsx";
@@ -27,7 +29,7 @@ import { StatusBar } from "./StatusBar.tsx";
 
 const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
-const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
+const api = backend(!window.__TAURI_INTERNALS__ && new URLSearchParams(window.location.search).get("source") === "demo");
 
 type Screen = "app" | "onboarding" | "settings" | "nextup";
 
@@ -75,8 +77,12 @@ type Run = ReturnType<typeof useRunSource>["runs"][number];
  * What the selection points at: a project (the run's, else the newest), and the
  * run shown in its lead chat (the chosen one, else the project's newest).
  */
-function resolve(runs: Run[], selection: Selection) {
+function resolve(runs: Run[], selection: Selection, extra: (string | undefined)[] = []) {
   const projects = projectsOf(runs.map((r) => r.view));
+  // Live: folders with a lead thread but no run yet, and a folder just chosen, are projects too.
+  for (const path of extra) {
+    if (path && !projects.some((p) => sameFolder(p.path, path))) projects.push({ path, name: path.split(/[\\/]/).filter(Boolean).pop() ?? path, runs: [] });
+  }
   const chosen = runs.find((r) => r.view.runId === selection.run);
   const project: Project | undefined = projects.find((p) => p.path === (selection.project ?? chosen?.view.project)) ?? projects[0];
   const current = chosen && chosen.view.project === project?.path ? chosen : runs.find((r) => r.view.runId === project?.runs[0]?.runId);
@@ -96,11 +102,22 @@ function MainWindow() {
   const askRef = useRef<HTMLTextAreaElement>(null);
   const groups = useProjectGroups();
 
-  const resolved = useMemo(() => resolve(runs, selection), [runs, selection]);
+  // The recorded demo keeps its own transcripts; everywhere else the lead chat is real (ADR-0008).
+  const live = !data.pending && Boolean(data.live);
+  const [leadProjects, setLeadProjects] = useState<string[]>([]);
+  const resolved = useMemo(
+    () => resolve(runs, selection, live ? [...leadProjects, selection.project] : []),
+    [runs, selection, live, leadProjects],
+  );
   const { projects, project } = resolved;
+  const lead = useLead(api, project?.path, live);
+  const leadKey = lead.projects.map((p) => p.project).join("\n");
+  useEffect(() => setLeadProjects(leadKey ? leadKey.split("\n") : []), [leadKey]);
   const leads = useLeads(projects);
   const current = state === "full" ? resolved.current : undefined;
-  const lead = project ? leads.stateOf(project.path) : "ready";
+  const gateState = project ? leads.stateOf(project.path) : "ready";
+  // A real lead has no resting gate: it answers when written to (the demo keeps the gate).
+  const leadState = live ? (lead.busy || gateState === "working" ? "working" : "ready") : gateState;
   const announced = useAnnouncer(current?.view);
   useEffect(() => rememberProject(project?.path), [project?.path]);
 
@@ -169,7 +186,8 @@ function MainWindow() {
           state={state}
           projects={projects}
           groups={groups}
-          leadState={leads.stateOf}
+          // A real lead is ready whenever written to; it works while its runs go or while it answers.
+          leadState={live ? (path) => (leads.stateOf(path) === "working" || (lead.busy && path === project?.path) ? "working" : "ready") : leads.stateOf}
           project={project?.path}
           run={current?.view.runId}
           card={selection.card}
@@ -225,10 +243,21 @@ function MainWindow() {
         <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
           <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs">
             <span className="shrink-0 font-medium text-tab-active-foreground">{project ? `${project.name} 총괄` : "총괄"}</span>
-            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs text-muted-foreground">{LEAD_WORD[lead]}</span>}
-            {current && (lead === "working" || lead === "ready") && <span className="truncate text-muted-foreground">{current.view.title}</span>}
+            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs text-muted-foreground">{lead.busy ? "답하는 중" : LEAD_WORD[leadState]}</span>}
+            {current && (leadState === "working" || leadState === "ready") && <span className="truncate text-muted-foreground">{current.view.title}</span>}
             <span className="ml-auto flex items-center gap-1">
               {project && <WhoIsWorking runs={project.runs} onOpen={openCard} />}
+              {live && project && lead.items.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => void lead.startNew().then(compose)}
+                  disabled={lead.busy}
+                  title="이 프로젝트의 총괄과 새 대화를 시작합니다 (지난 대화는 남습니다)"
+                  className="flex h-6 items-center gap-1 rounded-md border px-2 hover:bg-accent focus-ring disabled:cursor-not-allowed disabled:opacity-50"
+                >
+                  <MessageSquarePlus className="size-3.5" aria-hidden="true" />새 대화
+                </button>
+              )}
               {layout.popped && (
                 <button type="button" onClick={layout.dock} className="flex h-6 items-center gap-1 rounded-md border px-2 hover:bg-accent focus-ring">
                   <SquareArrowOutUpRight className="size-3.5" aria-hidden="true" />
@@ -242,8 +271,23 @@ function MainWindow() {
               )}
             </span>
           </header>
-          {state === "full" && project && (lead === "resting" || lead === "loading") ? (
-            <LeadGate project={project} loading={lead === "loading"} onWake={() => leads.wake(project.path)} />
+          {live && state !== "error" ? (
+            <div key={project?.path ?? "none"} className="bloom flex min-h-0 flex-1 flex-col">
+              <LeadThread
+                project={project?.path}
+                lead={lead}
+                runOf={(runId) => runs.find((r) => r.view.runId === runId)?.view}
+                onOpenCard={openCard}
+                onCompose={compose}
+                onStartProject={async (path) => {
+                  await api.leadNew(path);
+                  select({ project: path, run: undefined, card: undefined });
+                  compose();
+                }}
+              />
+            </div>
+          ) : state === "full" && project && (leadState === "resting" || leadState === "loading") ? (
+            <LeadGate project={project} loading={leadState === "loading"} onWake={() => leads.wake(project.path)} />
           ) : (
             <div key={project?.path} className="bloom flex min-h-0 flex-1 flex-col">
               <Thread
@@ -256,7 +300,7 @@ function MainWindow() {
               />
             </div>
           )}
-          <Composer inputRef={askRef} />
+          <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
         </section>
         {showPanel && (
           <>
@@ -278,7 +322,7 @@ function MainWindow() {
                 usageRuns={runs.map((r) => r.view)}
                 usageWindows={data.usageWindows}
                 now={data.clock}
-                leadResting={lead === "resting" || lead === "loading"}
+                leadResting={leadState === "resting" || leadState === "loading"}
                 view={selection.view}
                 card={selection.card}
                 onView={(view: PanelView) => select({ view })}

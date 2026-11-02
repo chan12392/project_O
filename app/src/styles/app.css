@@ -73,10 +73,10 @@
 .bloom { animation: bloom 0.42s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
 @media (prefers-reduced-motion: reduce) {
   :root:not([data-motion="full"]) .progress-flow { animation: none; left: 0; width: 100%; opacity: 0.6; }
-  :root:not([data-motion="full"]) :is(.shimmer, .bloom) { animation: none; }
+  :root:not([data-motion="full"]) :is(.shimmer, .bloom, .animate-spin) { animation: none; }
 }
 :root[data-motion="reduce"] .progress-flow { animation: none; left: 0; width: 100%; opacity: 0.6; }
-:root[data-motion="reduce"] :is(.shimmer, .bloom) { animation: none; }
+:root[data-motion="reduce"] :is(.shimmer, .bloom, .animate-spin) { animation: none; }
 
 /* Office people glide between spots; the sheet frames do the walking. */
 @media (prefers-reduced-motion: reduce) {

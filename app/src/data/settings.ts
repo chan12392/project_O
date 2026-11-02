@@ -1,6 +1,13 @@
 import { useSyncExternalStore } from "react";
 
+import { effortFor, isLeadProvider, type LeadProvider } from "../../../src/core/lead.ts";
 import { readStored, writeStored } from "../lib/storage.ts";
+
+/** A saved lead agent and effort, kept only while the agent can lead and takes that effort. */
+function leadChoice(agent: unknown, effort: unknown): { leadAgent: LeadProvider; leadEffort: string } {
+  const leadAgent = typeof agent === "string" && isLeadProvider(agent) ? agent : DEFAULTS.leadAgent;
+  return { leadAgent, leadEffort: effortFor(leadAgent, typeof effort === "string" ? effort : DEFAULTS.leadEffort) };
+}
 
 /**
  * The owner's app preferences (Settings), kept in localStorage and shared by the
@@ -24,6 +31,9 @@ export interface Settings {
   notify: boolean;
   /** Show this PC's Claude Code sessions as runs; unset follows the source (see `sessionsShown`). */
   sessions?: boolean;
+  /** Settings → 총괄: the agent and effort a new message starts with (the composer may pick others). */
+  leadAgent: LeadProvider;
+  leadEffort: string;
 }
 
 const KEY = "project-o.settings";
@@ -31,7 +41,16 @@ const ONBOARDED_KEY = "project-o.onboarded";
 const LAST_PROJECT_KEY = "project-o.last-project";
 
 /** The app was dark before Settings existed (index.html), so dark stays the default. */
-export const DEFAULTS: Settings = { theme: "dark", fontSize: "normal", motion: "system", start: "last", clean: true, notify: false };
+export const DEFAULTS: Settings = {
+  theme: "dark",
+  fontSize: "normal",
+  motion: "system",
+  start: "last",
+  clean: true,
+  notify: false,
+  leadAgent: "claude",
+  leadEffort: "medium",
+};
 
 const FONT_SCALE: Record<FontSize, string> = { small: "0.9375", normal: "1", large: "1.125" };
 
@@ -51,6 +70,7 @@ function load(): Settings {
       clean: typeof s.clean === "boolean" ? s.clean : DEFAULTS.clean,
       notify: typeof s.notify === "boolean" ? s.notify : DEFAULTS.notify,
       sessions: typeof s.sessions === "boolean" ? s.sessions : undefined,
+      ...leadChoice(s.leadAgent, s.leadEffort),
     };
   });
 }
