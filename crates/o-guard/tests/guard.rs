@@ -206,6 +206,23 @@ fn relative_shell_targets_reach_the_mirror_too() {
     }
 }
 
+/// A patch that moves a file is judged by both ends of the move.
+#[test]
+fn patch_moves_are_checked_at_source_and_destination() {
+    let patch = |from: &str, to: &str, line: &str| {
+        let body = format!("*** Begin Patch\n*** Update File: {from}\n*** Move to: {to}\n@@\n-old\n+{line}\n*** End Patch");
+        json!({ "tool_name": "apply_patch", "tool_input": { "command": body }, "cwd": "C:/ws/younchan" })
+    };
+    assert!(blocked(&patch("src/a.rs", "C:/ws/test_2/src/a.rs", "x"), &ByFolder));
+    assert!(blocked(&patch("src/a.rs", "../test_2/src/a.rs", "x"), &ByFolder));
+    assert!(blocked(&patch("C:/ws/test_2/src/a.rs", "src/a.rs", "x"), &ByFolder));
+    assert!(passes(&patch("src/a.rs", "src/b.rs", "x"), &ByFolder));
+    // Code only the rule file and its tests may spell, moved out of the allowed folder.
+    let bad = format!("let t = \"{OAUTH_TOKEN}\";");
+    assert!(blocked(&patch("crates/o-guard/tests/x.rs", "crates/o-core/src/x.rs", &bad), &ByFolder));
+    assert!(passes(&patch("crates/o-guard/tests/x.rs", "crates/o-guard/tests/y.rs", &bad), &ByFolder));
+}
+
 #[test]
 fn sign_in_files_are_off_limits_to_read_tools_too() {
     let read = |file_path: String| json!({ "tool_name": "Read", "tool_input": { "file_path": file_path } });

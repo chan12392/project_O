@@ -65,7 +65,8 @@ static VARIABLE_PREFIX: LazyLock<Regex> =
 static PERCENT_VARIABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%\w+%").unwrap());
 static PARENT_STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\\/])\.\.(?:[\\/]|$)").unwrap());
 
-static PATCH_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$").unwrap());
+/// Every file a patch touches: added, updated, deleted, and the destination of a move.
+static PATCH_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\*\*\* (?:(?:Add|Update|Delete) File|Move to): (.+)$").unwrap());
 static ROOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z]:)?[\\/]").unwrap());
 
 /// `gh pr merge` (group 1) or `gh api`, wherever it appears: quoted or not, on any line.
@@ -139,8 +140,8 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
 
     let raw_paths = edited_paths(tool, args);
     for path in &raw_paths {
-        // Forward slashes so dirname works the same for Windows and POSIX paths.
-        let absolute = if ROOTED.is_match(path) { path.clone() } else { format!("{cwd}/{path}") }.replace('\\', "/");
+        // Forward slashes so dirname works the same for Windows and POSIX paths; `..` resolved lexically.
+        let absolute = normalize(&if ROOTED.is_match(path) { path.clone() } else { format!("{cwd}/{path}") }.replace('\\', "/"));
         if git.is_mirror(dirname(&absolute)) {
             reasons.push(format!("{READ_ONLY_REASON} ({path})"));
             return reasons;
