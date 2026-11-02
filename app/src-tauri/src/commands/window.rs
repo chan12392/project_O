@@ -156,6 +156,17 @@ mod tests {
         }
     }
 
+    /// On Windows the native file-drop handler swallows the drag, so the composer's HTML5
+    /// `drop` (attachments) never fires unless the main window turns it off. Nothing listens
+    /// for Tauri's own drag-drop events.
+    #[test]
+    fn main_window_leaves_file_drops_to_the_page() {
+        let config: serde_json::Value = serde_json::from_str(include_str!("../../tauri.conf.json")).unwrap();
+        let main = config["app"]["windows"].as_array().unwrap().iter().find(|w| w["label"] == MAIN).unwrap();
+        assert_eq!(main["dragDropEnabled"], false);
+        assert_eq!(main["create"], false, "open_main이 새 창 처리기와 함께 만든다");
+    }
+
     #[test]
     fn window_events_carry_their_detail_as_json() {
         assert_eq!(window_event(POPOUT_CLOSED, None), r#"window.dispatchEvent(new Event("project-o:popout-closed"))"#);
