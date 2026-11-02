@@ -7,6 +7,7 @@
 //! leads/<threadId>/events.jsonl      the thread: lead.start · lead.user · lead.session · lead.reply
 //!                                    · lead.plan · lead.dispatch · lead.usage · lead.error · lead.seen
 //! leads/<threadId>/turn.raw.jsonl    the CLIs' stdout, for reading back a turn
+//! leads/<threadId>/sessions.txt      the CLI session ids it used, one per line (`o runs --sessions` reads these)
 //! leads/<threadId>/turn.lock         held (OS lock) by the turn in progress, for as long as it runs
 //! leads/<threadId>/running.json      that turn's marker ({ provider, owner, token, child }); stop: its stop request
 //! leads/<threadId>/dispatched/<planId>   made once, when a plan is dispatched
@@ -155,6 +156,7 @@ pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String>
     let thread_id = new_run_id(Utc::now());
     fs::create_dir_all(thread_dir(home, &thread_id))?;
     append(home, &thread_id, &LeadEvent::Start { at: now_iso(), thread_id: thread_id.clone(), project: project.to_string() })?;
+    fs::write(sessions_path(home, &thread_id), "")?;
     current.insert(key, thread_id.clone());
     write_current(home, &current)?;
     Ok(thread_id)
@@ -584,6 +586,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
                     StreamSignal::Session { session_id } => {
                         if session.as_deref() != Some(session_id.as_str()) {
                             emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone() })?;
+                            index_session(home, &thread_id, &session_id);
                         }
                         used_session = Some(session_id);
                     }
@@ -856,16 +859,42 @@ fn thread_ids(home: &Path) -> Vec<String> {
     entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|id| is_run_id(id)).collect()
 }
 
-/// Every CLI session a lead turn used, so `o runs --sessions` does not list the lead as separate work.
-pub fn session_ids(home: &Path) -> Vec<String> {
-    thread_ids(home)
-        .iter()
-        .flat_map(|id| read_thread(home, id))
+fn sessions_path(home: &Path, thread_id: &str) -> PathBuf {
+    thread_dir(home, thread_id).join("sessions.txt")
+}
+
+/// A thread's CLI session ids, one per line in `sessions.txt`. A thread from before that
+/// index gets it from its events, once (`create_new`: a turn that made it first keeps its own).
+fn thread_sessions(home: &Path, thread_id: &str) -> Vec<String> {
+    let path = sessions_path(home, thread_id);
+    if let Ok(text) = fs::read_to_string(&path) {
+        return text.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_string).collect();
+    }
+    let ids: Vec<String> = read_thread(home, thread_id)
+        .into_iter()
         .filter_map(|e| match e {
             LeadEvent::Session { session_id, .. } => Some(session_id),
             _ => None,
         })
-        .collect()
+        .collect();
+    if let Ok(mut file) = OpenOptions::new().write(true).create_new(true).open(&path) {
+        let _ = file.write_all(ids.iter().map(|id| format!("{id}\n")).collect::<String>().as_bytes());
+    }
+    ids
+}
+
+/// Adds a session id to its thread's index (made from the events first if the thread is older).
+fn index_session(home: &Path, thread_id: &str, session_id: &str) {
+    thread_sessions(home, thread_id);
+    if let Ok(mut file) = OpenOptions::new().append(true).open(sessions_path(home, thread_id)) {
+        let _ = file.write_all(format!("{session_id}\n").as_bytes());
+    }
+}
+
+/// Every CLI session a lead turn used, so `o runs --sessions` does not list the lead as separate
+/// work. Read from each thread's small index: this runs on every 2-second runs poll.
+pub fn session_ids(home: &Path) -> Vec<String> {
+    thread_ids(home).iter().flat_map(|id| thread_sessions(home, id)).collect()
 }
 
 /// Tokens lead turns spent (`o tokens`), for one project or all, since an ISO time.

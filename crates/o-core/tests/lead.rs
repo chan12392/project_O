@@ -42,7 +42,7 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 21] = [
+    let tests: [(&str, fn()); 22] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -64,6 +64,7 @@ fn main() {
         ("a turn that outlasts its time limit is ended and says so", turn_time_limit),
         ("back from another agent, a resumed session hears the turns it missed", round_trip),
         ("the thread list is written whole and a broken one is never overwritten", current_list),
+        ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -807,4 +808,28 @@ fn current_list() {
         assert_eq!(lead::current_thread(&home, folder).as_ref(), Some(thread), "{folder} lost its thread");
     }
     assert_ne!(lead::thread_for(&home, &project, false).unwrap(), first, "the list was removed above, so a new thread starts");
+}
+/// `o runs --sessions` asks every 2 seconds which CLI sessions are the lead's: that comes from
+/// each thread's small `sessions.txt`, not from re-reading every thread's events. A thread
+/// from before the index gets one from its events, once.
+fn session_index() {
+    let (home, project) = setup("sessions");
+    let (spawner, _) = fake(claude_answer("sess-ix", "네"));
+    lead::send(&home, &request(&project, "안녕"), spawner.as_ref()).unwrap();
+    let thread = lead::current_thread(&home, &project).unwrap();
+    let dir = lead::thread_dir(&home, &thread);
+    // The events are not what is read: replaced, the answer stays.
+    std::fs::write(dir.join("events.jsonl"), "not events\n").unwrap();
+    assert_eq!(lead::session_ids(&home), ["sess-ix"]);
+
+    // An older thread with no index: read from its events, then indexed.
+    let old = lead::thread_for(&home, &PathBuf::from(&project).join("old").to_string_lossy(), false).unwrap();
+    let old_dir = lead::thread_dir(&home, &old);
+    let _ = std::fs::remove_file(old_dir.join("sessions.txt"));
+    let line = json!({ "t": "lead.session", "at": "2026-11-01T00:00:00.000Z", "provider": "codex", "sessionId": "th-old" });
+    std::fs::OpenOptions::new().append(true).open(old_dir.join("events.jsonl")).and_then(|mut f| std::io::Write::write_all(&mut f, format!("{line}\n").as_bytes())).unwrap();
+    let mut ids = lead::session_ids(&home);
+    ids.sort();
+    assert_eq!(ids, ["sess-ix", "th-old"]);
+    assert!(std::fs::read_to_string(old_dir.join("sessions.txt")).unwrap().contains("th-old"));
 }
