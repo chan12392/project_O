@@ -321,7 +321,8 @@ fn ingest_run(conn: &mut Connection, path: &Path, run_id: &str) -> io::Result<()
 
 /// FNV-1a over the ingested bytes: tells a file that still starts with what was read
 /// from one rewritten in place (same size, or longer with a line break at the old end).
-fn fingerprint(bytes: &[u8]) -> i64 {
+/// The context index (`context`) checks its own read against the file the same way.
+pub(crate) fn fingerprint(bytes: &[u8]) -> i64 {
     let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, b| (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
     hash as i64
 }

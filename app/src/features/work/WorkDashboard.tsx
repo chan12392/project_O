@@ -1,7 +1,7 @@
 import { CircleCheck, CircleX, GitPullRequest, MessageSquare, Play, Rocket } from "lucide-react";
 import { useState } from "react";
 
-import { activity, fleetStats, type ActivityItem, type NextItem } from "../../../../src/core/attention.ts";
+import { activity, fleetStats, needsAction, type ActivityItem, type NextItem } from "../../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_SHORT, STATE_WORD, clip, compact, timeOf } from "../../lib/format.ts";
 import { NextTicket } from "./NextUp.tsx";
@@ -31,7 +31,8 @@ interface Props {
  */
 export function WorkDashboard({ runs, todo, stopped, now, onOpen, onToggle, onNextUp, onBoard, onCard }: Props) {
   const [all, setAll] = useState(false);
-  const pass = [...todo, ...stopped].filter((i) => URGENT.has(i.kind)).sort((a, b) => a.since.localeCompare(b.since));
+  // A note only needs reading and a Claude Code session's ticket is a record: neither waits on anyone.
+  const pass = [...todo, ...stopped].filter((i) => URGENT.has(i.kind) && needsAction(i)).sort((a, b) => a.since.localeCompare(b.since));
   const shown = all ? pass : pass.slice(0, PASS_VISIBLE);
   const stats = fleetStats(runs, now);
 
@@ -42,7 +43,12 @@ export function WorkDashboard({ runs, todo, stopped, now, onOpen, onToggle, onNe
           <h3 id="pass-title" className="text-sm font-bold">
             기다리는 일
           </h3>
-          {pass.length > 0 && <span className="rounded-full bg-red-500 px-1.5 text-2xs font-bold text-white tabular-nums">{pass.length}</span>}
+          {pass.length > 0 && (
+            <span className="rounded-full bg-destructive px-1.5 text-2xs font-bold text-destructive-foreground tabular-nums">
+              {pass.length}
+              <span className="sr-only">건</span>
+            </span>
+          )}
           <span className="truncate text-2xs text-muted-foreground">오래 기다린 것부터</span>
           {pass.length > PASS_VISIBLE && (
             <button type="button" onClick={() => setAll((a) => !a)} className="ml-auto shrink-0 rounded px-1.5 text-2xs text-muted-foreground hover:text-foreground focus-ring">
@@ -68,8 +74,8 @@ export function WorkDashboard({ runs, todo, stopped, now, onOpen, onToggle, onNe
       <div className="@container">
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-border text-card-foreground @xl:grid-cols-4" role="group" aria-label="작업 현황">
           <Metric label="작업 중" value={stats.running} hint={`${runs.filter((r) => r.status === "running").length}개 실행`} tone="text-agent-working" onClick={onBoard} action="보드 열기" />
-          <Metric label="멈춤" value={stopped.length} hint={`실패·중지 ${stats.stopped}`} tone={stopped.length > 0 ? "text-red-400" : "text-muted-foreground"} onClick={onNextUp} action="다음 할 일 열기" />
-          <Metric label="PR" value={stats.prs} hint="에이전트가 보고한 PR" tone="text-sky-400" onClick={onNextUp} action="다음 할 일 열기" />
+          <Metric label="멈춤" value={stopped.length} hint={`실패·중지 ${stats.stopped}`} tone={stopped.length > 0 ? "text-destructive" : "text-muted-foreground"} onClick={onNextUp} action="다음 할 일 열기" />
+          <Metric label="PR" value={stats.prs} hint="에이전트가 보고한 PR" tone="text-callout-note" onClick={onNextUp} action="다음 할 일 열기" />
           <Metric label="오늘 카드" value={stats.cardsToday} hint={stats.tokensToday > 0 ? `${compact.format(stats.tokensToday)} 토큰` : "토큰 보고 없음"} />
         </div>
       </div>

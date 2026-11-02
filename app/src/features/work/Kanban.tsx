@@ -40,8 +40,13 @@ export function KanbanHeader({ id, children }: { id: string; children: ReactNode
   return <h3 id={`kanban-${id}`} className="m-0 flex items-center gap-2 p-2 text-sm font-semibold">{children}</h3>;
 }
 
-export function KanbanCards({ children }: { children: ReactNode }) {
-  return <div className="scrollbar-sleek grid flex-grow grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] content-start gap-2 overflow-y-auto p-2 @4xl:flex @4xl:flex-col">{children}</div>;
+/** `empty`: stacked as lanes, an empty column folds to its header (its count says 0); side by side it keeps its box. */
+export function KanbanCards({ children, empty }: { children: ReactNode; empty?: boolean }) {
+  return (
+    <div className={`scrollbar-sleek grid flex-grow grid-cols-[repeat(auto-fill,minmax(14rem,1fr))] content-start gap-2 overflow-y-auto p-2 @4xl:flex @4xl:flex-col ${empty ? "@max-4xl:hidden" : ""}`}>
+      {children}
+    </div>
+  );
 }
 
 /** The whole card is one button; its text is what a screen reader hears, followed by the action. */

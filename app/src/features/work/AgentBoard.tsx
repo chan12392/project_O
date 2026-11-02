@@ -3,6 +3,7 @@ import { GitPullRequest } from "lucide-react";
 import { prOf, tokensOf } from "../../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, STATE_WORD, clip, compact, modelLine, timeOf } from "../../lib/format.ts";
+import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { lookOf } from "../office/characters.ts";
 import { Avatar } from "../office/Avatar.tsx";
 import { KanbanBoard, KanbanCard, KanbanCards, KanbanHeader, KanbanProvider, type KanbanColumn } from "./Kanban.tsx";
@@ -43,8 +44,9 @@ export function AgentBoard({ runs, onOpen }: { runs: RunView[]; onOpen: (target:
               {column.name}
               <span className="ml-auto rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{inColumn.length}</span>
             </KanbanHeader>
-            <KanbanCards>
-              {inColumn.length === 0 && <p className={`px-1 py-1 text-2xs text-muted-foreground ${column.id === "review" ? "" : "@max-4xl:hidden"}`}>{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
+            {/* Stacked, an empty lane is just its header; the PR lane keeps a line saying why it is empty. */}
+            <KanbanCards empty={inColumn.length === 0 && column.id !== "review"}>
+              {inColumn.length === 0 && <p className="px-1 py-1 text-2xs text-muted-foreground">{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
               {inColumn.map(({ card, run }) => (
                 <BoardCard key={`${run.runId}/${card.id}`} card={card} run={run} onOpen={() => onOpen({ run: run.runId, card: card.id })} />
               ))}
@@ -92,10 +94,10 @@ function BoardCard({ card, run, onOpen }: { card: CardView; run: RunView; onOpen
       {pr && (
         <div className="flex flex-col gap-1 px-1 pb-1">
           <span className="flex min-w-0 items-center gap-2 text-2xs">
-            <a href={pr} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1 truncate text-sky-400 hover:underline focus-ring">
+            <ExternalAnchor href={pr} className="flex min-w-0 items-center gap-1 truncate text-callout-note hover:underline focus-ring">
               <GitPullRequest className="size-3 shrink-0" aria-hidden="true" />
               {pr.replace("https://github.com/", "")}
-            </a>
+            </ExternalAnchor>
             <span className="shrink-0 text-muted-foreground">{reviewer ? "에이전트 검토 완료 · 사람 판단" : "사람 검토 필요"}</span>
           </span>
           {!reviewer && <ReviewButton project={run.project} pr={pr} />}

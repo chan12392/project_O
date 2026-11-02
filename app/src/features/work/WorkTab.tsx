@@ -8,7 +8,7 @@ import { readStored, writeStored } from "../../lib/storage.ts";
 import type { PanelViewDef } from "../../shell/SidePanel.tsx";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
 import { AgentBoard } from "./AgentBoard.tsx";
-import { NextUp, useHandled } from "./NextUp.tsx";
+import { NextUp, actionCount, useHandled } from "./NextUp.tsx";
 import { ReviewRequestForm } from "./ReviewRequest.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
 
@@ -69,7 +69,8 @@ const SUBS: SubDef[] = [
     id: "next",
     label: "다음 할 일",
     icon: ListTodo,
-    badge: (c) => c.todo.length + c.stopped.length,
+    // What waits on a person: notes to read and Claude Code sessions' tickets are not counted.
+    badge: (c) => actionCount([...c.todo, ...c.stopped]),
     reviewRequest: true,
     render: (c) => <NextUp todo={c.todo} stopped={c.stopped} now={c.now} handled={c.handled} onToggle={c.toggle} onOpen={c.openItem} />,
   },
@@ -154,8 +155,9 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
               <s.icon className="size-3.5" aria-hidden="true" />
               {s.label}
               {count > 0 && (
-                <span className="rounded-full bg-red-500/90 px-1.5 text-3xs font-bold text-white tabular-nums" aria-label={`${count}건`}>
+                <span className="rounded-full bg-destructive px-1.5 text-3xs font-bold text-destructive-foreground tabular-nums">
                   {count}
+                  <span className="sr-only">건</span>
                 </span>
               )}
             </button>

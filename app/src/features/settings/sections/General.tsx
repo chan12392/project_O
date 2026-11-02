@@ -46,21 +46,11 @@ function GeneralSection({ demo }: { demo: boolean }) {
             />
           }
         />
+        {/* What the app does, not a choice it does not offer yet. */}
         <SettingsRow
-          label="실시간 갱신 주기"
-          soon
-          description="이 PC의 O 실행 기록을 2초마다 읽고, 창이 가려져 있으면 쉽니다. 주기 바꾸기는 준비 중입니다."
-          control={
-            <Segmented
-              label="실시간 갱신 주기"
-              value="2"
-              options={[
-                { value: "2", label: "2초" },
-                { value: "5", label: "5초", soon: true },
-                { value: "10", label: "10초", soon: true },
-              ]}
-            />
-          }
+          label="실시간 갱신"
+          description="이 PC의 O 실행 기록을 2초마다 읽고, 창이 가려져 있으면 쉽니다."
+          control={<span className="text-xs text-muted-foreground tabular-nums">2초마다</span>}
         />
       </Rows>
     </Section>

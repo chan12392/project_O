@@ -4,8 +4,9 @@ import { useId, useMemo, useState, type ReactNode } from "react";
 import { isSessionRun, nextUpByProject, projectName, recommend, type NextItem, type ProjectNext, type Suggestion } from "../../../../src/core/attention.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { clip } from "../../lib/format.ts";
-import { NextTicket, STAMP, useHandled } from "./NextUp.tsx";
-import { Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
+import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
+import { DoneBox, NextTicket, STAMP, TicketGroups, actionCount, useHandled } from "./NextUp.tsx";
+import { Stamp, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
 
 interface Props {
   runs: RunView[];
@@ -112,15 +113,18 @@ function PickTicket({ pick, now, onOpen, onProject, onSkip }: { pick: Suggestion
   const item = pick.item;
   return (
     <Ticket since={pick.since} now={now} code={projectName(pick.project)} stamp={<Stamp tone={stamp.tone}>{stamp.label}</Stamp>}>
-      <h3 className="min-w-0 text-[13px] leading-snug font-semibold [overflow-wrap:anywhere]">{pick.title}</h3>
+      <div className="flex items-start gap-2">
+        <DoneBox title={pick.title} onToggle={onSkip} />
+        <h3 className="min-w-0 text-[13px] leading-snug font-semibold [overflow-wrap:anywhere]">{pick.title}</h3>
+      </div>
       <p className="text-xs font-semibold text-[var(--ink)]">{pick.reason}</p>
       {item?.detail && <p className="text-xs leading-relaxed text-[var(--ink-dim)] [overflow-wrap:anywhere]">{clip(item.detail, 140)}</p>}
       <div className="mt-1 flex flex-wrap items-center gap-1">
         {item?.pr ? (
-          <a href={item.pr} target="_blank" rel="noreferrer" className={TICKET_PRIMARY}>
+          <ExternalAnchor href={item.pr} className={TICKET_PRIMARY}>
             <ExternalLink className="size-3.5" aria-hidden="true" />
             PR 열기
-          </a>
+          </ExternalAnchor>
         ) : item ? (
           <button type="button" onClick={() => onOpen(item)} className={TICKET_PRIMARY}>
             {item.kind === "answer" ? "대화 보기" : "기록 열기"}
@@ -131,9 +135,6 @@ function PickTicket({ pick, now, onOpen, onProject, onSkip }: { pick: Suggestion
             프로젝트 열기
           </button>
         )}
-        <button type="button" onClick={onSkip} className={TICKET_GHOST} aria-label={`${pick.title} 처리함으로 표시`}>
-          처리함
-        </button>
       </div>
     </Ticket>
   );
@@ -144,12 +145,13 @@ function ProjectGroup({ group, struck, now, onOpen, onProject, onTick }: { group
   const id = useId();
   const name = projectName(group.project);
   const items = [...group.stopped, ...group.todo];
+  const grid = "grid gap-2.5 @2xl:grid-cols-2";
   return (
     <section aria-labelledby={id}>
       <GroupHead
         id={id}
         title={name}
-        count={items.length}
+        count={actionCount(items)}
         meta={group.project}
         action={
           <button type="button" onClick={() => onProject(group.project)} className="flex h-6 items-center gap-1 rounded-md px-1.5 text-2xs text-muted-foreground hover:bg-accent hover:text-foreground focus-ring">
@@ -159,13 +161,8 @@ function ProjectGroup({ group, struck, now, onOpen, onProject, onTick }: { group
         }
       />
       <div className="@container">
-        <div className="grid gap-2.5 @2xl:grid-cols-2">
-          {items.map((item) => (
-            <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={() => onTick(item)} />
-          ))}
-          {struck.map((item) => (
-            <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={() => onTick(item)} done />
-          ))}
+        <div className={grid}>
+          <TicketGroups items={items} ticked={struck} grid={grid} ticket={(item, done) => <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={() => onTick(item)} done={done} />} />
         </div>
       </div>
     </section>
