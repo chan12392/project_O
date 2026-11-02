@@ -164,13 +164,43 @@ pub fn short_sha(sha: &str) -> &str {
     js_head(sha, 9)
 }
 
-/// The commit checked out in `cwd` (`git rev-parse HEAD`), if any.
-pub fn local_head(cwd: &Path) -> Option<String> {
+/// `git <args>` in `cwd`; its trimmed standard output when it succeeds.
+fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
     let cli = resolve_cli("git")?;
     let mut command = Command::new(&cli.command);
-    command.args(&cli.prefix).args(["rev-parse", "HEAD"]).current_dir(cwd).stdin(Stdio::null());
+    command.args(&cli.prefix).args(args).current_dir(cwd).stdin(Stdio::null()).stderr(Stdio::null());
     let out = proc::hide_window(&mut command).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The commit checked out in `cwd` (`git rev-parse HEAD`), if any.
+pub fn local_head(cwd: &Path) -> Option<String> {
+    git_output(cwd, &["rev-parse", "HEAD"]).filter(|s| !s.is_empty())
+}
+
+/// How the project folder relates to the PR's head commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalTree {
+    /// HEAD is the PR's head and nothing is staged, changed or untracked (ignored files aside):
+    /// the folder's files are the head commit's files.
+    Head,
+    /// HEAD is the PR's head but the work tree has staged, unstaged or untracked changes.
+    Dirty,
+    /// Another commit, not a git folder, or git could not tell.
+    Other,
+}
+
+/// Whether the folder's files may stand in for the PR head: the same commit and a clean work tree.
+/// Untracked (not ignored) files count as changes — a card could read them as if they were the PR's.
+pub fn local_tree(cwd: &Path, head_oid: &str) -> LocalTree {
+    if local_head(cwd).as_deref() != Some(head_oid) {
+        return LocalTree::Other;
+    }
+    match git_output(cwd, &["status", "--porcelain", "--untracked-files=normal"]) {
+        Some(status) if status.is_empty() => LocalTree::Head,
+        Some(_) => LocalTree::Dirty,
+        None => LocalTree::Other,
+    }
 }
 
 /// The only GitHub write `o review` makes: a comment. Never `gh pr review --approve`, never a merge.
@@ -359,7 +389,8 @@ fn neutralize(text: &str) -> String {
 }
 
 /// The review card's task. `local_is_head`: the project folder has the PR's head commit
-/// checked out, so its files may fill in what the diff leaves out; otherwise they may not.
+/// checked out with a clean work tree (`local_tree` is `Head`), so its files may fill in what
+/// the diff leaves out; otherwise they may not.
 pub fn build_task(pr: &PullRequest, diff: &str, nonce: &str, local_is_head: bool) -> ReviewTask {
     let rules: Vec<&Rule> = code_rules().collect();
     let (title, t_cut) = redact(js_head(&pr.title, TITLE_CAP), &rules);
@@ -371,7 +402,7 @@ pub fn build_task(pr: &PullRequest, diff: &str, nonce: &str, local_is_head: bool
     let local_files = if local_is_head {
         "- 필요하면 프로젝트 폴더의 파일을 읽어 맥락을 확인해도 됩니다(폴더가 이 PR의 head 커밋입니다)."
     } else {
-        "- 프로젝트 폴더는 이 PR의 head 커밋이 아닙니다. 로컬 파일로 diff를 보충하거나 판단하지 말고, diff에 없는 부분은 검토하지 못했다고 밝히세요."
+        "- 프로젝트 폴더는 이 PR의 head 커밋 그대로가 아닙니다(다른 커밋이거나 커밋하지 않은 변경이 있음). 로컬 파일로 diff를 보충하거나 판단하지 말고, diff에 없는 부분은 검토하지 못했다고 밝히세요."
     };
 
     let mut head = vec![

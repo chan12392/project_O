@@ -20,6 +20,12 @@ const HELP: &str = "GitHub CLI(gh)를 설치하고 gh auth login --hostname gith
 const MAX_SETUP_SIZE: u64 = 1024 * 1024 * 1024;
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Atest_1-[0-9]{8}-[0-9a-f]{7}\z").unwrap());
 static ASSET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Aproject_O_[0-9]+\.[0-9]+\.[0-9]+_x64-setup\.exe\z").unwrap());
+static COMMIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9a-f]{40}\z").unwrap());
+static SHA256: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9a-f]{64}\z").unwrap());
+/// Who publishes releases: the release workflow's token, never a person.
+const RELEASE_AUTHOR: &str = "github-actions[bot]";
+/// The approved channel: a release is offered only when its commit is already in this branch.
+const APPROVED_BRANCH: &str = "test_1";
 static INSTALLING: Mutex<()> = Mutex::new(());
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Option<Update>> = Mutex::new(None);
@@ -53,6 +59,12 @@ pub struct Update {
     notes: String,
     asset: String,
     size: u64,
+    /// The commit the release was built from; checked against test_1 before it is offered.
+    #[serde(skip)]
+    target: String,
+    /// Lowercase hex SHA-256 of the installer, from the asset's `digest` (`sha256:<hex>`).
+    #[serde(skip)]
+    sha256: String,
 }
 
 #[derive(Serialize)]
@@ -64,6 +76,8 @@ pub struct Check {
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
+    target_commitish: Option<String>,
+    author: Option<Author>,
     prerelease: bool,
     draft: bool,
     published_at: Option<String>,
@@ -72,10 +86,21 @@ struct Release {
 }
 
 #[derive(Deserialize)]
+struct Author {
+    login: String,
+}
+
+#[derive(Deserialize)]
 struct Asset {
     name: String,
     size: u64,
     state: String,
+    digest: Option<String>,
+}
+
+/// `sha256:<64 lowercase hex>` → the hex; anything else (missing, another algorithm) is `None`.
+fn sha256_of(digest: Option<&str>) -> Option<String> {
+    digest?.strip_prefix("sha256:").filter(|hex| SHA256.is_match(hex)).map(str::to_string)
 }
 
 fn published(value: &str) -> Option<DateTime<FixedOffset>> {
@@ -90,9 +115,17 @@ fn select_release(json: &str, sha: &str, built_at: &str) -> Result<Option<Update
     let releases: Vec<Release> = serde_json::from_str(json).map_err(|_| "릴리스 응답을 읽지 못했습니다")?;
     let newest = releases.into_iter().filter_map(|r| {
         if !r.prerelease || r.draft || !valid_tag(&r.tag_name) { return None; }
+        // Only the release workflow publishes, and it pins the release to the commit named in the tag.
+        if r.author.as_ref().is_none_or(|a| a.login != RELEASE_AUTHOR) { return None; }
+        let target = r.target_commitish.filter(|t| COMMIT.is_match(t) && t.starts_with(&r.tag_name[16..]))?;
         let date = r.published_at.as_deref().and_then(published)?;
-        let asset = r.assets.into_iter().find(|a| ASSET.is_match(&a.name) && a.state == "uploaded" && (1..=MAX_SETUP_SIZE).contains(&a.size))?;
-        Some((date, Update { tag: r.tag_name, published_at: r.published_at?, notes: r.body.unwrap_or_default(), asset: asset.name, size: asset.size }))
+        let (asset, sha256) = r.assets.into_iter().find_map(|a| {
+            let ok = ASSET.is_match(&a.name) && a.state == "uploaded" && (1..=MAX_SETUP_SIZE).contains(&a.size);
+            // Without GitHub's digest the download could not be checked, so the release is not offered.
+            let sha256 = sha256_of(a.digest.as_deref()).filter(|_| ok)?;
+            Some((a, sha256))
+        })?;
+        Some((date, Update { tag: r.tag_name, published_at: r.published_at?, notes: r.body.unwrap_or_default(), asset: asset.name, size: asset.size, target, sha256 }))
     }).max_by_key(|(date, _)| *date);
     Ok(newest.and_then(|(date, update)| {
         // A local build can only reach this path through the manual button.
@@ -117,7 +150,21 @@ fn gh(args: &[&str], timeout: Duration) -> Result<String, String> {
 fn latest() -> Result<Option<Update>, String> {
     let endpoint = format!("repos/{REPOSITORY}/releases?per_page=20");
     let body = gh(&["api", "--hostname", "github.com", &endpoint], Duration::from_secs(30))?;
-    select_release(&body, BUILD_SHA, BUILD_TIME)
+    approved(select_release(&body, BUILD_SHA, BUILD_TIME)?, |target| {
+        let compare = format!("repos/{REPOSITORY}/compare/{APPROVED_BRANCH}...{target}");
+        gh(&["api", "--hostname", "github.com", &compare, "--jq", ".status"], Duration::from_secs(30))
+    })
+}
+
+/// Offers a release only when its commit is already in test_1 (`compare/test_1...<sha>` is
+/// identical or behind). A failed lookup or any other answer refuses it.
+fn approved(update: Option<Update>, compare_status: impl FnOnce(&str) -> Result<String, String>) -> Result<Option<Update>, String> {
+    let Some(update) = update else { return Ok(None) };
+    if !COMMIT.is_match(&update.target) { return Err("릴리스의 커밋을 확인하지 못했습니다".into()); }
+    match compare_status(&update.target)?.trim() {
+        "identical" | "behind" => Ok(Some(update)),
+        _ => Err(format!("릴리스 {}의 커밋이 {APPROVED_BRANCH}에 없어 설치를 제안하지 않습니다", update.tag)),
+    }
 }
 
 #[tauri::command]
@@ -133,7 +180,18 @@ fn verify_download(dir: &Path, update: &Update) -> Result<std::path::PathBuf, St
     no_links(&path)?;
     let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
     if !meta.is_file() || meta.len() != update.size { return Err("설치 파일 크기가 일치하지 않습니다. 다시 시도해 주세요".into()); }
+    if !SHA256.is_match(&update.sha256) || file_sha256(&path)? != update.sha256 {
+        return Err("설치 파일의 SHA-256이 릴리스와 일치하지 않습니다. 설치하지 않았습니다".into());
+    }
     Ok(path)
+}
+
+fn file_sha256(path: &Path) -> Result<String, String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
+    let mut hasher = Sha256::new();
+    std::io::copy(&mut file, &mut hasher).map_err(|e| e.to_string())?;
+    Ok(hasher.finalize().iter().map(|b| format!("{b:02x}")).collect())
 }
 
 #[tauri::command]
@@ -188,6 +246,40 @@ mod tests {
     }
 
     #[test]
+    fn only_workflow_releases_of_the_tagged_commit_are_selected() {
+        // Newer releases by a person, with a branch name as target, with a commit that is not the
+        // tag's, or with no author/target at all are all passed over.
+        let next = select_release(FIXTURE, "", "").unwrap().unwrap();
+        assert_eq!(next.tag, "test_1-20261102-1234567");
+        assert_eq!(next.target, "1234567890abcdef1234567890abcdef12345678");
+    }
+
+    #[test]
+    fn a_release_is_offered_only_when_its_commit_is_in_test_1() {
+        let update = || select_release(FIXTURE, "", "").unwrap();
+        let mut asked = String::new();
+        let offered = approved(update(), |sha| { asked = sha.to_string(); Ok("behind\n".into()) }).unwrap();
+        assert_eq!(asked, "1234567890abcdef1234567890abcdef12345678");
+        assert!(offered.is_some());
+        assert!(approved(update(), |_| Ok("identical".into())).unwrap().is_some());
+        for status in ["ahead", "diverged", ""] {
+            assert!(approved(update(), |_| Ok(status.into())).is_err(), "{status}");
+        }
+        assert!(approved(update(), |_| Err("gh 실패".into())).is_err());
+        assert!(approved(None, |_| -> Result<String, String> { panic!("조회하지 않아야 합니다") }).unwrap().is_none());
+    }
+
+    /// The updater offers test_1-* pre-releases, so the workflow publishes them only from test_1,
+    /// even when someone runs it by hand on another branch.
+    #[test]
+    fn release_workflow_publishes_only_from_test_1() {
+        let workflow = include_str!("../../../../.github/workflows/release.yml").replace("\r\n", "\n");
+        let jobs = workflow.matches("\n    runs-on:").count();
+        assert!(jobs > 0);
+        assert_eq!(workflow.matches("\n    if: github.ref == 'refs/heads/test_1'\n").count(), jobs, "모든 job이 test_1에서만 돌아야 합니다");
+    }
+
+    #[test]
     fn download_size_and_unique_directory_are_checked() {
         let first = fresh_dir(&std::env::temp_dir(), "project_O-update-test").unwrap();
         let second = fresh_dir(&std::env::temp_dir(), "project_O-update-test").unwrap();
@@ -198,5 +290,18 @@ mod tests {
         assert!(verify_download(&first, &update).is_err());
         fs::write(first.join(&update.asset), vec![0; update.size as usize]).unwrap();
         assert!(verify_download(&first, &update).is_ok());
+    }
+
+    /// A file of the right size but other bytes (a swapped or tampered asset) is refused:
+    /// the download must match the SHA-256 GitHub reports for the release asset.
+    #[test]
+    fn download_must_match_the_release_asset_digest() {
+        let dir = fresh_dir(&std::env::temp_dir(), "project_O-update-test").unwrap();
+        let update = select_release(FIXTURE, "", "").unwrap().unwrap();
+        fs::write(dir.join(&update.asset), vec![1; update.size as usize]).unwrap();
+        assert!(verify_download(&dir, &update).is_err());
+        fs::write(dir.join(&update.asset), vec![0; update.size as usize]).unwrap();
+        assert!(verify_download(&dir, &update).is_ok());
+        let _ = fs::remove_dir_all(&dir);
     }
 }

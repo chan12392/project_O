@@ -45,8 +45,9 @@ fn review(home: &Path, args: &[String]) -> i32 {
     };
     let author = review::authorship(home, &pr);
     let provider = args.provider.unwrap_or_else(|| review::choose_provider(author.provider));
-    // Local files may fill in a cut diff only when this folder is the PR's head commit.
-    let local_is_head = review::local_head(&project).is_some_and(|local| local == pr.head_ref_oid);
+    // Local files may fill in a cut diff only when this folder is the PR's head commit, unchanged.
+    let local = review::local_tree(&project, &pr.head_ref_oid);
+    let local_is_head = local == review::LocalTree::Head;
     let task = review::build_task(&pr, &diff, &review::new_nonce(), local_is_head);
     let project_text = project.to_string_lossy().into_owned();
     let input = review::build_plan(&project_text, pr.number, &task.text, provider, args.model.as_deref(), args.effort.as_deref());
@@ -65,7 +66,11 @@ fn review(home: &Path, args: &[String]) -> i32 {
             "검토할 커밋: head {} (base {}){}",
             review::short_sha(&pr.head_ref_oid),
             review::short_sha(&pr.base_ref_oid),
-            if local_is_head { " · 이 폴더와 같음" } else { " · 이 폴더는 다른 커밋이라 로컬 파일로 보충하지 않음" }
+            match local {
+                review::LocalTree::Head => " · 이 폴더와 같음",
+                review::LocalTree::Dirty => " · 이 폴더에 커밋하지 않은 변경이 있어 로컬 파일로 보충하지 않음",
+                review::LocalTree::Other => " · 이 폴더는 다른 커밋이라 로컬 파일로 보충하지 않음",
+            }
         );
         eprintln!("작성: {} → 검토: {provider}{}", author.describe(), if args.provider.is_some() { " (지정)" } else { "" });
         eprintln!("프롬프트 {}자 (상한 {}) · diff {}자 중 {}자 포함{cut}{redacted}", o_core::sys::js::js_len(&task.text), o_core::policy::LIMITS.max_task_chars, task.diff_chars, task.diff_included);

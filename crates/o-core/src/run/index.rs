@@ -5,12 +5,15 @@
 //! and never open this database (ADR-0002: a Codex card may only write its run
 //! folder). Readers call `ingest` first, which copies the whole lines appended
 //! since the last read; a run whose file no longer continues what was ingested
-//! (cut short or rewritten) is ingested again from the start.
+//! (cut short or rewritten: its first ingested bytes no longer hash to `prefix_hash`)
+//! is ingested again from the start.
 //!
 //! ```text
-//! runs      run_id PK · title · project · started_at · ended_at · status · cards · done · failed · tokens · ingested_bytes · events
+//! runs      run_id PK · title · project · started_at · ended_at · status · cards · done · failed · tokens · ingested_bytes · events · prefix_hash · modified
 //! events    run_id · seq · json            every complete, parseable events.jsonl line, in file order
 //! starts    run_id · card_id · provider · at   one row per started card (the daily cap)
+//! slots     run_id · card_id · provider · owner · pid   cards holding a slot: reserved by the runner
+//!                                  (`owner`) before the CLI starts, the CLI's `pid` once it runs
 //! cooldowns provider PK · until            when a provider may be used again
 //! blocked   at · title · violations        plans the policy refused (an audit trail)
 //! ```
@@ -21,7 +24,7 @@
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, File};
-use std::io::{self, ErrorKind, Read, Seek, SeekFrom};
+use std::io::{self, ErrorKind, Read};
 use std::path::Path;
 use std::time::Duration;
 
@@ -32,19 +35,23 @@ use serde_json::Value;
 use crate::sys::js::{iso, parse_time};
 use crate::run::store::RunRecord;
 
-const SCHEMA_VERSION: i64 = 1;
+/// 2: `runs.prefix_hash` and `runs.modified`, so a rewritten file is told from an appended one.
+/// 3: `slots`, the card slots runners hold from before a CLI starts until it ends.
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
   run_id TEXT PRIMARY KEY,
   title TEXT, project TEXT, started_at TEXT, ended_at TEXT, status TEXT,
   cards INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0,
-  ingested_bytes INTEGER NOT NULL DEFAULT 0, events INTEGER NOT NULL DEFAULT 0
+  ingested_bytes INTEGER NOT NULL DEFAULT 0, events INTEGER NOT NULL DEFAULT 0,
+  prefix_hash INTEGER NOT NULL DEFAULT 0, modified INTEGER NOT NULL DEFAULT -1
 );
 CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
 CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (run_id, seq)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS starts (run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS starts_by_at ON starts (at);
+CREATE TABLE IF NOT EXISTS slots (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, owner INTEGER NOT NULL, pid INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blocked (at TEXT NOT NULL, title TEXT, violations TEXT NOT NULL);
 ";
@@ -66,6 +73,16 @@ pub fn open(home: &Path) -> io::Result<Connection> {
     if version < SCHEMA_VERSION {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
         tx.execute_batch(SCHEMA).map_err(sql)?;
+        // A version-1 file already has `runs` without the fingerprint; its rows (hash 0) are read again once.
+        let has_hash: bool =
+            tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('runs') WHERE name = 'prefix_hash')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_hash {
+            tx.execute_batch(
+                "ALTER TABLE runs ADD COLUMN prefix_hash INTEGER NOT NULL DEFAULT 0;
+                 ALTER TABLE runs ADD COLUMN modified INTEGER NOT NULL DEFAULT -1;",
+            )
+            .map_err(sql)?;
+        }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql)?;
         tx.commit().map_err(sql)?;
     }
@@ -192,15 +209,18 @@ pub fn ingest(conn: &mut Connection, home: &Path) -> io::Result<()> {
         Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error),
     };
-    let known: HashMap<String, i64> = {
-        let mut stmt = conn.prepare("SELECT run_id, ingested_bytes FROM runs").map_err(sql)?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(sql)?;
+    let known: HashMap<String, (i64, i64)> = {
+        let mut stmt = conn.prepare("SELECT run_id, ingested_bytes, modified FROM runs").map_err(sql)?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))).map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)?
     };
     for run_id in &names {
         let file = home.join("runs").join(run_id).join("events.jsonl");
-        let size = fs::metadata(&file).map(|m| m.len()).unwrap_or(0);
-        if size != known.get(run_id).copied().unwrap_or(0) as u64 {
+        let meta = fs::metadata(&file).ok();
+        let size = meta.as_ref().map_or(0, |m| m.len());
+        // Same size and same modification time: nothing was appended or rewritten since the last read.
+        let (ingested, modified) = known.get(run_id).copied().unwrap_or((0, -1));
+        if size != ingested as u64 || meta.as_ref().map_or(-1, modified_ns) != modified {
             ingest_run(conn, &file, run_id)?;
         }
     }
@@ -246,23 +266,29 @@ fn ingest_run(conn: &mut Connection, path: &Path, run_id: &str) -> io::Result<()
         .optional()
         .map_err(sql)?
         .unwrap_or_default();
-    let mut bytes = Vec::new();
+    let stored_hash: i64 =
+        tx.query_row("SELECT prefix_hash FROM runs WHERE run_id = ?1", [run_id], |r| r.get(0)).optional().map_err(sql)?.unwrap_or(0);
+    let mut all = Vec::new();
+    let modified;
     match File::open(path) {
         Ok(mut file) => {
-            // What was ingested must still be there, ending on a line break; otherwise start over.
-            let from = summary.ingested_bytes as u64;
-            let mut last = [0u8; 1];
-            let continues = from == 0
-                || (file.metadata()?.len() >= from && file.seek(SeekFrom::Start(from - 1)).is_ok() && file.read_exact(&mut last).is_ok() && last[0] == b'\n');
+            // Taken before reading: a write after it changes the time again and brings the next ingest back here.
+            modified = modified_ns(&file.metadata()?);
+            file.read_to_end(&mut all)?;
+            // What was ingested must still be there byte for byte, ending on a line break; otherwise start over.
+            let from = summary.ingested_bytes as usize;
+            let continues = from == 0 || (all.len() >= from && all[from - 1] == b'\n' && fingerprint(&all[..from]) == stored_hash);
             if !continues {
                 summary = Summary::default();
             }
-            file.seek(SeekFrom::Start(summary.ingested_bytes as u64))?;
-            file.read_to_end(&mut bytes)?;
         }
-        Err(error) if error.kind() == ErrorKind::NotFound => summary = Summary::default(),
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            summary = Summary::default();
+            modified = -1;
+        }
         Err(error) => return Err(error),
     }
+    let bytes = &all[summary.ingested_bytes as usize..];
     if summary.events == 0 {
         tx.execute("DELETE FROM events WHERE run_id = ?1", [run_id]).map_err(sql)?;
     }
@@ -280,14 +306,29 @@ fn ingest_run(conn: &mut Connection, path: &Path, run_id: &str) -> io::Result<()
         }
     }
     summary.ingested_bytes += whole as i64;
+    let prefix_hash = fingerprint(&all[..summary.ingested_bytes as usize]);
     let s = &summary;
     tx.execute(
-        "INSERT OR REPLACE INTO runs (run_id, title, project, started_at, ended_at, status, cards, done, failed, tokens, ingested_bytes, events)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-        params![run_id, s.title, s.project, s.started_at, s.ended_at, s.status, s.cards, s.done, s.failed, s.tokens, s.ingested_bytes, s.events],
+        "INSERT OR REPLACE INTO runs (run_id, title, project, started_at, ended_at, status, cards, done, failed, tokens, ingested_bytes, events, prefix_hash, modified)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
+        params![
+            run_id, s.title, s.project, s.started_at, s.ended_at, s.status, s.cards, s.done, s.failed, s.tokens, s.ingested_bytes, s.events, prefix_hash, modified
+        ],
     )
     .map_err(sql)?;
     tx.commit().map_err(sql)
+}
+
+/// FNV-1a over the ingested bytes: tells a file that still starts with what was read
+/// from one rewritten in place (same size, or longer with a line break at the old end).
+fn fingerprint(bytes: &[u8]) -> i64 {
+    let hash = bytes.iter().fold(0xcbf2_9ce4_8422_2325_u64, |hash, b| (hash ^ u64::from(*b)).wrapping_mul(0x0100_0000_01b3));
+    hash as i64
+}
+
+/// The file's modification time in nanoseconds since 1970, or -1 when the system does not say.
+fn modified_ns(meta: &fs::Metadata) -> i64 {
+    meta.modified().ok().and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok()).map_or(-1, |d| d.as_nanos() as i64)
 }
 
 /// Which runs `o runs` lists.
