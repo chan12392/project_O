@@ -295,7 +295,11 @@ pub fn official_command(spec: &LaunchSpec, cwd: &str) -> io::Result<Command> {
     let cli = resolve_cli(&spec.bin)
         .ok_or_else(|| io::Error::other(format!("{} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다", spec.bin)))?;
     let mut command = Command::new(&cli.command);
-    command.args(&cli.prefix).args(&spec.args).current_dir(cwd).envs(&spec.env);
+    command.args(&cli.prefix).args(&spec.args).current_dir(cwd);
+    for name in crate::providers::names_to_remove(&spec.env_remove, std::env::vars_os().map(|(k, _)| k)) {
+        command.env_remove(name);
+    }
+    command.envs(&spec.env);
     Ok(command)
 }
 
