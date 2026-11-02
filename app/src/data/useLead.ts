@@ -111,6 +111,8 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     projects: view.projects,
     busy: sending || Boolean(thread?.busy),
     sending,
+    /** Read the thread again now ("다시 시도"). */
+    refresh,
     send,
     stop,
     startNew,

@@ -16,10 +16,12 @@ import {
   effortFor,
   fileSize,
   leadItems,
+  leadReadProblem,
   leadView,
   modelLabel,
   restoreDraft,
   takeDraft,
+  taskIsLong,
   uploadDone,
   type Drafts,
   type LeadEvent,
@@ -261,4 +263,14 @@ test("onboarding and the composer agree on which agents can lead", () => {
   // Both screens decide with this one rule (they used two, so onboarding said "ready" while the composer could not send).
   const app = (path: string) => readFileSync(new URL(`../app/src/features/${path}`, import.meta.url), "utf8");
   for (const screen of ["chat/Composer.tsx", "settings/AgentSetup.tsx"]) assert.match(app(screen), /\bcanLead\b/, screen);
+});
+
+test("a thread that cannot be read says what to check; a long card task can be read in full", () => {
+  const old = leadReadProblem("Command failed: o lead show --json\nusage: o <command>\n  runs …");
+  assert.match(old, /O CLI/);
+  assert.match(old, /Command failed/);
+  assert.doesNotMatch(leadReadProblem("총괄 대화 목록을 읽지 못했습니다"), /O CLI/);
+  assert.equal(taskIsLong("README 한 줄"), false);
+  assert.equal(taskIsLong("가".repeat(121)), true);
+  assert.equal(taskIsLong("한 줄\n두 줄\n세 줄\n네 줄"), true);
 });

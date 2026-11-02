@@ -314,3 +314,17 @@ export function takeDraft(drafts: Drafts, key: string): { drafts: Drafts; draft:
 export function restoreDraft(drafts: Drafts, key: string, taken: Draft): Drafts {
   return editDraft(drafts, key, (now) => ({ text: now.text || taken.text, files: now.files.length ? now.files : taken.files }));
 }
+
+/**
+ * Why the lead thread could not be read, for the chat: the error, and when it looks like an
+ * `o` that does not know `lead` (it printed its usage, or the command failed outright), what to check.
+ */
+export function leadReadProblem(error: string): string {
+  const oldCli = /usage:|unknown command|unrecognized|Command failed|o exited with/i.test(error);
+  return oldCli ? `${error.trim()}\n\nO CLI가 총괄 명령(o lead)을 모르는 옛 버전일 수 있습니다. 앱을 업데이트하거나 O CLI를 다시 설치한 뒤 다시 시도하세요.` : error.trim();
+}
+
+/** A card task too long for the plan table's three lines: it gets a "전체 보기". */
+export function taskIsLong(task: string): boolean {
+  return task.length > 120 || task.split("\n").length > 3;
+}
