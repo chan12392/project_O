@@ -383,8 +383,8 @@ mod tests {
         }).unwrap_err();
         assert_eq!(error, CANCELLED_MESSAGE);
         assert!(started.elapsed() < Duration::from_secs(10));
-        assert!(run_cancellable(&mut Command::new("cmd").args(["/d", "/c", "exit /b 0"]), Duration::from_secs(60), &AtomicBool::new(false)).is_ok());
-        assert!(run_cancellable(&mut Command::new("cmd").args(["/d", "/c", "exit /b 1"]), Duration::from_secs(60), &AtomicBool::new(false)).is_err());
+        assert!(run_cancellable(Command::new("cmd").args(["/d", "/c", "exit /b 0"]), Duration::from_secs(60), &AtomicBool::new(false)).is_ok());
+        assert!(run_cancellable(Command::new("cmd").args(["/d", "/c", "exit /b 1"]), Duration::from_secs(60), &AtomicBool::new(false)).is_err());
 
         let first = begin_install().unwrap();
         CANCELLED.store(true, Ordering::SeqCst);
