@@ -1,10 +1,11 @@
-import { useEffect, useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 
 import { tokensOf } from "../../../../src/core/attention.ts";
 import type { ProviderId } from "../../../../src/core/plan.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import type { UsageWindow } from "../../../../src/core/usage.ts";
-import { backend, type BudgetReport, type ProviderBudget } from "../../platform/backend/index.ts";
+import { useBudget } from "../../data/useBudget.ts";
+import type { ProviderBudget } from "../../platform/backend/index.ts";
 import { PROVIDER_NAME, compact, timeOf } from "../../lib/format.ts";
 import { Avatar } from "../office/Avatar.tsx";
 
@@ -13,11 +14,6 @@ const RINGS: { window: string; name: string }[] = [
   { window: "five_hour", name: "5시간" },
   { window: "seven_day", name: "주간" },
 ];
-
-/** The same answer App.tsx's backend gives: the recorded preview only when the link asks for it. */
-const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
-/** The budget changes as readings arrive (`o usage`, Claude's stream); it is read from saved snapshots only. */
-const BUDGET_POLL_MS = 15_000;
 
 interface Props {
   runs: RunView[];
@@ -81,53 +77,6 @@ export function UsagePanel({ runs, windows }: Props) {
       </ul>
     </section>
   );
-}
-
-/**
- * Today's budget from saved readings, polled while the page is visible; undefined until the
- * first answer or when unavailable. One read at a time: coming back to the window while a
- * read is out does not start a second loop (as TokenCard and useLiveRuns guard theirs).
- */
-function useBudget(): BudgetReport | undefined {
-  const [report, setReport] = useState<BudgetReport>();
-  useEffect(() => {
-    let stopped = false;
-    let inflight = false;
-    let timer: number | undefined;
-    let last = "";
-    const schedule = () => {
-      window.clearTimeout(timer);
-      if (!stopped && !document.hidden) timer = window.setTimeout(poll, BUDGET_POLL_MS);
-    };
-    const poll = async () => {
-      if (inflight) return;
-      inflight = true;
-      window.clearTimeout(timer);
-      try {
-        const next = await api.budget();
-        // The same report keeps the same state, so a quiet refresh re-renders nothing.
-        const text = JSON.stringify(next);
-        if (!stopped && text !== last) {
-          last = text;
-          setReport(next);
-        }
-      } catch {
-        // An older `o` without `budget`, or no machine behind the page: the row keeps its other rings.
-      } finally {
-        inflight = false;
-      }
-      schedule();
-    };
-    const onVisibility = () => (document.hidden ? window.clearTimeout(timer) : void poll());
-    void poll();
-    document.addEventListener("visibilitychange", onVisibility);
-    return () => {
-      stopped = true;
-      window.clearTimeout(timer);
-      document.removeEventListener("visibilitychange", onVisibility);
-    };
-  }, []);
-  return report;
 }
 
 const SIZE = 26;
