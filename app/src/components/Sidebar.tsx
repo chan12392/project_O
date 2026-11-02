@@ -1,6 +1,7 @@
-import { ChevronRight, Coffee, Folder, FolderPlus, MoreHorizontal, Pencil, SquarePen, X } from "lucide-react";
+import { ChevronRight, Coffee, Folder, FolderPlus, ListTodo, MoreHorizontal, Pencil, SquarePen, X } from "lucide-react";
 import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 
+import { isSessionRun } from "../../../src/core/attention.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../dismiss.ts";
 import { PROVIDER_SHORT, timeOf } from "../format.ts";
@@ -23,12 +24,16 @@ interface Props {
   onRun: (path: string, runId: string) => void;
   onCard: (runId: string, cardId: string) => void;
   onCompose: () => void;
+  /** Tickets waiting across every project, and whether that view is open. */
+  nextCount?: number;
+  nextOpen?: boolean;
+  onNextUp?: () => void;
   /** The account footer pinned under the project list. */
   footer?: ReactNode;
 }
 
 /** Orca's repo sidebar: projects, optionally in groups, each with its lead and its runs. */
-export function Sidebar({ state, projects, groups, leadState, project, run, card, onProject, onWake, onRun, onCard, onCompose, footer }: Props) {
+export function Sidebar({ state, projects, groups, leadState, project, run, card, onProject, onWake, onRun, onCard, onCompose, nextCount = 0, nextOpen, onNextUp, footer }: Props) {
   const shown = state === "full" ? projects : [];
   const [naming, setNaming] = useState<{ project?: string } | undefined>();
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set(project ? [project] : []));
@@ -74,6 +79,22 @@ export function Sidebar({ state, projects, groups, leadState, project, run, card
         <button type="button" onClick={onCompose} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring">
           <SquarePen className="size-4 text-muted-foreground" aria-hidden="true" />새 요청
         </button>
+        {onNextUp && (
+          <button
+            type="button"
+            onClick={onNextUp}
+            aria-current={nextOpen ? "page" : undefined}
+            className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium"
+          >
+            <ListTodo className="size-4 text-muted-foreground" aria-hidden="true" />
+            다음 할 일
+            {nextCount > 0 && (
+              <span className="ml-auto rounded-full bg-red-600 px-1.5 text-3xs font-bold text-white tabular-nums" aria-label={`${nextCount}건`}>
+                {nextCount}
+              </span>
+            )}
+          </button>
+        )}
       </nav>
 
       <div className="flex items-center px-4 pt-2 pb-1">
@@ -303,6 +324,11 @@ function RunRow({ run, current, card, onRun, onCard }: { run: RunView; current: 
       <button type="button" onClick={() => onRun(run.runId)} aria-current={current || undefined} className="flex w-full items-center gap-2 text-left focus-ring">
         <AgentStateDot state={run.status} />
         <span className="truncate text-xs">{run.title}</span>
+        {isSessionRun(run) && (
+          <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs text-muted-foreground" title="Claude Code 세션 (읽기 전용)">
+            세션
+          </span>
+        )}
         <span className="ml-auto shrink-0 text-3xs text-muted-foreground tabular-nums">{timeOf(run.startedAt)}</span>
       </button>
       <div className="mt-1 ml-[18px] flex flex-wrap items-center gap-0.5">

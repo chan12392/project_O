@@ -11,7 +11,7 @@ use o_core::agents::{self, ActionResult, AgentStatus};
 use o_core::index::RunQuery;
 use o_core::plan::ProviderId;
 use o_core::usage::UsageReading;
-use o_core::{budget, clean, probe, proc, resolve, review, store};
+use o_core::{budget, clean, probe, proc, resolve, review, sessions, store};
 use serde::Serialize;
 use serde_json::{json, Value};
 
@@ -26,9 +26,11 @@ fn provider(id: &str) -> Result<ProviderId, String> {
     ProviderId::parse(id).ok_or_else(|| format!("에이전트는 claude, codex, agy 중 하나입니다: {id}"))
 }
 
-/// The text `o runs --json --limit <limit>` prints.
-pub fn runs_json(home: &Path, limit: usize) -> Result<String, String> {
-    let runs = store::read_runs(home, &RunQuery { limit, project: None }).map_err(|e| e.to_string())?;
+/// The text `o runs --json --limit <limit> [--sessions]` prints.
+pub fn runs_json(home: &Path, limit: usize, with_sessions: bool) -> Result<String, String> {
+    let query = RunQuery { limit, project: None };
+    let read = if with_sessions { sessions::read_runs_with_sessions(home, &query, sessions::hours(sessions::DEFAULT_SINCE_HOURS)) } else { store::read_runs(home, &query) };
+    let runs = read.map_err(|e| e.to_string())?;
     Ok(json!({ "runs": runs }).to_string())
 }
 
@@ -74,11 +76,12 @@ pub fn about_info(home: &Path, agents_home: &Path) -> About {
     About { version: env!("CARGO_PKG_VERSION").into(), home: home.to_string_lossy().into_owned(), agents_home: agents_home.to_string_lossy().into_owned() }
 }
 
-/// Runs with every event, newest first, as JSON text (the shape `o runs --json` prints).
+/// Runs with every event, newest first, as JSON text (the shape `o runs --json` prints);
+/// with `sessions`, this PC's recent Claude Code sessions too (`o runs --json --sessions`).
 #[tauri::command]
-pub async fn runs(limit: Option<usize>) -> Result<String, String> {
+pub async fn runs(limit: Option<usize>, sessions: Option<bool>) -> Result<String, String> {
     let limit = limit.unwrap_or(DEFAULT_RUNS);
-    blocking(move || runs_json(&store::default_home(), limit)).await?
+    blocking(move || runs_json(&store::default_home(), limit, sessions.unwrap_or(false))).await?
 }
 
 /// The last saved usage reading as JSON text, without asking any CLI.
@@ -200,19 +203,19 @@ mod tests {
     #[test]
     fn runs_lists_runs_with_events_newest_first() {
         let home = temp("runs");
-        assert_eq!(serde_json::from_str::<Value>(&runs_json(&home, 50).unwrap()).unwrap(), json!({ "runs": [] }));
+        assert_eq!(serde_json::from_str::<Value>(&runs_json(&home, 50, false).unwrap()).unwrap(), json!({ "runs": [] }));
         for (id, at) in [("20261101-100000-aaaa", "2026-11-01T10:00:00.000Z"), ("20261102-100000-bbbb", "2026-11-02T10:00:00.000Z")] {
             let dir = home.join("runs").join(id);
             fs::create_dir_all(&dir).unwrap();
             let start = json!({ "t": "run.start", "at": at, "runId": id, "title": "t", "project": "C:/p", "cards": [] });
             fs::write(dir.join("events.jsonl"), format!("{start}\n")).unwrap();
         }
-        let body: Value = serde_json::from_str(&runs_json(&home, 50).unwrap()).unwrap();
+        let body: Value = serde_json::from_str(&runs_json(&home, 50, false).unwrap()).unwrap();
         let runs = body["runs"].as_array().unwrap();
         let ids: Vec<&str> = runs.iter().map(|r| r["runId"].as_str().unwrap()).collect();
         assert_eq!(ids, ["20261102-100000-bbbb", "20261101-100000-aaaa"]);
         assert_eq!(runs[0]["events"][0]["t"], "run.start");
-        let one: Value = serde_json::from_str(&runs_json(&home, 1).unwrap()).unwrap();
+        let one: Value = serde_json::from_str(&runs_json(&home, 1, false).unwrap()).unwrap();
         assert_eq!(one["runs"].as_array().unwrap().len(), 1);
     }
 

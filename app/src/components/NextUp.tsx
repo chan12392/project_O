@@ -1,12 +1,12 @@
 import { Check, Copy, ExternalLink } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 import type { NextItem, StoppedKind, TodoKind } from "../../../src/core/attention.ts";
 import { PROVIDER_SHORT, clip } from "../format.ts";
 import { readStored, writeStored } from "../storage.ts";
 import { Rail, Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket, type StampTone } from "./Ticket.tsx";
 
-const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
+export const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
   answer: { label: "답하기", tone: "rush" },
   review: { label: "사람 검토 필요", tone: "info" },
   check: { label: "결과 확인", tone: "done" },
@@ -23,19 +23,31 @@ const HANDLED_MAX = 500;
 const loadHandled = () =>
   readStored(HANDLED_KEY, new Set<string>(), (saved) => (Array.isArray(saved) ? new Set(saved.filter((k): k is string => typeof k === "string")) : undefined));
 
+/*
+ * Ticked tickets are one store for the window: the project's Next up, the
+ * all-projects view and the sidebar's count tick off the same set.
+ */
+let handledNow = loadHandled();
+const handledListeners = new Set<() => void>();
+
+function toggleHandled(key: string) {
+  const next = new Set(handledNow);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  handledNow = new Set([...next].slice(-HANDLED_MAX));
+  writeStored(HANDLED_KEY, [...handledNow]);
+  for (const listener of handledListeners) listener();
+}
+
+function subscribeHandled(listener: () => void) {
+  handledListeners.add(listener);
+  return () => void handledListeners.delete(listener);
+}
+
 /** Tickets a person has ticked off, kept in this browser (newest last, capped). */
 export function useHandled() {
-  const [handled, setHandled] = useState(loadHandled);
-  const toggle = useCallback((key: string) => {
-    setHandled((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return new Set([...next].slice(-HANDLED_MAX));
-    });
-  }, []);
-  useEffect(() => writeStored(HANDLED_KEY, [...handled]), [handled]);
-  return { handled, toggle };
+  const handled = useSyncExternalStore(subscribeHandled, () => handledNow);
+  return { handled, toggle: toggleHandled };
 }
 
 /** The O command that acts on a ticket, for a person to paste into a terminal. */

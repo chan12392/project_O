@@ -22,6 +22,8 @@ export interface Settings {
   clean: boolean;
   /** A desktop notification when a watched card finishes while the window is in the background. */
   notify: boolean;
+  /** Show this PC's Claude Code sessions as runs; unset follows the source (see `sessionsShown`). */
+  sessions?: boolean;
 }
 
 const KEY = "project-o.settings";
@@ -48,6 +50,7 @@ function load(): Settings {
       start: pick(s.start, ["last", "onboarding"], DEFAULTS.start),
       clean: typeof s.clean === "boolean" ? s.clean : DEFAULTS.clean,
       notify: typeof s.notify === "boolean" ? s.notify : DEFAULTS.notify,
+      sessions: typeof s.sessions === "boolean" ? s.sessions : undefined,
     };
   });
 }
@@ -89,6 +92,11 @@ window.addEventListener("storage", (e) => {
 function subscribe(listener: () => void) {
   listeners.add(listener);
   return () => void listeners.delete(listener);
+}
+
+/** Claude Code sessions are shown by default on this PC's runs, and hidden in the recorded demo until asked for. */
+export function sessionsShown(settings: Settings, demo: boolean): boolean {
+  return settings.sessions ?? !demo;
 }
 
 /** The settings as they are now, for code that reads them once (the card announcer). */

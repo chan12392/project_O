@@ -21,6 +21,7 @@ pub mod providers;
 pub mod resolve;
 pub mod review;
 pub mod runner;
+pub mod sessions;
 pub mod snapshot;
 pub mod store;
 pub mod team;
