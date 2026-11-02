@@ -30,6 +30,7 @@ mod tests {
     fn tokens_without_runs_is_an_empty_report() {
         let home = temp("tokens");
         let body: Value = serde_json::from_str(&tokens_json(&home, None).unwrap()).unwrap();
-        assert_eq!(body, json!({ "groups": [], "compare": { "baseline": null, "shared": null }, "runs": [] }));
+        let lead = json!({ "turns": 0, "input": 0, "cached": 0, "output": 0, "total": 0 });
+        assert_eq!(body, json!({ "groups": [], "compare": { "baseline": null, "shared": null }, "runs": [], "lead": lead }));
     }
 }

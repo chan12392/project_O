@@ -137,7 +137,8 @@ fn tokens_report_and_compare() {
     let (base, _home, project) = setup("tokens");
     let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
     let keys: Vec<&str> = report.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["groups", "compare", "runs"]);
+    assert_eq!(keys, ["groups", "compare", "runs", "lead"]);
+    assert_eq!(report["lead"], json!({ "turns": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
     assert_eq!(report["groups"].as_array().unwrap().iter().map(|g| g["key"].as_str().unwrap()).collect::<Vec<_>>(), ["normal", "clean+context"]);
     let group_keys: Vec<&str> = report["groups"][0].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(group_keys, ["key", "label", "clean", "context", "runs", "cards", "tokens", "perCard", "byProvider"]);
