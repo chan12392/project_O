@@ -83,6 +83,14 @@ export function Composer({
   onAgents: () => void;
 }) {
   const settings = useSettings();
+  const [yolo, setYolo] = useState<boolean>();
+  useEffect(() => {
+    let live = true;
+    const refresh = () => { void api.yolo().then((value) => { if (live) setYolo(value.enabled); }, () => { if (live) setYolo(undefined); }); };
+    refresh();
+    const timer = window.setInterval(refresh, 2000);
+    return () => { live = false; window.clearInterval(timer); };
+  }, [api]);
   const { checking, usable, why } = useLeadAgents(api, settings.clean);
   // Each project keeps its own draft; switching shows that project's, and an upload or a failed
   // send lands back in the draft it came from (src/core/lead.ts `Drafts`).
@@ -145,7 +153,7 @@ export function Composer({
       : uploading
         ? "첨부를 올리는 중입니다"
         : undefined;
-  const canSend = Boolean(text.trim()) && !blocker && !busy && Boolean(agent);
+  const canSend = Boolean(text.trim()) && !blocker && !busy && Boolean(agent) && yolo !== undefined;
 
   const addFiles = (list: FileList | File[]) => {
     if (!project) return setNotice("프로젝트 폴더를 먼저 정하세요");
@@ -356,6 +364,8 @@ export function Composer({
               },
             ]}
           />
+          {yolo && <span className="rounded-full border border-destructive bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground" title="승인 없이 파일 수정과 명령 실행이 가능합니다">YOLO</span>}
+          {yolo === undefined && <span role="status" className="text-xs text-destructive">YOLO 상태 확인 중 또는 확인 실패</span>}
           <div className="ml-auto flex min-w-0 items-center gap-1.5">
             {agent && effort ? (
               <ChoiceMenu
@@ -432,7 +442,7 @@ export function Composer({
         aria-live="polite"
         className={`mx-auto mt-1.5 max-w-3xl px-1 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 프로젝트를 읽고 답하는 중입니다. ■로 중지할 수 있습니다." : `${SEND_KEY} 보내기 · Enter 줄바꿈 · 총괄은 계획만 제안하고 실행은 계획 카드에서 합니다`)}
+        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : `${SEND_KEY} 보내기 · Enter 줄바꿈 · ${yolo ? "조건에 맞는 계획은 자동 실행됩니다" : "계획 카드에서 실행합니다"}`)}
       </p>
     </form>
   );

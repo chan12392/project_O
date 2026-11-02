@@ -7,11 +7,11 @@ fn args(items: &[&str]) -> Vec<String> {
 #[test]
 fn profile_flag_picks_the_profile_and_keeps_the_context_on() {
     let (default, rest) = take_flags(&args(&["plan.json"])).unwrap();
-    assert_eq!(default, RunMode { profile: Profile::ProjectO, context: true });
+    assert_eq!(default, RunMode { profile: Profile::ProjectO, context: true, yolo: false });
     assert_eq!(rest, ["plan.json"]);
 
     let (own, rest) = take_flags(&args(&["--profile", "own", "plan.json"])).unwrap();
-    assert_eq!(own, RunMode { profile: Profile::Own, context: true });
+    assert_eq!(own, RunMode { profile: Profile::Own, context: true, yolo: false });
     assert!(!own.clean());
     assert_eq!(rest, ["plan.json"]);
     assert_eq!(take_flags(&args(&["--profile=project-o"])).unwrap().0.profile, Profile::ProjectO);
@@ -20,7 +20,7 @@ fn profile_flag_picks_the_profile_and_keeps_the_context_on() {
     assert_eq!(take_flags(&args(&["--clean"])).unwrap().0, RunMode::of(Profile::ProjectO));
     assert_eq!(take_flags(&args(&["--profile", "project-o", "--clean"])).unwrap().0, RunMode::of(Profile::ProjectO));
     let (no_context, _) = take_flags(&args(&["--profile", "own", "--no-context"])).unwrap();
-    assert_eq!(no_context, RunMode { profile: Profile::Own, context: false });
+    assert_eq!(no_context, RunMode { profile: Profile::Own, context: false, yolo: false });
 }
 
 #[test]

@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! runs/<runId>/plan.json · events.jsonl · cards/<id>.raw.jsonl · stop · clean (o dispatch --clean)
+//!              · yolo (YOLO 모드, ADR-0014) · runner.json (the runner's pid and start time)
 //! active/<runId>.<cardId>.json   running card markers ({ pid, provider })
 //! o.db                           the run index, card starts (daily cap), held slots, cooldowns and
 //!                                refused plans; dispatch and the runner write it, cards never (see `index`)
@@ -418,7 +419,47 @@ pub fn mark_mode(home: &Path, run_id: &str, mode: &RunMode) -> io::Result<()> {
     if !mode.context {
         crate::context::mark_off(home, run_id)?;
     }
+    if mode.yolo {
+        fs::write(run_dir(home, run_id).join("yolo"), "")?;
+    }
     Ok(())
+}
+
+/// YOLO 모드 (ADR-0014): the run's cards launch with their CLI's YOLO flag (`providers::launch_spec_for`).
+pub fn is_yolo(home: &Path, run_id: &str) -> bool {
+    run_dir(home, run_id).join("yolo").exists()
+}
+
+/// The runner (`o _run`) of a run: its pid and start time, written when it starts.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct RunnerMark {
+    pid: u32,
+    #[serde(default)]
+    started: Option<u64>,
+}
+
+/// Notes this process as the run's runner, so others can tell a run that is still going
+/// from one whose runner died without `run.end` (`run_is_live`).
+pub fn mark_runner(home: &Path, run_id: &str) -> io::Result<()> {
+    let pid = std::process::id();
+    let mark = RunnerMark { pid, started: proc::started_at(pid) };
+    fs::write(run_dir(home, run_id).join("runner.json"), serde_json::to_string(&mark).map_err(io::Error::other)?)
+}
+
+/// How long a dispatched run may take to start its runner before it no longer counts as going.
+const RUNNER_START_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Whether a run is still going: no `run.end` yet, and its runner alive (the same pid and start
+/// time), or not written yet within a short while of the dispatch.
+pub fn run_is_live(home: &Path, run_id: &str) -> bool {
+    if read_events(home, run_id).iter().any(|e| matches!(e, OEvent::RunEnd { .. })) {
+        return false;
+    }
+    let dir = run_dir(home, run_id);
+    match fs::read_to_string(dir.join("runner.json")).ok().and_then(|t| serde_json::from_str::<RunnerMark>(&t).ok()) {
+        Some(mark) => proc::is_alive(mark.pid) && (mark.started.is_none() || proc::started_at(mark.pid) == mark.started),
+        None => fs::metadata(dir.join("plan.json")).and_then(|m| m.modified()).is_ok_and(|at| at.elapsed().is_ok_and(|age| age < RUNNER_START_GRACE)),
+    }
 }
 
 /// `JSON.stringify(value, null, 2)`.

@@ -4,12 +4,17 @@
 //! CLI (`claude`, `codex`, `agy`); [`get`] is the registry. Only these files know
 //! provider flags.
 //!
-//! Every launch keeps the CLI's own sign-in and permission checks: no token is
-//! injected and no flag that disables approvals is ever added. The one opening
-//! is narrow: each CLI may run `o msg`, the run's team channel, and the
-//! read-only `o context` search (ADR-0005; Antigravity only gets the section
-//! injected into its prompt), and nothing more. A lead chat turn (`Provider::lead`,
-//! ADR-0008) gets less: reading the project, nothing else.
+//! Every launch keeps the CLI's own sign-in: no token is injected. With YOLO off
+//! (the default) it keeps the CLI's permission checks too and no flag that disables
+//! approvals is added. The one opening is narrow: each CLI may run `o msg`, the run's
+//! team channel, and the read-only `o context` search (ADR-0005; Antigravity only gets
+//! the section injected into its prompt), and nothing more. A lead chat turn
+//! (`Provider::lead`, ADR-0008) gets less: reading the project, nothing else.
+//!
+//! YOLO mode (ADR-0014), the person's switch: `yolo_launch` and `yolo_lead` use the CLI's
+//! official "never ask" flag. These files (and their test) are the only code allowed to
+//! spell such flags (`o_guard::rules`); the commands that send work (`AGENT_ONLY_COMMANDS`)
+//! stay denied, and Claude keeps O's guard hook through `--settings`.
 
 pub mod agy;
 pub mod claude;
@@ -75,6 +80,19 @@ pub trait Provider: Sync {
     /// or its documented aliases). Empty: only the CLI's default (no `--model`).
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
         Ok(Vec::new())
+    }
+
+    // YOLO mode (ADR-0014): the person's switch, never a plan's. Only these two launches may
+    // carry the CLI's own "never ask" flag; each keeps `AGENT_ONLY_COMMANDS` denied where the
+    // CLI has deny rules. The default is `None`: the card or lead then runs as with YOLO off.
+
+    /// The card's launch with YOLO on.
+    fn yolo_launch(&self, _card: &Card, _plan: &Plan, _team: &TeamChannel, _prompt: String, _env: BTreeMap<String, String>) -> Option<LaunchSpec> {
+        None
+    }
+    /// The lead's launch with YOLO on: it may edit files and run commands; still resumed like `lead`.
+    fn yolo_lead(&self, _turn: &LeadTurn) -> Option<LaunchSpec> {
+        None
     }
 
     // Install and sign-in (`agents`).
@@ -238,15 +256,42 @@ pub struct TeamChannel<'a> {
 /// The team channel command each CLI may run without a prompt.
 const TEAM_COMMAND: &str = "o msg";
 
+/// The `o` commands no card or lead may run, in any mode (ADR-0014): only a person sends work.
+/// `o` itself refuses them inside a card or a lead turn (`run::inside`); CLIs with deny rules
+/// also get these, in YOLO mode, as rules that hold even when nothing else asks.
+pub const AGENT_ONLY_COMMANDS: [&str; 5] = ["o dispatch", "o lead", "o review", "o _run", "o _review"];
+
+/// The card prompt's tool line with YOLO on, in place of the CLI's own `tool_note`.
+const YOLO_NOTE: &str = "YOLO 모드: 파일 수정과 셸 명령을 승인 없이 실행합니다. 맡은 일 밖의 파일·명령은 건드리지 마세요. o dispatch·o lead·o review는 쓸 수 없습니다(작업은 사람이 보냅니다).";
+
 pub fn launch_spec(card: &Card, plan: &Plan, team: &TeamChannel) -> LaunchSpec {
     launch_spec_with(card, plan, team, None)
 }
 
 /// `launch_spec` with the card's shared context section (`context::prepare`), if any.
 pub fn launch_spec_with(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&str>) -> LaunchSpec {
-    let prompt = card_prompt_with(card, plan, team, context);
-    let env = BTreeMap::from([("O_RUN_ID".to_string(), team.run_id.to_string()), ("O_CARD_ID".to_string(), card.id.clone())]);
-    get(card.provider).launch(card, plan, team, prompt, env)
+    launch_spec_for(card, plan, team, context, false)
+}
+
+/// `launch_spec_with` in the run's mode: with `yolo` (ADR-0014) the CLI's YOLO launch, or its
+/// usual one when it has none. YOLO off is byte for byte the launch it always was.
+pub fn launch_spec_for(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&str>, yolo: bool) -> LaunchSpec {
+    let env = || BTreeMap::from([("O_RUN_ID".to_string(), team.run_id.to_string()), ("O_CARD_ID".to_string(), card.id.clone())]);
+    let provider = get(card.provider);
+    if yolo {
+        if let Some(spec) = provider.yolo_launch(card, plan, team, prompt_text(card, plan, team, context, true), env()) {
+            return spec;
+        }
+    }
+    provider.launch(card, plan, team, prompt_text(card, plan, team, context, false), env())
+}
+
+/// The lead's launch in the turn's mode: with `yolo` its YOLO launch (or the read-only one when
+/// the CLI has none). `None` when the CLI cannot lead.
+pub fn lead_spec(id: ProviderId, turn: &LeadTurn, yolo: bool) -> Option<LaunchSpec> {
+    let provider = get(id);
+    let yolo = if yolo { provider.yolo_lead(turn) } else { None };
+    yolo.or_else(|| provider.lead(turn))
 }
 
 /// Where an agent whose CLI cannot pass free text to a command writes what it sends.
@@ -261,6 +306,10 @@ pub fn card_prompt(card: &Card, plan: &Plan, team: &TeamChannel) -> String {
 
 /// The work card text with the shared context section after the task.
 pub fn card_prompt_with(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&str>) -> String {
+    prompt_text(card, plan, team, context, false)
+}
+
+fn prompt_text(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&str>, yolo: bool) -> String {
     let provider = get(card.provider);
     let others: Vec<&Card> = plan.cards.iter().filter(|c| c.id != card.id).collect();
     let role = card.role.as_deref().filter(|r| !r.is_empty()).map(|r| format!(" · {r}")).unwrap_or_default();
@@ -268,7 +317,11 @@ pub fn card_prompt_with(card: &Card, plan: &Plan, team: &TeamChannel, context: O
     if !others.is_empty() {
         lines.push("같은 폴더에서 다른 카드가 동시에 일합니다. 맡은 파일 밖의 파일은 지우거나 고치지 마세요.".into());
     }
-    lines.extend(provider.tool_note());
+    if yolo {
+        lines.push(YOLO_NOTE.into());
+    } else {
+        lines.extend(provider.tool_note());
+    }
     lines.push(String::new());
     lines.push(card.task.trim().to_string());
     lines.push(String::new());

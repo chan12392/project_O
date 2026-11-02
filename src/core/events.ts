@@ -50,7 +50,7 @@ export type OEvent =
    */
   | { t: "run.blocked"; at: string; runId: string; violations: Violation[] }
   /** The profile the run's cards used (project_O 프로필 사용, ADR-0013) and whether the shared context was on. */
-  | { t: "run.mode"; at: string; runId: string; profile: "project-o" | "own"; context: boolean };
+  | { t: "run.mode"; at: string; runId: string; profile: "project-o" | "own"; context: boolean; yolo?: boolean };
 
 /** One policy refusal, as crates/o-core/src/policy.rs `Violation` serializes it. */
 export interface Violation {

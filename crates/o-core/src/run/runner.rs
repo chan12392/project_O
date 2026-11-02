@@ -25,10 +25,10 @@ use crate::run::plan::{Card, Plan};
 use crate::policy::{check_plan, Violation, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
-use crate::providers::{launch_spec_with, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
+use crate::providers::{launch_spec_for, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
-    active_markers, append_event, clear_active, cooldown_times, is_clean, link_slot, mark_active, policy_context, read_events, read_plan, release_slot,
+    active_markers, append_event, clear_active, cooldown_times, is_clean, is_yolo, link_slot, mark_runner, mark_active, policy_context, read_events, read_plan, release_slot,
     reserve_slot, resolved_path, run_dir, set_cooldown, stop_requested, ActiveMarker, Reservation, Reserved,
 };
 
@@ -73,6 +73,8 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
 /// `run_plan` with the folder the policy check passed (see `Workdir`).
 pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>, workdir: Workdir) -> io::Result<CardStatus> {
     let workdir = Arc::new(workdir);
+    // YOLO 모드 (ADR-0014): chosen at dispatch, saved with the run.
+    let yolo = is_yolo(home, run_id);
     let emit = |event: OEvent| append_event(home, run_id, &event);
     emit(OEvent::RunStart {
         at: now_iso(),
@@ -98,6 +100,7 @@ pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>,
         run_id: run_id.to_string(),
         profile: Profile::of_clean(clean.is_some()),
         context: crate::context::enabled(home, run_id),
+        yolo,
     })?;
 
     // What earlier work of the project each card gets (ADR-0005); empty with `--no-context`.
@@ -188,7 +191,7 @@ pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>,
             thread::spawn(move || {
                 let context = contexts.get(&card.id).map(String::as_str);
                 let slot = Slot { home: &home, reservation, started: false, marked: false };
-                let start = Start { slot, workdir: &workdir, context, clean: clean.as_deref(), spawner: spawner.as_ref() };
+                let start = Start { slot, workdir: &workdir, context, clean: clean.as_deref(), spawner: spawner.as_ref(), yolo };
                 let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, start)))
                     .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))));
                 let _ = done.send((card.id, outcome));
@@ -254,10 +257,11 @@ struct Start<'a> {
     context: Option<&'a str>,
     clean: Option<&'a Path>,
     spawner: &'a Spawner,
+    yolo: bool,
 }
 
 fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -> io::Result<CardStatus> {
-    let Start { mut slot, workdir, context, clean, spawner } = start;
+    let Start { mut slot, workdir, context, clean, spawner, yolo } = start;
     let emit = |event: OEvent| append_event(home, run_id, &event);
     let dir = run_dir(home, run_id);
     let cards_dir = dir.join("cards");
@@ -287,7 +291,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
     }
     // The card works in the checked folder itself, never through the link.
     let checked_plan = Plan { project: workdir.checked.clone(), ..plan.clone() };
-    let spec = launch_spec_with(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context);
+    let spec = launch_spec_for(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context, yolo);
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
     let spawned = spawner(&spec, &workdir.checked).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
@@ -447,6 +451,8 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
     let mut raw: Option<Value> = None;
     let mut blocked: Vec<Violation> = Vec::new();
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
+        // Others tell a live run from one whose runner died by this (`store::run_is_live`).
+        let _ = mark_runner(home, run_id);
         let plan = read_plan(home, run_id).map_err(|e| e.to_string())?;
         raw = Some(plan.clone());
         // Codex and Antigravity report usage only when asked: a stale reading is read again before the budget check.

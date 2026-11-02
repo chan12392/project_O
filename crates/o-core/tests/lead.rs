@@ -36,14 +36,16 @@ fn main() {
         let watched = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY"];
         let keys: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| watched.iter().any(|n| n.eq_ignore_ascii_case(k))).collect();
         for line in lines {
-            println!("{}", line.replace("{keys}", &keys.join(",")));
+            println!("{}", line.replace("{keys}", &keys.join(",")).replace("{agent-role}", &std::env::var("O_AGENT_ROLE").unwrap_or_default()));
         }
         return;
     }
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 22] = [
+    let tests: [(&str, fn()); 24] = [
+        ("automatic dispatch respects mode, running work and the daily budget", autorun),
+        ("lead child receives its agent marker", lead_child_marker),
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -138,8 +140,46 @@ fn good_plan() -> Value {
     json!({ "title": "README 한 줄", "cards": [{ "id": "docs", "provider": "claude", "effort": "low", "task": "README.md 끝에 한 줄 추가" }] })
 }
 
+fn lead_child_marker() {
+    let (home, project) = setup("lead-marker");
+    let (spawner, _) = fake(claude_answer("session", "{agent-role}"));
+    let events = lead::send(&home, &request(&project, "확인"), spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "lead")));
+}
+
+fn autorun() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (home, project) = setup("autorun");
+    let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
+    let starts = AtomicUsize::new(0);
+    let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
+    let normal = lead::send_with_autorun(&home, &request(&project, "계획"), spawner.as_ref(), &start).unwrap();
+    assert!(normal.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(_), .. })));
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
+    let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    assert!(run.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    let blocked = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    assert!(blocked.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("진행 중"))));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    let run_id = run.iter().find_map(|e| match e { LeadEvent::Dispatch { run_id, .. } => Some(run_id), _ => None }).unwrap();
+    assert_eq!(lead::stop_all(&home, &project).unwrap(), 1);
+    assert!(o_core::run::store::stop_requested(&home, run_id));
+    o_core::run::store::append_event(&home, run_id, &o_core::run::events::OEvent::RunEnd {
+        at: Utc::now().to_rfc3339(), run_id: run_id.clone(), status: o_core::run::events::CardStatus::Done,
+    }).unwrap();
+    let duplicate = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    assert!(duplicate.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("같은 계획"))));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    o_core::usage::budget::write_enabled(&home, false).unwrap();
+    let blocked = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    assert!(blocked.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("예산"))));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
 fn request<'a>(project: &'a str, text: &'a str) -> SendRequest<'a> {
-    SendRequest { project, provider: ProviderId::Claude, model: None, effort: Some("low"), text, attach: &[], fresh: false, clean: None }
+    SendRequest { project, provider: ProviderId::Claude, model: None, effort: Some("low"), text, attach: &[], fresh: false, clean: None, yolo: false }
 }
 
 fn plans(events: &[LeadEvent]) -> Vec<(String, Value, bool, Vec<String>)> {
@@ -167,7 +207,7 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[], missed: &[] };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[], missed: &[], yolo: false };
     let first = build(&input);
     for part in ["[O 총괄] 프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");

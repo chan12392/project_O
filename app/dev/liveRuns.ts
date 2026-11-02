@@ -182,6 +182,11 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     run(o(args));
     return true;
   }
+  if (path === "/lead/stop-all") {
+    if (!projectOk) { fail(400, "프로젝트 폴더가 필요합니다"); return true; }
+    run(o(["lead", "stop-all", "--project", project]));
+    return true;
+  }
   if (path === "/lead/dispatch") {
     const plan = query.get("plan") ?? "";
     if (!PLAN_ID.test(plan)) {
@@ -328,6 +333,25 @@ export function liveRuns(): Plugin {
           if (value !== "on" && value !== "off") return send(res, 400, JSON.stringify({ error: "하루 사용 예산은 on 또는 off입니다" }));
           return void o(["budget", "--json", "--cached", `--${value}`]).then((out) => send(res, 200, out), error(res));
         }
+          if (req.method === "GET" && path === "/yolo") return void o(["yolo", "--json"]).then((out) => send(res, 200, out), error(res));
+          if (req.method === "POST" && path === "/yolo") {
+            void (async () => {
+            let change: { enabled?: boolean; maxCards?: number; perHour?: number; dedupeMinutes?: number };
+            try { change = JSON.parse((await body(req, 4096)).toString("utf8")); }
+            catch { return send(res, 400, JSON.stringify({ error: "설정이 올바르지 않습니다" })); }
+            if (!change || typeof change !== "object" || (change.enabled !== undefined && typeof change.enabled !== "boolean") ||
+                [change.maxCards, change.perHour, change.dedupeMinutes].some((v) => v !== undefined && (!Number.isInteger(v) || typeof v !== "number"))) {
+              return send(res, 400, JSON.stringify({ error: "설정이 올바르지 않습니다" }));
+            }
+            const args = ["yolo", "--json"];
+            if (change.maxCards !== undefined) args.push("--max-cards", String(change.maxCards));
+            if (change.perHour !== undefined) args.push("--per-hour", String(change.perHour));
+            if (change.dedupeMinutes !== undefined) args.push("--dedupe-minutes", String(change.dedupeMinutes));
+            if (change.enabled !== undefined) args.push(change.enabled ? "--on" : "--off");
+            return void o(args).then((out) => send(res, 200, out), error(res));
+            })();
+            return;
+          }
         const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, JSON.stringify({ ...JSON.parse(out), commit: "", builtAt: "" })), error(res));

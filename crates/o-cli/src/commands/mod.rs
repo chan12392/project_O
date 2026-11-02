@@ -25,6 +25,7 @@ mod status;
 mod stop;
 mod tokens;
 mod usage;
+mod yolo;
 
 pub struct Command {
     pub name: &'static str,
@@ -47,6 +48,7 @@ pub const COMMANDS: &[Command] = &[
     tokens::TOKENS,
     usage::USAGE,
     budget::BUDGET,
+    yolo::YOLO,
     runs::RUNS,
     sessions::SESSIONS,
     projects::PROJECTS,

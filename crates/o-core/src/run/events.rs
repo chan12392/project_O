@@ -139,9 +139,16 @@ pub enum OEvent {
     RunBlocked { at: String, run_id: String, violations: Vec<Violation> },
     /// How the run's cards are set up (project_O 프로필 사용, ADR-0013), right after `run.start`:
     /// the profile (`project-o` is the clean one `o tokens` groups as clean) and whether the
-    /// shared context is on.
+    /// shared context is on, and YOLO 모드 (ADR-0014; absent in runs from before it: off).
     #[serde(rename = "run.mode")]
-    RunMode { at: String, run_id: String, profile: Profile, context: bool },
+    RunMode {
+        at: String,
+        run_id: String,
+        profile: Profile,
+        context: bool,
+        #[serde(default)]
+        yolo: bool,
+    },
 }
 
 impl OEvent {

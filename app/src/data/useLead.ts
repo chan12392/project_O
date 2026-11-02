@@ -85,6 +85,12 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     await refresh();
   }, [api, project, refresh]);
 
+  const stopAll = useCallback(async () => {
+    if (!project) return;
+    await api.leadStopAll(project);
+    await refresh();
+  }, [api, project, refresh]);
+
   const startNew = useCallback(async () => {
     if (!project) return;
     await api.leadNew(project);
@@ -115,6 +121,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     refresh,
     send,
     stop,
+    stopAll,
     startNew,
     dispatch,
   };

@@ -19,7 +19,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::rules::{
-    code_rules, find_hits, is_allowed_path, CREDENTIAL_RULES, OWNER, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
+    code_rules, find_hits, is_allowed_path, rules_for_paths, CREDENTIAL_RULES, OWNER, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
 };
 
 /// Keep in sync with .github/workflows/branch-flow.yml.
@@ -37,6 +37,7 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|_run|review|_review|lead\s+(?:send|dispatch))\b"#).unwrap());
 static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
@@ -116,6 +117,9 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
 
     if matches!(tool, "Bash" | "shell" | "PowerShell") {
         let command = string_of(args.get("command"));
+        if (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) && AGENT_DISPATCH.is_match(&command) {
+            reasons.push("에이전트 안에서는 작업을 시작할 수 없습니다. 사용자가 실행해 주세요".into());
+        }
         reasons.extend(find_hits(&command, code_rules()).into_iter().map(|hit| hit.reason.to_string()));
         reasons.extend(git_reasons(&command, &current_branch));
         reasons.extend(merge_reasons(&command, &cwd, git));
@@ -153,7 +157,8 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
     }
     if !paths.is_empty() || tool == "apply_patch" {
         let place = if paths.is_empty() { tool.to_string() } else { paths.join(", ") };
-        for hit in find_hits(&args.to_string(), code_rules()) {
+        // A provider file may spell the bypass switches (ADR-0014); every other rule still applies.
+        for hit in find_hits(&args.to_string(), rules_for_paths(&paths)) {
             reasons.push(format!("{} ({place})", hit.reason));
         }
     }

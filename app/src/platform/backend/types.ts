@@ -144,6 +144,8 @@ export interface Backend {
   setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
   /** Turns the daily budget on or off (`o budget --on|--off`) and returns the new report. */
   setBudgetEnabled(enabled: boolean): Promise<BudgetReport>;
+  yolo(): Promise<YoloReport>;
+  setYolo(change: YoloChange): Promise<YoloReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
   tokens(project?: string): Promise<TokenReport>;
 
@@ -161,6 +163,7 @@ export interface Backend {
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
   /** Stops the project's lead while it answers. */
   leadStop(project?: string): Promise<{ stopped: boolean }>;
+  leadStopAll(project: string): Promise<{ stopped: number }>;
   /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
   leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
 
@@ -181,6 +184,13 @@ export interface Backend {
   /** The native folder picker (desktop only); null when cancelled or unavailable. */
   pickFolder?(): Promise<string | null>;
 }
+
+export interface YoloReport {
+  enabled: boolean;
+  budgetEnabled: boolean;
+  autoRun: { maxCards: number; perHour: number; dedupeMinutes: number };
+}
+export type YoloChange = { enabled?: boolean; maxCards?: number; perHour?: number; dedupeMinutes?: number };
 
 export interface LeadSendRequest {
   project: string;

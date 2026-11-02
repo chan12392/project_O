@@ -75,7 +75,9 @@ pub fn valid_percent(value: &Value) -> Option<u8> {
     (n.fract() == 0.0 && (f64::from(MIN_PERCENT)..=f64::from(MAX_PERCENT)).contains(&n)).then_some(n as u8)
 }
 
-fn read_settings(home: &Path) -> Map<String, Value> {
+/// `<O home>/settings.json` as an object; missing or unreadable is empty. The YOLO switch
+/// (`run::yolo`) keeps its keys in the same file.
+pub(crate) fn read_settings(home: &Path) -> Map<String, Value> {
     fs::read(settings_path(home))
         .ok()
         .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
@@ -93,13 +95,32 @@ pub fn read_enabled(home: &Path) -> bool {
     read_settings(home).get(ENABLED_KEY).and_then(Value::as_bool).unwrap_or(true)
 }
 
+/// Automatic execution must not assume the budget is enabled when settings cannot be read.
+pub fn read_enabled_for_autorun(home: &Path) -> bool {
+    match fs::read(settings_path(home)) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => true,
+        Err(_) => false,
+        Ok(bytes) => serde_json::from_slice::<Value>(&bytes).ok().and_then(|v| v.as_object().cloned())
+            .is_some_and(|settings| match settings.get(ENABLED_KEY) { None => true, Some(Value::Bool(on)) => *on, _ => false }),
+    }
+}
+
 /// Saves one setting, keeping the file's others.
-fn write_setting(home: &Path, key: &str, value: Value) -> Result<(), String> {
-    let mut settings = read_settings(home);
-    settings.insert(key.into(), value);
+pub(crate) fn write_setting(home: &Path, key: &str, value: Value) -> Result<(), String> {
     let write = || -> io::Result<()> {
         fs::create_dir_all(home)?;
-        fs::write(settings_path(home), to_pretty(&Value::Object(settings))?)
+        let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(home.join("settings.lock"))?;
+        lock.lock()?;
+        let path = settings_path(home);
+        let mut settings = match fs::read(&path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => Map::new(),
+            Err(e) => return Err(e),
+            Ok(bytes) => serde_json::from_slice::<Map<String, Value>>(&bytes).map_err(io::Error::other)?,
+        };
+        settings.insert(key.into(), value);
+        let temp = path.with_extension(format!("{}.tmp", crate::run::store::new_run_id(Utc::now())));
+        fs::write(&temp, to_pretty(&Value::Object(settings))?)?;
+        fs::rename(temp, path)
     };
     write().map_err(|e| format!("settings.json: {e}"))
 }
