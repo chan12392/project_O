@@ -1,8 +1,8 @@
 import { X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-/** Raised by the desktop shell when a link was not opened (app/src-tauri/src/commands/window.rs). */
-const LINK_BLOCKED = "project-o:link-blocked";
+import { LINK_BLOCKED } from "../platform/backend/tauri.ts";
+
 const SHOW_MS = 10_000;
 
 interface Blocked {
