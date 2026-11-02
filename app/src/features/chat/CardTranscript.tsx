@@ -74,7 +74,7 @@ function Entry({
           <p className="text-xs text-chat-foreground-faint">
             {names(entry.team.from)} → {names(entry.team.to)}
           </p>
-          <p className="whitespace-pre-wrap">{entry.text}</p>
+          <Markdown text={entry.text} />
         </div>
       </li>
     );

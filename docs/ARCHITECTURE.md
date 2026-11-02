@@ -46,7 +46,7 @@
 
 ### `crates/o-cli/src`
 
-`main.rs`는 `commands::find`로 명령을 찾아 실행할 뿐이다. `commands/mod.rs`의 `COMMANDS` 표가 이름·도움말 줄·처리 함수를 가지며 `o help`는 이 표의 순서대로 만들어진다. 명령 파일: `dispatch`(check·dispatch·내부 `_run`), `status`, `events`, `stop`, `msg`, `lead`(send·show·new·attach·dispatch·stop), `review`(내부 `_review` 포함), `context`, `tokens`, `usage`, `budget`, `runs`, `sessions`, `guard`(hook·scan), `mirror`, `agents`, `about`.
+`main.rs`는 `commands::find`로 명령을 찾아 실행할 뿐이다. `commands/mod.rs`의 `COMMANDS` 표가 이름·도움말 줄·처리 함수를 가지며 `o help`는 이 표의 순서대로 만들어진다. 명령 파일: `dispatch`(check·dispatch·내부 `_run`), `status`, `events`, `stop`, `msg`, `lead`(send·show·new·attach·dispatch·stop·models), `review`(내부 `_review` 포함), `context`, `tokens`, `usage`, `budget`, `runs`, `sessions`, `guard`(hook·scan), `mirror`, `agents`, `about`.
 
 ### `app/src-tauri/src`
 
@@ -57,7 +57,7 @@
 | 폴더 | 내용 |
 |---|---|
 | `shell/` | `App.tsx`(메인 창·팝아웃), `Sidebar`, `SidePanel`(오른쪽 패널과 보기 목록), `StatusBar`, `panelLayout.ts`, `announcer.ts` |
-| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `Markdown`, `TeamChat` |
+| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 이미지는 불러오지 않음, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(하위 보기 목록 `SUBS`), `WorkDashboard`, `NextUp`, `AllNextUp`, `AgentBoard`, `Kanban`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
@@ -94,10 +94,11 @@
 
 **총괄을 맡을 수 있는 CLI로 만들기**(ADR-0008): 헤드리스로 읽기 전용 실행과 세션 재개를 모두 보장할 수 있을 때만 한다.
 
-1. `Provider::lead_efforts`에 그 CLI가 받는 노력 수준을, `Provider::lead`에 `LeadTurn`(프로젝트·프롬프트·재개할 세션·노력·첨부 폴더·이미지)으로 만든 실행 인자를 둔다. 쓰기·셸 도구와 권한 확인을 끄는 옵션은 넣지 않는다. 스트림은 카드와 같은 `stream_reader`로 읽으므로 세션 id(`StreamSignal::Session`)와 최종 답을 내야 한다.
+1. `Provider::lead_efforts`에 그 CLI가 받는 노력 수준을, `Provider::lead`에 `LeadTurn`(프로젝트·프롬프트·재개할 세션·모델·노력·첨부 폴더·이미지)으로 만든 실행 인자를 둔다. 쓰기·셸 도구와 권한 확인을 끄는 옵션은 넣지 않는다. 모드 이름이 아니라 CLI가 강제하는 장치(도구 목록, 샌드박스, 거부 규칙)로 읽기 전용을 만들고, 홈 폴더 밖 임시 폴더에서 고치기·셸 요청이 막히는지 실제로 확인한다(ADR-0008 개정 1). 스트림은 카드와 같은 `stream_reader`로 읽으므로 세션 id(`StreamSignal::Session`)와 최종 답을 내야 한다.
 2. 그 CLI가 구독 대신 쓰는 API 키 변수가 있으면 `providers::api_key_vars`에 더한다.
-3. 화면 사본 `src/core/lead.ts`의 `LEAD_EFFORTS`에 같은 값을 더한다(`tests/lead.test.ts`가 Rust와 비교한다).
-4. 테스트: `providers.rs`에 첫 턴·재개 인자와 "쓰기·우회 없음" 사례(`lead_launches_never_write_and_never_turn_approvals_off`가 모든 프로바이더를 돈다).
+3. `Provider::lead_models`에 그 CLI의 공식 모델 목록(목록 명령은 `providers::list_command`로, 없으면 문서화된 별칭)을 둔다.
+4. 화면 사본 `src/core/lead.ts`의 `LEAD_EFFORTS`·`LEAD_NAME`에 같은 값을 더한다(`tests/lead.test.ts`가 Rust와 비교한다).
+5. 테스트: `providers.rs`에 첫 턴·재개 인자와 "쓰기·우회 없음" 사례(`lead_launches_never_write_and_never_turn_approvals_off`가 모든 프로바이더를 돈다), 모델 목록 해석 사례.
 
 ### (b) 화면 패널 · 작업 탭 하위 보기 · 설정 항목
 

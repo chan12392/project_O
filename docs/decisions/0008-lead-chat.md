@@ -1,6 +1,6 @@
 # ADR-0008: 총괄 채팅 — 읽기 전용 총괄이 계획을 제안하고 사람이 실행한다
 
-- 상태: 승인 (2026-11-02 — 대표 요청으로 구현과 함께 작성)
+- 상태: 승인 (2026-11-02 — 대표 요청으로 구현과 함께 작성). 같은 날 개정: 총괄 모델 선택, Antigravity를 총괄에 더함(대표 요청, 아래 "개정 1")
 - 날짜: 2026-11-02
 - 승인: [x] A  [ ] B (사후 확인 필요)
 - 관련: [GOALS.md](../GOALS.md) 목표 6, ADR-0002(카드 권한), ADR-0004(하루 예산), ADR-0007(모듈 구조), [ARCHITECTURE.md](../ARCHITECTURE.md)
@@ -38,9 +38,9 @@
 |---|---|---|---|
 | Claude | `claude -p --output-format stream-json --verbose --permission-mode default --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --strict-mcp-config [--effort] [--add-dir 첨부 폴더]` | `--resume <session>` | 도구가 읽기 셋뿐이고 MCP를 싣지 않는다 |
 | Codex | `codex exec -s read-only -C <project> --skip-git-repo-check [-i 이미지]... --json [-c model_reasoning_effort=…] -` | `codex exec … resume [-i …] --json <session> -` | read-only 샌드박스 |
-| Antigravity | 제외 | — | agy 1.4는 `--conversation`으로 이어 가지만 읽기 전용이라고 문서화된 모드가 없어 총괄을 맡기지 않는다 |
+| Antigravity | `agy --output-format stream-json --mode plan --sandbox --settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}} [--add-dir 첨부 폴더] [--model] [--effort] -p <프롬프트>` | `--conversation <id>` (스트림 `init`의 `conversation_id`) | 세션 설정의 거부 규칙을 agy 권한 검사가 막는다(파일 쓰기·셸·MCP·URL 동작). plan 모드만으로는 막히지 않는다(개정 1) |
 
-- 노력 수준은 CLI가 받는 값만: Claude `low·medium·high·xhigh·max`, Codex `minimal·low·medium·high·xhigh`. 모델은 CLI 기본(총괄 모델 지정은 CLI에만 `--model`로 둔다).
+- 노력 수준은 CLI가 받는 값만: Claude `low·medium·high·xhigh·max`, Codex `minimal·low·medium·high·xhigh`, Antigravity `low·medium·high·xhigh·max`. 모델은 기본이 CLI 설정이고, 사람이 고르면 `--model`(Codex `-m`)로 넘긴다(개정 1).
 - 총괄 CLI는 그 CLI의 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`, `CODEX_API_KEY`)를 대소문자 구분 없이 물려받지 않는다. 남은 키가 구독 대신 API로 과금되는 것을 막는다(B의 카드 수정과 같은 `api_key_vars`·`names_to_remove`).
 
 ### 프롬프트 (`lead::prompt`)
@@ -63,11 +63,45 @@
 
 ### 앱
 
-- `o lead send|show|new|attach|dispatch|stop`, Tauri `lead_*` 명령, 개발 서버 `/api/lead/*`, `Backend.lead*`. 첨부는 Tauri에서 원본 바이트(머리글에 프로젝트·이름), 개발 서버에서 요청 본문으로 받아 `o lead attach … -`에 넘긴다. 데모는 "미리보기에서는 총괄에 보내지 않습니다"로 거절한다.
-- 입력창: 상자 하나 안에 첨부 칩, 글, 아랫줄 왼쪽 `+`(첨부)와 실행 프로필 칩(깨끗한 에이전트/기본 하네스 — 설정과 같은 값), 오른쪽 에이전트·노력 하나의 선택(설치·로그인된 Claude Code·Codex만), 답하는 동안 돌아가는 표시와 중지(■), 아니면 보내기. Ctrl/⌘+Enter, 이미지 붙여넣기·끌어 놓기.
-- 대화: 사용자 글과 첨부, 총괄의 답(마크다운), 계획 카드(카드 id·역할·에이전트·모델·노력·할 일, 정책 결과, 실행 → runId와 그 실행 카드), 오류. 설정 → 총괄에서 기본 에이전트와 노력.
+- `o lead send|show|new|attach|dispatch|stop|models`, Tauri `lead_*` 명령, 개발 서버 `/api/lead/*`, `Backend.lead*`. 첨부는 Tauri에서 원본 바이트(머리글에 프로젝트·이름), 개발 서버에서 요청 본문으로 받아 `o lead attach … -`에 넘긴다. 데모는 "미리보기에서는 총괄에 보내지 않습니다"로 거절한다.
+- 입력창: 상자 하나 안에 첨부 칩, 글, 아랫줄 왼쪽 `+`(첨부)와 실행 프로필 칩(깨끗한 에이전트/기본 하네스 — 설정과 같은 값), 오른쪽 에이전트·모델·노력 하나의 선택(설치·로그인된 총괄 에이전트만 고를 수 있음, 개정 1), 답하는 동안 돌아가는 표시와 중지(■), 아니면 보내기. Ctrl/⌘+Enter, 이미지 붙여넣기·끌어 놓기.
+- 대화: 사용자 글과 첨부, 총괄의 답(마크다운), 계획 카드(카드 id·역할·에이전트·모델·노력·할 일, 정책 결과, 실행 → runId와 그 실행 카드), 오류. 설정 → 총괄에서 기본 에이전트와 노력, 에이전트마다 기본 모델.
 - 데스크톱 앱은 실제 데이터만 보인다: 실행이 없어도 데모로 넘어가지 않고, 첫 실행은 에이전트 연결 → 프로젝트 폴더 → 총괄 대화다. 녹화된 데모는 브라우저 미리보기(`?source=demo`, 개발 서버)에만 있다.
 - `o tokens`는 총괄 턴의 토큰을 계획 부대 비용(`lead`)으로 따로 센다.
+
+## 개정 1 (2026-11-02): 총괄 모델 선택, Antigravity 총괄
+
+대표 요청: 입력창에서 총괄 모델도 고르고, 설치된 agy가 총괄 목록에 보이게 한다.
+
+### 모델
+
+- `o lead send --model <id>`: 카드 `model`과 같은 형식 규칙(`policy::is_model_id`)으로 검사하고 `lead.user`에 남긴 뒤 `Provider::lead`에 넘긴다. 없으면 CLI 기본 모델이다.
+- 목록은 각 CLI의 공식 출처만 쓴다(`Provider::lead_models`, `o lead models --provider <id>`). 셸 없이, 창 없이, API 키 변수를 뺀 채 실행한다. 형식 규칙에 맞지 않는 id는 버린다.
+
+| CLI | 출처 |
+|---|---|
+| Claude Code | 목록 명령이 없어 `claude --help`가 문서화한 별칭 `fable·opus·sonnet·haiku` |
+| Codex | `codex debug models`(`codex --help`에 있는 명령)의 모델 카탈로그 중 `visibility: "list"`, `priority` 순 |
+| Antigravity | `agy models`의 `id<TAB>이름` 줄 |
+
+- 앱은 목록을 10분 둔다(Tauri `lead_models`, 개발 서버 `/api/lead/models`, 데모는 고정 목록). 목록을 못 받으면 입력창은 "직접 입력"으로 id를 받고, 같은 규칙(`src/core/lead.ts`의 `MODEL_ID`, `tests/lead.test.ts`가 Rust와 비교)으로 검사한다.
+- 입력창 선택 메뉴는 에이전트 → 모델 → 노력 수준 순서이고, 첫 모델은 "기본 모델"(`--model` 없음)이다. 버튼은 "Claude Code · Opus · 높음"처럼 보인다. 설정 → 총괄에 에이전트마다 기본 모델을 둔다(이 브라우저의 설정).
+- 총괄로 쓸 수 있지만 지금 고를 수 없는 에이전트(설치·로그인 안 됨)도 메뉴에 비활성으로 보이고 이유를 적는다.
+
+### Antigravity
+
+agy 1.4.12 `--help`에 `--mode plan`, `--sandbox`, `--settings`(세션 한정 설정 JSON), `--conversation <ID>`, `--add-dir`, `--model`, `--effort`가 있다. 홈 폴더 밖 임시 프로젝트(`C:\o-smoke-agy`, 파일 하나)에서 `--effort low`로 네 번 확인했다.
+
+| # | 실행 | 결과 |
+|---|---|---|
+| 1 | `--mode plan --sandbox --settings {"permissions":{"deny":["command(*)","write_file(*)","mcp(*)"]}}`, 파일 고치기와 `cmd /c echo hi > made.txt` 요청 | 모델이 `edit_file`·`run_command`를 시도했고 둘 다 "Matches user-configured deny rule"로 거부. 파일 해시 같음, `made.txt` 없음. agy가 자기 계획 문서(`~/.gemini/.../implementation_plan.md`)를 쓰는 것도 거부됨 |
+| 2 | 같은 요청, `--mode plan --sandbox`만(거부 규칙 없음) | 모델이 스스로 고치지 않았지만 자기 계획 문서는 썼다. 1에서 plan 모드인데도 `edit_file`을 시도했으므로 plan 모드만으로는 읽기 전용을 보장하지 못한다 |
+| 3 | 1의 대화를 `--conversation <id>`로 이어 감, 최종 거부 규칙(+`read_url(*)`·`execute_url(*)`) | `init`과 결과의 `conversation_id`가 같고 앞 턴 내용을 기억함. 다시 시도한 셸 명령은 거부. 파일 그대로 |
+| 4 | 같은 명령을 `allow`에도 넣고 `deny`와 함께 | 모델이 시도하지 않아 allow·deny 우선순위는 확인하지 못함. 파일 그대로 |
+
+- 결정: 읽기 전용은 plan 모드가 아니라 거부 규칙이 보장하므로, agy 총괄은 거부 규칙을 항상 넣는다. 허용(`allow`) 규칙은 넣지 않는다. 권한 확인을 끄는 옵션이나 `accept-edits`·`auto` 모드는 쓰지 않는다(`crates/o-core/tests/providers.rs`가 고정).
+- agy는 이미지 입력 옵션이 없다. 첨부는 프롬프트에 경로를 적고 첨부 폴더를 `--add-dir`로 연다(읽기만).
+- 남은 위험: 사람의 agy 사용자 설정에 넓은 `allow` 규칙이 있을 때 세션 `deny`가 이기는지는 직접 확인하지 못했다(4번). 총괄의 계획은 그대로 사람이 "실행"을 눌러야 카드가 되고 정책을 두 번 거친다.
 
 ## 영향
 

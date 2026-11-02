@@ -1,12 +1,18 @@
 import { useSyncExternalStore } from "react";
 
-import { effortFor, isLeadProvider, type LeadProvider } from "../../../src/core/lead.ts";
+import { MODEL_ID, effortFor, isLeadProvider, type LeadProvider } from "../../../src/core/lead.ts";
 import { readStored, writeStored } from "../lib/storage.ts";
 
 /** A saved lead agent and effort, kept only while the agent can lead and takes that effort. */
 function leadChoice(agent: unknown, effort: unknown): { leadAgent: LeadProvider; leadEffort: string } {
   const leadAgent = typeof agent === "string" && isLeadProvider(agent) ? agent : DEFAULTS.leadAgent;
   return { leadAgent, leadEffort: effortFor(leadAgent, typeof effort === "string" ? effort : DEFAULTS.leadEffort) };
+}
+
+/** Saved default models, kept only for agents that can lead and ids `o lead send --model` takes. */
+function leadModels(saved: unknown): Partial<Record<LeadProvider, string>> {
+  if (!saved || typeof saved !== "object") return {};
+  return Object.fromEntries(Object.entries(saved).filter(([agent, id]) => isLeadProvider(agent) && typeof id === "string" && MODEL_ID.test(id)));
 }
 
 /**
@@ -34,6 +40,8 @@ export interface Settings {
   /** Settings → 총괄: the agent and effort a new message starts with (the composer may pick others). */
   leadAgent: LeadProvider;
   leadEffort: string;
+  /** Settings → 총괄: each agent's default model id; none means the CLI's own default (no `--model`). */
+  leadModels: Partial<Record<LeadProvider, string>>;
   skippedUpdate?: string;
 }
 
@@ -51,6 +59,7 @@ export const DEFAULTS: Settings = {
   notify: false,
   leadAgent: "claude",
   leadEffort: "medium",
+  leadModels: {},
 };
 
 const FONT_SCALE: Record<FontSize, string> = { small: "0.9375", normal: "1", large: "1.125" };
@@ -72,6 +81,7 @@ function load(): Settings {
       notify: typeof s.notify === "boolean" ? s.notify : DEFAULTS.notify,
       sessions: typeof s.sessions === "boolean" ? s.sessions : undefined,
       ...leadChoice(s.leadAgent, s.leadEffort),
+      leadModels: leadModels(s.leadModels),
       skippedUpdate: typeof s.skippedUpdate === "string" ? s.skippedUpdate : undefined,
     };
   });

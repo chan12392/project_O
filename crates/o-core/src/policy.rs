@@ -53,6 +53,11 @@ static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9
 const RESERVED_CARD_IDS: [&str; 2] = ["lead", "all"];
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
+/// Whether a model id has the shape a card's `model` field takes (the lead's `--model` uses it too).
+pub fn is_model_id(model: &str) -> bool {
+    MODEL.is_match(model)
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Violation {

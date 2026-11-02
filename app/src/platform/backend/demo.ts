@@ -1,4 +1,4 @@
-import type { AgentId, Backend, BudgetReport, BudgetState, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
+import type { AgentId, Backend, BudgetReport, BudgetState, LeadModel, LeadProvider, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
 import { DESKTOP_UPDATES_ONLY } from "../updates.ts";
 
 /** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread. */
@@ -55,6 +55,24 @@ const demoGroup = (key: TokenGroup["key"], label: string, runs: number, cards: n
 const DEMO_BASELINE = demoGroup("normal", "기본 하네스", 3, 9, demoTokens(18_400, 41_200, 3_100));
 const DEMO_SHARED = demoGroup("clean+context", "깨끗한+세션 공유", 3, 9, demoTokens(6_900, 12_800, 2_700));
 
+/** The preview's model lists, in the shape `o lead models` prints (Claude's are its documented aliases). */
+const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
+  claude: [
+    { id: "fable", label: "Fable" },
+    { id: "opus", label: "Opus" },
+    { id: "sonnet", label: "Sonnet" },
+    { id: "haiku", label: "Haiku" },
+  ],
+  codex: [
+    { id: "gpt-6.1-sol", label: "GPT-6.1-Sol" },
+    { id: "gpt-6.1-terra", label: "GPT-6.1 Terra" },
+  ],
+  agy: [
+    { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)" },
+    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
+  ],
+};
+
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 export const demoBackend: Backend = {
   kind: "demo",
@@ -82,4 +100,5 @@ export const demoBackend: Backend = {
   leadSend: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadDispatch: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadStop: async () => ({ stopped: false }),
+  leadModels: async (provider) => ({ provider, models: DEMO_MODELS[provider] }),
 };
