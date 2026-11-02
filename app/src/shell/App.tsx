@@ -2,28 +2,28 @@ import { PanelRightOpen, SquareArrowOutUpRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { nextUp, type NextItem } from "../../../src/core/attention.ts";
-import type { RunView } from "../../../src/core/snapshot.ts";
-import { backend } from "../platform/backend/index.ts";
+import { LEAD_WORD, projectsOf, useLeads, useProjectGroups, type Project } from "../data/projects.ts";
+import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow } from "../data/settings.ts";
+import { useRunSource } from "../data/useLiveRuns.ts";
+import { readParams, writeParam, type PanelView, type ScreenState } from "../data/useRun.ts";
+import { Composer } from "../features/chat/Composer.tsx";
+import { LeadGate } from "../features/chat/LeadGate.tsx";
+import { Thread } from "../features/chat/Thread.tsx";
+import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { AccountMenu, SETTINGS_BUTTON_ID } from "../features/settings/AccountMenu.tsx";
+import { Onboarding } from "../features/settings/Onboarding.tsx";
+import type { SettingsSection } from "../features/settings/sections/index.ts";
+import { Settings } from "../features/settings/Settings.tsx";
 import { AllNextUp } from "../features/work/AllNextUp.tsx";
 import { useHandled } from "../features/work/NextUp.tsx";
 import { useNow } from "../features/work/WorkTab.tsx";
-import { Composer } from "../features/chat/Composer.tsx";
-import { LeadGate } from "../features/chat/LeadGate.tsx";
-import { Onboarding } from "../features/settings/Onboarding.tsx";
-import { Settings } from "../features/settings/Settings.tsx";
-import type { SettingsSection } from "../features/settings/sections/index.ts";
+import { ICON_BUTTON } from "../lib/format.ts";
+import { backend } from "../platform/backend/index.ts";
+import { useAnnouncer } from "./announcer.ts";
+import { usePanelLayout, usePopoutChannel, type Selection } from "./panelLayout.ts";
 import { SidePanel } from "./SidePanel.tsx";
 import { Sidebar } from "./Sidebar.tsx";
 import { StatusBar } from "./StatusBar.tsx";
-import { Thread } from "../features/chat/Thread.tsx";
-import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
-import { ICON_BUTTON, STATE_WORD } from "../lib/format.ts";
-import { usePanelLayout, usePopoutChannel, type Selection } from "./panelLayout.ts";
-import { LEAD_WORD, projectsOf, useLeads, useProjectGroups, type Project } from "../data/projects.ts";
-import { useRunSource } from "../data/useLiveRuns.ts";
-import { readParams, writeParam, type PanelView, type ScreenState } from "../data/useRun.ts";
-import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow } from "../data/settings.ts";
 
 const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
@@ -330,37 +330,4 @@ function PopoutPanel() {
       />
     </div>
   );
-}
-
-/** Settings → 알림: a desktop notification for a finished card while the window is in the background. */
-function notify(title: string, body: string) {
-  if (!settingsNow().notify || typeof Notification === "undefined" || Notification.permission !== "granted" || document.hasFocus()) return;
-  try {
-    new Notification(title, { body });
-  } catch {
-    // Some webviews only allow notifications from a service worker; the screen reader line still speaks.
-  }
-}
-
-/** Says out loud (and, if enabled, notifies) when a card finishes while its run is watched; cards that had already finished stay quiet. */
-function useAnnouncer(run: RunView | undefined) {
-  const [text, setText] = useState("");
-  const seen = useRef(new Set<string>());
-  const runs = useRef(new Set<string>());
-  useEffect(() => {
-    if (!run) return;
-    const first = !runs.current.has(run.runId);
-    runs.current.add(run.runId);
-    for (const card of run.cards) {
-      const key = `${run.runId}/${card.id}`;
-      if (card.endedAt && !seen.current.has(key)) {
-        seen.current.add(key);
-        if (first) continue;
-        const said = `${card.label} 카드 ${STATE_WORD[card.state]}`;
-        setText(said);
-        notify(run.title, said);
-      }
-    }
-  }, [run]);
-  return text;
 }

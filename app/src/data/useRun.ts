@@ -13,7 +13,9 @@ export interface Message {
 }
 
 export type ScreenState = "loading" | "empty" | "error" | "full";
-export type PanelView = "work" | "office";
+/** The side panel's views, in tab order (shell/SidePanel.tsx draws each). */
+export const PANEL_VIEWS = ["work", "office"] as const;
+export type PanelView = (typeof PANEL_VIEWS)[number];
 
 interface DemoRun {
   events: OEvent[];
@@ -88,7 +90,7 @@ export function readParams() {
     project: params.get("project") ?? undefined,
     run: params.get("run") ?? undefined,
     // The team chat now lives under the office; older links with view=team land there.
-    view: (view === "office" || view === "team" ? "office" : "work") as PanelView,
+    view: view === "team" ? "office" : (PANEL_VIEWS.find((v) => v === view) ?? PANEL_VIEWS[0]),
     card: params.get("card") ?? undefined,
     start: Number.isFinite(t) && t > 0 ? Math.min(1, t) : 0,
     popout: params.get("popout") === "panel",
