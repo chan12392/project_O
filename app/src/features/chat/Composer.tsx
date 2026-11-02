@@ -120,7 +120,8 @@ export function Composer({
   const modelChoices: MenuChoice[] = agent
     ? [
         { value: "", label: "기본 모델", hint: `${LEAD_NAME[agent]}에 설정된 모델` },
-        ...models.models.map((m) => ({ value: m.id, label: m.label })),
+        // An alias (Claude's) shows itself at the row's end; the tooltip names the model it stands for now.
+        ...models.models.map((m) => ({ value: m.id, label: m.label, ...(m.hint ? { aside: m.id, title: `별칭 ${m.id} → ${m.hint}` } : {}) })),
         // A typed-in or saved id the list does not have still shows, so the person sees what runs.
         ...(model && !models.models.some((m) => m.id === model) ? [{ value: model, label: model, hint: "직접 입력한 모델" }] : []),
         ...(models.loading ? [{ value: " 불러오는 중", label: "모델 목록을 불러오는 중…", disabled: true }] : []),
@@ -374,6 +375,8 @@ export function Composer({
                   },
                   {
                     label: "모델",
+                    // A long list (Antigravity names every model at every level) scrolls; agent and effort stay in view.
+                    scroll: true,
                     value: model,
                     onChoose: (v) => (v === TYPE_MODEL ? setTyping({ draft: model }) : setPicked({ agent, model: v, effort })),
                     choices: modelChoices,

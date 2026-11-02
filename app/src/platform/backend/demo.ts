@@ -70,22 +70,31 @@ const demoList = (): ProjectList => ({ root: DEMO_ROOT, defaultRoot: true, rootE
 const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/;
 const nameOf = (path: string) => folderKey(path).split("/").filter(Boolean).pop() ?? path;
 
-/** The preview's model lists, in the shape `o lead models` prints (Claude's are its documented aliases). */
+/**
+ * The preview's model lists, in the shape `o lead models` prints (Claude's are its documented
+ * aliases with the version each stands for). Antigravity lists every model at every thinking
+ * level, so its list is the long one the menu has to scroll.
+ */
 const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
   claude: [
-    { id: "fable", label: "Fable" },
-    { id: "opus", label: "Opus" },
-    { id: "sonnet", label: "Sonnet" },
-    { id: "haiku", label: "Haiku" },
+    { id: "fable", label: "Fable 5.1", hint: "claude-fable-5-1" },
+    { id: "opus", label: "Opus 5.5", hint: "claude-opus-5-5" },
+    { id: "sonnet", label: "Sonnet 5.5", hint: "claude-sonnet-5-5" },
+    { id: "haiku", label: "Haiku 5.5", hint: "claude-haiku-5-5" },
   ],
   codex: [
     { id: "gpt-6.1-sol", label: "GPT-6.1-Sol" },
     { id: "gpt-6.1-terra", label: "GPT-6.1 Terra" },
   ],
-  agy: [
-    { id: "gemini-4-argon-high", label: "Gemini 4 Argon (High)" },
-    { id: "gemini-3.8-flash-medium", label: "Gemini 3.8 Flash (Medium)" },
-  ],
+  agy: (
+    [
+      ["gemini-4-argon", "Gemini 4 Argon"],
+      ["gemini-4-argon-pro", "Gemini 4 Argon Pro"],
+      ["gemini-3.8-flash", "Gemini 3.8 Flash"],
+      ["claude-opus-5-5", "Claude Opus 5.5"],
+      ["claude-sonnet-5-5", "Claude Sonnet 5.5"],
+    ] as const
+  ).flatMap(([id, name]) => (["high", "medium", "low"] as const).map((level) => ({ id: `${id}-${level}`, label: `${name} (${level[0].toUpperCase()}${level.slice(1)})` }))),
 };
 
 /** The recorded demo: every agent installed and signed in, nothing really runs. */

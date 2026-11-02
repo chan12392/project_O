@@ -251,7 +251,7 @@ pub fn parse_codex_models(stdout: &str) -> Vec<ModelChoice> {
         .filter_map(|m| {
             let id = m.get("slug").and_then(Value::as_str)?.to_string();
             let label = m.get("display_name").and_then(Value::as_str).filter(|l| !l.trim().is_empty()).unwrap_or(&id).trim().to_string();
-            Some((m.get("priority").and_then(Value::as_f64).unwrap_or(f64::MAX), ModelChoice { id, label }))
+            Some((m.get("priority").and_then(Value::as_f64).unwrap_or(f64::MAX), ModelChoice { id, label, hint: None }))
         })
         .collect();
     listed.sort_by(|a, b| a.0.total_cmp(&b.0));

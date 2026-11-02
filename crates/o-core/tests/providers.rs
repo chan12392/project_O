@@ -356,8 +356,8 @@ fn lead_model_lists_come_from_each_cli() {
     assert_eq!(
         parse_agy_models(agy),
         [
-            ModelChoice { id: "gemini-4-argon-high".into(), label: "Gemini 4 Argon (High)".into() },
-            ModelChoice { id: "claude-opus-5-5-low".into(), label: "Claude Opus 5.5 (Low)".into() },
+            ModelChoice { id: "gemini-4-argon-high".into(), label: "Gemini 4 Argon (High)".into(), hint: None },
+            ModelChoice { id: "claude-opus-5-5-low".into(), label: "Claude Opus 5.5 (Low)".into(), hint: None },
         ]
     );
     let codex = json!({ "models": [

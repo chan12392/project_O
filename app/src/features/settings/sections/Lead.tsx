@@ -63,7 +63,7 @@ function LeadSection({ api }: { api: Backend }) {
 
 /** Where each agent's model list comes from, in the row's description. */
 const MODEL_SOURCE: Record<LeadProvider, string> = {
-  claude: "Claude Code가 문서화한 모델 별칭(최신 Opus·Sonnet 등)입니다. 기본 모델은 Claude Code 설정을 따릅니다.",
+  claude: "Claude Code가 문서화한 모델 별칭(최신 Opus·Sonnet 등)입니다. 이름 뒤 버전은 지금 그 별칭이 가리키는 모델입니다. 기본 모델은 Claude Code 설정을 따릅니다.",
   codex: "codex debug models가 알려 주는 모델 목록입니다. 기본 모델은 Codex 설정을 따릅니다.",
   agy: "agy models가 알려 주는 모델 목록입니다. 기본 모델은 Antigravity 설정을 따릅니다.",
 };

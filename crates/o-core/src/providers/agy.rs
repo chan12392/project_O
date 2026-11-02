@@ -216,7 +216,7 @@ pub fn parse_agy_models(stdout: &str) -> Vec<ModelChoice> {
         .filter_map(|line| {
             let (id, label) = line.split_once('\t')?;
             let id = id.trim();
-            (!id.is_empty()).then(|| ModelChoice { id: id.to_string(), label: Some(label.trim()).filter(|l| !l.is_empty()).unwrap_or(id).to_string() })
+            (!id.is_empty()).then(|| ModelChoice { id: id.to_string(), label: Some(label.trim()).filter(|l| !l.is_empty()).unwrap_or(id).to_string(), hint: None })
         })
         .collect()
 }
