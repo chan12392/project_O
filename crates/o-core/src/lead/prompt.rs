@@ -70,6 +70,9 @@ fn role(project: &str, budget: &[String]) -> String {
 /// One run's state for a continuing turn: title, then each card's state and the start of its result.
 pub fn run_status(run: &RunView) -> String {
     let mut lines = vec![format!("- 실행 {} \"{}\": {}", run.run_id, run.title, run.status.as_str())];
+    if run.failed_before_cards() {
+        lines.push(format!("  - 카드를 시작하지 않음: {}", clip(&run.blocked_reason(), RESULT_CHARS)));
+    }
     for card in &run.cards {
         let result = card.result.as_deref().map(|r| r.lines().take(5).collect::<Vec<_>>().join(" / ")).unwrap_or_default();
         let result = if js_len(&result) > RESULT_CHARS { format!("{}…", js_head(&result, RESULT_CHARS)) } else { result };

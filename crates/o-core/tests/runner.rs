@@ -15,7 +15,7 @@ use o_core::sys::js::{iso, parse_time};
 use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
-use o_core::run::runner::{run_plan, run_plan_in, Spawner, Workdir};
+use o_core::run::runner::{run_detached, run_plan, run_plan_in, Spawner, Workdir};
 use o_core::run::store::{
     active_markers, clear_active, cooldown_times, create_run, mark_active, read_events, record_start, request_stop, set_cooldown, started_on,
     ActiveMarker,
@@ -45,7 +45,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 16] = [
+    let tests: [(&str, fn()); 17] = [
+        ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
         ("cards start in the folder the policy checked, not the link the plan names", cards_run_in_the_checked_folder),
         ("a project link pointed elsewhere after the check refuses the card", a_link_swapped_after_the_check_is_refused),
         ("a stop that comes while a card's CLI is starting still ends it", stop_while_starting),
@@ -110,6 +111,16 @@ fn ends_of(home: &std::path::Path, run_id: &str) -> BTreeMap<String, CardStatus>
 
 fn quiet() -> Arc<Spawner> {
     fake_cli(|_| vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])
+}
+
+fn rejected_plan_records_reason() {
+    let home = temp_home();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "test")]);
+    p.project = home.join("missing-project").to_string_lossy().into_owned();
+    create_run(&home, "rejected", &p).unwrap();
+    assert!(run_detached(&home, "rejected").is_err());
+    let events = read_events(&home, "rejected");
+    assert!(matches!(events.as_slice(), [OEvent::RunStart { cards, .. }, OEvent::RunBlocked { violations, .. }, OEvent::RunEnd { status: CardStatus::Failed, .. }] if cards.is_empty() && !violations.is_empty()));
 }
 
 fn parallel_and_limit() {

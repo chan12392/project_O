@@ -6,6 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::policy::Violation;
 use crate::sys::js::ser_num;
 use crate::run::plan::ProviderId;
 
@@ -130,6 +131,11 @@ pub enum OEvent {
     /// Cards whose prompt got a shared context section (`context`), and its characters in all.
     #[serde(rename = "run.context")]
     RunContext { at: String, run_id: String, cards: usize, chars: usize, card_ids: Vec<String> },
+    /// The runner's own check right before the start (`o _run`) refused the plan: no card
+    /// started. The violations are the ones `o check` would print (a cap, a cooldown, today's
+    /// budget read again since dispatch). `run.end failed` follows.
+    #[serde(rename = "run.blocked")]
+    RunBlocked { at: String, run_id: String, violations: Vec<Violation> },
 }
 
 impl OEvent {
@@ -151,6 +157,7 @@ impl OEvent {
             OEvent::ReviewPosted { .. } => "review.posted",
             OEvent::CardBudget { .. } => "card.budget",
             OEvent::RunContext { .. } => "run.context",
+            OEvent::RunBlocked { .. } => "run.blocked",
         }
     }
 }
