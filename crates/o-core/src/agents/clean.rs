@@ -118,6 +118,9 @@ pub fn ensure_profile(root: &Path, provider: ProviderId, real_home: &Path) -> io
 
 /// The official CLI with the clean environment, run in the current folder.
 pub fn command(root: &Path, provider: ProviderId, args: &[&str]) -> io::Result<Command> {
+    if let Some(why) = providers::get(provider).profile_unsupported() {
+        return Err(io::Error::other(why));
+    }
     let bin = provider.as_str();
     let cli = resolve_cli(bin).ok_or_else(|| io::Error::other(format!("{bin} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다")))?;
     let mut command = Command::new(&cli.command);
