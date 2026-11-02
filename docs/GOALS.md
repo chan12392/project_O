@@ -39,7 +39,7 @@
 - `app/src/features/work/AgentBoard.tsx`: 프로젝트 카드들을 대기·작업 중·PR 검토·완료·막힘으로 묶는다.
 - `app/src/features/chat/CardTranscript.tsx`, `TeamChat.tsx`: 카드 기록과 같은 실행 안의 팀 대화를 표시한다.
 - `app/src/data/useLiveRuns.ts`: Tauri/API에서 최근 실행 50개를 읽고 보이는 동안 2초 간격으로 갱신한다.
-- 같은 파일에서 소스를 지정하지 않았고 실제 실행이 없으면 데모 기록으로 전환한다. 데모 화면은 실제 작업의 증거가 아니다.
+- 같은 파일에서 브라우저 미리보기는 소스를 지정하지 않았고 실제 실행이 없으면 데모 기록으로 전환한다. 데스크톱 앱은 전환하지 않는다(ADR-0008). 데모 화면은 실제 작업의 증거가 아니다.
 - `crates/o-core/src/run/events.rs`에 `card.session`은 있지만 부모·자식 에이전트 관계 필드는 없다.
 
 진행 중: `younchan-office-nextup`이 목표 1–2를 담당한다. 이 기준 소스에는 그 결과가 반영되지 않았다.
@@ -162,16 +162,21 @@ SQLite 색인은 현재 실행 목록/이벤트 조회용이며 의미 검색·�
 - `app/src/features/settings/Onboarding.tsx`, `Settings.tsx`, `AgentSetup.tsx`: 공식 CLI 상태 확인·설치·로그인과 깨끗한 프로필 선택이 있다.
 - `app/src/data/settings.ts`의 clean 기본값은 true지만, 현재 연결 대상은 상태 확인·로그인이다. CLI dispatch는 명시적인 `--clean`이 필요하다.
 
-진행 중: 목표 6 전담 브랜치는 전달받지 않았다. budget·context 작업이 분배 시 예산과 문맥의 기반을 보강할 예정이다.
+총괄 채팅(`younchan-lead`, [ADR-0008](decisions/0008-lead-chat.md)) — 남은 순서 1–3 중 1·2와 3의 일부를 구현했다:
+
+- `crates/o-core/src/lead/`: 프로젝트별 총괄 스레드(`leads/<id>/events.jsonl`, "새 대화"), Claude·Codex 총괄의 읽기 전용 한 턴과 세션 재개(`Provider::lead`), 계획 블록(` ```o-plan `)을 읽어 프로젝트를 고정하고 `o dispatch`와 같은 정책으로 검사해 저장, 사람이 누른 "실행"만 다시 검사해 한 번 dispatch, 첨부(이미지·문서, O 상태 폴더 밖), 총괄 토큰을 `o tokens`의 부대 비용으로.
+- `o lead send|show|new|attach|dispatch|stop`, Tauri `lead_*`, 개발 서버 `/api/lead/*`. 앱 입력창(에이전트·노력 선택, 첨부, 중지)과 계획 카드, 설정 → 총괄. 설정의 깨끗한 에이전트 선택이 총괄 실행과 계획 dispatch(`--clean`)에 실제로 전달된다.
+- Antigravity는 읽기 전용 모드를 보장하지 못해 총괄에서 뺐다(카드로는 그대로 쓴다). 카드의 provider·model·effort는 총괄이 고른다.
+- 실제 확인(2026-11-02): 로그인된 Claude CLI로 홈 밖 임시 프로젝트에 `o lead send --effort low`를 보내 카드 1장 계획이 저장되고 정책을 통과했다(실행은 하지 않음). 총괄 한 턴 입력 4,234 · 캐시 3,223 · 출력 567 토큰.
+- 데스크톱 앱은 실제 데이터만 보인다. 녹화된 데모는 브라우저 미리보기(`?source=demo`, 개발 서버)에만 있다.
 
 남은 순서:
 
-1. 총괄의 프로바이더·모델·프로젝트 세션 수명과 저장 형식을 합의하고, 한 총괄 CLI 연결부터 구현한다.
-2. `app/src/features/chat/Composer.tsx`의 입력을 총괄 → 계획 확인 → dispatch로 연결하며 Tauri·개발 API·CLI 동작을 맞춘다.
-3. 총괄 재접속·카드 질문 응답·중지·실패 회수까지 한 계획으로 검증하고 설정의 clean 선택을 실제 dispatch에 전달한다.
+1. 카드 질문(`o msg … --to lead`)에 앱 총괄이 답하는 연결: 지금은 다음 턴 프롬프트에 실행 상태와 결과 요약만 넣는다.
+2. 총괄 답의 스트리밍 중간 표시, 앱이 꺼진 사이 끊긴 턴의 회수, 실패한 카드의 재시도 계획.
+3. 같은 요청으로 터미널 총괄과 앱 총괄의 계획 품질·토큰을 비교한다.
 
-현재 Composer는 전송하지 않았다는 안내만 표시한다. `app/src/data/projects.ts`의 총괄 깨우기도 타이머 기반 화면 상태다.
-O는 계획된 카드를 실행·대기시키며, 작업을 스스로 분해하거나 프로바이더·모델·effort를 자동 결정하지 않는다.
+O는 계획된 카드를 실행·대기시킨다. 작업 분해와 프로바이더·모델·effort 선택은 총괄 CLI가 제안하고, 사람이 실행을 결정한다.
 
 ## 병렬 작업의 통합 상태
 
@@ -235,7 +240,7 @@ usage 이벤트가 없거나 필드가 누락된 카드는 0 사용으로 단정
 1. 병렬 브랜치의 실제 변경과 ADR 상태를 확인하고, 기록·프로젝트 경계·토큰 집계 계약부터 맞춘다.
 2. clean + 공유 주입 + `o tokens`를 한 계획에 연결해 위 A/B를 실행하고 절감 근거를 남긴다.
 3. 같은 기록을 사용해 예산/effort를 검증한 뒤, NextUP 재개·PR 검토·부모/자식 시각화를 각각 연결한다.
-4. 총괄 설정과 Composer의 실제 전달을 연결해 사람이 앱에서 맡기고·확인하고·다시 맡기는 경로를 완성한다.
+4. 총괄 설정과 Composer의 실제 전달은 연결됐다(ADR-0008). 카드 질문 응답과 재시도까지 이어 사람이 앱에서 맡기고·확인하고·다시 맡기는 경로를 완성한다.
 
 이 문서 추가의 검증은 경로·구현 근거 확인과 `cargo run --release -p o-cli -- scan --all`이다.
 실제 유료 CLI 실행, A/B 측정, 앱 조작, 병렬 브랜치 통합 검증은 이 문서 작업에서 수행하지 않는다.
