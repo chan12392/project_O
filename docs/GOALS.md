@@ -173,16 +173,24 @@ SQLite 색인은 현재 실행 목록/이벤트 조회용이며 의미 검색·�
 현재 Composer는 전송하지 않았다는 안내만 표시한다. `app/src/projects.ts`의 총괄 깨우기도 타이머 기반 화면 상태다.
 O는 계획된 카드를 실행·대기시키며, 작업을 스스로 분해하거나 프로바이더·모델·effort를 자동 결정하지 않는다.
 
-## 병렬 작업의 통합 확인점
+## 병렬 작업의 통합 상태
 
-아래는 진행 중인 담당 범위다. 완료 여부·검사 결과·변경 계약은 각 브랜치의 결과로 확인해야 한다.
+네 작업 브랜치는 `younchan-features`에 merge commit으로 합쳐졌다(goals → pr-review → budget → context → office-nextup). 통합 검토(Codex)의 높은·중간 우선 지적은 같은 브랜치에서 고쳤다.
 
-| 브랜치 | 담당 | 통합 시 먼저 확인할 것 |
-|---|---|---|
-| `younchan-budget` | 목표 4 | 예산 기준·남은 시간·자동 effort·명시 선택 보존 |
-| `younchan-context` | 목표 5, `o tokens` | 프로젝트 경계·검색 출처·주입량 제한·토큰 집계 |
-| `younchan-office-nextup` | 목표 1–2 | 실제 수집 범위·여러 프로젝트 목록·재개 경로 |
-| `younchan-pr-review` | 목표 3, `o review` | PR head 고정·검토 결과·인간 확인·상태 동기화 |
+| 브랜치 | 담당 | 통합 상태 | 통합 때 고친 것 |
+|---|---|---|---|
+| `younchan-budget` | 목표 4 | 병합됨 — `o budget`, `daily-budget` 정책, `card.budget`, 앱 "오늘" 고리 | 주간 창이 초기화된 뒤 이전 창 사용량으로 계속 막던 문제, 자정 이전 기록 없이 당일 창 전환을 놓치던 문제 |
+| `younchan-context` | 목표 5, `o tokens` | 병합됨 — FTS5 검색·카드 주입·`o context`·`run.context`·`o tokens --compare`·`dispatch --no-context` | 카드의 `o context`를 실행의 프로젝트로 고정(다른 프로젝트·미확정 실행 거부), 주입 조각을 비신뢰 참고 자료 구획에 넣음, 1,500자를 절 전체 상한으로 |
+| `younchan-office-nextup` | 목표 1–2 | 병합됨 — `o sessions`, `o runs --sessions`, 사무실 세션 보기, 전체 NextUp·추천 | `projects`와 그 아래 링크·정션을 따라가지 않음, `--project`·`--limit`을 세션까지 합친 목록에 적용, 세션 티켓에 O 명령을 내지 않음 |
+| `younchan-pr-review` | 목표 3, `o review` | 병합됨 — `o review`, 앱 검토 요청, `review.posted` | 검토문을 카드가 못 쓰는 O 폴더에 새 파일로 저장, head·base 커밋 기록과 게시 직전 재확인, task 전체 20,000자 배분, 앱의 깨끗한 에이전트 설정 전달, 검토 카드에는 컨텍스트 주입 안 함 |
+
+남은 한계(다음 작업):
+
+- 컨텍스트 C2: FTS 진행을 이벤트 개수로만 판단한다. 같은 개수로 다시 쓰인 실행은 옛 결과가 검색에 남는다(재수집 세대 기록 필요).
+- 컨텍스트 C3: 앱·`o runs`의 색인 갱신은 FTS까지 동기화하지 않는다. 같은 실행에서 막 끝난 카드 결과는 다음 dispatch나 `o context`(카드 밖)가 갱신해야 보인다.
+- 세션 O2: 같은 크기이거나 더 커진 파일로 통째로 바뀐 transcript는 캐시가 이어 읽기로 판단해 옛 내용을 보일 수 있다.
+- 예산 B3: 슬롯을 오래 기다린 다음 카드는 사용량을 다시 조회하지 않고 저장된 예산으로 출발한다.
+- 토큰 비교: `o tokens --compare`는 기술 통계다. 예산이 낮춘 실효 effort·성공 여부·같은 작업/커밋을 맞추지 않으므로 그대로 절감률 근거로 쓰지 않는다.
 
 ## 토큰 최적화 측정 방법
 
