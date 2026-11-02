@@ -9,6 +9,7 @@
 mod about;
 mod agents;
 mod lead;
+mod projects;
 mod review;
 mod runs;
 mod tokens;
@@ -38,6 +39,13 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_dispatch,
         lead::lead_stop,
         lead::lead_models,
+        projects::projects_list,
+        projects::projects_add,
+        projects::projects_remove,
+        projects::projects_new,
+        projects::projects_root,
+        projects::projects_check,
+        projects::pick_folder,
         update::update_check,
         update::update_install,
         update::update_pending,

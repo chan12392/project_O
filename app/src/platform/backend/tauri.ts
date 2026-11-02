@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
 import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
 /** Raised when the desktop app did not open a link; `shell/LinkNotice.tsx` shows it (also raised by app/src-tauri/src/commands/window.rs). */
@@ -56,5 +56,13 @@ export function tauriBackend(invoke: Invoke): Backend {
     leadDispatch: (planId, clean) => invoke("lead_dispatch", { planId, clean }) as Promise<LeadDispatched>,
     leadStop: (project) => invoke("lead_stop", { project: project ?? null }) as Promise<{ stopped: boolean }>,
     leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
+    projects: () => invoke("projects_list") as Promise<ProjectList>,
+    projectsAdd: (path) => invoke("projects_add", { path }) as Promise<ProjectList>,
+    projectsRemove: (path) => invoke("projects_remove", { path }) as Promise<ProjectList>,
+    projectsNew: (name) => invoke("projects_new", { name }) as Promise<ProjectList & { created: string }>,
+    projectsRoot: ({ path, reset, create }) => invoke("projects_root", { path: path ?? null, reset: Boolean(reset), create: Boolean(create) }) as Promise<ProjectList>,
+    projectsCheck: (paths) => invoke("projects_check", { paths }) as Promise<ProjectCheck[]>,
+    // The native picker opens from Rust; the screen gets the chosen path or null.
+    pickFolder: () => invoke("pick_folder") as Promise<string | null>,
   };
 }

@@ -18,6 +18,8 @@ const RESULT_CHARS: usize = 300;
 /// Earlier messages a fresh CLI session in an existing thread is shown.
 const HISTORY_TURNS: usize = 6;
 const HISTORY_CHARS: usize = 500;
+/// Messages a resumed session missed while another agent led: at most this many, newest kept.
+const MISSED_TURNS: usize = 12;
 
 /// Everything one turn's prompt is built from.
 pub struct PromptInput<'a> {
@@ -32,6 +34,8 @@ pub struct PromptInput<'a> {
     pub resumed: bool,
     /// Earlier user and lead messages of the thread (`("사용자"|"총괄", text)`), for a fresh session.
     pub history: &'a [(String, String)],
+    /// For a resumed session: the messages of turns it did not see (another agent led them).
+    pub missed: &'a [(String, String)],
 }
 
 /// The role, rules and plan format, sent once per CLI session.
@@ -89,8 +93,15 @@ pub fn build(input: &PromptInput) -> String {
             let lines: Vec<String> = input.history[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
             parts.push(format!("지금까지의 대화(요약):\n{}", lines.join("\n")));
         }
-    } else if !input.budget.is_empty() {
-        parts.push(format!("오늘 사용 예산:\n{}", input.budget.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n")));
+    } else {
+        if !input.budget.is_empty() {
+            parts.push(format!("오늘 사용 예산:\n{}", input.budget.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n")));
+        }
+        if !input.missed.is_empty() {
+            let start = input.missed.len().saturating_sub(MISSED_TURNS);
+            let lines: Vec<String> = input.missed[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
+            parts.push(format!("그사이 다른 에이전트가 총괄로 나눈 대화(이 세션은 못 봄):\n{}", lines.join("\n")));
+        }
     }
     if !input.runs.is_empty() {
         let mut status = String::new();

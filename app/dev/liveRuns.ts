@@ -17,11 +17,21 @@ function oBinary(): string {
   return existsSync(built) ? built : "o";
 }
 
+/**
+ * Why `o` failed, for the page: its stderr, else the end of its stdout with the bare error
+ * (an `o` too old for a command prints its usage to stdout and exits 1, which said nothing).
+ */
+export function failureText(stderr: string, stdout: string, message: string): string {
+  if (stderr.trim()) return stderr.trim();
+  const tail = stdout.trim().split(/\r?\n/).slice(-4).join("\n");
+  return tail ? `${message}\n${tail}` : message;
+}
+
 /** Runs `o` with fixed arguments (no shell) and returns its stdout. */
 function o(args: string[], timeout = 60_000, cwd?: string): Promise<string> {
   return new Promise((resolve, reject) =>
     execFile(oBinary(), args, { windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout, cwd }, (error, stdout, stderr) =>
-      error ? reject(new Error(stderr.trim() || error.message)) : resolve(stdout),
+      error ? reject(new Error(failureText(stderr, stdout, error.message))) : resolve(stdout),
     ),
   );
 }
@@ -42,24 +52,28 @@ function oWithInput(args: string[], input: Buffer, timeout: number): Promise<str
     child.on("close", (code) => {
       clearTimeout(timer);
       const stdout = Buffer.concat(out).toString("utf8");
-      const stderr = Buffer.concat(err).toString("utf8").trim();
+      const stderr = Buffer.concat(err).toString("utf8");
       if (code === 0) resolve(stdout);
-      else reject(Object.assign(new Error(stderr || `o exited with ${code}`), { code }));
+      else reject(Object.assign(new Error(failureText(stderr, stdout, `o exited with ${code}`)), { code }));
     });
     child.stdin.end(input);
   });
 }
 
-/** A request body up to `limit` bytes; larger ones are refused before they are read in full. */
-function body(req: IncomingMessage, limit: number): Promise<Buffer> {
+/**
+ * A request body up to `limit` bytes. A larger one is refused as soon as it passes the limit,
+ * and the rest is read and dropped rather than cutting the connection: cut, the page saw
+ * "Failed to fetch" instead of the 413 that says why.
+ */
+export function body(req: IncomingMessage, limit: number): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     const parts: Buffer[] = [];
     let size = 0;
     req.on("data", (b: Buffer) => {
       size += b.length;
       if (size > limit) {
+        parts.length = 0;
         reject(new Error("첨부 파일은 하나에 10MB까지입니다"));
-        req.destroy();
       } else parts.push(b);
     });
     req.on("end", () => resolve(Buffer.concat(parts)));
@@ -104,8 +118,8 @@ const BUDGET_PERCENT = /^1[234]$/;
 
 /** npm installs can take minutes. */
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
-/** A lead turn reads the project before it answers. */
-const LEAD_TIMEOUT_MS = 15 * 60_000;
+/** A lead turn reads the project before it answers; `o` ends it at 15 minutes (lead::TURN_LIMIT) and records why, so this waits a little longer. */
+const LEAD_TIMEOUT_MS = 16 * 60_000;
 /** One attachment (10MB), with room for nothing else. */
 const ATTACH_LIMIT = 10 * 1024 * 1024;
 /** Lead ids, efforts and plan ids as `o lead` takes them; it checks every one again. */
@@ -124,6 +138,14 @@ function cachedModels(provider: string): Promise<string> {
     leadModels.set(provider, { at: Date.now(), out });
     return out;
   });
+}
+
+/**
+ * `o lead stop` for one project; none without an existing absolute folder. Without
+ * `--project`, `o lead stop` stops every project's lead, which a page never asks for.
+ */
+export function leadStopArgs(project: string): string[] | undefined {
+  return ABSOLUTE.test(project) && existsSync(project) ? ["lead", "stop", "--project", project] : undefined;
 }
 
 /** The lead chat's twins of the Tauri lead_* commands (app/src-tauri/src/commands/lead.rs). */
@@ -152,7 +174,12 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
   if (path === "/lead/stop") {
-    run(o(["lead", "stop", ...(projectOk ? ["--project", project] : [])]));
+    const args = leadStopArgs(project);
+    if (!args) {
+      fail(400, "중지할 총괄의 프로젝트 폴더가 필요합니다");
+      return true;
+    }
+    run(o(args));
     return true;
   }
   if (path === "/lead/dispatch") {
@@ -216,6 +243,54 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   return false;
 }
 
+/** A new project's folder name as `o projects new` takes it; it checks the name again. */
+const PROJECT_NAME = /^[^\\/:*?"<>|\0]{1,64}$/;
+
+/** The project list's twins of the Tauri projects_* commands (app/src-tauri/src/commands/projects.rs, ADR-0009). */
+async function projects(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
+  // `o projects` refuses with the reason on stderr; the screen shows it as it is.
+  const run = (args: string[]) => {
+    void o(["projects", ...args, "--json"]).then((out) => send(res, 200, out), (e: Error) => send(res, 400, JSON.stringify({ error: e.message })));
+    return true;
+  };
+  const fail = (message: string) => {
+    send(res, 400, JSON.stringify({ error: message }));
+    return true;
+  };
+  const folder = query.get("path") ?? "";
+  if (req.method === "GET" && path === "/projects") return run([]);
+  if (req.method !== "POST") return false;
+  if (path === "/projects/add" || path === "/projects/remove") {
+    if (!ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
+    return run([path.endsWith("add") ? "add" : "remove", folder]);
+  }
+  if (path === "/projects/new") {
+    const name = query.get("name") ?? "";
+    if (!PROJECT_NAME.test(name)) return fail("프로젝트 이름은 1~64자이고 \\ / : * ? \" < > |를 쓸 수 없습니다");
+    return run(["new", name]);
+  }
+  if (path === "/projects/root") {
+    if (folder && !ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
+    const target = query.get("reset") === "1" ? ["--default"] : folder ? [folder] : [];
+    return run(["root", ...target, ...(query.get("create") === "1" ? ["--create"] : [])]);
+  }
+  if (path === "/projects/check") {
+    let paths: unknown;
+    try {
+      paths = JSON.parse((await body(req, 256 * 1024)).toString("utf8"));
+    } catch {
+      return fail("요청 본문이 JSON이 아닙니다");
+    }
+    const folders = Array.isArray(paths) ? paths.filter((p): p is string => typeof p === "string" && ABSOLUTE.test(p)).slice(0, 200) : [];
+    if (folders.length === 0) {
+      send(res, 200, "[]");
+      return true;
+    }
+    return run(["check", ...folders]);
+  }
+  return false;
+}
+
 /**
  * Dev-server stand-in for the desktop shell (src/platform/backend, src/data/useLiveRuns.ts): runs, usage,
  * agent CLI status, the official install and sign-in, and About, each through `o`.
@@ -263,6 +338,9 @@ export function liveRuns(): Plugin {
         if (req.method === "GET" && path === "/tokens") {
           const project = query.get("project");
           return void o(["tokens", "--json", ...(project ? ["--project", project] : [])]).then((out) => send(res, 200, out), error(res));
+        }
+        if (path === "/projects" || path?.startsWith("/projects/")) {
+          return void projects(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
         if (path?.startsWith("/lead/")) {
           return void lead(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));

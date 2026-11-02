@@ -28,7 +28,7 @@
 
 - 프로젝트마다 현재 스레드 하나(키: 정규화한 프로젝트 경로, Windows는 대소문자 무시). `leads/current.json`이 프로젝트 → 스레드 id, 스레드는 `leads/<threadId>/events.jsonl`. "새 대화"는 새 스레드를 만들고 현재로 바꾼다. 지난 스레드는 지우지 않는다.
 - 이벤트(실행의 `events.jsonl`과 따로, 자기 타입 `LeadEvent`): `lead.start`, `lead.user`(글·첨부·에이전트·노력), `lead.session`(CLI 세션 id), `lead.reply`(계획 블록을 뺀 마크다운), `lead.plan`(planId·계획·정책 결과), `lead.dispatch`(planId → runId), `lead.usage`(토큰), `lead.error`. 실행 이벤트 계약(`OEvent`, `src/core/events.ts`)은 바꾸지 않았다.
-- 한 스레드에는 한 번에 한 턴만: `running.json`을 `create_new`로 만들고(프로세스가 사라진 표시는 무시), 턴이 끝나면 지운다. "중지"는 `stop` 표시 후 CLI 프로세스 트리를 끝낸다.
+- 한 스레드에는 한 번에 한 턴만: 턴은 `turn.lock`에 OS 배타 잠금을 잡고(개정 2), 표시 `running.json`은 통째로(이름 바꾸기로) 쓰며, 턴이 끝나면 지운다. "중지"는 그 턴의 토큰을 적은 `stop` 요청이고, 턴의 주인이 CLI를 띄우기 전이면 띄우지 않고 띄운 뒤면 그 트리를 끝낸다(개정 2).
 
 ### 총괄 실행 (`Provider::lead`, `lead_efforts`)
 
@@ -36,9 +36,9 @@
 
 | CLI | 첫 턴 | 이어 말하기 | 읽기 전용 |
 |---|---|---|---|
-| Claude | `claude -p --output-format stream-json --verbose --permission-mode default --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --strict-mcp-config [--effort] [--add-dir 첨부 폴더]` | `--resume <session>` | 도구가 읽기 셋뿐이고 MCP를 싣지 않는다 |
-| Codex | `codex exec -s read-only -C <project> --skip-git-repo-check [-i 이미지]... --json [-c model_reasoning_effort=…] -` | `codex exec … resume [-i …] --json <session> -` | read-only 샌드박스 |
-| Antigravity | `agy --output-format stream-json --mode plan --sandbox --settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}} [--add-dir 첨부 폴더] [--model] [--effort] -p <프롬프트>` | `--conversation <id>` (스트림 `init`의 `conversation_id`) | 세션 설정의 거부 규칙을 agy 권한 검사가 막는다(파일 쓰기·셸·MCP·URL 동작). plan 모드만으로는 막히지 않는다(개정 1) |
+| Claude | `claude -p --output-format stream-json --verbose --permission-mode default --tools Read,Grep,Glob --allowedTools Read,Grep,Glob --strict-mcp-config --setting-sources user --settings {"disableAllHooks":true} [--effort] [--add-dir 첨부 폴더]` | `--resume <session>` (같은 인자) | 도구가 읽기 셋뿐이고 MCP를 싣지 않는다. 프로젝트 설정을 읽지 않고 훅을 끈다(개정 2) |
+| Codex | `codex exec -s read-only -C <project> --skip-git-repo-check --disable hooks [-i 이미지]... --json [-c model_reasoning_effort=…] -` | `codex exec … --disable hooks resume [-i …] --json <session> -` | read-only 샌드박스, 훅 끔(개정 2) |
+| Antigravity | `agy --output-format stream-json --mode plan --sandbox --settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}} [--add-dir 첨부 폴더] [--model] [--effort] -p <프롬프트>` | `--conversation <id>` (스트림 `init`의 `conversation_id`) | 세션 설정의 거부 규칙을 agy 권한 검사가 막는다(파일 쓰기·셸·MCP·URL 동작). plan 모드만으로는 막히지 않는다(개정 1). 한 번만 훅을 끄는 공식 옵션이 없어 프로젝트에 `.agents/hooks.json`이 있으면 총괄을 맡지 않는다(개정 2) |
 
 - 노력 수준은 CLI가 받는 값만: Claude `low·medium·high·xhigh·max`, Codex `minimal·low·medium·high·xhigh`, Antigravity `low·medium·high·xhigh·max`. 모델은 기본이 CLI 설정이고, 사람이 고르면 `--model`(Codex `-m`)로 넘긴다(개정 1).
 - 총괄 CLI는 그 CLI의 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`, `CODEX_API_KEY`)를 대소문자 구분 없이 물려받지 않는다. 남은 키가 구독 대신 API로 과금되는 것을 막는다(B의 카드 수정과 같은 `api_key_vars`·`names_to_remove`).
@@ -102,6 +102,42 @@ agy 1.4.12 `--help`에 `--mode plan`, `--sandbox`, `--settings`(세션 한정 �
 - 결정: 읽기 전용은 plan 모드가 아니라 거부 규칙이 보장하므로, agy 총괄은 거부 규칙을 항상 넣는다. 허용(`allow`) 규칙은 넣지 않는다. 권한 확인을 끄는 옵션이나 `accept-edits`·`auto` 모드는 쓰지 않는다(`crates/o-core/tests/providers.rs`가 고정).
 - agy는 이미지 입력 옵션이 없다. 첨부는 프롬프트에 경로를 적고 첨부 폴더를 `--add-dir`로 연다(읽기만).
 - 남은 위험: 사람의 agy 사용자 설정에 넓은 `allow` 규칙이 있을 때 세션 `deny`가 이기는지는 직접 확인하지 못했다(4번). 총괄의 계획은 그대로 사람이 "실행"을 눌러야 카드가 되고 정책을 두 번 거친다.
+
+## 개정 2 (2026-11-02): 정기 코드 검토·UX 감사 반영
+
+### 프로젝트 훅
+
+- `claude -p`는 폴더 신뢰 대화상자를 띄우지 않지만 프로젝트 설정 파일의 훅은 실행한다(code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder). 그래서 총괄은 첫 턴·이어 말하기 모두 `--setting-sources user`(깨끗한 프로필이면 그 프로필 설정이 user)와 `--settings {"disableAllHooks":true}`로 띄운다. 공식 문서가 권하는 두 옵션이다.
+- Codex는 신뢰한 프로젝트의 `.codex/`에서 훅을 싣는다. `--disable hooks`(`codex exec --help`: `-c features.hooks=false`와 같음, 모든 설정 층보다 우선)로 끈다.
+- agy는 프로젝트 `.agents/hooks.json`을 싣고(antigravity.google/docs/hooks) 한 번만 훅을 끄는 공식 옵션이 없다. 그 파일이 있는 프로젝트에서는 agy 총괄을 거절하고 Claude Code·Codex를 고르게 한다.
+
+### 한 턴 잠금
+
+- 턴이 도는지는 표시 파일이 아니라 `turn.lock`의 OS 배타 잠금(`File::try_lock`)으로 판단한다. 잠금은 그 프로세스가 어떻게 끝나든 OS가 풀어 주므로 앱이 답하는 도중 꺼져도 "답하는 중"에 갇히지 않고, pid가 다른 프로세스에 재사용돼도 상관없다.
+- 잠금을 잡은 채 표시가 비었거나 덜 쓰였으면 "시작하는 중"(`busy: "starting"`)이다. 다른 보내기가 그 표시를 지우고 두 번째 턴을 띄우던 경쟁을 막는다. 표시는 임시 파일에 쓰고 이름을 바꿔 통째로만 보인다.
+
+### 대화 목록
+
+- `leads/current.json`은 임시 파일에 쓰고 이름을 바꿔 통째로 바꾸며, 바꾸는 동안 `leads/current.lock`에 OS 잠금을 잡는다. 읽지 못한 목록을 빈 목록으로 보지 않는다(짧게 다시 읽고, 그래도 안 되면 오류). 2초 조회와 다른 프로젝트의 새 대화가 겹쳐 대화가 저절로 새로 시작되던 문제(감사 BK9)와, 동시에 보낸 첫 메시지가 스레드를 둘 만들던 경쟁을 막는다.
+
+### 세션 색인
+
+- `o runs --sessions`(2초마다)가 총괄의 CLI 세션을 빼려고 매번 모든 스레드의 이벤트를 읽던 것을, 스레드마다 `sessions.txt`(세션 id 한 줄씩)만 읽게 바꿨다(감사 BK14의 총괄 쪽). 색인이 없는 옛 스레드는 한 번 이벤트에서 만든다. 실행 이벤트 전체를 IPC로 보내는 나머지 비용은 `sessions.rs`·`useLiveRuns.ts` 쪽 일이다.
+
+### 중지
+
+- 표시는 주인(앱이나 `o lead send`의 pid)과 CLI(자식 pid와 시작 시각)를 따로 적는다. "중지"는 아무것도 직접 죽이지 않고 그 턴의 토큰을 `stop`에 적는다. 주인은 CLI를 띄우기 직전에 확인해 띄우지 않고, 띄운 뒤에는 감시 스레드가 0.1초마다 보고 자기 자식 트리를 끝낸다. 자식 핸들을 쥔 채라 pid 재사용을 걱정할 필요가 없고, 별도 `o lead stop`이 앱 자체를 끝내는 일도 없다.
+- 이전 턴의 `stop`은 슬롯을 잡을 때 지워 다음 턴을 멈추지 않는다. 시작 직후 몇 초 동안 중지가 무시되던 문제(감사 BK2)도 같은 원인이다.
+- 한 턴은 15분(`lead::TURN_LIMIT`)까지다. 넘으면 감시 스레드가 CLI 트리를 끝내고 "제한 시간" 오류를 남긴다. 데스크톱 `lead_send`에 시간 제한이 없던 문제(감사 BK8)를 o-core에서 한 번에 막는다.
+- 주인이 죽고 CLI만 남은 경우(kill-on-close 작업 객체가 없을 때)는 잠금을 잡은 채 pid와 시작 시각이 둘 다 맞을 때만 끝내고 표시를 지운다.
+
+### 에이전트를 오가며 이어 말하기
+
+- CLI가 한 턴을 받으면 `lead.seen`(에이전트·세션 id·그 턴의 `lead.user` 위치)을 남긴다. 같은 세션을 이어 쓸 때 그 위치 다음 턴부터의 대화(다른 에이전트가 총괄로 나눈 것, 최근 12개·각 500자)를 프롬프트에 넣는다. Claude → Codex → Claude에서 Codex에게 준 제약을 돌아온 Claude가 모르던 문제를 막는다. 이 이벤트가 없던 스레드는 그 에이전트에게 보낸 마지막 메시지를 기준으로 삼는다.
+
+### 첨부 경로
+
+- 경로로 받은 파일은 열기 전에 위쪽 폴더를 하나씩 확인해 링크(심볼릭 링크·정션)가 하나라도 있으면 거절하고, 실제 경로(`canonicalize`)를 다시 로그인 정보 폴더·파일 이름 규칙으로 검사한 뒤 그 실제 경로를 연다. `.claude`를 가리키는 별칭 폴더 아래의 평범한 파일이 통과하던 문제를 막는다.
 
 ## 영향
 

@@ -2,7 +2,9 @@ import { CircleCheckBig, Pause, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { isSessionRun } from "../../../../src/core/attention.ts";
+import { chipSummary } from "../../../../src/core/projects.ts";
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
+import { CardSummary } from "./CardSummary.tsx";
 import { PROVIDER_SHORT, STATE_WORD, clip } from "../../lib/format.ts";
 import { lookOf } from "./characters.ts";
 import { useReducedMotion } from "../../data/settings.ts";
@@ -45,6 +47,9 @@ const STAY: Point[] = [];
 const AFTER_WORK: Point[] = [...LOUNGE, ...MEETING];
 const LEAD_ROUND: Point[] = [BOARD, AISLE[0]];
 
+/** The overlay lists each card up to this many; more fold into a summary line. */
+const LISTED_CARDS = 6;
+
 /** Where a card's agent should be for its state. */
 function homeFor(card: CardView, index: number): { spot: Point; roam: Point[] } {
   const desk = DESKS[index % DESKS.length];
@@ -56,6 +61,7 @@ function homeFor(card: CardView, index: number): { spot: Point; roam: Point[] } 
 /** The office: agents at their desks while they work, wandering otherwise, saying what they do. */
 export function Office({ run, selected, leadResting, onSelect }: { run: RunView; selected?: string; leadResting?: boolean; onSelect: (id: string) => void }) {
   const finished = run.cards.filter((c) => c.endedAt).length;
+  const summary = run.cards.length > LISTED_CARDS ? chipSummary(run, new Date()) : undefined;
   // A Claude Code session: its main thread stands in the lead's place, each subagent is a person.
   const session = isSessionRun(run);
   const lead = session ? "메인 대화" : "총괄";
@@ -101,8 +107,10 @@ export function Office({ run, selected, leadResting, onSelect }: { run: RunView;
               <CircleCheckBig className="size-3.5 text-emerald-400" aria-hidden="true" />
               완료 {finished}/{run.cards.length}
             </p>
+            {/* A session with dozens of subagents: one summary line, then only the cards that need a look. */}
+            {summary && <CardSummary summary={summary} onDark className="mt-1" />}
             <ul className="mt-1 grid gap-0.5 text-3xs text-white/80">
-              {run.cards.map((card) => (
+              {(summary ? summary.attention.map((a) => a.card) : run.cards).map((card) => (
                 <li key={card.id} className="flex min-w-0 items-center gap-1.5">
                   <AgentStateDot state={card.state} />
                   <span className="truncate text-white">{card.label}</span>
