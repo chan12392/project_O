@@ -1,7 +1,7 @@
 import { GitPullRequest } from "lucide-react";
 
 import { prOf, tokensOf } from "../../../../src/core/attention.ts";
-import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
+import { blockedReason, failedBeforeCards, type CardView, type RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, STATE_WORD, clip, compact, modelLine, timeOf } from "../../lib/format.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { lookOf } from "../office/characters.ts";
@@ -33,20 +33,29 @@ interface Item {
 /** The project's work cards on a board: who does what, which PR, how far along. */
 export function AgentBoard({ runs, onOpen }: { runs: RunView[]; onOpen: (target: { run: string; card: string }) => void }) {
   const items: Item[] = runs.flatMap((run) => run.cards.map((card) => ({ card, run })));
+  const blockedRuns = runs.filter(failedBeforeCards);
   return (
     <KanbanProvider columns={COLUMNS}>
       {(column) => {
         const inColumn = items.filter((i) => columnOf(i.card) === column.id);
+        const failedRuns = column.id === "blocked" ? blockedRuns : [];
+        const count = inColumn.length + failedRuns.length;
         return (
           <KanbanBoard key={column.id} id={column.id}>
             <KanbanHeader id={column.id}>
               <span className={`size-2 rounded-full ${column.tone}`} aria-hidden="true" />
               {column.name}
-              <span className="ml-auto rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{inColumn.length}</span>
+              <span className="ml-auto rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{count}</span>
             </KanbanHeader>
             {/* Stacked, an empty lane is just its header; the PR lane keeps a line saying why it is empty. */}
-            <KanbanCards empty={inColumn.length === 0 && column.id !== "review"}>
-              {inColumn.length === 0 && <p className="px-1 py-1 text-2xs text-muted-foreground">{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
+            <KanbanCards empty={count === 0 && column.id !== "review"}>
+              {count === 0 && <p className="px-1 py-1 text-2xs text-muted-foreground">{column.id === "review" ? "에이전트가 보고한 PR이 없습니다" : "없음"}</p>}
+              {failedRuns.map((run) => (
+                <div key={run.runId} className="rounded-lg border p-3 text-xs">
+                  <p className="font-medium">{run.title} · 카드 시작 전 실패</p>
+                  <p className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">{blockedReason(run)}</p>
+                </div>
+              ))}
               {inColumn.map(({ card, run }) => (
                 <BoardCard key={`${run.runId}/${card.id}`} card={card} run={run} onOpen={() => onOpen({ run: run.runId, card: card.id })} />
               ))}

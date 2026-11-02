@@ -1,6 +1,6 @@
 import type { ProviderId } from "./plan.ts";
 import type { CardStatus } from "./events.ts";
-import { endWord, type CardView, type RunView } from "./snapshot.ts";
+import { blockedReason, endWord, failedBeforeCards, type CardView, type RunView } from "./snapshot.ts";
 
 /**
  * What needs a person next, read from runs alone (pure, like snapshot.ts).
@@ -109,6 +109,9 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
   for (const run of runs) {
     const base = { runId: run.runId, runTitle: run.title };
     const cardOf = new Map(run.cards.map((c) => [c.id, c]));
+    if (failedBeforeCards(run)) {
+      keep(stopped, { ...base, key: `failed:${run.runId}`, kind: "failed", title: run.title, detail: blockedReason(run), since: run.endedAt ?? run.startedAt });
+    }
 
     // An agent wrote to the lead and the lead has not written back to it (or to everyone) since.
     const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
@@ -289,7 +292,7 @@ export function fleetStats(runs: RunView[], now: Date): FleetStats {
   const todays = runs.filter((r) => Date.parse(r.startedAt) >= today.getTime()).flatMap((r) => r.cards);
   return {
     running: cards.filter((c) => c.state === "running").length,
-    stopped: cards.filter((c) => c.state === "failed" || c.state === "stopped").length,
+    stopped: cards.filter((c) => c.state === "failed" || c.state === "stopped").length + runs.filter(failedBeforeCards).length,
     prs: cards.filter((c) => prOf(c)).length,
     cardsToday: todays.length,
     tokensToday: todays.reduce((sum, c) => sum + tokensOf(c), 0),
@@ -310,7 +313,7 @@ export interface ActivityItem {
 export function activity(runs: RunView[], limit: number): ActivityItem[] {
   const items: ActivityItem[] = [];
   for (const run of runs) {
-    items.push({ at: run.startedAt, kind: "run", runId: run.runId, text: run.title, detail: `작업 시작 · 카드 ${run.cards.length}장` });
+    items.push({ at: run.startedAt, kind: "run", runId: run.runId, text: run.title, detail: failedBeforeCards(run) ? `카드 시작 전 실패 · ${blockedReason(run)}` : `작업 시작 · 카드 ${run.cards.length}장` });
     for (const card of run.cards) {
       const who = { runId: run.runId, cardId: card.id, provider: card.provider };
       if (card.startedAt) items.push({ ...who, at: card.startedAt, kind: "start", text: card.label, detail: `시작 · ${run.title}` });

@@ -1,4 +1,4 @@
-import type { CardStatus, OEvent } from "./events.ts";
+import type { CardStatus, OEvent, Violation } from "./events.ts";
 import { cardLabel, type ProviderId } from "./plan.ts";
 
 /**
@@ -70,6 +70,24 @@ export interface RunView {
   messages: TeamMessage[];
   /** Latest report per provider and window. */
   quotas: Quota[];
+  /** Why the runner refused to start the run (`run.blocked`); absent when it did not. */
+  blocked?: Violation[];
+}
+
+/** What a run that failed before its cards says when the runner left no reason (as crates/o-core/src/run/snapshot.rs). */
+export const BLOCKED_UNKNOWN = "카드를 만들기 전에 실행기가 멈췄습니다. 실행 폴더의 runner.err.log를 확인하세요";
+
+/**
+ * A run that ended failed before any card was made (refused by the runner's last check, or its
+ * runner failed): no card shows it, so screens count and show it as a run of its own.
+ */
+export function failedBeforeCards(run: Pick<RunView, "status" | "cards">): boolean {
+  return run.status === "failed" && run.cards.length === 0;
+}
+
+/** Why it never started, one line: the policy's reasons, or where to look when there are none. */
+export function blockedReason(run: Pick<RunView, "blocked">): string {
+  return run.blocked?.length ? run.blocked.map((v) => v.message).join(" / ") : BLOCKED_UNKNOWN;
 }
 
 export interface FoldedRun {
@@ -133,6 +151,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (e.t === "quota") {
       run.quotas = [...run.quotas.filter((q) => q.provider !== e.provider || q.window !== e.window), { provider: e.provider, window: e.window, used: e.used, resetsAt: e.resetsAt, at: e.at }];
+      continue;
+    }
+    if (e.t === "run.blocked") {
+      run.blocked = e.violations;
       continue;
     }
     if (e.t === "review.posted") continue;

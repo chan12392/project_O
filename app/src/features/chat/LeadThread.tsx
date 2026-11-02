@@ -2,7 +2,7 @@ import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, Oct
 import { useState, type FormEvent } from "react";
 
 import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadReadProblem, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
-import type { RunView } from "../../../../src/core/snapshot.ts";
+import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useSettings } from "../../data/settings.ts";
@@ -124,6 +124,8 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
   const { clean } = useSettings();
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
   const titleId = `plan-${plan.planId}`;
+  // Passed when saved, then refused by the runner's own check right before the start.
+  const refused = run !== undefined && failedBeforeCards(run) && Boolean(run.blocked?.length);
   const dispatch = async () => {
     setState({ busy: true });
     try {
@@ -145,10 +147,15 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
             총괄이 제안한 계획 · 카드 {plan.cards.length}장 · <time dateTime={plan.at}>{timeOf(plan.at)}</time>
           </p>
         </div>
-        {plan.ok ? (
+        {refused ? (
+          <span className="flex shrink-0 items-center gap-1 rounded-full border border-destructive/40 px-2 py-0.5 text-2xs text-destructive">
+            <OctagonX className="size-3" aria-hidden="true" />
+            실행 직전 차단
+          </span>
+        ) : plan.ok ? (
           <span className="flex shrink-0 items-center gap-1 rounded-full border px-2 py-0.5 text-2xs text-status-success">
             <CircleCheck className="size-3" aria-hidden="true" />
-            정책 통과
+            계획 당시 정책 통과
           </span>
         ) : (
           <span className="flex shrink-0 items-center gap-1 rounded-full border border-destructive/40 px-2 py-0.5 text-2xs text-destructive">
@@ -226,7 +233,11 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
       )}
       <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
         {plan.runId ? (
-          run ? (
+          run && failedBeforeCards(run) ? (
+            <p role="alert" className="text-xs text-destructive">
+              실행 {plan.runId}는 카드를 시작하기 전에 막혔습니다. 아래 이유를 확인하세요.
+            </p>
+          ) : run ? (
             <p className="text-xs text-muted-foreground">실행 {plan.runId}를 시작했습니다. 진행은 아래와 작업 보기에서 볼 수 있습니다.</p>
           ) : (
             <p role="status" className="text-xs text-muted-foreground">
@@ -240,7 +251,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
               {state.busy ? "실행하는 중…" : "실행"}
             </button>
             <p id={`${titleId}-how`} className="min-w-0 flex-1 text-xs text-muted-foreground">
-              정책을 한 번 더 검사한 뒤 {clean ? "깨끗한 에이전트" : "기본 하네스"}로 카드들을 띄웁니다. 한 번만 실행할 수 있습니다.
+              실행 직전에 예산을 포함한 정책을 다시 검사한 뒤 {clean ? "깨끗한 에이전트" : "기본 하네스"}로 카드들을 띄웁니다. 한 번만 실행할 수 있습니다.
             </p>
           </>
         ) : (

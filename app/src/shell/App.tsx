@@ -172,7 +172,7 @@ function MainWindow() {
   useEffect(() => {
     if (screen !== "settings") return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== "Escape" || e.defaultPrevented) return;
+      if (e.key !== "Escape" || e.defaultPrevented || document.querySelector("dialog[open]")) return;
       const target = e.target as HTMLElement | null;
       // An open menu on screen closes first (the app underneath stays mounted but hidden).
       const menuOpen = [...document.querySelectorAll<HTMLElement>("[aria-expanded=true]")].some((el) => el.offsetParent !== null);

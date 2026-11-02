@@ -21,7 +21,7 @@ use crate::run::events::{CardInfo, CardStatus, OEvent, StreamSignal};
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
 use crate::run::plan::{Card, Plan};
-use crate::policy::{check_plan, LIMITS};
+use crate::policy::{check_plan, Violation, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
 use crate::providers::{launch_spec_with, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
@@ -436,6 +436,7 @@ pub fn stop_run(home: &Path, run_id: &str) -> io::Result<bool> {
 /// on record so watchers (`o events --follow`, the app) are not left waiting.
 pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
     let mut raw: Option<Value> = None;
+    let mut blocked: Vec<Violation> = Vec::new();
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
         let plan = read_plan(home, run_id).map_err(|e| e.to_string())?;
         raw = Some(plan.clone());
@@ -448,7 +449,9 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
         let checked = check_plan(&plan, &ctx);
         let Some(plan) = checked.plan else {
             let reasons: Vec<&str> = checked.violations.iter().map(|v| v.message.as_str()).collect();
-            return Err(format!("정책 위반: {}", reasons.join(" / ")));
+            let message = format!("정책 위반: {}", reasons.join(" / "));
+            blocked = checked.violations;
+            return Err(message);
         };
         let clean = is_clean(home, run_id).then(clean::default_root);
         // The folder the check above passed, links resolved: the cards run there (see `Workdir`).
@@ -473,6 +476,10 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
                 &OEvent::RunStart { at: now_iso(), run_id: run_id.to_string(), title: text("title"), project: text("project"), cards: Vec::new() },
             );
         }
+    }
+    // Why no card started, for every screen and `o status`, not only runner.err.log.
+    if !blocked.is_empty() {
+        let _ = append_event(home, run_id, &OEvent::RunBlocked { at: now_iso(), run_id: run_id.to_string(), violations: blocked });
     }
     if started || raw.is_some() {
         let _ = append_event(home, run_id, &OEvent::RunEnd { at: now_iso(), run_id: run_id.to_string(), status: CardStatus::Failed });
