@@ -17,6 +17,7 @@ mod guard;
 mod lead;
 mod mirror;
 mod msg;
+mod projects;
 mod review;
 mod runs;
 mod sessions;
@@ -48,6 +49,7 @@ pub const COMMANDS: &[Command] = &[
     budget::BUDGET,
     runs::RUNS,
     sessions::SESSIONS,
+    projects::PROJECTS,
     guard::HOOK,
     guard::SCAN,
     mirror::SYNC_MIRROR,
