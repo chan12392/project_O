@@ -142,6 +142,58 @@ fn ingest_is_incremental_and_idempotent_and_follows_the_runs_folder() {
     assert_eq!(count(&home), 1);
 }
 
+/// Writes the run's file anew (not appended), as a rewrite in place would.
+fn rewrite(home: &Path, run_id: &str, events: &[Value]) {
+    let dir = run_dir(home, run_id);
+    fs::create_dir_all(&dir).unwrap();
+    let text: String = events.iter().map(|e| format!("{e}\n")).collect();
+    fs::write(dir.join("events.jsonl"), text).unwrap();
+}
+
+#[test]
+fn a_rewritten_events_file_is_read_again_even_with_the_same_number_of_events() {
+    let home = temp_home();
+    let begin = start("r1", "2026-11-01T10:00:00.000Z", "C:/work/game", &[("a", "claude"), ("b", "codex")]);
+    rewrite(&home, "r1", &[begin.clone(), end("a", "done", "사무실 화면을 정리했습니다")]);
+    assert_eq!(ids(&search(&home, "사무실", None)), ["r1/a"]);
+
+    // Same number of events, other content: the old entry goes and the new one is found.
+    rewrite(&home, "r1", &[begin.clone(), end("a", "done", "회의실 화면을 새로 그렸습니다")]);
+    assert!(search(&home, "사무실", None).is_empty(), "the replaced result must not stay searchable");
+    assert_eq!(ids(&search(&home, "회의실", None)), ["r1/a"]);
+    assert_eq!(count(&home), 1);
+
+    // Longer, with a line break where the old file ended, but not a continuation of it.
+    rewrite(&home, "r1", &[begin.clone(), end("a", "done", "창고 화면을 지웠습니다"), end("b", "done", "README를 고쳤습니다")]);
+    assert!(search(&home, "회의실", None).is_empty());
+    assert_eq!(ids(&search(&home, "창고", None)), ["r1/a"]);
+    assert_eq!(count(&home), 2);
+
+    // A real append still reads only what was added.
+    append(&home, "r1", &[msg("b", "lead", "다 끝났습니다")]);
+    assert_eq!(count(&home), 3);
+}
+
+#[test]
+fn an_older_context_seen_without_the_fingerprint_is_read_again_once() {
+    let home = temp_home();
+    rewrite(&home, "r1", &[start("r1", "2026-11-01T10:00:00.000Z", "C:/work/game", &[("a", "claude")]), end("a", "done", "사무실 화면을 정리했습니다")]);
+    {
+        // The table as an older O left it: the run marked read, its entry made from content since replaced.
+        let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE context_seen (run_id TEXT PRIMARY KEY, events INTEGER NOT NULL);
+             INSERT INTO context_seen VALUES ('r1', 2);
+             CREATE VIRTUAL TABLE context_fts USING fts5(title, text, files, project UNINDEXED, run_id UNINDEXED, card_id UNINDEXED, kind UNINDEXED, at UNINDEXED, tokenize = 'unicode61 remove_diacritics 2');
+             INSERT INTO context_fts VALUES ('r1 작업 · a 카드', '옛 결과', '', 'C:/work/game', 'r1', 'a', 'result', '2026-11-01T10:05:00.000Z');",
+        )
+        .unwrap();
+    }
+    assert!(search(&home, "옛", None).is_empty());
+    assert_eq!(ids(&search(&home, "사무실", None)), ["r1/a"]);
+    assert_eq!(count(&home), 1);
+}
+
 fn plan(project: &str, cards: Vec<Card>) -> Plan {
     Plan { title: "새 작업".into(), project: project.into(), cards }
 }
