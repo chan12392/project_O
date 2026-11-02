@@ -115,11 +115,7 @@ pub async fn lead_send(
             clean: root.as_deref(),
             yolo: o_core::run::yolo::read_enabled(&home),
         };
-        let start = |run_id: &str| -> std::io::Result<()> {
-            let o = o_binary().ok_or_else(|| std::io::Error::other("o CLI를 찾지 못했습니다"))?;
-            proc::spawn_detached(Command::new(o).args(["_run", run_id])).map(|_| ())
-        };
-        let events = lead::send_with_autorun(&home, &req, &official_command, &start)?;
+        let events = lead::send(&home, &req, &official_command)?;
         Ok(json!({ "threadId": lead::current_thread(&home, &project), "events": events }))
     })
     .await?
@@ -131,6 +127,9 @@ pub async fn lead_send(
 pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String> {
     blocking(move || {
         let o = o_binary().ok_or("o CLI를 찾지 못했습니다 (cargo install --path crates/o-cli)")?;
+        let output = proc::hide_window(Command::new(&o).args(["about", "--json"])).output().map_err(|e| format!("O CLI를 확인하지 못했습니다: {e}"))?;
+        let compatible = output.status.success() && graph_capable(&output.stdout);
+        if !compatible { return Err("O CLI가 작업 그래프를 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하거나 설치하세요".into()); }
         let start = |run_id: &str| proc::spawn_detached(Command::new(&o).args(["_run", run_id])).map(|_| ());
         let home = store::default_home();
         let mode = RunMode { yolo: o_core::run::yolo::read_enabled(&home), ..RunMode::of(Profile::of_clean(clean)) };
@@ -144,6 +143,11 @@ pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String
         }
     })
     .await?
+}
+
+fn graph_capable(output: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(output).ok().and_then(|info| info.get("capabilities").and_then(Value::as_array).cloned())
+        .is_some_and(|caps| caps.iter().any(|cap| cap.as_str() == Some("work-graph-v1")))
 }
 
 /// How long a lead model list is reused before the CLI is asked again.
@@ -197,5 +201,12 @@ mod tests {
         assert!(project_arg(&dir.to_string_lossy()).is_ok());
         assert!(project_arg("relative/dir").is_err());
         assert!(project_arg(&dir.join("missing").to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn old_or_malformed_runner_never_claims_graph_support() {
+        assert!(!graph_capable(br#"{"version":"0.3.0"}"#));
+        assert!(!graph_capable(b"invalid"));
+        assert!(graph_capable(br#"{"capabilities":["work-graph-v1"]}"#));
     }
 }

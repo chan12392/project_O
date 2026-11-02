@@ -43,7 +43,9 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 24] = [
+    let tests: [(&str, fn()); 26] = [
+        ("design snapshots persist and malformed ones do not dispatch", design_snapshots),
+        ("only the latest plan in the current thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
         ("lead child receives its agent marker", lead_child_marker),
         ("a plan block is read: none, one, malformed, two", plan_blocks),
@@ -79,6 +81,36 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn design_snapshots() {
+    let (home, project) = setup("design");
+    let answer = "설계했습니다.\n```o-design\n{\"goal\":\"게임\",\"decisions\":[\"2D\"],\"questions\":[\"점수\"]}\n```";
+    let (spawner, _) = fake(claude_answer("s", answer));
+    let events = lead::send(&home, &request(&project, "설계"), spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Design { design, .. } if design["goal"] == "게임")));
+    let (next, seen) = fake(claude_answer("s", "확인"));
+    lead::send(&home, &request(&project, "계속"), next.as_ref()).unwrap();
+    assert!(seen.lock().unwrap()[0].stdin.as_deref().unwrap().contains("게임"));
+    let broken = format!("```o-design\n{{}}\n```\n{}", plan_answer(good_plan()));
+    let (spawner, _) = fake(claude_answer("s", &broken));
+    let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })));
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Plan { .. } | LeadEvent::Design { .. })));
+}
+
+fn stale_plan_refused() {
+    let (home, project) = setup("stale-plan");
+    let (spawner, _) = fake(claude_answer("s", &plan_answer(good_plan())));
+    let first = plans(&lead::send(&home, &request(&project, "first"), spawner.as_ref()).unwrap()).remove(0).0;
+    let second = plans(&lead::send(&home, &request(&project, "second"), spawner.as_ref()).unwrap()).remove(0).0;
+    let start = |_: &str| -> std::io::Result<()> { panic!("stale plans must not start") };
+    assert!(matches!(lead::dispatch(&home, &first, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
+    let (reply, _) = fake(claude_answer("s", "답변"));
+    lead::send(&home, &request(&project, "추가 질문"), reply.as_ref()).unwrap();
+    assert!(matches!(lead::dispatch(&home, &second, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
+    lead::new_thread(&home, &project).unwrap();
+    assert!(matches!(lead::dispatch(&home, &second, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
 }
 
 fn temp(name: &str) -> PathBuf {
@@ -157,6 +189,10 @@ fn autorun() {
     assert!(normal.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(_), .. })));
     assert_eq!(starts.load(Ordering::SeqCst), 0);
     let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
+    let manual = lead::send(&home, &yolo, spawner.as_ref()).unwrap();
+    assert!(manual.iter().any(|e| matches!(e, LeadEvent::Plan { .. })));
+    assert!(!manual.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
     let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
     assert!(run.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
@@ -204,10 +240,22 @@ fn plan_blocks() {
     // Other code blocks are prose.
     let (prose, plan) = split_plan("예:\n```json\n{}\n```");
     assert_eq!((prose.as_str(), plan), ("예:\n```json\n{}\n```", Ok(None)));
+    let (_, tagged) = split_plan("```o-plan\ntitle: 게임\n[[codex]] id=logic\n게임 로직\n[[claude]] id=score after=logic\n점수 로직\n```");
+    let tagged = tagged.unwrap().unwrap();
+    assert_eq!(tagged["cards"][0]["provider"], "codex");
+    assert_eq!(tagged["cards"][1]["depends_on"], serde_json::json!(["logic"]));
+    let (_, inline) = split_plan("```o-plan\ntitle: 게임\n[[codex]] = 로직 구현\n```");
+    assert_eq!(inline.unwrap().unwrap()["cards"][0]["task"], "로직 구현");
+    assert!(split_plan("```o-plan\ntitle: 게임\n[[codex]] id=a\n내용").1.is_err());
+    assert!(split_plan("```o-plan\ntitle: 게임\n[[codex]] id=a command=oops\n내용\n```").1.is_err());
+    let example = "````markdown\n```o-plan\ntitle: 예시\n[[codex]] = 실행하면 안 됨\n```\n````";
+    assert_eq!(split_plan(example).1, Ok(None));
+    let indented = "    ```o-plan\n    title: 예시\n    [[codex]] = 실행하면 안 됨\n    ```";
+    assert_eq!(split_plan(indented).1, Ok(None));
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[], missed: &[], yolo: false };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[], missed: &[], design: None, yolo: false };
     let first = build(&input);
     for part in ["[O 총괄] 프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");

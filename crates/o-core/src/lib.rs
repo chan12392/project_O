@@ -25,5 +25,6 @@ pub mod providers;
 pub mod review;
 pub mod run;
 pub mod sessions;
+pub mod skills;
 pub mod sys;
 pub mod usage;

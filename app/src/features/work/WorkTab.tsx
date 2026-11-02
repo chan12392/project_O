@@ -1,12 +1,15 @@
-import { ArrowLeft, Columns3, KanbanSquare, LayoutDashboard, ListTodo, type LucideIcon } from "lucide-react";
+import { ArrowLeft, ClipboardList, Columns3, KanbanSquare, LayoutDashboard, ListTodo, type LucideIcon } from "lucide-react";
 import { useEffect, useMemo, useState, type ReactNode } from "react";
 
 import { nextUp, type NextItem } from "../../../../src/core/attention.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { names } from "../../lib/format.ts";
+import type { LeadState } from "../../data/useLead.ts";
 import { readStored, writeStored } from "../../lib/storage.ts";
 import type { PanelViewDef } from "../../shell/SidePanel.tsx";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
+import { PlanCard } from "../chat/LeadThread.tsx";
+import { Markdown } from "../chat/Markdown.tsx";
 import { AgentBoard } from "./AgentBoard.tsx";
 import { NextUp, actionCount, useHandled } from "./NextUp.tsx";
 import { ReviewRequestForm } from "./ReviewRequest.tsx";
@@ -16,14 +19,15 @@ import { WorkDashboard } from "./WorkDashboard.tsx";
 export const WORK_VIEW: PanelViewDef = {
   label: "에이전트 작업",
   icon: KanbanSquare,
-  render: ({ run, projectRuns, card, now, onCard }) => <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} />,
+  render: ({ run, projectRuns, card, now, onCard, lead }) => <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} lead={lead} />,
 };
 
-type Sub = "dashboard" | "next" | "board";
+type Sub = "design" | "dashboard" | "next" | "board";
 
 /** What every sub-view of the work tab is drawn from. */
 interface SubContext {
   runs: RunView[];
+  lead?: LeadState;
   todo: NextItem[];
   stopped: NextItem[];
   now: Date;
@@ -47,6 +51,12 @@ interface SubDef {
 
 /** The work tab's sub-views, in button order; the first is the default. */
 const SUBS: SubDef[] = [
+  {
+    id: "design",
+    label: "설계",
+    icon: ClipboardList,
+    render: ({ lead, runs, onCard }) => <DesignPanel lead={lead} runs={runs} onCard={onCard} />,
+  },
   {
     id: "dashboard",
     label: "대시보드",
@@ -78,7 +88,40 @@ const SUBS: SubDef[] = [
 ];
 const SUB_KEY = "project-o-work-tab";
 
-const loadSub = () => readStored<Sub>(SUB_KEY, "dashboard", (saved) => SUBS.find((s) => s.id === saved)?.id);
+const loadSub = () => readStored<Sub>(SUB_KEY, "design", (saved) => SUBS.find((s) => s.id === saved)?.id);
+
+function DesignPanel({ lead, runs, onCard }: { lead?: LeadState; runs: RunView[]; onCard: Props["onCard"] }) {
+  if (!lead) return <p className="text-sm text-muted-foreground">실제 프로젝트의 총괄 대화에서 설계를 확인할 수 있습니다.</p>;
+  if (lead.failed) return <p role="alert" className="text-sm text-destructive">설계를 읽지 못했습니다. <button type="button" className="underline focus-ring" onClick={() => void lead.refresh()}>다시 시도</button></p>;
+  if (!lead.loaded) return <p role="status" className="text-sm text-muted-foreground">설계를 불러오는 중…</p>;
+  const events = lead.thread?.events ?? [];
+  const designIndex = events.findLastIndex((event) => event.t === "lead.design");
+  const event = events[designIndex];
+  const design = event?.t === "lead.design" ? event.design : undefined;
+  const designStale = designIndex >= 0 && events.slice(designIndex + 1).some((item) => item.t === "lead.user");
+  const summary = design && typeof design.goal === "string" && Array.isArray(design.decisions) && Array.isArray(design.questions) && (
+    <section aria-label="설계 요약" className="space-y-3 border-b pb-4 text-sm">
+      <div><h3 className="text-xs text-muted-foreground">목표</h3><p className="mt-1 whitespace-pre-wrap">{design.goal || "아직 정하지 않았습니다."}</p></div>
+      {[["결정", design.decisions], ["미결정", design.questions]].map(([label, entries]) => (
+        <div key={label as string}><h3 className="text-xs text-muted-foreground">{label}</h3><ul className="mt-1 list-disc space-y-1 pl-4">{(entries as string[]).filter((entry) => typeof entry === "string").map((entry, i) => <li key={i} className="whitespace-pre-wrap">{entry}</li>)}</ul></div>
+      ))}
+      {designStale && <p role="status" className="text-xs text-status-warning-text">이후 대화가 있어 설계가 최신이 아닐 수 있습니다.</p>}
+    </section>
+  );
+  const plans = lead.items.filter((item) => item.kind === "plan");
+  const latest = plans.at(-1);
+  if (!latest) return <div className="space-y-4">{summary}<p className="text-sm text-muted-foreground">총괄과 작업을 논의하면 제안된 작업이 여기에 나타납니다.</p></div>;
+  const previous = lead.items[lead.items.indexOf(latest) - 1];
+  return (
+    <div className="space-y-4">
+      <div><h2 className="text-sm font-medium">현재 설계</h2><p className="mt-1 text-xs text-muted-foreground">총괄의 최신 제안을 확인하고 작업을 분배하세요.</p></div>
+      {summary}
+      {previous?.kind === "reply" && <details className="text-sm"><summary className="cursor-pointer text-xs text-muted-foreground focus-ring">총괄 설명과 미결정 사항</summary><div className="mt-2"><Markdown text={previous.text} /></div></details>}
+      <PlanCard plan={latest} lead={lead} run={runs.find((run) => run.runId === latest.runId)} onOpenCard={(run, card) => onCard({ run, card })} />
+      {plans.length > 1 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계 {plans.length - 1}개</summary><ol className="mt-2 space-y-1 pl-4">{plans.slice(0, -1).reverse().map((plan) => <li key={plan.planId}>{plan.title}</li>)}</ol></details>}
+    </div>
+  );
+}
 
 /** The clock tickets age by: the caller's (a replay's) or the wall clock, re-read every half minute. */
 export function useNow(given: Date | undefined): Date {
@@ -97,13 +140,14 @@ interface Props {
   open?: { run: string; card: string };
   onCard: (target?: { run: string; card: string }) => void;
   now?: Date;
+  lead?: LeadState;
 }
 
 /**
  * The agent work tab: the Orchestrator app's dashboard and next up brought to
  * one O project, with the card board beside them.
  */
-export function WorkTab({ runs, open, onCard, now: given }: Props) {
+export function WorkTab({ runs, open, onCard, now: given, lead }: Props) {
   const [sub, setSub] = useState<Sub>(loadSub);
   const now = useNow(given);
   const { handled, toggle } = useHandled();
@@ -138,7 +182,7 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
     );
   }
 
-  const ctx: SubContext = { runs, todo, stopped, now, handled, toggle, openItem, choose, onCard };
+  const ctx: SubContext = { runs, lead, todo, stopped, now, handled, toggle, openItem, choose, onCard };
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div role="group" aria-label="에이전트 작업 보기" className="flex shrink-0 gap-1 border-b px-3 py-1.5">
@@ -165,12 +209,12 @@ export function WorkTab({ runs, open, onCard, now: given }: Props) {
         })}
       </div>
       <div className="scrollbar-sleek min-h-0 flex-1 overflow-auto bg-chat-canvas p-4">
-        {runs.length === 0 ? (
+        {runs.length === 0 && current.id !== "design" ? (
           <p className="text-sm text-muted-foreground">이 프로젝트에는 아직 작업이 없습니다.</p>
         ) : (
           <>
             {/* Every run here shares one project folder: a person's PR can be handed to an agent from it. */}
-            {current.reviewRequest && <ReviewRequestForm project={runs[0].project} />}
+            {current.reviewRequest && runs[0] && <ReviewRequestForm project={runs[0].project} />}
             {current.render(ctx)}
           </>
         )}

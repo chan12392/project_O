@@ -50,7 +50,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 19] = [
+    let tests: [(&str, fn()); 20] = [
+        ("dependencies wait for success and never start after failure", dependency_order),
         ("devin transcript and answer become card events", devin_transcript),
         ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
         ("budget off keeps effort and refuses nothing", budget_off_keeps_effort_and_refuses_nothing),
@@ -81,6 +82,34 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn dependency_order() {
+    let home = temp_home();
+    let first = card("first", ProviderId::Claude, "first");
+    let mut second = card("second", ProviderId::Claude, "second");
+    second.depends_on = vec!["first".into()];
+    let p = plan(vec![second, first]);
+    create_run(&home, "graph-ok", &p).unwrap();
+    let received = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&received);
+    let spawner = fake_cli(move |spec| {
+        if spec.stdin.as_deref().is_some_and(|s| s.contains("[선행 작업 결과") && s.contains("first")) { observed.store(true, Ordering::SeqCst); }
+        vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+    });
+    assert_eq!(run_plan(&home, "graph-ok", &p, None, spawner).unwrap(), CardStatus::Done);
+    assert!(received.load(Ordering::SeqCst));
+    let events = read_events(&home, "graph-ok");
+    let first_end = events.iter().position(|e| matches!(e, OEvent::CardEnd { card_id, status: CardStatus::Done, .. } if card_id == "first")).unwrap();
+    let second_start = events.iter().position(|e| matches!(e, OEvent::CardStart { card_id, .. } if card_id == "second")).unwrap();
+    assert!(first_end < second_start);
+
+    create_run(&home, "graph-fail", &p).unwrap();
+    let fail: Arc<Spawner> = Arc::new(|_, _| Err(std::io::Error::other("fake failure")));
+    assert_eq!(run_plan(&home, "graph-fail", &p, None, fail).unwrap(), CardStatus::Failed);
+    let events = read_events(&home, "graph-fail");
+    assert!(!events.iter().any(|e| matches!(e, OEvent::CardStart { card_id, .. } if card_id == "second")));
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { card_id, status: CardStatus::Failed, .. } if card_id == "second")));
 }
 
 fn devin_transcript() {
@@ -115,7 +144,7 @@ fn temp_home() -> PathBuf {
 }
 
 fn card(id: &str, provider: ProviderId, task: &str) -> Card {
-    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None }
+    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] }
 }
 
 fn plan(cards: Vec<Card>) -> Plan {

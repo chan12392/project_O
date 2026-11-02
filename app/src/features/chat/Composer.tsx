@@ -442,7 +442,7 @@ export function Composer({
         aria-live="polite"
         className={`mx-auto mt-1.5 max-w-3xl px-1 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : `${SEND_KEY} 보내기 · Enter 줄바꿈 · ${yolo ? "조건에 맞는 계획은 자동 실행됩니다" : "계획 카드에서 실행합니다"}`)}
+        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : `${SEND_KEY} 보내기 · Enter 줄바꿈 · 설계를 확인한 뒤 작업을 분배합니다`)}
       </p>
     </form>
   );

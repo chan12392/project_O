@@ -433,6 +433,7 @@ function MainWindow() {
             {/* The stored width can outgrow a window made narrower since; the chat keeps 360px (MIN_CHAT). */}
             <div className="min-h-0 shrink-0 max-lg:h-[50vh] max-lg:w-full! max-lg:border-t lg:max-w-[calc(100%-360px)]" style={{ width: layout.width }}>
               <SidePanel
+                lead={live ? lead : undefined}
                 run={current?.view}
                 projectRuns={project?.runs ?? []}
                 usageRuns={runs.map((r) => r.view)}
@@ -467,6 +468,7 @@ function PopoutPanel() {
   const { selection, select, receive } = useSelection(send);
   const { projects } = useProjects(runs, [], []);
   const { project, current } = resolve(runs, projects, selection);
+  const lead = useLead(api, project?.path ?? selection.project, !data.pending && Boolean(data.live));
   // The main window's run until this window has read it: never quietly another run (B15).
   const waiting = Boolean(selection.run) && !runs.some((r) => r.view.runId === selection.run);
   useEffect(() => {
@@ -482,6 +484,7 @@ function PopoutPanel() {
   return (
     <div className="h-full">
       <SidePanel
+        lead={data.live ? lead : undefined}
         run={current?.view}
         projectRuns={project?.runs ?? []}
         usageRuns={runs.map((r) => r.view)}

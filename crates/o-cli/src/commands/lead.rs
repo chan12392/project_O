@@ -19,7 +19,7 @@ use super::{fail, print_violations, Command};
 
 pub const LEAD: Command = Command {
     name: "lead",
-    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--profile project-o|own] [--mode yolo|normal] <메시지|->
+    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--manual-dispatch] [--profile project-o|own] [--mode yolo|normal] <메시지|->
                              총괄에게 메시지 (읽기 전용으로 프로젝트를 읽고 계획을 제안), 새 이벤트 JSON 출력
                              --profile project-o(기본)면 총괄도 O의 깨끗한 프로필로, own이면 평소 CLI 설정으로 실행
                              --mode yolo면 총괄이 파일을 고치고 명령을 실행 (주지 않으면 o yolo 설정, ADR-0014)
@@ -74,6 +74,7 @@ struct Args {
     name: Option<String>,
     attach: Vec<PathBuf>,
     fresh: bool,
+    manual_dispatch: bool,
     /// The profile and context choice (`run::mode::take_flags`, ADR-0013).
     mode: RunMode,
     /// `--mode yolo|normal` (ADR-0014); none: the saved switch.
@@ -97,6 +98,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--name" => out.name = Some(value("--name")?),
             "--attach" => out.attach.push(PathBuf::from(value("--attach")?)),
             "--new" => out.fresh = true,
+            "--manual-dispatch" => out.manual_dispatch = true,
             "--json" => out.json = true,
             other if other.starts_with("--") => return Err(format!("알 수 없는 인자: {other}")),
             other => out.words.push(other.to_string()),
@@ -146,7 +148,8 @@ fn send(home: &Path, args: &[String]) -> i32 {
     let start = |run_id: &str| -> std::io::Result<()> {
         proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
     };
-    match lead::send_with_autorun(home, &req, spawner.as_ref(), &start) {
+    let result = if a.manual_dispatch { lead::send(home, &req, spawner.as_ref()) } else { lead::send_with_autorun(home, &req, spawner.as_ref(), &start) };
+    match result {
         Ok(events) => {
             let thread = lead::current_thread(home, project);
             // A turn that ended in lead.error is still on record: the events say what happened.

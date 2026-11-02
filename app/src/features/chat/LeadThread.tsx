@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play } from "lucide-react";
-import { useState, type FormEvent } from "react";
+import { useId, useState, type FormEvent } from "react";
 
 import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadReadProblem, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
@@ -49,7 +49,7 @@ export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStar
         )}
         {project && lead.loaded && lead.items.length === 0 && !lead.busy && (
           <Notice title="아직 총괄과 나눈 대화가 없습니다" action="첫 요청 쓰기" onAction={onCompose}>
-            할 일을 보내면 총괄이 계획을 제안합니다. YOLO가 켜져 있고 자동 실행 조건에 맞으면 계획이 바로 실행됩니다.
+            할 일을 보내면 총괄이 계획을 제안합니다. 계획을 확인한 뒤 작업을 분배할 수 있습니다.
           </Notice>
         )}
         {lead.items.map((item, i) => (
@@ -124,12 +124,14 @@ function Item({ item, lead, runOf, onOpenCard }: { item: LeadItem; lead: LeadSta
 }
 
 /** A proposed plan: its cards, what the policy said, and 실행 (once). */
-function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: Props["onOpenCard"] }) {
+export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: Props["onOpenCard"] }) {
   const { clean } = useSettings();
   const budget = useBudget();
   const over = budget?.providers.filter((entry) => entry.state === "over" && plan.cards.some((card) => card.provider === entry.provider)) ?? [];
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
-  const titleId = `plan-${plan.planId}`;
+  const titleId = useId();
+  const position = lead.items.findIndex((item) => item.kind === "plan" && item.planId === plan.planId);
+  const stale = position < 0 || lead.items.slice(position + 1).some((item) => item.kind === "user" || item.kind === "plan");
   // Passed when saved, then refused by the runner's own check right before the start.
   const refused = run !== undefined && failedBeforeCards(run) && Boolean(run.blocked?.length);
   const dispatch = async () => {
@@ -150,7 +152,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
             {plan.title}
           </h2>
           <p className="text-2xs text-muted-foreground">
-            총괄이 제안한 계획 · 카드 {plan.cards.length}장 · <time dateTime={plan.at}>{timeOf(plan.at)}</time>
+            총괄이 제안한 계획 · 작업 {plan.cards.length}개 · <time dateTime={plan.at}>{timeOf(plan.at)}</time>
           </p>
         </div>
         {refused ? (
@@ -174,11 +176,11 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
         <div className="relative overflow-x-auto">
           {/* relative: the sr-only caption stays inside the chat instead of stretching the page. */}
           <table className="w-full text-left text-xs">
-            <caption className="sr-only">{plan.title}의 작업카드</caption>
+            <caption className="sr-only">{plan.title}의 작업 분배</caption>
             <thead className="text-2xs text-muted-foreground">
               <tr className="border-b">
                 <th scope="col" className="px-4 py-2 font-normal">
-                  카드
+                  작업
                 </th>
                 <th scope="col" className="px-2 py-2 font-normal">
                   에이전트
@@ -205,6 +207,7 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
                   </td>
                   <td className="px-2 py-2.5 pr-4">
                     <CardTask task={card.task} />
+                    {Boolean(card.depends_on?.length) && <p className="mt-1 text-2xs text-muted-foreground">선행: {card.depends_on?.join(", ")}</p>}
                   </td>
                 </tr>
               ))}
@@ -258,12 +261,13 @@ function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { k
           )
         ) : plan.ok ? (
           <>
-            <button type="button" onClick={dispatch} disabled={state.busy} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
+            <p role="note" className="w-full text-xs text-status-warning-text">작업은 같은 폴더에서 실행됩니다. 다른 세션이나 병렬 작업이 같은 파일을 수정하지 않도록 확인하세요.</p>
+            <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
               <Play className="size-3.5" aria-hidden="true" />
-              {state.busy ? "실행하는 중…" : "실행"}
+              {state.busy ? "분배하는 중…" : "작업 분배"}
             </button>
             <p id={`${titleId}-how`} className="min-w-0 flex-1 text-xs text-muted-foreground">
-              실행 직전에 정책{budget?.enabled === false ? "" : "(하루 예산 포함)"}을 다시 검사한 뒤 {clean ? "project_O 프로필" : "내 설정"}로 카드들을 띄웁니다. 한 번만 실행할 수 있습니다.
+              {stale ? "이후 대화가 있습니다. 총괄에게 최신 설계를 다시 요청하세요." : `실행 직전에 정책${budget?.enabled === false ? "" : "(하루 예산 포함)"}을 다시 검사한 뒤 ${clean ? "project_O 프로필" : "내 설정"}로 작업을 시작합니다. 한 번만 실행할 수 있습니다.`}
             </p>
           </>
         ) : (

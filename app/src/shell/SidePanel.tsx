@@ -4,6 +4,7 @@ import type { ReactNode } from "react";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import type { UsageWindow } from "../../../src/core/usage.ts";
 import { PANEL_VIEWS, type PanelView } from "../data/useRun.ts";
+import type { LeadState } from "../data/useLead.ts";
 import { OFFICE_VIEW } from "../features/office/OfficeView.tsx";
 import { WORK_VIEW } from "../features/work/WorkTab.tsx";
 import { ICON_BUTTON } from "../lib/format.ts";
@@ -17,6 +18,7 @@ export interface PanelViewProps {
   usageRuns: RunView[];
   usageWindows: UsageWindow[];
   leadResting?: boolean;
+  lead?: LeadState;
   /** The clock tickets age by; a replayed run passes its own. Defaults to the wall clock. */
   now?: Date;
   card?: string;

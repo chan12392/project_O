@@ -91,6 +91,18 @@ fn a_well_formed_plan_passes_and_keeps_card_order() {
 }
 
 #[test]
+fn dependencies_must_exist_be_unique_and_acyclic() {
+    let first = code_card();
+    let second = with(design_card(), "depends_on", json!(["code"]));
+    assert!(check_plan(&plan(vec![first.clone(), second.clone()]), &ctx()).plan.is_some());
+    for invalid in [json!(["missing"]), json!(["design"]), json!(["code", "code"]), json!("code")] {
+        assert!(has(&check_plan(&plan(vec![first.clone(), with(second.clone(), "depends_on", invalid)]), &ctx()), "plan-dependency"));
+    }
+    let cycle = plan(vec![with(first, "depends_on", json!(["design"])), second]);
+    assert!(has(&check_plan(&cycle, &ctx()), "plan-dependency"));
+}
+
+#[test]
 fn cards_cannot_name_a_binary_args_env_or_account() {
     for field in ["command", "args", "env", "bin", "account", "token"] {
         let checked = check_plan(&plan(vec![with(code_card(), field, json!("x"))]), &ctx());

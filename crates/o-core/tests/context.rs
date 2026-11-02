@@ -199,7 +199,7 @@ fn plan(project: &str, cards: Vec<Card>) -> Plan {
 }
 
 fn card(id: &str, provider: ProviderId, task: &str) -> Card {
-    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None }
+    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] }
 }
 
 #[test]

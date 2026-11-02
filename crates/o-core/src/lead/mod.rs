@@ -89,6 +89,8 @@ pub enum LeadEvent {
     /// The lead's answer as Markdown, without its plan block.
     #[serde(rename = "lead.reply")]
     Reply { at: String, provider: ProviderId, text: String },
+    #[serde(rename = "lead.design")]
+    Design { at: String, design: Value },
     /// A proposed plan with the project forced to the thread's and the policy check's result.
     #[serde(rename = "lead.plan")]
     Plan { at: String, plan_id: String, plan: Value, ok: bool, violations: Vec<Violation> },
@@ -496,6 +498,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
     let runs = dispatched_runs(home, &before);
     let budget = budget_lines(home);
+    let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
     let text = prompt::build(&prompt::PromptInput {
         project: req.project,
         text: req.text,
@@ -505,6 +508,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         resumed: session.is_some(),
         history: &history,
         missed: &missed,
+        design: design.as_deref(),
         yolo: req.yolo,
     });
     let files_dir = files::thread_files(home, &thread_id);
@@ -685,8 +689,17 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     }
 
     let (prose, plan) = prompt::split_plan(&answer);
+    let (prose, design) = prompt::split_design(&prose);
     if !prose.is_empty() {
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose })?;
+    }
+    match design {
+        Ok(Some(design)) => emit(LeadEvent::Design { at: now_iso(), design })?,
+        Ok(None) => {},
+        Err(message) => {
+            emit(LeadEvent::Error { at: now_iso(), text: message })?;
+            return Ok(added);
+        }
     }
     match plan {
         Ok(None) => {}
@@ -749,8 +762,22 @@ pub struct Dispatched {
 /// `mode` is the profile and context choice (ADR-0013), saved with the run like `o dispatch` does.
 pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
+    let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+    current.lock().map_err(|e| e.to_string())?;
+    let turn = turn_lock(home, thread_id).map_err(|e| e.to_string())?;
+    turn.try_lock().map_err(|_| "총괄이 답하는 중입니다. 새 설계를 확인한 뒤 분배하세요".to_string())?;
     let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
     lock.lock().map_err(|e| e.to_string())?;
+    let events = read_thread(home, thread_id);
+    let project = thread_project(&events).ok_or_else(|| "총괄 대화를 찾지 못했습니다".to_string())?;
+    let latest = events.iter().rev().find_map(|event| match event {
+        LeadEvent::Plan { plan_id, .. } => Some(Some(plan_id.as_str())),
+        LeadEvent::User { .. } => Some(None),
+        _ => None,
+    }).flatten();
+    if current_thread(home, &project).as_deref() != Some(thread_id) || latest != Some(plan_id) {
+        return Err("설계가 변경되었습니다. 최신 설계를 확인한 뒤 분배하세요".to_string().into());
+    }
     dispatch_locked(home, plan_id, mode, start)
 }
 

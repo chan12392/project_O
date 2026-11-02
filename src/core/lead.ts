@@ -22,6 +22,7 @@ export interface PlanCard {
   model?: string;
   effort?: string;
   task: string;
+  depends_on?: string[];
 }
 
 export type LeadEvent =
@@ -29,6 +30,7 @@ export type LeadEvent =
   | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
   | { t: "lead.reply"; at: string; provider: ProviderId; text: string }
+  | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
@@ -158,6 +160,10 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     for (const key of ["role", "model", "effort"] as const) {
       const value = text(card[key]);
       if (value) kept[key] = value;
+    }
+    if (card.depends_on !== undefined) {
+      if (!Array.isArray(card.depends_on) || card.depends_on.some((id: unknown) => typeof id !== "string")) problems.push(`작업 ${id}의 선행 작업이 올바르지 않습니다`);
+      else kept.depends_on = card.depends_on;
     }
     cards.push(kept);
   });

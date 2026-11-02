@@ -189,6 +189,28 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     }
 
     for card in &valid {
+        let mut seen = HashSet::new();
+        for dependency in &card.depends_on {
+            if dependency == &card.id || !ids.contains(dependency) || !seen.insert(dependency) {
+                found.add("plan-dependency", format!("{}의 선행 작업이 올바르지 않습니다: {dependency}", card.id), Some(&card.id));
+            }
+        }
+    }
+    let mut resolved = HashSet::new();
+    loop {
+        let before = resolved.len();
+        for card in &valid {
+            if card.depends_on.iter().all(|id| resolved.contains(id)) {
+                resolved.insert(card.id.clone());
+            }
+        }
+        if before == resolved.len() { break; }
+    }
+    if resolved.len() != valid.len() {
+        found.add("plan-dependency", "선행 작업을 해결할 수 없습니다. 순환이나 없는 작업을 확인하세요", None);
+    }
+
+    for card in &valid {
         if let Some(until) = ctx.cooldowns.get(&card.provider) {
             if parse_time(until).is_some_and(|t| t > ctx.now) {
                 found.add(
@@ -345,6 +367,11 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
             fail(found, "plan-shape".into(), format!("effort는 {} 중 하나입니다", EFFORTS.join(", ")));
         }
     }
+    if let Some(dependencies) = raw.get("depends_on") {
+        if dependencies.as_array().is_none_or(|items| items.iter().any(|id| id.as_str().is_none_or(|s| !CARD_ID.is_match(s)))) {
+            fail(found, "plan-dependency".into(), "depends_on은 선행 작업 id의 배열이어야 합니다".into());
+        }
+    }
     if let Some(task) = task {
         for hit in find_hits(task, code_rules()) {
             fail(found, format!("task-{}", hit.rule), hit.reason.to_string());
@@ -361,6 +388,7 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
         task: task?.to_string(),
         model: text("model"),
         effort: text("effort"),
+        depends_on: raw.get("depends_on").and_then(Value::as_array).map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
     })
 }
 

@@ -241,7 +241,7 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
       return true;
     }
     const model = typeof input.model === "string" && input.model ? ["--model", input.model] : [];
-    const args = ["lead", "send", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
+    const args = ["lead", "send", "--manual-dispatch", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
     run(oWithInput([...args, "--profile", input.clean === true ? "project-o" : "own", "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
     return true;
   }
