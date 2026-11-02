@@ -48,10 +48,11 @@ pub fn transcript_path(run_dir: &str, card_id: &str) -> String {
     format!("{}/cards/{card_id}.atif.json", run_dir.trim_end_matches(['\\', '/']))
 }
 
-fn read_transcript(path: &Path) -> Option<String> {
+fn read_transcript(run_dir: &Path, path: &Path) -> Option<String> {
+    let run_dir = run_dir.canonicalize().ok()?;
     let parent = path.parent()?.canonicalize().ok()?;
     let resolved = path.canonicalize().ok()?;
-    if resolved.parent()? != parent || !fs::symlink_metadata(path).ok()?.file_type().is_file() { return None; }
+    if parent != run_dir.join("cards") || resolved.parent()? != parent || !fs::symlink_metadata(path).ok()?.file_type().is_file() { return None; }
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -136,7 +137,7 @@ impl Provider for Devin {
     }
 
     fn finish_text_run(&self, card: &Card, team: &TeamChannel, stdout: &str, stderr: &str) -> Vec<StreamSignal> {
-        let transcript = read_transcript(Path::new(&transcript_path(team.run_dir, &card.id)));
+        let transcript = read_transcript(Path::new(team.run_dir), Path::new(&transcript_path(team.run_dir, &card.id)));
         read_run(stdout, stderr, transcript.as_deref())
     }
 
@@ -277,10 +278,14 @@ mod transcript_tests {
         let name = format!("o-devin-transcript-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
         let dir = std::env::temp_dir().join(name);
         fs::create_dir(&dir).unwrap();
-        let path = dir.join("transcript.json");
+        fs::create_dir(dir.join("cards")).unwrap();
+        let path = dir.join("cards/transcript.json");
         fs::write(&path, "{}").unwrap();
-        assert_eq!(read_transcript(&path).as_deref(), Some("{}"));
+        assert_eq!(read_transcript(&dir, &path).as_deref(), Some("{}"));
+        let outside = dir.join("outside.json");
+        fs::write(&outside, "{}").unwrap();
+        assert!(read_transcript(&dir, &outside).is_none());
         fs::hard_link(&path, dir.join("other.json")).unwrap();
-        assert!(read_transcript(&path).is_none());
+        assert!(read_transcript(&dir, &path).is_none());
     }
 }
