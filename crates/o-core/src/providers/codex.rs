@@ -17,6 +17,7 @@ use serde_json::{json, Map, Value};
 use super::stream::{limit_from_text, num, short, short_value};
 use super::{list_command, opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel};
 use crate::agents::clean::LoginState;
+use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
 use crate::sys::js::{coalesce, iso_from_secs, js_string, number_text};
@@ -29,8 +30,10 @@ pub struct Codex;
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
-        let mut args = strings(&["exec", "--json", "-s", "workspace-write", "-C", &plan.project, "--add-dir", team.run_dir]);
-        args.extend(opt("-m", card.model.as_deref()));
+        let spec = connection("codex").headless;
+        let mut args = strings(spec.fixed);
+        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir]));
+        args.extend(opt(spec.model_flag, card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
@@ -88,7 +91,7 @@ impl Provider for Codex {
 
     /// `codex debug models` (in `codex --help`) prints the CLI's model catalog as JSON.
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
-        list_command("codex", &["debug", "models"], ProviderId::Codex, &[]).map(|out| parse_codex_models(&out))
+        list_command("codex", connection("codex").models, ProviderId::Codex, &[]).map(|out| parse_codex_models(&out))
     }
 
     // https://github.com/openai/codex (npm, Homebrew, Windows installer)

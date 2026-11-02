@@ -1,4 +1,5 @@
-//! Every other agent CLI O knows of (ADR-0015, research `o-research/agent-clis.md` §2): one
+//! Adapted from stablyai/orca (MIT); see THIRD_PARTY_NOTICES.md.
+//! Every agent CLI O knows of (ADR-0015, research `o-research/agent-clis.md` §2): one
 //! table the app (Settings → 에이전트 → 다른 에이전트 CLI) and `o agents list --all` both read.
 //!
 //! An entry is connected when a `ProviderId` with its id exists; otherwise it is planned (with
@@ -13,12 +14,13 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::thread;
 use std::time::Duration;
+use std::sync::{LazyLock, Mutex};
 
 use serde::Serialize;
 
 use crate::run::plan::ProviderId;
 use crate::sys::proc;
-use crate::sys::resolve::{resolve_cli, which};
+use crate::sys::resolve::{refresh_paths, resolve_cli, which};
 
 /// What O plans for a CLI that is not connected yet.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,7 +41,7 @@ pub enum Profile {
 }
 
 #[derive(Clone, Copy, Debug)]
-pub struct Entry {
+pub struct AgentSpec {
     /// The id it would have as a provider (`ProviderId::as_str`).
     pub id: &'static str,
     pub name: &'static str,
@@ -54,8 +56,68 @@ pub struct Entry {
     pub note: &'static str,
 }
 
-/// The research report's candidates (§2.1–2.3), the connection order of §3.1.
+#[derive(Clone, Copy, Debug)]
+pub struct Headless {
+    pub fixed: &'static [&'static str],
+    pub model_flag: &'static str,
+    pub prompt: PromptDelivery,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PromptDelivery { Stdin, Argument, AfterSeparator }
+
+pub type Entry = AgentSpec;
+
+/// Only connected providers have launch recipes; policy and parsers remain code.
+pub struct Connection {
+    pub id: &'static str,
+    pub headless: Headless,
+    pub models: &'static [&'static str],
+}
+
+pub const CONNECTIONS: &[Connection] = &[
+    Connection { id: "claude", headless: Headless { fixed: &["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools"], model_flag: "--model", prompt: PromptDelivery::Stdin }, models: &[] },
+    Connection { id: "codex", headless: Headless { fixed: &["exec", "--json", "-s", "workspace-write"], model_flag: "-m", prompt: PromptDelivery::Stdin }, models: &["debug", "models"] },
+    Connection { id: "agy", headless: Headless { fixed: &["--output-format", "stream-json", "--mode", "accept-edits"], model_flag: "--model", prompt: PromptDelivery::Argument }, models: &["models"] },
+    Connection { id: "opencode", headless: Headless { fixed: &["run", "--format", "json", "--standalone"], model_flag: "-m", prompt: PromptDelivery::Stdin }, models: &["models", "--standalone"] },
+    Connection { id: "devin", headless: Headless { fixed: &["-p"], model_flag: "--model", prompt: PromptDelivery::AfterSeparator }, models: &[] },
+];
+
+pub fn connection(id: &str) -> &'static Connection {
+    CONNECTIONS.iter().find(|c| c.id == id).expect("connected provider has a recipe")
+}
+
+macro_rules! extra {
+    ($id:literal, $name:literal, [$($bin:literal),+], $url:literal) => {
+        AgentSpec { id: $id, name: $name, vendor: "", bins: &[$($bin),+], install_url: Some($url),
+            plan: Plan::Unsupported("연결 방식 미검증"), profile: Profile::Unsupported("독립 프로필 경로 미검증"), note: "" }
+    };
+}
+
+/// CLI identities and aliases; launch and model recipes are in `CONNECTIONS`.
 pub const CATALOG: &[Entry] = &[
+    Entry { id: "claude", name: "Claude Code", vendor: "Anthropic", bins: &["claude"], install_url: Some("https://code.claude.com/docs/en/setup"), plan: Plan::Planned(0), profile: Profile::Relocatable("CLAUDE_CONFIG_DIR"), note: "" },
+    Entry { id: "codex", name: "Codex", vendor: "OpenAI", bins: &["codex"], install_url: Some("https://github.com/openai/codex"), plan: Plan::Planned(0), profile: Profile::Relocatable("CODEX_HOME"), note: "" },
+    Entry { id: "agy", name: "Antigravity", vendor: "Google", bins: &["agy"], install_url: Some("https://antigravity.google/docs/cli-overview"), plan: Plan::Planned(0), profile: Profile::Relocatable("USERPROFILE"), note: "" },
+    extra!("claude-agent-teams", "Claude Agent Teams", ["orca", "orca-dev", "orca-ide"], "https://code.claude.com/docs/en/agent-teams"),
+    extra!("openclaude", "OpenClaude", ["openclaude"], "https://openclaude.gitlawb.com"),
+    extra!("opencode2", "OpenCode 2", ["opencode2"], "https://opencode.ai/v2/docs/"),
+    extra!("mimo-code", "MiMo Code", ["mimo"], "https://mimo.xiaomi.com/coder"),
+    extra!("ante", "Ante", ["ante"], "https://github.com/AntigmaLabs/ante-preview"),
+    extra!("trae", "Trae", ["traecli"], "https://docs.trae.cn/cli_get-started-with-trae-cli"),
+    extra!("muse", "Muse", ["muse"], "https://dev.meta.ai/docs/muse-code"),
+    extra!("dsh", "DeepSeek Harness", ["dsh-tui", "dst"], "https://deepseek-harness.github.io/deepseek-harness"),
+    extra!("qoder", "Qoder CLI", ["qodercli", "qoder"], "https://docs.qoder.com/cli/overview"),
+    extra!("qoder-cn", "Qoder CLI China", ["qoderclicn", "qodercn"], "https://docs.qoder.cn/cli/overview"),
+    extra!("zcode", "ZCode", ["zcode"], "https://zcode.z.ai/en/docs"),
+    extra!("prime-agent", "Prime Agent", ["prime-agent"], "https://github.com/PrimeIntellect-ai/prime-agent"),
+    extra!("autohand", "Autohand Code", ["autohand"], "https://github.com/autohandai/code-cli"),
+    extra!("cline", "Cline", ["cline"], "https://docs.cline.bot/cline-cli/overview"),
+    extra!("codebuff", "Codebuff", ["codebuff"], "https://codebuff.com/docs/help/quick-start"),
+    extra!("freebuff", "Freebuff", ["freebuff"], "https://freebuff.com/cli"),
+    extra!("rovo", "Rovo Dev", ["acli"], "https://support.atlassian.com/rovo/"),
+    extra!("codebuddy", "CodeBuddy", ["codebuddy", "cbc"], "https://www.codebuddy.ai/cli"),
+    extra!("jcode", "Jcode", ["jcode"], "https://github.com/1jehuang/jcode"),
     Entry {
         id: "omp",
         name: "Oh My Pi",
@@ -70,7 +132,7 @@ pub const CATALOG: &[Entry] = &[
         id: "commandcode",
         name: "Command Code",
         vendor: "Command Code AI",
-        bins: &["commandcode"],
+        bins: &["command-code", "commandcode"],
         install_url: Some("https://github.com/CommandCodeAI/command-code"),
         plan: Plan::Unsupported("연결 방식 미검증"),
         profile: Profile::Unsupported("독립 프로필 경로 미검증"),
@@ -210,7 +272,7 @@ pub const CATALOG: &[Entry] = &[
         id: "vibe",
         name: "Mistral Vibe",
         vendor: "Mistral AI",
-        bins: &["vibe"],
+        bins: &["vibe", "mistral-vibe"],
         install_url: Some("https://docs.mistral.ai/vibe/code/cli/work-with-cli"),
         plan: Plan::Planned(4),
         profile: Profile::Relocatable("VIBE_HOME"),
@@ -220,7 +282,7 @@ pub const CATALOG: &[Entry] = &[
         id: "kimi",
         name: "Kimi Code CLI",
         vendor: "Moonshot AI",
-        bins: &["kimi"],
+        bins: &["kimi", "kimi-code"],
         install_url: Some("https://moonshotai.github.io/kimi-code/en/guides/getting-started.html"),
         plan: Plan::Unsupported("약관: Kimi Code 구독은 대화형 사용만 허용합니다(비대화형 자동화 금지)"),
         profile: Profile::Relocatable("KIMI_CODE_HOME"),
@@ -403,6 +465,9 @@ const VERSION_TIMEOUT: Duration = Duration::from_secs(5);
 /// Finds the entry's binary on PATH and asks it `--version` (nothing else). A shim O cannot
 /// start without a shell still counts as detected, without a version.
 pub fn detect(entry: &Entry) -> Found {
+    if (entry.id == "claude-agent-teams" && (cfg!(windows) || which("claude").is_none())) || (entry.id == "dsh" && which("dsh").is_none()) {
+        return Found::default();
+    }
     let Some((bin, path)) = entry.bins.iter().find_map(|bin| which(bin).map(|p| (*bin, p))) else { return Found::default() };
     let version = resolve_cli(bin).and_then(|cli| {
         let mut command = Command::new(&cli.command);
@@ -417,8 +482,39 @@ pub fn detect(entry: &Entry) -> Found {
 
 /// The whole catalog with detection, every entry checked in parallel, in table order.
 pub fn list() -> Vec<Listed> {
+    refresh_paths();
     thread::scope(|s| {
-        let checks: Vec<_> = CATALOG.iter().map(|e| (e, s.spawn(move || detect(e)))).collect();
+        let checks: Vec<_> = CATALOG.iter().filter(|e| !matches!(e.id, "claude" | "codex" | "agy")).map(|e| (e, s.spawn(move || detect(e)))).collect();
         checks.into_iter().map(|(e, check)| listed(e, check.join().unwrap_or_default())).collect()
     })
+}
+
+static CACHE: LazyLock<Mutex<Option<Vec<Listed>>>> = LazyLock::new(|| Mutex::new(None));
+
+/// A forced refresh replaces the old snapshot only after detection completes.
+pub fn cached_list(refresh: bool) -> Vec<Listed> {
+    let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
+    if refresh || cache.is_none() { *cache = Some(list()); }
+    cache.clone().unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashSet;
+
+    #[test]
+    fn identities_are_unique_and_connected_recipes_keep_approvals() {
+        let ids: HashSet<_> = CATALOG.iter().map(|a| a.id).collect();
+        assert_eq!(ids.len(), CATALOG.len());
+        assert!(ids.len() >= 45);
+        for provider in ProviderId::ALL {
+            let agent = entry(provider.as_str()).unwrap();
+            assert_eq!(agent.bins[0], provider.as_str());
+            let recipe = connection(provider.as_str());
+            assert!(o_guard::rules::find_hits(&recipe.headless.fixed.join(" "), o_guard::rules::code_rules().filter(|r| r.id == "permission-bypass")).is_empty());
+        }
+        assert!(entry("qoder").unwrap().bins.contains(&"qoder"));
+        assert!(entry("commandcode").unwrap().bins.contains(&"command-code"));
+    }
 }

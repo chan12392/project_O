@@ -11,24 +11,24 @@ fn provider(id: &str) -> Result<ProviderId, String> {
 
 #[tauri::command]
 pub async fn agents_status(clean: bool) -> Result<Vec<AgentStatus>, String> {
-    blocking(move || agents::status(&clean::default_root(), clean)).await
+    blocking(move || { o_core::sys::resolve::refresh_paths(); agents::status(&clean::default_root(), clean) }).await
 }
 
 #[tauri::command]
-pub async fn agents_catalog() -> Result<Vec<catalog::Listed>, String> {
-    blocking(catalog::list).await
+pub async fn agents_catalog(refresh: bool) -> Result<Vec<catalog::Listed>, String> {
+    blocking(move || catalog::cached_list(refresh)).await
 }
 
 #[tauri::command]
 pub async fn agent_install(id: String) -> Result<ActionResult, String> {
     let provider = provider(&id)?;
-    blocking(move || agents::install(provider)).await
+    blocking(move || { o_core::sys::resolve::ensure_paths(); agents::install(provider) }).await
 }
 
 #[tauri::command]
 pub async fn agent_login(id: String, clean: bool) -> Result<ActionResult, String> {
     let provider = provider(&id)?;
-    blocking(move || agents::open_login(&clean::default_root(), provider, clean)).await
+    blocking(move || { o_core::sys::resolve::ensure_paths(); agents::open_login(&clean::default_root(), provider, clean) }).await
 }
 
 #[tauri::command]

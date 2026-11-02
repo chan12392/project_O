@@ -48,6 +48,9 @@ fn run(args: &[String]) -> i32 {
         Some((verb, rest)) => (verb.as_str(), rest),
         None => ("", &[][..]),
     };
+    if matches!(verb, "status" | "install" | "open-login" | "login" | "shell") {
+        o_core::sys::resolve::ensure_paths();
+    }
     match verb {
         "path" => {
             for provider in ProviderId::ALL {

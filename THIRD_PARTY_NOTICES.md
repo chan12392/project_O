@@ -8,6 +8,7 @@ project_O's app UI follows Orca's design system. Copied or adapted from
 - `app/src/styles/orca-theme.css`: design tokens, copied verbatim from `src/renderer/src/assets/main.css`
 - `app/src/components/AgentStateDot.tsx`: adapted from `AgentStateDot.tsx` and `AgentWorkingSpinner.tsx`
 - Layout and class recipes of the sidebar rows, tab strip, native chat column, composer and status bar, rebuilt for O's data
+- `crates/o-core/src/agents/catalog.rs`, `crates/o-core/src/sys/resolve.rs`, `crates/o-core/src/agents/clean.rs`: 에이전트 명령·별칭 표, 설치 폴더 탐색과 프로필 신뢰 처리를 Orca 1.4.246 조사 결과에서 각색했다. 위 커밋은 저장소에서 확인한 별도 기준이며 설치본과 일치한다고 가정하지 않는다.
 
 ```
 MIT License

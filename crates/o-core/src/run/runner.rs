@@ -316,7 +316,9 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
     let spawned = spawner(&spec, &workdir.checked).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
         if let Some(root) = clean {
-            command.env_clear().envs(clean::environment(root, card.provider)?);
+            let env = clean::environment(root, card.provider)?;
+            let _ = clean::trust_preflight(root, card.provider, Path::new(&workdir.checked));
+            command.env_clear().envs(env);
         } else if card.provider == ProviderId::OpenCode {
             command.env_clear().envs(clean::own_profile_environment());
         }
@@ -453,6 +455,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
 
 /// Launches the official CLI found on PATH, never through a shell (see `resolve`).
 pub fn official_command(spec: &LaunchSpec, cwd: &str) -> io::Result<Command> {
+    crate::sys::resolve::ensure_paths();
     let cli = resolve_cli(&spec.bin)
         .ok_or_else(|| io::Error::other(format!("{} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다", spec.bin)))?;
     let mut command = Command::new(&cli.command);

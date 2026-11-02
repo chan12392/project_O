@@ -26,6 +26,7 @@ use serde_json::{json, Map, Value};
 use super::stream::{is_limit_text, num, short, tool_summary};
 use super::{list_command, strings, LaunchSpec, ModelChoice, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
+use crate::agents::catalog::connection;
 use crate::context::CONTEXT_COMMAND;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -36,6 +37,7 @@ pub struct OpenCode;
 
 /// 공식 상태 명령의 연결 종류만 확인하며 출력은 저장하지 않는다.
 pub fn check_auth(root: Option<&Path>) -> Result<(), String> {
+    crate::sys::resolve::ensure_paths();
     let cli = resolve_cli("opencode").ok_or("OpenCode CLI를 찾지 못했습니다")?;
     let mut command = Command::new(cli.command);
     command.args(cli.prefix).args(["auth", "list", "--format", "json", STANDALONE]);
@@ -78,13 +80,14 @@ impl Provider for OpenCode {
     /// its variant (`provider/model#high`, `opencode run --help`). OpenCode checks the variant;
     /// without a model there is no variant to name, so the effort is left to the CLI's default.
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
-        let mut args = strings(&["run", "--format", "json", STANDALONE]);
+        let spec = connection("opencode").headless;
+        let mut args = strings(spec.fixed);
         if let Some(model) = card.model.as_deref().filter(|m| !m.is_empty()) {
             let model = match card.effort.as_deref().filter(|e| !e.is_empty()) {
                 Some(effort) => format!("{model}#{effort}"),
                 None => model.to_string(),
             };
-            args.extend(["-m".to_string(), model]);
+            args.extend([spec.model_flag.to_string(), model]);
         }
         LaunchSpec { bin: "opencode".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
     }
@@ -124,7 +127,7 @@ impl Provider for OpenCode {
 
     /// `opencode models --standalone`: one `provider/model` per line.
     fn card_models(&self) -> Option<Result<Vec<ModelChoice>, String>> {
-        Some(list_command("opencode", &["models", STANDALONE], ProviderId::OpenCode, &[]).map(|out| parse_models(&out)))
+        Some(list_command("opencode", connection("opencode").models, ProviderId::OpenCode, &[]).map(|out| parse_models(&out)))
     }
 
     // https://opencode.ai/v2/docs/ (v2 is the npm package @opencode/cli; v1's opencode-ai is another package)

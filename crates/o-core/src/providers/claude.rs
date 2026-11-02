@@ -10,6 +10,7 @@ use serde_json::{json, Map, Value};
 use super::stream::{limit_from_text, num, tool_summary};
 use super::{opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
+use crate::agents::catalog::connection;
 use crate::context::CONTEXT_COMMAND;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan};
@@ -65,10 +66,11 @@ const LEAD_MODELS: [(&str, &str, &str, &str); 4] = [
 
 impl Provider for Claude {
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
-        let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools"]);
+        let spec = connection("claude").headless;
+        let mut args = strings(spec.fixed);
         args.push(format!("Bash({TEAM_COMMAND} *)"));
         args.push(format!("Bash({CONTEXT_COMMAND} *)"));
-        args.extend(opt("--model", card.model.as_deref()));
+        args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
     }
