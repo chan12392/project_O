@@ -40,7 +40,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 9] = [
+    let tests: [(&str, fn()); 10] = [
         ("behind today's budget, cards start with lower effort and say so", budget_lowers_effort),
         ("a provider over today's budget starts no card", budget_over_refuses),
         ("runs cards in parallel, records a limit as a provider cooldown", parallel_and_limit),
@@ -49,6 +49,7 @@ fn main() {
         ("a stop request ends the cards still waiting", stop_request),
         ("a card waits in the queue while its provider is full, then runs", queue_then_run),
         ("a clean run starts its cards with only the clean environment", clean_run),
+        ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
         ("a card's CLI never inherits the API key variables it prefers over its sign-in", api_keys_dropped),
     ];
     let mut failed = 0;
@@ -230,6 +231,25 @@ fn clean_run() {
     assert!(get("PATH").is_some());
     assert!(get("ORCA_TERMINAL_ID").is_none() && get("BEAKHO_RELEASE").is_none());
     assert!(profile.join(".claude").join("settings.json").is_file());
+}
+
+/// One plan with more cards of a provider than its slots: the extra card waits even
+/// while the first ones are still starting (their slot markers not yet written).
+fn same_provider_slots_in_one_plan() {
+    let home = temp_home();
+    let max = LIMITS.max_active_per_provider(ProviderId::Claude);
+    let p = plan((0..=max).map(|i| card(&format!("c{i}"), ProviderId::Claude, "x")).collect());
+    create_run(&home, "r10", &p).unwrap();
+    let inner = quiet();
+    // A slow start (PATH lookup, process creation) leaves the window the runner must not miss.
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        std::thread::sleep(Duration::from_millis(300));
+        inner(spec, cwd)
+    });
+    assert_eq!(run_plan(&home, "r10", &p, None, spawner).unwrap(), CardStatus::Done);
+    let queued = read_events(&home, "r10").iter().filter(|e| matches!(e, OEvent::CardQueued { .. })).count();
+    assert_eq!(queued, 1);
+    assert!(active_markers(&home).is_empty());
 }
 
 /// A key left in the person's environment must not reach the card's CLI, in any case spelling.

@@ -64,9 +64,10 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
     let shared_plan = Arc::new(plan.clone());
     let mut pending: Vec<Card> = plan.cards.clone();
     let mut queued: HashSet<String> = HashSet::new();
-    let mut running = 0usize;
+    // This run's cards started and not yet ended, with their providers.
+    let mut running: Vec<(String, ProviderId)> = Vec::new();
     let mut results: Vec<CardStatus> = Vec::new();
-    let (done_tx, done_rx) = mpsc::channel::<io::Result<CardStatus>>();
+    let (done_tx, done_rx) = mpsc::channel::<(String, io::Result<CardStatus>)>();
     let ended = |card: &Card, status: CardStatus, result: Option<String>| OEvent::CardEnd {
         at: now_iso(),
         card_id: card.id.clone(),
@@ -75,7 +76,7 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
         exit_code: None,
     };
 
-    while !pending.is_empty() || running > 0 {
+    while !pending.is_empty() || !running.is_empty() {
         if stop_requested(home, run_id) {
             for card in pending.drain(..) {
                 emit(ended(&card, CardStatus::Stopped, None))?;
@@ -99,7 +100,8 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
                 results.push(CardStatus::Failed);
                 continue;
             }
-            if let Some(reason) = slot_blocker(home, card.provider) {
+            let mine: Vec<ProviderId> = running.iter().map(|(_, p)| *p).collect();
+            if let Some(reason) = slot_blocker(home, run_id, card.provider, &mine) {
                 if queued.insert(card.id.clone()) {
                     emit(OEvent::CardQueued { at: now_iso(), card_id: card.id.clone(), reason })?;
                 }
@@ -130,21 +132,23 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
             let (home, run_id, plan, clean, spawner, done) =
                 (home.to_path_buf(), run_id.to_string(), Arc::clone(&shared_plan), clean.map(Path::to_path_buf), Arc::clone(&spawner), done_tx.clone());
             let contexts = Arc::clone(&contexts);
+            running.push((card.id.clone(), card.provider));
             thread::spawn(move || {
                 let context = contexts.get(&card.id).map(String::as_str);
                 let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, context, clean.as_deref(), spawner.as_ref())))
                     .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))));
-                let _ = done.send(outcome);
+                let _ = done.send((card.id, outcome));
             });
-            running += 1;
         }
-        if running > 0 {
-            let first = done_rx.recv().map_err(io::Error::other)?;
-            running -= 1;
-            results.push(first?);
+        if !running.is_empty() {
+            let mut ended_card = |(card_id, outcome): (String, io::Result<CardStatus>)| -> io::Result<()> {
+                running.retain(|(id, _)| *id != card_id);
+                results.push(outcome?);
+                Ok(())
+            };
+            ended_card(done_rx.recv().map_err(io::Error::other)?)?;
             while let Ok(next) = done_rx.try_recv() {
-                running -= 1;
-                results.push(next?);
+                ended_card(next)?;
             }
         } else if !pending.is_empty() {
             thread::sleep(WAIT_FOR_SLOT);
@@ -162,13 +166,18 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
     Ok(status)
 }
 
-fn slot_blocker(home: &Path, provider: ProviderId) -> Option<String> {
-    let active = active_markers(home);
+/// `mine` are the providers of this run's cards started and not yet ended. They
+/// count from the moment the runner starts them: their own markers are written
+/// only once the CLI is up, so other runs' markers are read from disk and this
+/// run's cards from `mine`.
+fn slot_blocker(home: &Path, run_id: &str, provider: ProviderId, mine: &[ProviderId]) -> Option<String> {
+    let mut active: Vec<ProviderId> = active_markers(home).into_iter().filter(|m| m.run_id != run_id).map(|m| m.provider).collect();
+    active.extend_from_slice(mine);
     if active.len() >= LIMITS.max_active_total {
         return Some(format!("전체 동시 실행 {}개가 차서 대기", LIMITS.max_active_total));
     }
     let max = LIMITS.max_active_per_provider(provider);
-    if active.iter().filter(|m| m.provider == provider).count() >= max {
+    if active.iter().filter(|p| **p == provider).count() >= max {
         return Some(format!("{provider} 동시 실행 {max}개가 차서 대기"));
     }
     None
