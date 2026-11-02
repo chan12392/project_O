@@ -15,7 +15,7 @@ use o_core::sys::js::{iso, parse_time};
 use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
-use o_core::run::runner::{run_plan, Spawner};
+use o_core::run::runner::{run_plan, run_plan_in, Spawner, Workdir};
 use o_core::run::store::{
     active_markers, clear_active, cooldown_times, create_run, mark_active, read_events, record_start, request_stop, set_cooldown, started_on,
     ActiveMarker,
@@ -45,7 +45,9 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 14] = [
+    let tests: [(&str, fn()); 16] = [
+        ("cards start in the folder the policy checked, not the link the plan names", cards_run_in_the_checked_folder),
+        ("a project link pointed elsewhere after the check refuses the card", a_link_swapped_after_the_check_is_refused),
         ("a stop that comes while a card's CLI is starting still ends it", stop_while_starting),
         ("runs dispatched together never take more slots than the caps between them", runners_share_slots),
         ("runs dispatched together never start more cards than the day allows", runners_share_the_days_last_start),
@@ -379,6 +381,57 @@ fn stop_while_starting() {
     assert!(started.elapsed() < Duration::from_secs(10), "the CLI ran on for {:?} after the stop", started.elapsed());
     assert_eq!(ends_of(&home, "rs"), BTreeMap::from([("a".into(), CardStatus::Stopped)]));
     assert!(active_markers(&home).is_empty());
+}
+
+/// The plan names the project through a link; the policy passed the folder it resolved to.
+/// Cards start in that checked folder, not wherever the link points later.
+fn cards_run_in_the_checked_folder() {
+    let home = temp_home();
+    let real = home.join("project");
+    std::fs::create_dir_all(&real).unwrap();
+    let checked = real.to_string_lossy().into_owned();
+    let mut p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    p.project = home.join("link-to-project").to_string_lossy().into_owned();
+    create_run(&home, "rw", &p).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<(String, Vec<String>)>::new()));
+    let log = Arc::clone(&seen);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        log.lock().unwrap().push((cwd.to_string(), spec.args.clone()));
+        inner(spec, cwd)
+    });
+    let to = checked.clone();
+    let workdir = Workdir { checked: checked.clone(), resolve: Arc::new(move |_: &str| to.clone()) };
+    run_plan_in(&home, "rw", &p, None, spawner, workdir).unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, checked);
+    // Codex is told the same folder (`-C`), not the link.
+    let at = seen[0].1.iter().position(|a| a == "-C").unwrap();
+    assert_eq!(seen[0].1[at + 1], checked);
+}
+
+/// The link is pointed elsewhere after the check: the card is refused, its CLI never starts.
+fn a_link_swapped_after_the_check_is_refused() {
+    let home = temp_home();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    p.project = home.join("link-to-project").to_string_lossy().into_owned();
+    create_run(&home, "rx", &p).unwrap();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        seen.store(true, Ordering::SeqCst);
+        inner(spec, cwd)
+    });
+    let checked = home.join("project").to_string_lossy().into_owned();
+    let elsewhere = std::env::temp_dir().to_string_lossy().into_owned();
+    let workdir = Workdir { checked, resolve: Arc::new(move |_: &str| elsewhere.clone()) };
+    assert_eq!(run_plan_in(&home, "rx", &p, None, spawner, workdir).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    let refused = read_events(&home, "rx").into_iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("정책 검사 뒤")));
+    assert!(refused);
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
 }
 
 /// A key left in the person's environment must not reach the card's CLI, in any case spelling.

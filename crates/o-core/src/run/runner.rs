@@ -28,7 +28,7 @@ use crate::providers::{launch_spec_with, remove_inherited, LaunchSpec, StreamRea
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
     active_markers, append_event, clear_active, cooldown_times, is_clean, link_slot, mark_active, policy_context, read_events, read_plan, release_slot,
-    reserve_slot, run_dir, set_cooldown, stop_requested, ActiveMarker, Reservation, Reserved,
+    reserve_slot, resolved_path, run_dir, set_cooldown, stop_requested, ActiveMarker, Reservation, Reserved,
 };
 
 /// Builds the command for a card's CLI. The runner adds the environment, pipes,
@@ -37,8 +37,41 @@ pub type Spawner = dyn Fn(&LaunchSpec, &str) -> io::Result<Command> + Send + Syn
 
 const WAIT_FOR_SLOT: Duration = Duration::from_millis(2_000);
 
+/// Where a run's cards work. `checked` is the folder the policy check passed: the plan's
+/// project with links, junctions and short names resolved. Cards start there, and each
+/// card first resolves the plan's path again (`resolve`): a link pointed elsewhere since
+/// the check refuses the card.
+pub struct Workdir {
+    pub checked: String,
+    pub resolve: Arc<dyn Fn(&str) -> String + Send + Sync>,
+}
+
+impl Workdir {
+    /// The plan's project as it resolves on disk now.
+    pub fn of(project: &str) -> Workdir {
+        Workdir { checked: resolved_path(project), resolve: Arc::new(resolved_path) }
+    }
+}
+
+/// The same folder, spelled as Windows compares it (any slash; any case on Windows).
+fn same_folder(a: &str, b: &str) -> bool {
+    let plain = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let (a, b) = (plain(a), plain(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
 /// `clean` is the profile root when the run uses clean agent profiles (`o dispatch --clean`).
 pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>) -> io::Result<CardStatus> {
+    run_plan_in(home, run_id, plan, clean, spawner, Workdir::of(&plan.project))
+}
+
+/// `run_plan` with the folder the policy check passed (see `Workdir`).
+pub fn run_plan_in(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>, workdir: Workdir) -> io::Result<CardStatus> {
+    let workdir = Arc::new(workdir);
     let emit = |event: OEvent| append_event(home, run_id, &event);
     emit(OEvent::RunStart {
         at: now_iso(),
@@ -141,14 +174,14 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
             }
             let (home, run_id, plan, clean, spawner, done) =
                 (home.to_path_buf(), run_id.to_string(), Arc::clone(&shared_plan), clean.map(Path::to_path_buf), Arc::clone(&spawner), done_tx.clone());
-            let contexts = Arc::clone(&contexts);
+            let (contexts, workdir) = (Arc::clone(&contexts), Arc::clone(&workdir));
             running.push(card.id.clone());
             thread::spawn(move || {
                 let context = contexts.get(&card.id).map(String::as_str);
                 let slot = Slot { home: &home, reservation, started: false, marked: false };
-                let outcome =
-                    panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, slot, context, clean.as_deref(), spawner.as_ref())))
-                        .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))));
+                let start = Start { slot, workdir: &workdir, context, clean: clean.as_deref(), spawner: spawner.as_ref() };
+                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, start)))
+                    .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))));
                 let _ = done.send((card.id, outcome));
             });
         }
@@ -204,23 +237,23 @@ fn append_bytes(path: &Path, bytes: &[u8]) {
     }
 }
 
-#[allow(clippy::too_many_arguments)] // the card's whole start: where, what, with which slot, context, profile and spawner
-fn run_card(
-    home: &Path,
-    run_id: &str,
-    plan: &Plan,
-    card: &Card,
-    mut slot: Slot,
-    context: Option<&str>,
-    clean: Option<&Path>,
-    spawner: &Spawner,
-) -> io::Result<CardStatus> {
+/// What a card starts with besides its plan: the slot it holds, the checked folder, its
+/// context section, the clean profile root and the spawner.
+struct Start<'a> {
+    slot: Slot<'a>,
+    workdir: &'a Workdir,
+    context: Option<&'a str>,
+    clean: Option<&'a Path>,
+    spawner: &'a Spawner,
+}
+
+fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -> io::Result<CardStatus> {
+    let Start { mut slot, workdir, context, clean, spawner } = start;
     let emit = |event: OEvent| append_event(home, run_id, &event);
     let dir = run_dir(home, run_id);
     let cards_dir = dir.join("cards");
     let dir_text = dir.to_string_lossy().into_owned();
-    let spec = launch_spec_with(card, plan, &TeamChannel { run_id, run_dir: &dir_text }, context);
-    let end = |status: CardStatus, result: Option<String>, exit_code: Option<i64>| OEvent::CardEnd {
+    let end =|status: CardStatus, result: Option<String>, exit_code: Option<i64>| OEvent::CardEnd {
         at: now_iso(),
         card_id: card.id.clone(),
         status,
@@ -234,8 +267,20 @@ fn run_card(
         emit(end(CardStatus::Stopped, None, None))?;
         return Ok(CardStatus::Stopped);
     }
+    // The project is resolved again right before the start: a link or junction pointed
+    // elsewhere since the policy check would take the card out of the folder it allowed.
+    let now = (workdir.resolve)(&plan.project);
+    if !same_folder(&now, &workdir.checked) {
+        drop(slot);
+        let reason = format!("작업 폴더 {}가 정책 검사 뒤 다른 곳({now})을 가리켜 시작하지 않음 (검사한 폴더: {})", plan.project, workdir.checked);
+        emit(end(CardStatus::Failed, Some(reason), None))?;
+        return Ok(CardStatus::Failed);
+    }
+    // The card works in the checked folder itself, never through the link.
+    let checked_plan = Plan { project: workdir.checked.clone(), ..plan.clone() };
+    let spec = launch_spec_with(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context);
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
-    let spawned = spawner(&spec, &plan.project).and_then(|mut command| {
+    let spawned = spawner(&spec, &workdir.checked).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
         if let Some(root) = clean {
             command.env_clear().envs(clean::environment(root, card.provider)?);
@@ -406,7 +451,9 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
             return Err(format!("정책 위반: {}", reasons.join(" / ")));
         };
         let clean = is_clean(home, run_id).then(clean::default_root);
-        run_plan(home, run_id, &plan, clean.as_deref(), Arc::new(official_command)).map_err(|e| e.to_string())?;
+        // The folder the check above passed, links resolved: the cards run there (see `Workdir`).
+        let workdir = Workdir { checked: (ctx.resolve)(&plan.project), resolve: Arc::new(resolved_path) };
+        run_plan_in(home, run_id, &plan, clean.as_deref(), Arc::new(official_command), workdir).map_err(|e| e.to_string())?;
         Ok(())
     }))
     .unwrap_or_else(|panic| {
