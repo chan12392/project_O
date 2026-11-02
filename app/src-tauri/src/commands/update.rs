@@ -1,10 +1,10 @@
 //! Fixed-repository release checks. Only the explicit install command executes an installer.
 use std::fs;
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::{LazyLock, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, FixedOffset};
 use o_core::sys::{proc, resolve};
@@ -28,6 +28,7 @@ const RELEASE_AUTHOR: &str = "github-actions[bot]";
 const APPROVED_BRANCH: &str = "test_1";
 static INSTALLING: Mutex<()> = Mutex::new(());
 static CANCELLED: AtomicBool = AtomicBool::new(false);
+const CANCELLED_MESSAGE: &str = "업데이트를 취소했습니다";
 static PENDING: Mutex<Option<Update>> = Mutex::new(None);
 
 pub fn start_checks() {
@@ -35,7 +36,9 @@ pub fn start_checks() {
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(10));
         loop {
-            if let Ok(release) = latest() { *PENDING.lock().unwrap() = release; }
+            let result = latest();
+            *LAST_CHECK.lock().unwrap() = Some(last_check(&result, chrono::Utc::now().to_rfc3339()));
+            if let Ok(release) = result { *PENDING.lock().unwrap() = release; }
             std::thread::sleep(Duration::from_secs(6 * 60 * 60));
         }
     });
@@ -44,6 +47,42 @@ pub fn start_checks() {
 #[tauri::command]
 pub fn update_pending() -> Option<Update> {
     PENDING.lock().unwrap().take()
+}
+
+/// The last background check, kept so Settings → 정보 can say why updates are not arriving
+/// (no gh, not signed in) instead of the check failing silently.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastCheck {
+    at: String,
+    /// The release it found, if any.
+    tag: Option<String>,
+    error: Option<String>,
+}
+
+static LAST_CHECK: Mutex<Option<LastCheck>> = Mutex::new(None);
+
+fn last_check(result: &Result<Option<Update>, String>, at: String) -> LastCheck {
+    match result {
+        Ok(release) => LastCheck { at, tag: release.as_ref().map(|u| u.tag.clone()), error: None },
+        Err(error) => LastCheck { at, tag: None, error: Some(error.clone()) },
+    }
+}
+
+/// What Settings → 정보 shows before anyone presses "업데이트 확인".
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateStatus {
+    /// Release builds check by themselves; local builds only on the button.
+    automatic: bool,
+    /// Whether a usable `gh` is on PATH (updates need it, signed in).
+    gh: bool,
+    last_check: Option<LastCheck>,
+}
+
+#[tauri::command]
+pub fn update_status() -> UpdateStatus {
+    UpdateStatus { automatic: !BUILD_SHA.is_empty(), gh: gh_command(&[]).is_ok(), last_check: LAST_CHECK.lock().unwrap().clone() }
 }
 
 #[tauri::command]
@@ -135,16 +174,45 @@ fn select_release(json: &str, sha: &str, built_at: &str) -> Result<Option<Update
     }))
 }
 
-fn gh(args: &[&str], timeout: Duration) -> Result<String, String> {
+fn gh_command(args: &[&str]) -> Result<Command, String> {
     let executable = resolve::which("gh").ok_or_else(|| HELP.to_string())?;
     if cfg!(windows) && executable.extension().is_none_or(|e| !e.eq_ignore_ascii_case("exe")) {
         return Err(HELP.into());
     }
     let mut command = Command::new(executable);
     command.args(args).env("GH_HOST", "github.com").env("GH_PROMPT_DISABLED", "1");
-    let (status, out, _) = proc::capture(&mut command, timeout).map_err(|_| format!("GitHub 확인이 시간 안에 끝나지 않았습니다. {HELP}"))?;
+    Ok(command)
+}
+
+fn gh(args: &[&str], timeout: Duration) -> Result<String, String> {
+    let (status, out, _) = proc::capture(&mut gh_command(args)?, timeout).map_err(|_| format!("GitHub 확인이 시간 안에 끝나지 않았습니다. {HELP}"))?;
     if !status.success() { return Err(format!("릴리스에 접근하지 못했습니다. 네트워크와 저장소 접근 권한을 확인해 주세요. {HELP}")); }
     Ok(out)
+}
+
+/// Runs a download that "나중에" stops: the moment `cancelled` is set, the command and what it
+/// started are ended (a job object), instead of finishing a 15-minute download first.
+fn run_cancellable(command: &mut Command, timeout: Duration, cancelled: &AtomicBool) -> Result<(), String> {
+    command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    let mut run = proc::Contained::spawn(command).map_err(|e| format!("다운로드를 시작하지 못했습니다: {e}"))?;
+    let deadline = Instant::now() + timeout;
+    loop {
+        if cancelled.load(Ordering::SeqCst) { return Err(CANCELLED_MESSAGE.into()); }
+        match run.child.try_wait().map_err(|e| e.to_string())? {
+            Some(status) if status.success() => return Ok(()),
+            Some(_) => return Err(format!("설치 파일을 받지 못했습니다. 네트워크와 저장소 접근 권한을 확인해 주세요. {HELP}")),
+            None if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(200)),
+            None => return Err(format!("설치 파일 다운로드가 시간 안에 끝나지 않았습니다. {HELP}")),
+        }
+    }
+}
+
+/// One install at a time. The cancel flag is cleared only by the install that got the lock, so
+/// a second click cannot undo "나중에" of the one already downloading.
+fn begin_install() -> Result<std::sync::MutexGuard<'static, ()>, String> {
+    let guard = INSTALLING.try_lock().map_err(|_| "업데이트가 이미 진행 중입니다".to_string())?;
+    CANCELLED.store(false, Ordering::SeqCst);
+    Ok(guard)
 }
 
 fn latest() -> Result<Option<Update>, String> {
@@ -197,16 +265,16 @@ fn file_sha256(path: &Path) -> Result<String, String> {
 #[tauri::command]
 pub async fn update_install(app: tauri::AppHandle, tag: String) -> Result<(), String> {
     if !valid_tag(&tag) { return Err("잘못된 릴리스 태그입니다".into()); }
-    CANCELLED.store(false, Ordering::SeqCst);
     tauri::async_runtime::spawn_blocking(move || {
-        let _installing = INSTALLING.try_lock().map_err(|_| "업데이트가 이미 진행 중입니다")?;
+        let _installing = begin_install()?;
         let update = latest()?.filter(|u| u.tag == tag).ok_or("릴리스가 바뀌었습니다. 다시 확인해 주세요")?;
         let dir = fresh_dir(&std::env::temp_dir(), "project_O-update")?;
         let result: Result<(), String> = (|| {
             let folder = dir.to_str().ok_or("임시 폴더 경로를 읽지 못했습니다")?;
-            gh(&["release", "download", &update.tag, "--repo", REPOSITORY, "--pattern", &update.asset, "--dir", folder], Duration::from_secs(15 * 60))?;
+            let mut download = gh_command(&["release", "download", &update.tag, "--repo", REPOSITORY, "--pattern", &update.asset, "--dir", folder])?;
+            run_cancellable(&mut download, Duration::from_secs(15 * 60), &CANCELLED)?;
             let setup = verify_download(&dir, &update)?;
-            if CANCELLED.load(Ordering::SeqCst) { return Err("업데이트를 취소했습니다".into()); }
+            if CANCELLED.load(Ordering::SeqCst) { return Err(CANCELLED_MESSAGE.into()); }
             // Interactive NSIS owns errors, cancellation and the final 'run app' checkbox.
             proc::spawn_detached(&mut Command::new(setup)).map_err(|e| format!("설치 프로그램을 열지 못했습니다: {e}"))?;
             Ok(())
@@ -290,6 +358,41 @@ mod tests {
         assert!(verify_download(&first, &update).is_err());
         fs::write(first.join(&update.asset), vec![0; update.size as usize]).unwrap();
         assert!(verify_download(&first, &update).is_ok());
+    }
+
+    #[test]
+    fn a_failed_background_check_is_kept_with_its_reason() {
+        let found = select_release(FIXTURE, "", "").unwrap();
+        assert_eq!(last_check(&Ok(found), "t".into()), LastCheck { at: "t".into(), tag: Some("test_1-20261102-1234567".into()), error: None });
+        assert_eq!(last_check(&Ok(None), "t".into()).tag, None);
+        let failed = last_check(&Err(HELP.into()), "t".into());
+        assert_eq!(failed.error.as_deref(), Some(HELP));
+        assert!(HELP.contains("gh auth login"));
+    }
+
+    /// "나중에" during a download ends it at once, and a second install click while the first is
+    /// downloading neither starts another nor clears the first one's cancel.
+    #[cfg(windows)]
+    #[test]
+    fn later_stops_the_download_and_a_second_click_keeps_the_cancel() {
+        let cancelled = AtomicBool::new(false);
+        let started = Instant::now();
+        let error = std::thread::scope(|s| {
+            s.spawn(|| { std::thread::sleep(Duration::from_millis(500)); cancelled.store(true, Ordering::SeqCst); });
+            run_cancellable(Command::new("ping").args(["-n", "30", "127.0.0.1"]), Duration::from_secs(60), &cancelled)
+        }).unwrap_err();
+        assert_eq!(error, CANCELLED_MESSAGE);
+        assert!(started.elapsed() < Duration::from_secs(10));
+        assert!(run_cancellable(Command::new("cmd").args(["/d", "/c", "exit /b 0"]), Duration::from_secs(60), &AtomicBool::new(false)).is_ok());
+        assert!(run_cancellable(Command::new("cmd").args(["/d", "/c", "exit /b 1"]), Duration::from_secs(60), &AtomicBool::new(false)).is_err());
+
+        let first = begin_install().unwrap();
+        CANCELLED.store(true, Ordering::SeqCst);
+        assert!(begin_install().is_err());
+        assert!(CANCELLED.load(Ordering::SeqCst), "두 번째 클릭이 취소를 되돌리면 안 됩니다");
+        drop(first);
+        let _second = begin_install().unwrap();
+        assert!(!CANCELLED.load(Ordering::SeqCst));
     }
 
     /// A file of the right size but other bytes (a swapped or tampered asset) is refused:

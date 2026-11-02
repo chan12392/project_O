@@ -3,7 +3,7 @@ mod installer_paths;
 
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use installer_paths::{fresh_dir, no_links};
 use o_core::sys::proc;
@@ -27,25 +27,31 @@ fn targets(local: &Path, roaming: &Path) -> Result<Vec<PathBuf>, String> {
     Ok(paths)
 }
 
+/// Removes every folder it can. A folder in use (or otherwise refused) is skipped, the rest
+/// still go, and the ones left are reported together so the person can close what holds them
+/// and run the removal again.
 fn purge(paths: &[PathBuf]) -> Result<(), String> {
+    let mut left = Vec::new();
     // std::fs::remove_dir_all removes child links themselves, never their targets.
     for path in paths {
         no_links(path)?;
         match fs::remove_dir_all(path) {
             Ok(()) => {}
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => return Err(format!("{}: {e}", path.display())),
+            Err(e) => left.push(format!("{}: {e}", path.display())),
         }
     }
-    Ok(())
+    if left.is_empty() { Ok(()) } else { Err(format!("지우지 못한 폴더가 있습니다 (사용 중인 프로그램을 닫고 다시 시도해 주세요):\n{}", left.join("\n"))) }
 }
 
-fn installed_tasks() -> Result<Vec<&'static str>, String> {
-    let out = proc::hide_window(Command::new("schtasks.exe").args(["/Query", "/FO", "CSV", "/NH"]))
-        .output().map_err(|e| e.to_string())?;
-    if !out.status.success() { return Err("예약 작업 목록을 확인하지 못했습니다".into()); }
-    let text = String::from_utf8_lossy(&out.stdout);
-    Ok(TASKS.iter().copied().filter(|name| text.lines().any(|line| line.split(',').next() == Some(format!("\"\\{name}\"").as_str()))).collect())
+/// Asks for each known task by name, so one broken task elsewhere on the PC cannot stop the
+/// removal (a full `schtasks /Query` fails on it).
+fn installed_tasks() -> Vec<&'static str> {
+    TASKS.iter().copied().filter(|name| {
+        proc::hide_window(Command::new("schtasks.exe").args(["/Query", "/TN", name]))
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .status().is_ok_and(|s| s.success())
+    }).collect()
 }
 
 fn run() -> Result<(), String> {
@@ -65,7 +71,7 @@ fn run() -> Result<(), String> {
         _ => return Err("expected [--dry-run] [--test-id <32 hex digits>]".into()),
     };
     let paths = targets(&local, &roaming)?;
-    let tasks = if fixture { Vec::new() } else { installed_tasks()? };
+    let tasks = if fixture { Vec::new() } else { installed_tasks() };
     if dry_run {
         let report = fresh_dir(&std::env::temp_dir(), "project_O-purge-plan")?.join("plan.json");
         fs::write(&report, serde_json::to_vec_pretty(&serde_json::json!({ "dryRun": true, "folders": paths, "tasks": tasks })).unwrap()).map_err(|e| e.to_string())?;
@@ -73,12 +79,16 @@ fn run() -> Result<(), String> {
         return Ok(());
     }
     // Remove the writer before its log/state folder; never change its mirror repository.
+    // A task that refuses is reported with the folders, after removing everything else.
+    let mut errors = Vec::new();
     for name in tasks {
-        let status = proc::hide_window(Command::new("schtasks.exe").args(["/Delete", "/TN", name, "/F"]))
-            .status().map_err(|e| e.to_string())?;
-        if !status.success() { return Err(format!("예약 작업을 제거하지 못했습니다: {name}")); }
+        let deleted = proc::hide_window(Command::new("schtasks.exe").args(["/Delete", "/TN", name, "/F"]))
+            .stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())
+            .status().is_ok_and(|s| s.success());
+        if !deleted { errors.push(format!("예약 작업을 제거하지 못했습니다: {name}")); }
     }
-    purge(&paths)
+    if let Err(e) = purge(&paths) { errors.push(e); }
+    if errors.is_empty() { Ok(()) } else { Err(errors.join("\n")) }
 }
 
 fn main() {
@@ -113,5 +123,26 @@ mod tests {
         }
         assert!(targets(Path::new(""), &roaming).is_err());
         assert!(targets(Path::new("../outside"), &roaming).is_err());
+    }
+
+    /// A folder held open by another program does not stop the others from going, and is named.
+    #[cfg(windows)]
+    #[test]
+    fn a_locked_folder_is_skipped_and_reported() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let base = fresh_dir(&std::env::temp_dir(), "project_O-uninstall-test").unwrap();
+        let paths = targets(&base.join("Local"), &base.join("Roaming")).unwrap();
+        for path in &paths {
+            fs::create_dir_all(path).unwrap();
+            fs::write(path.join("data.txt"), b"x").unwrap();
+        }
+        // No sharing at all: like a running program holding its file.
+        let held = fs::OpenOptions::new().read(true).share_mode(0).open(paths[0].join("data.txt")).unwrap();
+        let error = purge(&paths).unwrap_err();
+        assert!(error.contains(&paths[0].display().to_string()), "{error}");
+        assert!(paths[1..].iter().all(|p| !p.exists()));
+        drop(held);
+        purge(&paths).unwrap();
+        assert!(paths.iter().all(|p| !p.exists()));
     }
 }

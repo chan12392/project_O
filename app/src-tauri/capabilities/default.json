@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Card-finished notifications in the main window (Settings → 알림). The app's own commands need no entry here.",
+  "windows": ["main"],
+  "permissions": ["notification:allow-is-permission-granted", "notification:allow-request-permission", "notification:allow-notify"]
+}

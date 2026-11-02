@@ -13,6 +13,9 @@
 //! - `projects`: the projects root and registered folders the app lists (ADR-0009)
 //! - `sys`: processes, CLI lookup, JS-compatible formats, mirror sync
 
+/// This build's O version (`o about`); the desktop app shows it beside its own.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 pub mod agents;
 pub mod context;
 pub mod lead;

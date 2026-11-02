@@ -1,6 +1,6 @@
 import type { AgentId, Backend, BudgetReport, BudgetState, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
 import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
-import { DESKTOP_UPDATES_ONLY } from "../updates.ts";
+import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS } from "../updates.ts";
 
 /** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread. */
 function demoBudget(percent: number): BudgetReport {
@@ -104,6 +104,7 @@ export const demoBackend: Backend = {
   pendingUpdate: async () => null,
   installUpdate: async () => { throw new Error(DESKTOP_UPDATES_ONLY); },
   cancelUpdate: async () => {},
+  updateStatus: async () => NO_UPDATE_STATUS,
   review: async () => ({ ok: false, message: "미리보기에서는 검토를 요청하지 않습니다" }),
   budget: async () => demoBudget(demoPercent),
   setBudgetPercent: async (percent) => demoBudget((demoPercent = percent)),

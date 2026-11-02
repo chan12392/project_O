@@ -3,7 +3,8 @@
 //! blocking thread and calls o-core directly: no shell, and any CLI it asks runs
 //! without a window (sign-in alone opens a console the person drives). Every
 //! domain command has a dev-server twin under `/api` (app/dev/liveRuns.ts) and an `o`
-//! command that prints the same JSON. Desktop updates only expose an unavailable notice in dev.
+//! command that prints the same JSON. Desktop updates only expose an unavailable notice in dev;
+//! the window commands (pop-out) exist only in the desktop app.
 
 mod about;
 mod agents;
@@ -14,6 +15,7 @@ mod runs;
 mod tokens;
 mod usage;
 pub(crate) mod update;
+pub(crate) mod window;
 
 /// Every command the screens may call.
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
@@ -48,6 +50,9 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         update::update_install,
         update::update_pending,
         update::update_cancel,
+        update::update_status,
+        window::popout_open,
+        window::popout_close,
     ]
 }
 

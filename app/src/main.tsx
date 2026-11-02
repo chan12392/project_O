@@ -6,9 +6,11 @@ import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import "./styles/app.css";
 
 import { App } from "./shell/App.tsx";
+import { LinkNotice } from "./shell/LinkNotice.tsx";
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
     <App />
+    <LinkNotice />
   </StrictMode>,
 );
