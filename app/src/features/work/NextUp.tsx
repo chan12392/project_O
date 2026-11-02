@@ -105,7 +105,12 @@ export function NextTicket({ item, now, onOpen, onDone, done }: { item: NextItem
             </button>
           )}
           {command && (
-            <button type="button" onClick={() => copy(command.text, command.label)} title={command.text} className={TICKET_GHOST}>
+            <button
+              type="button"
+              onClick={() => copy(command.text, command.label.replace(/ 복사$/, ""))}
+              title={`앱에서는 아직 할 수 없어 터미널에 붙여 넣을 명령을 복사합니다\n${command.text}`}
+              className={TICKET_GHOST}
+            >
               <Copy className="size-3.5" aria-hidden="true" />
               {command.label}
             </button>

@@ -53,15 +53,16 @@ export function needsAction(item: Pick<NextItem, "kind" | "detail" | "runId">): 
 }
 
 /**
- * The O command that acts on a ticket, for a person to paste into a terminal. A Claude Code
- * session is no O run (no plan, events or process of O's), so its tickets get none: they
- * are read-only records.
+ * The O command for what the app cannot do yet (answer a card, stop a run), for a person
+ * to paste into a terminal; a secondary step beside opening the record. What a status
+ * command would print, the record already shows, so failed or stopped work gets none. A
+ * Claude Code session is no O run (no plan, events or process of O's), so its tickets get
+ * none either: they are read-only records.
  */
 export function ticketCommand(item: Pick<NextItem, "kind" | "runId" | "cardId">): { label: string; text: string } | undefined {
   if (isSessionRun(item)) return undefined;
-  if (item.kind === "answer") return { label: "답장 명령", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId} "답장 내용"` };
-  if (item.kind === "silent") return { label: "중지 명령", text: `o stop ${item.runId}` };
-  if (item.kind === "failed" || item.kind === "limit" || item.kind === "stopped") return { label: "상태 명령", text: `o status ${item.runId}` };
+  if (item.kind === "answer") return { label: "답장 명령 복사", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId} "답장 내용"` };
+  if (item.kind === "silent") return { label: "중지 명령 복사", text: `o stop ${item.runId}` };
   return undefined;
 }
 

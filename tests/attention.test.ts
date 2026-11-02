@@ -92,13 +92,16 @@ test("fleet stats and activity read the same runs", () => {
   assert.ok(feed.every((item, i) => i === 0 || feed[i - 1].at >= item.at));
 });
 
-test("stopped and silent tickets offer O commands for O runs, none for Claude Code sessions", () => {
-  for (const kind of ["failed", "stopped", "limit", "silent", "answer"] as const) {
+test("tickets offer a command only for what the app cannot do yet, and none for Claude Code sessions", () => {
+  for (const kind of ["silent", "answer"] as const) {
     const run = ticketCommand({ kind, runId: "20261101-162328-9p0b", cardId: "a" });
     assert.ok(run, kind);
     assert.ok(run.text.includes("20261101-162328-9p0b"), kind);
     assert.equal(ticketCommand({ kind, runId: "session-0f3c", cardId: "a" }), undefined, kind);
   }
   assert.equal(ticketCommand({ kind: "silent", runId: "20261101-162328-9p0b", cardId: "a" })?.text, "o stop 20261101-162328-9p0b");
-  assert.equal(ticketCommand({ kind: "failed", runId: "20261101-162328-9p0b", cardId: "a" })?.text, "o status 20261101-162328-9p0b");
+  // A status command would print what the record already shows.
+  for (const kind of ["failed", "stopped", "limit", "review", "check", "queued"] as const) {
+    assert.equal(ticketCommand({ kind, runId: "20261101-162328-9p0b", cardId: "a" }), undefined, kind);
+  }
 });
