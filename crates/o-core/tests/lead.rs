@@ -16,10 +16,17 @@ use serde_json::{json, Value};
 
 const FAKE: &str = "O_FAKE_LEAD_LINES";
 const FAKE_SLEEP: &str = "O_FAKE_LEAD_SLEEP_MS";
+/// Set for a fake CLI: the file it makes when it runs at all.
+const FAKE_RAN: &str = "O_FAKE_LEAD_RAN";
+/// Set for this binary as a turn's owner in its own process (the app, standing in): a JSON job.
+const OWNER: &str = "O_FAKE_LEAD_OWNER";
 
 fn main() {
     if let Ok(lines) = std::env::var(FAKE) {
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
+        if let Ok(ran) = std::env::var(FAKE_RAN) {
+            std::fs::write(ran, "ran").unwrap();
+        }
         // A slow CLI (a turn still answering) waits before it answers.
         if let Some(ms) = std::env::var(FAKE_SLEEP).ok().and_then(|v| v.parse().ok()) {
             std::thread::sleep(std::time::Duration::from_millis(ms));
@@ -32,7 +39,10 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 16] = [
+    if let Ok(job) = std::env::var(OWNER) {
+        return owner_process(&job);
+    }
+    let tests: [(&str, fn()); 18] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -49,6 +59,8 @@ fn main() {
         ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
         ("no project hook runs before a plan is approved, first turn or resumed", project_hooks_off),
         ("an attachment reached through a linked parent folder is refused", attachment_parent_links),
+        ("a stop while the turn starts keeps the CLI from running and never ends the owner", stop_while_starting),
+        ("a stop ends a running CLI; an orphaned one only when its start time matches", stop_running_and_orphans),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -590,4 +602,125 @@ fn project_hooks_off() {
     let refused = lead::send(&home, &SendRequest { provider: ProviderId::Agy, ..request(&project, "agy") }, agy.as_ref()).unwrap_err();
     assert!(refused.contains("hooks.json"), "{refused}");
     assert!(seen.lock().unwrap().is_empty());
+}
+
+/// A spawner that takes `delay_ms` before handing over the command (a turn still setting
+/// up: attachments, budget), whose fake CLI makes `ran` if it ever runs.
+fn starting_spawner(lines: Vec<String>, ran: PathBuf, delay_ms: u64) -> Arc<Spawner> {
+    Arc::new(move |_spec: &LaunchSpec, cwd: &str| {
+        std::thread::sleep(std::time::Duration::from_millis(delay_ms));
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_RAN, &ran);
+        Ok(command)
+    })
+}
+
+/// What a turn's events say, as `kind: text` lines.
+fn summary(events: &[LeadEvent]) -> Vec<String> {
+    events
+        .iter()
+        .map(|e| match e {
+            LeadEvent::Reply { text, .. } => format!("reply: {text}"),
+            LeadEvent::Error { text, .. } => format!("error: {text}"),
+            LeadEvent::User { .. } => "user".into(),
+            _ => "other".into(),
+        })
+        .collect()
+}
+
+/// This binary as the turn's owner in a process of its own (the app): it sends, and its
+/// spawner takes a while, so a stop from the test process lands while the turn starts.
+fn owner_process(job: &str) {
+    let job: Value = serde_json::from_str(job).unwrap();
+    let text = |k: &str| job[k].as_str().unwrap().to_string();
+    let (home, project) = (PathBuf::from(text("home")), text("project"));
+    let spawner = starting_spawner(claude_answer("s", "다 했습니다"), PathBuf::from(text("ran")), 2_000);
+    let result = lead::send(&home, &request(&project, "오래 걸리는 시작"), spawner.as_ref()).map(|events| summary(&events));
+    std::fs::write(text("out"), serde_json::to_string(&result).unwrap()).unwrap();
+}
+
+fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    while !done() {
+        assert!(std::time::Instant::now() < deadline, "timed out waiting for {what}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+}
+
+fn is_busy(home: &Path, project: &str) -> bool {
+    !lead::show(home, Some(project))["thread"]["busy"].is_null()
+}
+
+/// "중지" pressed while the turn still sets up (before its CLI starts): the CLI never runs,
+/// the turn ends as stopped, and the stop never ends the turn's owner — whether the stop
+/// comes from the owner's own process or from another one (`o lead stop` beside the app).
+fn stop_while_starting() {
+    // Another process owns the turn.
+    let (home, project) = setup("stop-other");
+    lead::thread_for(&home, &project, false).unwrap();
+    let base = home.parent().unwrap().to_path_buf();
+    let (ran, out) = (base.join("ran"), base.join("out.json"));
+    let job = json!({ "home": home, "project": project, "ran": ran, "out": out });
+    let mut owner = Command::new(std::env::current_exe().unwrap()).env(OWNER, job.to_string()).spawn().unwrap();
+    wait_until("the owner to take the turn", || is_busy(&home, &project));
+    assert!(lead::stop(&home, Some(&project)));
+    let status = owner.wait().unwrap();
+    assert!(status.success(), "the stop ended the turn's owner: {status:?}");
+    let result: Result<Vec<String>, String> = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
+    let lines = result.unwrap();
+    assert!(lines.iter().any(|l| l.contains("중지")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.starts_with("reply")), "{lines:?}");
+    assert!(!ran.exists(), "the CLI ran after the stop");
+
+    // The owner's own process stops it (the app's 중지 button).
+    let (home, project) = setup("stop-same");
+    lead::thread_for(&home, &project, false).unwrap();
+    let ran = home.parent().unwrap().join("ran");
+    let spawner = starting_spawner(claude_answer("s", "다 했습니다"), ran.clone(), 1_500);
+    let turn = {
+        let (home, project) = (home.clone(), project.clone());
+        std::thread::spawn(move || lead::send(&home, &request(&project, "시작 중 중지"), spawner.as_ref()).map(|e| summary(&e)))
+    };
+    wait_until("the turn to start", || is_busy(&home, &project));
+    assert!(lead::stop(&home, Some(&project)));
+    let lines = turn.join().unwrap().unwrap();
+    assert!(lines.iter().any(|l| l.contains("중지")) && !lines.iter().any(|l| l.starts_with("reply")), "{lines:?}");
+    assert!(!ran.exists(), "the CLI ran after the stop");
+    // A stop left from that turn does not stop the next one.
+    let (spawner, _) = fake(claude_answer("s", "다음 턴"));
+    let lines = summary(&lead::send(&home, &request(&project, "다음"), spawner.as_ref()).unwrap());
+    assert!(lines.contains(&"reply: 다음 턴".to_string()), "{lines:?}");
+}
+
+/// A stop while the CLI answers ends it at once. A CLI left behind by a dead owner is
+/// ended only when its pid and start time both match what the turn wrote.
+fn stop_running_and_orphans() {
+    let (home, project) = setup("stop-run");
+    let (spawner, seen) = fake_slow(claude_answer("s", "늦은 답"), 20_000);
+    let turn = {
+        let (home, project, spawner) = (home.clone(), project.clone(), spawner.clone());
+        std::thread::spawn(move || lead::send(&home, &request(&project, "오래"), spawner.as_ref()).map(|e| summary(&e)))
+    };
+    wait_until("the CLI to start", || !seen.lock().unwrap().is_empty());
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    let at = std::time::Instant::now();
+    assert!(lead::stop(&home, Some(&project)));
+    let lines = turn.join().unwrap().unwrap();
+    assert!(at.elapsed() < std::time::Duration::from_secs(10), "the CLI kept running after the stop");
+    assert!(lines.iter().any(|l| l.contains("중지")), "{lines:?}");
+
+    let thread = lead::current_thread(&home, &project).unwrap();
+    let marker = lead::thread_dir(&home, &thread).join("running.json");
+    let mut orphan = bystander();
+    let pid = orphan.id();
+    let started = o_core::sys::proc::started_at(pid).expect("start time");
+    let mark = |started: u64| json!({ "provider": "claude", "owner": 4_000_000_000u32, "token": "gone", "child": { "pid": pid, "started": started } });
+    std::fs::write(&marker, mark(started + 1).to_string()).unwrap();
+    assert!(!lead::stop(&home, Some(&project)));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(orphan.try_wait().unwrap().is_none(), "a process whose start time differs was ended");
+    std::fs::write(&marker, mark(started).to_string()).unwrap();
+    assert!(lead::stop(&home, Some(&project)));
+    wait_until("the orphaned CLI to end", || orphan.try_wait().unwrap().is_some());
+    assert!(!marker.exists(), "a dead turn's marker is cleared once its CLI is ended");
 }

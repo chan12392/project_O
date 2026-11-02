@@ -25,6 +25,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
+use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -161,9 +162,18 @@ struct Running {
     owner: u32,
     /// This turn's own id, so a turn never removes another turn's marker.
     token: String,
-    /// The lead CLI, once it started.
+    /// The lead CLI, once it started. Only this is ever ended by a stop, never the owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    child: Option<u32>,
+    child: Option<ChildMark>,
+}
+
+/// A started lead CLI: its pid and start time (`proc::started_at`), which together name
+/// that one process even after the pid is handed to another.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+struct ChildMark {
+    pid: u32,
+    #[serde(default)]
+    started: Option<u64>,
 }
 
 /// A turn holding a thread: its marker, or `None` while the owner has not written it yet.
@@ -174,10 +184,21 @@ struct Busy {
 /// `busy` of a turn whose owner has not written its marker yet.
 const STARTING: &str = "starting";
 
+/// How often a running turn looks for a stop request.
+const STOP_POLL: Duration = Duration::from_millis(100);
+
 const BUSY: &str = "총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요";
 
 fn running_path(home: &Path, thread_id: &str) -> PathBuf {
     thread_dir(home, thread_id).join("running.json")
+}
+
+fn stop_path(home: &Path, thread_id: &str) -> PathBuf {
+    thread_dir(home, thread_id).join("stop")
+}
+
+fn read_marker(home: &Path, thread_id: &str) -> Option<Running> {
+    fs::read_to_string(running_path(home, thread_id)).ok().and_then(|t| serde_json::from_str(&t).ok())
 }
 
 /// The file a turn holds an OS lock on for as long as it runs. The OS lets go of the lock
@@ -197,8 +218,7 @@ fn running(home: &Path, thread_id: &str) -> Option<Busy> {
         Err(fs::TryLockError::WouldBlock) => {}
         Err(fs::TryLockError::Error(_)) => return None,
     }
-    let marker = fs::read_to_string(running_path(home, thread_id)).ok().and_then(|t| serde_json::from_str(&t).ok());
-    Some(Busy { marker })
+    Some(Busy { marker: read_marker(home, thread_id) })
 }
 
 /// Holds a thread's one turn: an OS lock on `turn.lock` that only one holder gets, and the
@@ -206,6 +226,7 @@ fn running(home: &Path, thread_id: &str) -> Option<Busy> {
 struct TurnSlot {
     _lock: fs::File,
     path: PathBuf,
+    stop: PathBuf,
     marker: Running,
 }
 
@@ -222,8 +243,10 @@ impl TurnSlot {
                 Err(fs::TryLockError::Error(e)) => return Err(format!("총괄 대화를 시작하지 못했습니다: {e}")),
             }
         }
+        // A stop file here is an older turn's: this one has no marker yet, so none was meant for it.
+        let _ = fs::remove_file(stop_path(home, thread_id));
         let marker = Running { provider, owner: std::process::id(), token: new_run_id(Utc::now()), child: None };
-        let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), marker };
+        let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), stop: stop_path(home, thread_id), marker };
         slot.write().map_err(|e| format!("총괄 대화를 시작하지 못했습니다: {e}"))?;
         Ok(slot)
     }
@@ -236,15 +259,23 @@ impl TurnSlot {
     }
 
     fn set_child(&mut self, pid: u32) {
-        self.marker.child = Some(pid);
+        self.marker.child = Some(ChildMark { pid, started: proc::started_at(pid) });
         let _ = self.write();
+    }
+
+    /// Whether this turn was asked to stop: the stop file names its token, or is empty (written
+    /// by a stop that could not read the marker, which can only be this turn's, since a turn
+    /// clears any older stop before it writes its marker).
+    fn stop_asked(&self) -> bool {
+        fs::read_to_string(&self.stop).is_ok_and(|t| t.is_empty() || t == self.marker.token)
     }
 }
 
 impl Drop for TurnSlot {
     fn drop(&mut self) {
-        // The marker before the lock: the next turn never finds this one's marker under its own lock.
+        // The marker and its stop before the lock: the next turn never finds them under its own lock.
         let _ = fs::remove_file(&self.path);
+        let _ = fs::remove_file(&self.stop);
     }
 }
 
@@ -396,16 +427,23 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
     };
 
     let dir = thread_dir(home, &thread_id);
-    let _ = fs::remove_file(dir.join("stop"));
-    let spawned = spawner(&spec, req.project).and_then(|mut command| {
+    let stopped = || LeadEvent::Error { at: now_iso(), text: "총괄을 중지했습니다".into() };
+    let command = spawner(&spec, req.project).and_then(|mut command| {
         if let Some(root) = req.clean {
             command.env_clear().envs(clean::environment(root, req.provider)?);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.
         providers::remove_inherited(&mut command, &spec.env_remove);
         command.envs(&spec.env);
-        proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
+        Ok(command)
     });
+    // A stop that came while the turn set up (attachments, budget, the command) ends it here,
+    // before the CLI can spend anything.
+    if slot.stop_asked() {
+        emit(stopped())?;
+        return Ok(added);
+    }
+    let spawned = command.and_then(|mut command| proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn());
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
@@ -415,6 +453,22 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
     };
     let _tree = proc::contain(&child);
     slot.set_child(child.id());
+    // The owner ends its own CLI when a stop comes, from this process or another: it holds the
+    // child's handle, so the pid cannot have gone to another process. Checked at once, then often.
+    let (done, finished) = mpsc::channel::<()>();
+    let watcher = {
+        let (stop, token, pid) = (slot.stop.clone(), slot.marker.token.clone(), child.id());
+        thread::spawn(move || loop {
+            if fs::read_to_string(&stop).is_ok_and(|t| t.is_empty() || t == token) {
+                proc::kill_tree(pid);
+                return;
+            }
+            match finished.recv_timeout(STOP_POLL) {
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+                _ => return,
+            }
+        })
+    };
     if let Some(mut stdin) = child.stdin.take() {
         let text = spec.stdin.clone().unwrap_or_default();
         thread::spawn(move || {
@@ -482,14 +536,17 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
             }
         }
     }
+    // The watcher is done before the child is reaped, so it never ends a pid reused since.
+    drop(done);
+    let _ = watcher.join();
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
     if used {
         emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output })?;
     }
 
-    if dir.join("stop").exists() {
-        emit(LeadEvent::Error { at: now_iso(), text: "총괄을 중지했습니다".into() })?;
+    if slot.stop_asked() {
+        emit(stopped())?;
         return Ok(added);
     }
     let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && exit == Some(0);
@@ -631,15 +688,48 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
     let mut stopped = false;
     for thread_id in threads {
         if let Some(busy) = running(home, &thread_id) {
-            let _ = fs::write(thread_dir(home, &thread_id).join("stop"), "");
-            // Only the lead CLI is ended, never the turn's owner (the app or `o lead send`).
-            if let Some(child) = busy.marker.and_then(|m| m.child) {
-                proc::kill_tree(child);
+            // A request the turn's owner acts on: before its CLI starts it does not start it, after
+            // it ends it. Nothing is killed from here, so the owner (the app, or `o lead send`)
+            // is never ended and no pid is trusted. The marker may be a moment from being written.
+            let mut marker = busy.marker;
+            for _ in 0..20 {
+                if marker.is_some() {
+                    break;
+                }
+                thread::sleep(Duration::from_millis(10));
+                marker = read_marker(home, &thread_id);
             }
+            let _ = fs::write(stop_path(home, &thread_id), marker.map(|m| m.token).unwrap_or_default());
             stopped = true;
+        } else if let Some(stopped_orphan) = clear_dead_turn(home, &thread_id) {
+            stopped |= stopped_orphan;
         }
     }
     stopped
+}
+
+/// A marker whose owner is gone, cleared under the turn lock (so never a new turn's). Its
+/// CLI, if the owner left it running (no kill-on-close job held it), is ended only when its
+/// pid still names the process the turn started (same start time). `Some(ended)` when a
+/// marker was there.
+fn clear_dead_turn(home: &Path, thread_id: &str) -> Option<bool> {
+    let lock = turn_lock(home, thread_id).ok()?;
+    lock.try_lock().ok()?;
+    let marker = read_marker(home, thread_id);
+    let path = running_path(home, thread_id);
+    if marker.is_none() && !path.exists() {
+        return None;
+    }
+    let mut ended = false;
+    if let Some(orphan) = marker.and_then(|m| m.child) {
+        let started = proc::started_at(orphan.pid);
+        if started.is_some() && started == orphan.started {
+            proc::kill_tree(orphan.pid);
+            ended = true;
+        }
+    }
+    let _ = fs::remove_file(path);
+    Some(ended)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
