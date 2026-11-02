@@ -95,6 +95,62 @@ fn unparsable_lines_are_skipped_and_a_rewritten_file_is_read_again() {
     assert_eq!(event_count(&home, "r1"), 0);
 }
 
+/// A file replaced by one of the same size (restored, edited by hand) is read again, not kept from the index.
+#[test]
+fn a_rewritten_file_of_the_same_size_is_read_again() {
+    let home = temp_home();
+    append(&home, "r1", &(start("r1", "2026-11-01T10:00:00.000Z", "C:/p") + &msg("aaaa")));
+    assert_eq!(all(&home)[0].events[1]["text"], "aaaa");
+    let rewritten = start("r1", "2026-11-01T10:00:00.000Z", "C:/q") + &msg("bbbb");
+    assert_eq!(rewritten.len() as u64, fs::metadata(run_dir(&home, "r1").join("events.jsonl")).unwrap().len());
+    fs::write(run_dir(&home, "r1").join("events.jsonl"), &rewritten).unwrap();
+    let runs = all(&home);
+    assert_eq!(runs[0].events[0]["project"], "C:/q");
+    assert_eq!(runs[0].events[1]["text"], "bbbb");
+    assert_eq!(event_count(&home, "r1"), 2);
+}
+
+/// A longer replacement whose byte before the old offset happens to be a line break is
+/// not a continuation: the index must not keep the old lines and add the new tail.
+#[test]
+fn a_longer_rewrite_that_breaks_a_line_at_the_old_offset_is_read_again() {
+    let home = temp_home();
+    let first = start("r1", "2026-11-01T10:00:00.000Z", "C:/p") + &msg("aaaa");
+    append(&home, "r1", &first);
+    assert_eq!(all(&home)[0].events.len(), 2);
+    let rewritten = start("r1", "2026-11-01T10:00:00.000Z", "C:/q") + &msg("bbbb") + &msg("cccc");
+    assert_eq!(rewritten.as_bytes()[first.len() - 1], b'\n');
+    fs::write(run_dir(&home, "r1").join("events.jsonl"), &rewritten).unwrap();
+    let runs = all(&home);
+    let texts: Vec<&str> = runs[0].events.iter().filter_map(|e| e.get("text").and_then(Value::as_str)).collect();
+    assert_eq!(texts, ["bbbb", "cccc"]);
+    assert_eq!(runs[0].events[0]["project"], "C:/q");
+    assert_eq!(event_count(&home, "r1"), 3);
+}
+
+/// An o.db written by the previous build (no fingerprint yet) opens, and its runs are read again once.
+#[test]
+fn an_index_from_the_previous_build_is_upgraded() {
+    let home = temp_home();
+    {
+        let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE runs (run_id TEXT PRIMARY KEY, title TEXT, project TEXT, started_at TEXT, ended_at TEXT, status TEXT,
+               cards INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, failed INTEGER NOT NULL DEFAULT 0, tokens INTEGER NOT NULL DEFAULT 0,
+               ingested_bytes INTEGER NOT NULL DEFAULT 0, events INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (run_id, seq)) WITHOUT ROWID;
+             CREATE TABLE starts (run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, at TEXT NOT NULL);
+             CREATE TABLE cooldowns (provider TEXT PRIMARY KEY, until TEXT NOT NULL);
+             CREATE TABLE blocked (at TEXT NOT NULL, title TEXT, violations TEXT NOT NULL);
+             PRAGMA user_version = 1;",
+        )
+        .unwrap();
+    }
+    append(&home, "r1", &(start("r1", "2026-11-01T10:00:00.000Z", "C:/p") + &msg("a")));
+    assert_eq!(all(&home)[0].events.len(), 2);
+    assert_eq!(event_count(&home, "r1"), 2);
+}
+
 #[test]
 fn the_runs_row_sums_up_the_run() {
     let home = temp_home();
