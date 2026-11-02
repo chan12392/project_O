@@ -67,7 +67,7 @@ pub struct PolicyContext {
     /// Provider → ISO time until which it may not be used.
     pub cooldowns: HashMap<ProviderId, String>,
     pub project_exists: Box<dyn Fn(&str) -> bool>,
-    /// Whether the folder is a project_O test/main mirror checkout.
+    /// Whether the folder is a project_O protected-branch (test_1/test_2/main) mirror checkout.
     pub is_mirror: Box<dyn Fn(&str) -> bool>,
     /// O's state folder: a project may neither be inside it nor contain it.
     pub o_home: String,
@@ -123,7 +123,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
             } else if (ctx.is_mirror)(project) {
                 found.add(
                     "read-only-project",
-                    format!("{project}는 project_O의 test·main 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
+                    format!("{project}는 project_O의 보호 브랜치(test_1·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
                     None,
                 );
             } else if within(project, &ctx.o_home) || within(&ctx.o_home, project) || within(&ctx.user_home, project) {

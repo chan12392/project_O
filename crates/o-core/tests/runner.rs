@@ -22,8 +22,17 @@ use o_core::store::{
 };
 
 const FAKE: &str = "O_FAKE_CLI_LINES";
+/// `--dump-env <file>`: the fake writes its environment there as JSON and succeeds.
+const DUMP_ENV: &str = "--dump-env";
 
 fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some(DUMP_ENV) {
+        let env: BTreeMap<String, String> = std::env::vars().collect();
+        std::fs::write(&args[2], serde_json::to_string(&env).unwrap()).unwrap();
+        println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}"#);
+        return;
+    }
     if let Ok(lines) = std::env::var(FAKE) {
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
         for line in lines {
@@ -31,12 +40,13 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 5] = [
+    let tests: [(&str, fn()); 6] = [
         ("runs cards in parallel, records a limit as a provider cooldown", parallel_and_limit),
         ("a card whose provider is cooling down ends without launching", cooling_down),
         ("the day's cap is checked again when a card starts, not only at dispatch", daily_cap_at_start),
         ("a stop request ends the cards still waiting", stop_request),
         ("a card waits in the queue while its provider is full, then runs", queue_then_run),
+        ("a clean run starts its cards with only the clean environment", clean_run),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -99,6 +109,7 @@ fn parallel_and_limit() {
         &home,
         "r1",
         &p,
+        None,
         fake_cli(|spec| {
             if spec.bin == "claude" {
                 vec![
@@ -139,7 +150,7 @@ fn cooling_down() {
         seen.store(true, Ordering::SeqCst);
         inner(spec, cwd)
     });
-    run_plan(&home, "r2", &p, spawner).unwrap();
+    run_plan(&home, "r2", &p, None, spawner).unwrap();
     assert!(!launched.load(Ordering::SeqCst));
     assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
     assert_eq!(ends_of(&home, "r2"), BTreeMap::from([("a".into(), CardStatus::Failed)]));
@@ -152,7 +163,7 @@ fn daily_cap_at_start() {
     }
     let p = plan(vec![card("a", ProviderId::Claude, "x")]);
     create_run(&home, "r3", &p).unwrap();
-    assert_eq!(run_plan(&home, "r3", &p, quiet()).unwrap(), CardStatus::Failed);
+    assert_eq!(run_plan(&home, "r3", &p, None, quiet()).unwrap(), CardStatus::Failed);
     assert_eq!(ends_of(&home, "r3"), BTreeMap::from([("a".into(), CardStatus::Failed)]));
     assert_eq!(started_on(&home, Utc::now()).unwrap(), LIMITS.max_cards_per_day);
 }
@@ -162,7 +173,7 @@ fn stop_request() {
     let p = plan(vec![card("a", ProviderId::Codex, "x")]);
     create_run(&home, "r4", &p).unwrap();
     request_stop(&home, "r4").unwrap();
-    assert_eq!(run_plan(&home, "r4", &p, quiet()).unwrap(), CardStatus::Stopped);
+    assert_eq!(run_plan(&home, "r4", &p, None, quiet()).unwrap(), CardStatus::Stopped);
     assert_eq!(ends_of(&home, "r4"), BTreeMap::from([("a".into(), CardStatus::Stopped)]));
 }
 
@@ -183,10 +194,37 @@ fn queue_then_run() {
             clear_active(&freeing, "other", &format!("b{i}"));
         }
     });
-    run_plan(&home, "r5", &p, fake_cli(|_| vec![r#"{"event":"result","result":{"status":"SUCCESS","response":"ok"}}"#])).unwrap();
+    run_plan(&home, "r5", &p, None, fake_cli(|_| vec![r#"{"event":"result","result":{"status":"SUCCESS","response":"ok"}}"#])).unwrap();
     freer.join().unwrap();
     let kinds: Vec<&str> = read_events(&home, "r5").iter().map(OEvent::kind).collect();
     let at = |k: &str| kinds.iter().position(|x| *x == k).unwrap();
     assert!(at("card.queued") < at("card.start"));
     assert_eq!(ends_of(&home, "r5"), BTreeMap::from([("a".into(), CardStatus::Done)]));
+}
+
+fn clean_run() {
+    let home = temp_home();
+    let root = home.join("agents");
+    let dump = home.join("env.json");
+    std::env::set_var("ORCA_TERMINAL_ID", "t1");
+    std::env::set_var("BEAKHO_RELEASE", "pinned");
+    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    create_run(&home, "r6", &p).unwrap();
+    let target = dump.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, cwd: &str| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).arg(DUMP_ENV).arg(&target);
+        Ok(command)
+    });
+    assert_eq!(run_plan(&home, "r6", &p, Some(&root), spawner).unwrap(), CardStatus::Done);
+    let env: BTreeMap<String, String> = serde_json::from_str(&std::fs::read_to_string(&dump).unwrap()).unwrap();
+    let get = |name: &str| env.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+    let profile = root.join("claude").join("home");
+    assert_eq!(get("O_RUN_ID").as_deref(), Some("r6"));
+    assert_eq!(get("O_CARD_ID").as_deref(), Some("a"));
+    assert_eq!(get("USERPROFILE"), Some(profile.to_string_lossy().into_owned()));
+    assert_eq!(get("CLAUDE_CONFIG_DIR"), Some(profile.join(".claude").to_string_lossy().into_owned()));
+    assert!(get("PATH").is_some());
+    assert!(get("ORCA_TERMINAL_ID").is_none() && get("BEAKHO_RELEASE").is_none());
+    assert!(profile.join(".claude").join("settings.json").is_file());
 }

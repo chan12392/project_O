@@ -58,7 +58,7 @@ export function UsagePanel({ runs, windows }: Props) {
   );
 }
 
-/** Pattern from beakho-design lucian-099 (activity ring): one arc per window, fuller is warmer. */
+/** Activity ring: one arc per window, fuller is warmer. */
 function Ring({ short, name, windows }: { short: string; name: string; windows: UsageWindow[] }) {
   const worst = windows.reduce<UsageWindow | undefined>((w, x) => (!w || x.used > w.used ? x : w), undefined);
   const size = 26;

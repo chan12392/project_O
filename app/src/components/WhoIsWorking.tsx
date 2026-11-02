@@ -11,7 +11,7 @@ import { Avatar } from "./Avatar.tsx";
 const RECENT = 6;
 
 /**
- * Pattern from beakho-design lucian-074 (header dropdown with a count badge):
+ * A header dropdown with a count badge:
  * who in this project is working on what, at a glance from the chat header.
  */
 export function WhoIsWorking({ runs, onOpen }: { runs: RunView[]; onOpen: (run: string, card: string) => void }) {

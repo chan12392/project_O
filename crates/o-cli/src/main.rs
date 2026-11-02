@@ -15,13 +15,16 @@ use o_core::snapshot::snapshot;
 use o_core::store::{self, default_home, is_run_id, run_dir};
 use o_core::team::{self, Caller, Refused};
 use o_core::usage::UsageReading;
-use o_core::{mirror, probe, proc, runner};
+use o_core::plan::ProviderId;
+use o_core::{clean, mirror, probe, proc, runner};
 use serde_json::{json, Value};
 
 const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬로 전달합니다.
 
   o check [plan.json|-]      정책 검사만 (실행 안 함)
-  o dispatch [plan.json|-]   정책 검사 후 백그라운드 실행, runId 출력
+  o dispatch [--clean] [plan.json|-]
+                             정책 검사 후 백그라운드 실행, runId 출력
+                             --clean: 카드를 깨끗한 에이전트 프로필로 실행 (o agents)
   o status [runId]           카드별 상태 (runId 없으면 최근 5개 실행)
   o events <runId> [--follow]  정규화된 이벤트(JSONL) — UI·총괄 에이전트용
   o stop <runId>             실행 중지
@@ -35,7 +38,15 @@ const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬
                              실행별 이벤트(최근 시작 순, 기본 50개) — 앱 화면용
   o hook                     에이전트 PreToolUse 훅 (도구 호출 JSON을 stdin으로 받음)
   o scan [--all|--staged|--pre-push]   저장소 정책 검사 (git 훅·CI용)
-  o sync-mirror <거울 폴더>   test·main 거울 폴더를 fast-forward (예약 작업용)
+  o sync-mirror <거울 폴더>   거울 폴더(test_2, test_1, main)를 fast-forward (예약 작업용)
+  o agents path              깨끗한 에이전트 프로필(개인 훅·스킬·MCP·전역 지시 없음) 위치
+  o agents login <claude|codex|agy>   그 프로필로 공식 로그인 (CLI마다 한 번)
+  o agents shell <claude|codex|agy> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행
+  o agents doctor [--json]   로그인 상태와 프로필 오염 검사 (깨끗하면 종료 코드 0)
+  o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
+  o agents install <claude|codex|agy> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
+  o agents open-login <claude|codex|agy> [--clean] [--json]   새 콘솔 창에서 공식 로그인
+  o about [--json]           버전과 상태·프로필 폴더 위치
 
 정책 위반이 하나라도 있으면 계획 전체를 실행하지 않고 종료 코드 2로 끝납니다.";
 
@@ -53,8 +64,10 @@ fn run(args: &[String]) -> i32 {
     let first = rest.first().map(String::as_str);
     let has = |flag: &str| rest.iter().any(|a| a == flag);
     match command {
-        Some("check") => check(&home, first, false),
-        Some("dispatch") => check(&home, first, true),
+        Some("check") => check(&home, plan_arg(rest), false, false),
+        Some("dispatch") => check(&home, plan_arg(rest), true, has("--clean")),
+        Some("agents") => agents(rest),
+        Some("about") => about(&home, has("--json")),
         Some("status") => match first {
             None => status(&home, None),
             Some(id) => run_id_arg(Some(id)).map_or(1, |id| status(&home, Some(id))),
@@ -99,7 +112,12 @@ fn read_input(path: Option<&str>) -> Result<Value, String> {
     Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
 }
 
-fn check(home: &Path, path: Option<&str>, dispatch: bool) -> i32 {
+/// The plan file among `check`/`dispatch` arguments (`--clean` is a flag).
+fn plan_arg(args: &[String]) -> Option<&str> {
+    args.iter().map(String::as_str).find(|a| *a != "--clean")
+}
+
+fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool) -> i32 {
     let input = match read_input(path) {
         Ok(input) => input,
         Err(error) => return fail(&error),
@@ -126,7 +144,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool) -> i32 {
         return 0;
     }
     let run_id = store::new_run_id(now);
-    if let Err(error) = store::create_run(home, &run_id, &plan) {
+    if let Err(error) = store::create_run(home, &run_id, &plan).and_then(|()| if clean { store::mark_clean(home, &run_id) } else { Ok(()) }) {
         return fail(&error.to_string());
     }
     let started = std::env::current_exe().and_then(|exe| proc::spawn_detached(Command::new(exe).args(["_run", &run_id])));
@@ -135,8 +153,146 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool) -> i32 {
     }
     let events = run_dir(home, &run_id).join("events.jsonl");
     let cards: Vec<&str> = plan.cards.iter().map(|c| c.id.as_str()).collect();
-    println!("{}", json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards }));
+    println!("{}", json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "clean": clean }));
     0
+}
+
+fn provider_arg(value: Option<&String>) -> Option<ProviderId> {
+    let found = value.and_then(|v| ProviderId::parse(v));
+    if found.is_none() {
+        eprintln!("에이전트를 claude, codex, agy 중에서 지정하세요\n\n{USAGE}");
+    }
+    found
+}
+
+/// Runs a CLI attached to this console and passes on its exit code.
+fn attached(command: std::io::Result<Command>) -> i32 {
+    match command.and_then(|mut c| c.status()) {
+        Ok(status) => status.code().unwrap_or(1),
+        Err(error) => fail(&error.to_string()),
+    }
+}
+
+/// `o agents path|login|shell|doctor`: clean agent profiles (see `o_core::clean`).
+fn agents(args: &[String]) -> i32 {
+    let root = clean::default_root();
+    let (verb, rest) = match args.split_first() {
+        Some((verb, rest)) => (verb.as_str(), rest),
+        None => ("", &[][..]),
+    };
+    match verb {
+        "path" => {
+            for provider in ProviderId::ALL {
+                println!("{:<6} {}", provider.as_str(), clean::profile_home(&root, provider).to_string_lossy());
+            }
+            0
+        }
+        "login" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            match clean::login_args(provider) {
+                Some(args) => attached(clean::command(&root, provider, args)),
+                None => {
+                    println!("Antigravity는 이 PC의 시스템 로그인(OS 자격 증명 저장소)을 그대로 씁니다. 따로 로그인하지 않습니다.");
+                    let state = clean::login_state(&root, provider);
+                    println!("agy    {}", state.detail);
+                    i32::from(state.logged_in != Some(true))
+                }
+            }
+        }
+        "shell" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            let args: Vec<&str> = rest[1..].iter().map(String::as_str).collect();
+            attached(clean::command(&root, provider, &args))
+        }
+        "doctor" => doctor(&root, rest.iter().any(|a| a == "--json")),
+        "status" => {
+            let list = o_core::agents::status(&root, rest.iter().any(|a| a == "--clean"));
+            if rest.iter().any(|a| a == "--json") {
+                println!("{}", json!(list));
+            } else {
+                for a in &list {
+                    let state = match (a.installed, a.logged_in) {
+                        (false, _) => format!("설치 안 됨 — {}", a.install_hint),
+                        (true, Some(true)) => "로그인됨".into(),
+                        (true, Some(false)) => "로그인 안 됨".into(),
+                        (true, None) => "로그인 상태 모름".into(),
+                    };
+                    println!("{:<6} {:<12} {}  {}", a.id.as_str(), a.version.as_deref().unwrap_or("-"), state, a.path.as_deref().unwrap_or(""));
+                }
+            }
+            0
+        }
+        "install" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            action(o_core::agents::install(provider), rest)
+        }
+        "open-login" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            action(o_core::agents::open_login(&root, provider, rest.iter().any(|a| a == "--clean")), rest)
+        }
+        _ => fail(USAGE),
+    }
+}
+
+/// Prints an install or sign-in result: JSON for the app (exit 0 once printed), or words.
+fn action(result: o_core::agents::ActionResult, args: &[String]) -> i32 {
+    if args.iter().any(|a| a == "--json") {
+        println!("{}", json!(result));
+        return 0;
+    }
+    println!("{}", result.message);
+    if !result.ok {
+        if let Some(log) = &result.log {
+            eprintln!("{log}");
+        }
+    }
+    i32::from(!result.ok)
+}
+
+/// `o about [--json]`: this build's version and where O keeps its state.
+fn about(home: &Path, as_json: bool) -> i32 {
+    let version = env!("CARGO_PKG_VERSION");
+    let agents_home = clean::default_root();
+    if as_json {
+        println!("{}", json!({ "version": version, "home": home.to_string_lossy(), "agentsHome": agents_home.to_string_lossy() }));
+    } else {
+        println!("o {version}\n상태 폴더   {}\n에이전트 프로필 {}", home.to_string_lossy(), agents_home.to_string_lossy());
+    }
+    0
+}
+
+fn doctor(root: &Path, as_json: bool) -> i32 {
+    let profiles = clean::doctor(root);
+    let cwd = std::env::current_dir().unwrap_or_default();
+    let real_home = store::user_home();
+    let ancestors: Vec<String> = clean::ancestor_instructions(&cwd, &real_home).iter().map(|p| p.to_string_lossy().into_owned()).collect();
+    let inside_home = clean::inside_home(&cwd, &real_home);
+    let is_clean = profiles.iter().all(|p| p.issues.is_empty());
+    if as_json {
+        println!("{}", json!({ "clean": is_clean, "profiles": profiles, "ancestorInstructions": ancestors, "insideHome": inside_home }));
+    } else {
+        for p in &profiles {
+            let state = if p.issues.is_empty() { "깨끗함" } else { "문제 있음" };
+            println!("{:<6} {state:<6} {}  {}", p.provider.as_str(), p.login.detail, p.home);
+            for issue in &p.issues {
+                println!("         - {issue}");
+            }
+        }
+        if !ancestors.is_empty() {
+            println!("\n주의: 이 폴더 위의 지시 파일을 깨끗한 Claude도 읽습니다(프로필이 제외하는 것은 홈 폴더의 파일뿐):");
+            for file in &ancestors {
+                println!("  - {file}");
+            }
+        }
+        if inside_home {
+            println!("\n주의: 지금 폴더가 홈 폴더({}) 안입니다. 테스트 프로젝트는 홈 폴더 밖에 두세요.", real_home.to_string_lossy());
+        }
+    }
+    if is_clean {
+        0
+    } else {
+        1
+    }
 }
 
 fn fail(message: &str) -> i32 {

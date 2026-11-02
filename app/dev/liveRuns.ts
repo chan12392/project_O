@@ -16,9 +16,9 @@ function oBinary(): string {
 }
 
 /** Runs `o` with fixed arguments (no shell) and returns its stdout. */
-function o(args: string[]): Promise<string> {
+function o(args: string[], timeout = 60_000): Promise<string> {
   return new Promise((resolve, reject) =>
-    execFile(oBinary(), args, { windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout: 60_000 }, (error, stdout, stderr) =>
+    execFile(oBinary(), args, { windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout }, (error, stdout, stderr) =>
       error ? reject(new Error(stderr.trim() || error.message)) : resolve(stdout),
     ),
   );
@@ -49,7 +49,16 @@ function sameOrigin(req: IncomingMessage): boolean {
   return !origin || origin === `http://${req.headers.host}`;
 }
 
-/** Dev-server stand-in for the desktop shell: `o runs`, `o usage --cached` and `o usage`, read-only otherwise. */
+/** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
+const AGENT_ACTION = /^\/agents\/(claude|codex|agy)\/(install|login)$/;
+
+/** npm installs can take minutes. */
+const INSTALL_TIMEOUT_MS = 10 * 60_000;
+
+/**
+ * Dev-server stand-in for the desktop shell (backend.ts, useLiveRuns.ts): runs, usage,
+ * agent CLI status, the official install and sign-in, and About, each through `o`.
+ */
 export function liveRuns(): Plugin {
   let refreshing: Promise<string> | undefined;
   const error = (res: ServerResponse) => (e: Error) => send(res, 500, JSON.stringify({ error: e.message }));
@@ -66,6 +75,15 @@ export function liveRuns(): Plugin {
         if (req.method === "POST" && path === "/usage/refresh") {
           refreshing ??= o(["usage", "--json"]).finally(() => (refreshing = undefined));
           return void refreshing.then((out) => send(res, 200, out), error(res));
+        }
+        const clean = new URLSearchParams(req.url?.split("?")[1] ?? "").get("clean") === "1" ? ["--clean"] : [];
+        if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, out), error(res));
+        const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
+        if (action) {
+          const [, id, verb] = action;
+          const args = verb === "install" ? ["agents", "install", id, "--json"] : ["agents", "open-login", id, "--json", ...clean];
+          return void o(args, verb === "install" ? INSTALL_TIMEOUT_MS : 60_000).then((out) => send(res, 200, out), error(res));
         }
         next();
       });
