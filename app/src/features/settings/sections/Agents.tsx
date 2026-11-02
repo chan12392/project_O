@@ -1,5 +1,5 @@
 import { Bot, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import { updateSettings, useSettings } from "../../../data/settings.ts";
 import { BUDGET_PERCENTS, type AgentCatalogEntry, type Backend, type BudgetPercent, type BudgetReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
@@ -70,19 +70,39 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
   );
 }
 
+const catalogCache = new WeakMap<Backend, AgentCatalogEntry[]>();
+
 function AgentCatalog({ api }: { api: Backend }) {
-  const [entries, setEntries] = useState<AgentCatalogEntry[]>();
+  const [entries, setEntries] = useState<AgentCatalogEntry[]>(() => catalogCache.get(api) ?? []);
   const [error, setError] = useState("");
+  const [checking, setChecking] = useState(false);
+  const generation = useRef(0);
   useEffect(() => {
-    let active = true;
-    void api.agentsCatalog().then((list) => { if (active) setEntries(list); }, (e) => { if (active) setError(String(e)); });
-    return () => { active = false; };
+    setEntries(catalogCache.get(api) ?? []);
+    if (!catalogCache.has(api)) void detect(false);
+    return () => { generation.current++; };
   }, [api]);
+  function detect(refresh: boolean) {
+    const request = ++generation.current;
+    setChecking(true);
+    setError("");
+    return api.agentsCatalog(refresh).then((list) => {
+      if (request !== generation.current) return;
+      catalogCache.set(api, list);
+      setEntries(list);
+    }, (e) => { if (request === generation.current) setError(String(e)); }).finally(() => { if (request === generation.current) setChecking(false); });
+  }
   return <div>
-    <SubHeading title="다른 에이전트 CLI" description="설치 여부와 연결 지원 상태를 확인하세요." />
+    <div className="flex items-end justify-between gap-3">
+      <SubHeading title="다른 에이전트 CLI" description="설치 여부와 연결 지원 상태를 확인하세요." />
+      <button type="button" onClick={() => void detect(true)} disabled={checking} className={BUTTON_SECONDARY}>
+        <RefreshCw className={`size-3.5 ${checking ? "animate-spin motion-reduce:animate-none" : ""}`} aria-hidden="true" />
+        {checking ? "감지하는 중" : "다시 감지"}
+      </button>
+    </div>
     {error && <p role="alert" className="text-sm text-destructive">목록을 읽지 못했습니다: {error}</p>}
-    {!entries && !error && <p role="status" className="text-sm text-muted-foreground">감지하는 중입니다</p>}
-    {entries && <ul className="mt-3 divide-y rounded-lg border">{entries.map((entry) => <li key={entry.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+    {checking && entries.length === 0 && <p role="status" className="text-sm text-muted-foreground">감지하는 중입니다</p>}
+    {entries.length > 0 && <ul className="mt-3 divide-y rounded-lg border">{entries.map((entry) => <li key={entry.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
       <div><p className="text-sm font-medium">{entry.name}</p><p className="text-xs text-muted-foreground">{entry.detected ? entry.version ?? "감지됨" : "설치되지 않음"} · {entry.status === "connected" ? "연결 지원" : entry.status === "planned" ? "연결 예정" : "지원하지 않음"}{entry.profileSupported ? "" : " · 프로필 미지원"}</p><p className="mt-1 text-xs text-muted-foreground">{entry.note}</p></div>
       {entry.installUrl && <button type="button" className={BUTTON_SECONDARY} onClick={() => void api.openExternal(entry.installUrl!)}>공식 설치 안내</button>}
     </li>)}</ul>}

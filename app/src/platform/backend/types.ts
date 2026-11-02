@@ -130,7 +130,7 @@ export interface Backend {
   kind: "tauri" | "dev" | "demo";
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;
-  agentsCatalog(): Promise<AgentCatalogEntry[]>;
+  agentsCatalog(refresh?: boolean): Promise<AgentCatalogEntry[]>;
   /** Runs the official installer for one CLI and returns when it finishes. */
   install(id: AgentId): Promise<ActionResult>;
   /** Opens the official sign-in for one CLI (a console window and/or the browser). */

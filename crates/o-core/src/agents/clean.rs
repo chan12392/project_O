@@ -1,3 +1,4 @@
+//! Adapted from stablyai/orca (MIT); see THIRD_PARTY_NOTICES.md.
 //! Clean agent profiles: the official CLIs with none of the owner's own
 //! harness (user hooks, global instructions, skills, plugins, MCP servers,
 //! memories, settings), without touching his normal setup.
@@ -19,6 +20,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -116,11 +118,33 @@ pub fn ensure_profile(root: &Path, provider: ProviderId, real_home: &Path) -> io
     Ok(home)
 }
 
+/// Trust the first project in a new Codex profile without reading or overwriting any existing configuration.
+/// Existing configuration is left to the CLI because it may have been changed by the user.
+pub fn trust_preflight(root: &Path, provider: ProviderId, project: &Path) -> io::Result<()> {
+    if provider != ProviderId::Codex || root.file_name().is_none_or(|name| name != "project_O-agents") { return Ok(()); }
+    let project = project.canonicalize()?;
+    let real_home = user_home().canonicalize()?;
+    if !project.is_dir() || real_home.starts_with(&project) { return Ok(()); }
+    let root = root.canonicalize()?;
+    let config_dir = profile_home(&root, provider).join(".codex");
+    let actual = config_dir.canonicalize()?;
+    if actual != config_dir { return Ok(()); }
+    let path = project.to_string_lossy();
+    let key = serde_json::to_string(path.as_ref()).map_err(io::Error::other)?;
+    let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(actual.join("config.toml")) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    write!(file, "[projects.{key}]\ntrust_level = \"trusted\"\n")
+}
+
 /// The official CLI with the clean environment, run in the current folder.
 pub fn command(root: &Path, provider: ProviderId, args: &[&str]) -> io::Result<Command> {
     if let Some(why) = providers::get(provider).profile_unsupported() {
         return Err(io::Error::other(why));
     }
+    crate::sys::resolve::ensure_paths();
     let bin = provider.as_str();
     let cli = resolve_cli(bin).ok_or_else(|| io::Error::other(format!("{bin} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다")))?;
     let mut command = Command::new(&cli.command);

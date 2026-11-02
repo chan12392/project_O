@@ -257,3 +257,22 @@ fn devin_gets_no_clean_profile_and_says_why() {
     assert!(!profile_home(&root, ProviderId::Devin).exists());
     assert!(environment(&root, ProviderId::Codex).is_ok());
 }
+
+#[test]
+fn trust_preflight_only_creates_new_clean_codex_configuration() {
+    use o_core::agents::clean::trust_preflight;
+    let base = temp("trust");
+    let root = base.join("project_O-agents");
+    let project = base.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let home = ensure_profile(&root, ProviderId::Codex, &base).unwrap();
+    trust_preflight(&root, ProviderId::Codex, &project).unwrap();
+    let config = home.join(".codex/config.toml");
+    let created = std::fs::read_to_string(&config).unwrap();
+    assert!(created.contains("trust_level = \"trusted\""));
+    std::fs::write(&config, "# user configuration\n").unwrap();
+    trust_preflight(&root, ProviderId::Codex, &project).unwrap();
+    assert_eq!(std::fs::read_to_string(config).unwrap(), "# user configuration\n");
+    trust_preflight(&root, ProviderId::Claude, &project).unwrap();
+    assert!(!profile_home(&root, ProviderId::Claude).exists());
+}

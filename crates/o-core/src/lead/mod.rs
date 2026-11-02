@@ -531,7 +531,9 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
             if let Some(why) = clean::not_ready(root, &[req.provider]).remove(&req.provider) {
                 return Err(io::Error::other(why));
             }
-            command.env_clear().envs(clean::environment(root, req.provider)?);
+            let env = clean::environment(root, req.provider)?;
+            let _ = clean::trust_preflight(root, req.provider, Path::new(req.project));
+            command.env_clear().envs(env);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.
         providers::remove_inherited(&mut command, &spec.env_remove);

@@ -23,6 +23,7 @@ use serde_json::{Map, Value};
 use super::stream::{limit_from_text, num, short, tool_summary};
 use super::{opt, strings, LaunchSpec, Official, Provider, ReadLine, TeamChannel};
 use crate::agents::clean::LoginState;
+use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan};
 use crate::sys::js::js_string;
@@ -92,9 +93,11 @@ fn read_transcript(run_dir: &Path, path: &Path) -> Option<String> {
 /// to the run folder while retaining the CLI's workspace trust check.
 /// No effort flag exists; a Devin model id names its level (`swe-2-medium`).
 fn card_args(card: &Card, team: &TeamChannel, prompt: String, mode: &str) -> Vec<String> {
-    let mut args = strings(&["-p", "--permission-mode", mode, "--export"]);
+    let spec = connection("devin").headless;
+    let mut args = strings(spec.fixed);
+    args.extend(strings(&["--permission-mode", mode, "--export"]));
     args.push(transcript_path(team.run_dir, &card.id));
-    args.extend(opt("--model", card.model.as_deref()));
+    args.extend(opt(spec.model_flag, card.model.as_deref()));
     args.push("--".into());
     args.push(prompt);
     args
