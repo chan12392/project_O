@@ -40,7 +40,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 8] = [
+    let tests: [(&str, fn()); 9] = [
         ("behind today's budget, cards start with lower effort and say so", budget_lowers_effort),
         ("a provider over today's budget starts no card", budget_over_refuses),
         ("runs cards in parallel, records a limit as a provider cooldown", parallel_and_limit),
@@ -49,6 +49,7 @@ fn main() {
         ("a stop request ends the cards still waiting", stop_request),
         ("a card waits in the queue while its provider is full, then runs", queue_then_run),
         ("a clean run starts its cards with only the clean environment", clean_run),
+        ("a card's CLI never inherits the API key variables it prefers over its sign-in", api_keys_dropped),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -229,6 +230,36 @@ fn clean_run() {
     assert!(get("PATH").is_some());
     assert!(get("ORCA_TERMINAL_ID").is_none() && get("BEAKHO_RELEASE").is_none());
     assert!(profile.join(".claude").join("settings.json").is_file());
+}
+
+/// A key left in the person's environment must not reach the card's CLI, in any case spelling.
+fn api_keys_dropped() {
+    let home = temp_home();
+    let vars = [("ANTHROPIC_API_KEY", "placeholder"), ("anthropic_auth_token", "placeholder"), ("CODEX_API_KEY", "placeholder"), ("ANTHROPIC_API_KEY_HELPER", "kept")];
+    for (name, value) in vars {
+        std::env::set_var(name, value);
+    }
+    let p = plan(vec![card("a", ProviderId::Claude, "x"), card("b", ProviderId::Codex, "y")]);
+    create_run(&home, "r9", &p).unwrap();
+    let dumps = home.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).arg(DUMP_ENV).arg(dumps.join(format!("{}.json", spec.bin)));
+        Ok(command)
+    });
+    // The fake answers in Claude's stream format, so only the Claude card ends done; both dump their environment.
+    run_plan(&home, "r9", &p, None, spawner).unwrap();
+    for (name, _) in vars {
+        std::env::remove_var(name);
+    }
+    assert_eq!(ends_of(&home, "r9").get("a"), Some(&CardStatus::Done));
+    let env_of = |bin: &str| -> BTreeMap<String, String> { serde_json::from_str(&std::fs::read_to_string(home.join(format!("{bin}.json"))).unwrap()).unwrap() };
+    let has = |env: &BTreeMap<String, String>, name: &str| env.keys().any(|k| k.eq_ignore_ascii_case(name));
+    let (claude, codex) = (env_of("claude"), env_of("codex"));
+    assert!(!has(&claude, "ANTHROPIC_API_KEY") && !has(&claude, "ANTHROPIC_AUTH_TOKEN"));
+    assert!(has(&claude, "ANTHROPIC_API_KEY_HELPER") && has(&claude, "CODEX_API_KEY") && has(&claude, "PATH"));
+    assert!(!has(&codex, "CODEX_API_KEY") && has(&codex, "ANTHROPIC_API_KEY"));
+    assert_eq!(claude.get("O_CARD_ID").map(String::as_str), Some("a"));
 }
 
 use std::sync::Mutex;
