@@ -4,9 +4,9 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
-use o_core::events::OEvent;
-use o_core::plan::{Card, Plan, ProviderId};
-use o_core::store::{create_run, read_events};
+use o_core::run::events::OEvent;
+use o_core::run::plan::{Card, Plan, ProviderId};
+use o_core::run::store::{create_run, read_events};
 
 fn o(base: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_o"));

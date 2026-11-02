@@ -7,7 +7,6 @@
 
 mod commands;
 mod installer_paths;
-mod update;
 
 /// Puts this exe's folder first on PATH, so every child (agent CLIs, `o dispatch`, cards
 /// running `o msg`/`o context`) finds the `o.exe` installed beside project_O.exe, even when
@@ -23,25 +22,8 @@ fn own_folder_first_on_path() {
 fn main() {
     own_folder_first_on_path();
     tauri::Builder::default()
-        .setup(|_| { update::start_checks(); Ok(()) })
-        .invoke_handler(tauri::generate_handler![
-            commands::runs,
-            commands::usage,
-            commands::usage_refresh,
-            commands::budget,
-            commands::budget_set_percent,
-            commands::agents_status,
-            commands::agent_install,
-            commands::agent_login,
-            commands::open_external,
-            commands::about,
-            commands::review,
-            commands::tokens,
-            update::update_check,
-            update::update_install,
-            update::update_pending,
-            update::update_cancel,
-        ])
+        .setup(|_| { commands::update::start_checks(); Ok(()) })
+        .invoke_handler(commands::handler())
         .run(tauri::generate_context!())
         .expect("Project O 창을 열지 못했습니다");
 }

@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use installer_paths::{fresh_dir, no_links};
-use o_core::proc;
+use o_core::sys::proc;
 
 const LOCAL_NAMES: &[&str] = &["project_O", "project_O-agents", "local.project-o.desktop"];
 const TASKS: &[&str] = &["project_O mirror sync (test)", "project_O mirror sync (test_1)", "project_O mirror sync (test_2)", "project_O mirror sync (main)"];

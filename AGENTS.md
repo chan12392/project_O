@@ -66,6 +66,7 @@
   - 공용 경계: 기술 스택, 공용 데이터 모델(세션·계정·프로바이더), 프로바이더 연결 방식, 라우팅 단위, 화면 최상위 구조.
 - 자기 영역 안의 구현 결정은 ADR 없이 진행한다.
 - 현재 설계 초안과 미결정 목록은 `docs/DESIGN.md`에 있다.
+- 모듈 지도와 새 프로바이더·화면·명령을 더하는 체크리스트는 `docs/ARCHITECTURE.md`에 있다 (ADR-0007).
 
 ## 보안
 
@@ -85,7 +86,7 @@
 ## 데스크톱 셸 (`app/src-tauri`)
 
 - Tauri 2 셸. 크레이트 `project-o`, 실행 파일 `project_O.exe`, 창 제목 "Project O". 빌드: `cd app && npm run tauri build -- --no-bundle` → `target/release/project_O.exe`. 개발: `npm run tauri dev`(Vite 1430 포트, `tauri.conf.json`의 `devUrl`·`devCsp`와 같이 고친다).
-- 화면은 프로세스를 직접 띄우지 않는다. 셸의 정해진 Tauri 명령(`app/src-tauri/src/commands.rs`)만 부르고, 그 명령은 `o-core`를 쓴다. 명령을 더하면 개발 서버 `/api`(`app/dev/liveRuns.ts`)와 `o` 명령에도 같은 동작을 둔다.
+- 화면은 프로세스를 직접 띄우지 않는다. 셸의 정해진 Tauri 명령(`app/src-tauri/src/commands/`)만 부르고, 그 명령은 `o-core`를 쓴다. 명령을 더하면 개발 서버 `/api`(`app/dev/liveRuns.ts`)와 `o` 명령에도 같은 동작을 둔다.
 - 에이전트 설치는 공식 npm 패키지만 앱에서 실행하고, 나머지는 공식 안내를 연다. 로그인은 새 콘솔 창의 공식 명령으로 한다.
 - 설치 파일(NSIS, 사용자별, `o.exe` 사이드카 포함): `pwsh scripts/build-installer.ps1`, `test_1` push마다 `release.yml`이 프리릴리스로 올린다. 설치 폴더·상태 폴더 구분과 안내는 [docs/INSTALL.md](docs/INSTALL.md).
 - Linux CI는 WebView 라이브러리가 없어 `cargo test/clippy`에서 `project-o`를 뺀다(`.github/workflows/guard.yml`). Windows 전용 코드의 import·`mut`는 `#[cfg(windows)]`로 묶어 Linux clippy가 통과하게 한다.

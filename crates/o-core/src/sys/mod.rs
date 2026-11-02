@@ -1,0 +1,8 @@
+//! Plumbing with no O policy in it: processes and job objects, finding a CLI
+//! on PATH without a shell, the JavaScript-compatible formats O's files use,
+//! and the mirror checkout sync.
+
+pub mod js;
+pub mod mirror;
+pub mod proc;
+pub mod resolve;

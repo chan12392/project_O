@@ -16,10 +16,10 @@
 
 | 기반 | 현재 코드와 범위 |
 |---|---|
-| 계획·실행 | `crates/o-core/src/plan.rs`, `policy.rs`, `runner.rs`: 카드 검사, 공식 CLI 실행, 대기·중지·결과 기록 |
-| 기록·조회 | `crates/o-core/src/store.rs`, `index.rs`: 실행별 `events.jsonl` 원본과 SQLite `o.db` 증분 색인 |
-| 화면 상태 | `src/core/snapshot.ts`: 이벤트를 카드·대화·사용량으로 접음; CLI 상태 조회에는 Rust `crates/o-core/src/snapshot.rs` 사용 |
-| 앱 연결 | `app/src-tauri/src/commands.rs`는 `o-core` 호출, 개발 서버 `app/dev/liveRuns.ts`는 `o` 호출 |
+| 계획·실행 | `crates/o-core/src/run/plan.rs`, `run/runner.rs`, `policy.rs`: 카드 검사, 공식 CLI 실행, 대기·중지·결과 기록 |
+| 기록·조회 | `crates/o-core/src/run/store.rs`, `index.rs`: 실행별 `events.jsonl` 원본과 SQLite `o.db` 증분 색인 |
+| 화면 상태 | `src/core/snapshot.ts`: 이벤트를 카드·대화·사용량으로 접음; CLI 상태 조회에는 Rust `crates/o-core/src/run/snapshot.rs` 사용 |
+| 앱 연결 | `app/src-tauri/src/commands/`는 `o-core` 호출, 개발 서버 `app/dev/liveRuns.ts`는 `o` 호출 |
 | 정책 | `crates/o-guard`의 훅·정적 검사와 `o-core/src/policy.rs`의 실행 검사가 담당 |
 
 - [ADR-0001](decisions/0001-stack-tauri-rust-core.md): Tauri 2·Rust 코어·React 채택, A 승인·B 사후 확인 필요 상태다.
@@ -34,13 +34,13 @@
 
 현재 있는 것:
 
-- `crates/o-core/src/plan.rs`, `providers.rs`: Claude·Codex·Antigravity 카드를 같은 계획에 담거나 한 프로바이더만 사용할 수 있다.
-- `app/src/components/Office.tsx`: 선택한 실행의 총괄과 카드들을 캐릭터로 표시하고, 상태에 따라 책상·대기·휴식 위치를 바꾼다.
-- `app/src/components/AgentBoard.tsx`: 프로젝트 카드들을 대기·작업 중·PR 검토·완료·막힘으로 묶는다.
-- `app/src/components/CardTranscript.tsx`, `TeamChat.tsx`: 카드 기록과 같은 실행 안의 팀 대화를 표시한다.
-- `app/src/useLiveRuns.ts`: Tauri/API에서 최근 실행 50개를 읽고 보이는 동안 2초 간격으로 갱신한다.
+- `crates/o-core/src/run/plan.rs`, `providers/`: Claude·Codex·Antigravity 카드를 같은 계획에 담거나 한 프로바이더만 사용할 수 있다.
+- `app/src/features/office/Office.tsx`: 선택한 실행의 총괄과 카드들을 캐릭터로 표시하고, 상태에 따라 책상·대기·휴식 위치를 바꾼다.
+- `app/src/features/work/AgentBoard.tsx`: 프로젝트 카드들을 대기·작업 중·PR 검토·완료·막힘으로 묶는다.
+- `app/src/features/chat/CardTranscript.tsx`, `TeamChat.tsx`: 카드 기록과 같은 실행 안의 팀 대화를 표시한다.
+- `app/src/data/useLiveRuns.ts`: Tauri/API에서 최근 실행 50개를 읽고 보이는 동안 2초 간격으로 갱신한다.
 - 같은 파일에서 소스를 지정하지 않았고 실제 실행이 없으면 데모 기록으로 전환한다. 데모 화면은 실제 작업의 증거가 아니다.
-- `crates/o-core/src/events.rs`에 `card.session`은 있지만 부모·자식 에이전트 관계 필드는 없다.
+- `crates/o-core/src/run/events.rs`에 `card.session`은 있지만 부모·자식 에이전트 관계 필드는 없다.
 
 진행 중: `younchan-office-nextup`이 목표 1–2를 담당한다. 이 기준 소스에는 그 결과가 반영되지 않았다.
 
@@ -58,12 +58,12 @@
 
 현재 있는 것:
 
-- `app/src/projects.ts`: 실행의 프로젝트 경로로 묶어 최근 활동순으로 나열하고, 사용자 그룹은 브라우저에 저장한다.
+- `app/src/data/projects.ts`: 실행의 프로젝트 경로로 묶어 최근 활동순으로 나열하고, 사용자 그룹은 브라우저에 저장한다.
 - `src/core/attention.ts`의 `nextUp`: 미응답 총괄 메시지, 완료 카드의 PR 링크, 24시간 내 완료 실행, 대기 카드를 뽑는다.
 - 같은 함수가 실패·중지·한도와 실행 중 10분 넘게 자기 기록이 없는 카드를 구분하고, 종류와 대기 시간으로 정렬한다.
-- `app/src/components/WorkDashboard.tsx`, `NextUp.tsx`: 기다리는 일·멈춘 일, 실행 흐름과 활동을 보여 준다.
+- `app/src/features/work/WorkDashboard.tsx`, `NextUp.tsx`: 기다리는 일·멈춘 일, 실행 흐름과 활동을 보여 준다.
 - NextUp 티켓은 기록 열기, PR 링크, 답장·중지·상태 명령 복사와 처리 표시를 지원한다.
-- `app/src/components/WorkTab.tsx`, `SidePanel.tsx`: 실제 NextUp 입력은 선택한 프로젝트의 실행들이다.
+- `app/src/features/work/WorkTab.tsx`, `app/src/shell/SidePanel.tsx`: 실제 NextUp 입력은 선택한 프로젝트의 실행들이다.
 
 진행 중: `younchan-office-nextup`. 현재 구현은 기록에서 조건에 맞는 일을 추리는 규칙 기반 목록이다.
 
@@ -83,12 +83,12 @@
 현재 있는 것:
 
 - `src/core/attention.ts`의 `prOf`는 카드 결과·로그에서 첫 GitHub PR URL을 찾고, 완료 카드에 검토 티켓을 만든다.
-- `app/src/components/AgentBoard.tsx`, `NextUp.tsx`는 그 링크와 PR 검토 상태를 표시한다.
-- `crates/o-core/src/team.rs`, `policy.rs`: 같은 실행의 카드와 총괄이 `o msg`로 대화하고 발신자·수신자·내용을 검사한다.
+- `app/src/features/work/AgentBoard.tsx`, `NextUp.tsx`는 그 링크와 PR 검토 상태를 표시한다.
+- `crates/o-core/src/run/team.rs`, `crates/o-core/src/policy.rs`: 같은 실행의 카드와 총괄이 `o msg`로 대화하고 발신자·수신자·내용을 검사한다.
 - `crates/o-guard/src/hook.rs`, `scan.rs`: 보호 브랜치 직접 변경과 규칙 밖 병합을 해당 훅 경로에서 막는다.
 - `.github/workflows/branch-flow.yml`, `merge-guard.yml`: PR 방향 검사와 대표 외 보호 브랜치 병합·push 경보가 있다.
 
-진행 중: `younchan-pr-review`가 목표 3과 `o review`를 담당한다. 현재 `crates/o-cli/src/main.rs`에는 이 명령이 없다.
+진행 중: `younchan-pr-review`가 목표 3과 `o review`를 담당한다. 현재 `crates/o-cli/src/commands/`에는 이 명령이 없다.
 
 남은 순서:
 
@@ -106,12 +106,12 @@ ADR-0003의 CI 경보는 사후 감지이며 GitHub 웹 병합을 사전에 강�
 
 현재 있는 것:
 
-- `crates/o-core/src/usage.rs`, `probe.rs`: 공식 CLI를 통해 Codex·Antigravity의 구독 창 사용 비율과 초기화 시각을 조회한다.
-- `crates/o-core/src/providers.rs`: Claude 실행 스트림의 구독 창을 `quota`로, 세 프로바이더의 토큰을 `card.usage`로 정규화한다.
-- `app/src/components/UsagePanel.tsx`: 읽어 온 실행의 토큰 합계와 5시간·주간 구독 창을 표시한다.
+- `crates/o-core/src/usage/mod.rs`, `probe.rs`: 공식 CLI를 통해 Codex·Antigravity의 구독 창 사용 비율과 초기화 시각을 조회한다.
+- `crates/o-core/src/providers/`: Claude 실행 스트림의 구독 창을 `quota`로, 세 프로바이더의 토큰을 `card.usage`로 정규화한다.
+- `app/src/features/usage/UsagePanel.tsx`: 읽어 온 실행의 토큰 합계와 5시간·주간 구독 창을 표시한다.
 - `crates/o-core/src/policy.rs`: 계획당 8장, 하루 60장, 전체 동시 6개, Claude/Codex 각 3개·Antigravity 2개 상한이 있다.
-- `crates/o-core/src/runner.rs`: 시작 전 상한·쿨다운을 확인하고, 실행 중 한도 감지 시 같은 프로바이더의 대기 카드도 실패 처리한다.
-- `plan.rs`, `providers.rs`: 카드에 지정된 `effort`를 검증·전달한다. `skills/o/SKILL.md`는 총괄에게 사용량 확인과 선택을 안내한다.
+- `crates/o-core/src/run/runner.rs`: 시작 전 상한·쿨다운을 확인하고, 실행 중 한도 감지 시 같은 프로바이더의 대기 카드도 실패 처리한다.
+- `crates/o-core/src/run/plan.rs`, `providers/`: 카드에 지정된 `effort`를 검증·전달한다. `skills/o/SKILL.md`는 총괄에게 사용량 확인과 선택을 안내한다.
 
 진행 중: `younchan-budget`이 목표 4를 담당한다. 카드 수 상한과 주간 사용량 비율 예산은 서로 다른 기준이다.
 
@@ -130,12 +130,12 @@ ADR-0003의 CI 경보는 사후 감지이며 GitHub 웹 병합을 사전에 강�
 
 현재 있는 것:
 
-- `crates/o-core/src/store.rs`, `runner.rs`: 실행 계획, 정규화 이벤트, 카드별 원시 출력과 오류 로그를 로컬에 남긴다.
-- `crates/o-core/src/index.rs`: JSONL의 새 완결 행만 SQLite에 반영하며 실행·이벤트·시작 수·쿨다운·차단을 관리한다.
-- `crates/o-cli/src/main.rs`: `o runs --json --project <폴더> --limit N`으로 프로젝트별 실행 기록을 조회할 수 있다.
-- `crates/o-core/src/team.rs`: `o msg read`는 같은 실행 안의 새 메시지를 읽는다. 프로젝트 전체 세션 검색 명령은 아니다.
-- `crates/o-core/src/clean.rs`: 별도 홈·환경변수로 개인 훅·전역 지침·스킬·MCP·메모리·설정을 분리하고 `o agents doctor`로 점검한다.
-- `o dispatch --clean plan.json`과 `runner.rs`가 깨끗한 프로필 실행을 연결한다. 프로젝트 지침·상위 폴더 지침까지 모두 제거하는 것은 아니다.
+- `crates/o-core/src/run/store.rs`, `runner.rs`: 실행 계획, 정규화 이벤트, 카드별 원시 출력과 오류 로그를 로컬에 남긴다.
+- `crates/o-core/src/run/index.rs`: JSONL의 새 완결 행만 SQLite에 반영하며 실행·이벤트·시작 수·쿨다운·차단을 관리한다.
+- `crates/o-cli/src/commands/runs.rs`: `o runs --json --project <폴더> --limit N`으로 프로젝트별 실행 기록을 조회할 수 있다.
+- `crates/o-core/src/run/team.rs`: `o msg read`는 같은 실행 안의 새 메시지를 읽는다. 프로젝트 전체 세션 검색 명령은 아니다.
+- `crates/o-core/src/agents/clean.rs`: 별도 홈·환경변수로 개인 훅·전역 지침·스킬·MCP·메모리·설정을 분리하고 `o agents doctor`로 점검한다.
+- `o dispatch --clean plan.json`과 `run/runner.rs`가 깨끗한 프로필 실행을 연결한다. 프로젝트 지침·상위 폴더 지침까지 모두 제거하는 것은 아니다.
 
 진행 중: `younchan-context`가 목표 5와 토큰 보고 명령 `o tokens`를 담당한다. 현재 CLI에는 `o tokens`가 없다.
 
@@ -156,21 +156,21 @@ SQLite 색인은 현재 실행 목록/이벤트 조회용이며 의미 검색·�
 현재 있는 것:
 
 - `skills/o/SKILL.md`: 총괄이 파일 소유권이 겹치지 않도록 카드를 나누고 provider·model·effort를 고르는 절차가 있다.
-- `crates/o-core/src/providers.rs`: 카드 목표·동료 목록·팀 대화 방법·결과 요약 지시를 짧은 프롬프트로 만든다.
-- `crates/o-core/src/policy.rs`, `runner.rs`: 총괄이 만든 계획을 검사하고 각 카드를 독립된 공식 CLI 프로세스로 실행한다.
+- `crates/o-core/src/providers/`: 카드 목표·동료 목록·팀 대화 방법·결과 요약 지시를 짧은 프롬프트로 만든다.
+- `crates/o-core/src/policy.rs`, `run/runner.rs`: 총괄이 만든 계획을 검사하고 각 카드를 독립된 공식 CLI 프로세스로 실행한다.
 - O 카드는 특정 CLI의 내장 서브에이전트 호출이 아니다. 별도 CLI 세션이 같은 프로젝트 폴더에서 일하며 실행별 팀 채널로 연락한다.
-- `app/src/components/Onboarding.tsx`, `Settings.tsx`, `AgentSetup.tsx`: 공식 CLI 상태 확인·설치·로그인과 깨끗한 프로필 선택이 있다.
-- `app/src/settings.ts`의 clean 기본값은 true지만, 현재 연결 대상은 상태 확인·로그인이다. CLI dispatch는 명시적인 `--clean`이 필요하다.
+- `app/src/features/settings/Onboarding.tsx`, `Settings.tsx`, `AgentSetup.tsx`: 공식 CLI 상태 확인·설치·로그인과 깨끗한 프로필 선택이 있다.
+- `app/src/data/settings.ts`의 clean 기본값은 true지만, 현재 연결 대상은 상태 확인·로그인이다. CLI dispatch는 명시적인 `--clean`이 필요하다.
 
 진행 중: 목표 6 전담 브랜치는 전달받지 않았다. budget·context 작업이 분배 시 예산과 문맥의 기반을 보강할 예정이다.
 
 남은 순서:
 
 1. 총괄의 프로바이더·모델·프로젝트 세션 수명과 저장 형식을 합의하고, 한 총괄 CLI 연결부터 구현한다.
-2. `app/src/components/Composer.tsx`의 입력을 총괄 → 계획 확인 → dispatch로 연결하며 Tauri·개발 API·CLI 동작을 맞춘다.
+2. `app/src/features/chat/Composer.tsx`의 입력을 총괄 → 계획 확인 → dispatch로 연결하며 Tauri·개발 API·CLI 동작을 맞춘다.
 3. 총괄 재접속·카드 질문 응답·중지·실패 회수까지 한 계획으로 검증하고 설정의 clean 선택을 실제 dispatch에 전달한다.
 
-현재 Composer는 전송하지 않았다는 안내만 표시한다. `app/src/projects.ts`의 총괄 깨우기도 타이머 기반 화면 상태다.
+현재 Composer는 전송하지 않았다는 안내만 표시한다. `app/src/data/projects.ts`의 총괄 깨우기도 타이머 기반 화면 상태다.
 O는 계획된 카드를 실행·대기시키며, 작업을 스스로 분해하거나 프로바이더·모델·effort를 자동 결정하지 않는다.
 
 ## 병렬 작업의 통합 상태
@@ -205,7 +205,7 @@ O는 계획된 카드를 실행·대기시키며, 작업을 스스로 분해하�
 - 결과: `card.end` 상태, 검증 통과/실패, 사람이 고친 내용·재시도 수, 완료 시간, 한도·쿨다운과 측정 누락.
 - 부대 비용: 총괄의 계획 수립, 검색·요약 준비, 실패한 카드와 재작업의 토큰도 별도 기록한다. 카드 합계만으로 전체 비용을 주장하지 않는다.
 
-집계의 근거는 `events.rs`, `providers.rs`, `runner.rs`, 양쪽 `snapshot` 구현의 `card.usage`다.
+집계의 근거는 `run/events.rs`, `providers/`, `run/runner.rs`, 양쪽 `snapshot` 구현의 `card.usage`다.
 정규화된 `input`은 캐시 입력을 제외한다. Codex는 보고 입력에서 캐시를 빼고, Claude는 캐시 생성 입력을 input에 더한다.
 Antigravity는 보고된 thinking 토큰을 output에 더한다. 프로바이더 원시 합계를 다시 더해 이중 집계하지 않는다.
 `input + cached`는 전체 입력량, `input + cached + output`은 보고 토큰 합계다. 비용·구독 비율과 같은 수치는 아니다.

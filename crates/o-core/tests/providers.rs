@@ -1,8 +1,8 @@
 //! Port of tests/providers.test.ts.
 
-use o_core::events::StreamSignal;
-use o_core::js::iso_from_secs;
-use o_core::plan::{Card, Plan, ProviderId};
+use o_core::run::events::StreamSignal;
+use o_core::sys::js::iso_from_secs;
+use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::providers::{card_prompt, launch_spec, unwrap_shell, LaunchSpec, StreamReader, TeamChannel};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;

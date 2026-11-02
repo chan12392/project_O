@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { backend } from "../app/src/backend.ts";
-import { DESKTOP_UPDATES_ONLY, UNINSTALL_KEEP, UNINSTALL_PURGE } from "../app/src/updates.ts";
+import { backend } from "../app/src/platform/backend/index.ts";
+import { DESKTOP_UPDATES_ONLY, UNINSTALL_KEEP, UNINSTALL_PURGE } from "../app/src/platform/updates.ts";
 
 test("demo checks explain the desktop boundary and cannot install", async () => {
   const demo = backend(true);

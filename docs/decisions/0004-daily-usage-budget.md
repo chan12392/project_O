@@ -3,7 +3,7 @@
 - 상태: 제안 (대표 요청, test_2에서 확인 후 B 확인)
 - 날짜: 2026-11-02
 - 승인: [x] A  [ ] B
-- 관련: `crates/o-core/src/budget.rs`, `policy.rs`(새 규칙 `daily-budget`), `runner.rs`, `events.rs`(`card.budget`), ADR-0002
+- 관련: `crates/o-core/src/usage/budget.rs`, `policy.rs`(새 규칙 `daily-budget`), `run/runner.rs`, `run/events.rs`(`card.budget`), ADR-0002
 
 ## 배경
 

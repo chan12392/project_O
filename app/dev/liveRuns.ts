@@ -4,7 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 
 import type { Plugin } from "vite";
-import { DESKTOP_UPDATES_ONLY } from "../src/updates.ts";
+import { DESKTOP_UPDATES_ONLY } from "../src/platform/updates.ts";
 
 /**
  * The `o` this checkout builds (`cargo build --release`), else the one on PATH.
@@ -53,7 +53,7 @@ function sameOrigin(req: IncomingMessage): boolean {
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
 const AGENT_ACTION = /^\/agents\/(claude|codex|agy)\/(install|login)$/;
 
-/** A PR number or github.com pull address, as `o review` takes it (backend.ts PR_SELECTOR). */
+/** A PR number or github.com pull address, as `o review` takes it (platform/backend PR_SELECTOR). */
 const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
 /** An absolute folder; `o review`'s policy check decides whether it may be a project. */
 const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/;
@@ -64,7 +64,7 @@ const BUDGET_PERCENT = /^1[234]$/;
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 
 /**
- * Dev-server stand-in for the desktop shell (backend.ts, useLiveRuns.ts): runs, usage,
+ * Dev-server stand-in for the desktop shell (src/platform/backend, src/data/useLiveRuns.ts): runs, usage,
  * agent CLI status, the official install and sign-in, and About, each through `o`.
  */
 export function liveRuns(): Plugin {
