@@ -7,7 +7,8 @@ use std::time::UNIX_EPOCH;
 use chrono::{DateTime, Duration, TimeZone, Utc};
 use o_core::events::OEvent;
 use o_core::js::iso;
-use o_core::sessions::{read_sessions, transcript_files, with_sessions};
+use o_core::index::RunQuery;
+use o_core::sessions::{read_sessions, transcript_files, with_sessions, with_sessions_for};
 use o_core::snapshot::{snapshot, CardState, RunStatus, RunView};
 use o_core::store::RunRecord;
 use serde_json::{json, Value};
@@ -391,4 +392,25 @@ fn o_cards_own_sessions_are_not_listed_twice() {
     ];
     let ids: Vec<String> = with_sessions(runs, sessions).into_iter().map(|r| r.run_id).collect();
     assert_eq!(ids, ["session-s2", "20261101-100000-aaaa"]);
+}
+
+#[test]
+fn sessions_follow_the_runs_project_and_limit() {
+    let record = |id: &str, project: &str, at: &str| RunRecord { run_id: id.into(), events: vec![json!({ "t": "run.start", "at": at, "runId": id, "title": "t", "project": project, "cards": [] })] };
+    let mut o_run = record("20261101-100000-aaaa", "C:/A", "2026-11-01T10:00:00.000Z");
+    o_run.events.push(json!({ "t": "card.session", "at": "2026-11-01T10:00:01.000Z", "cardId": "c1", "sessionId": "s1" }));
+    let sessions = || {
+        vec![
+            record("session-s1", "C:/A", "2026-11-01T10:00:01.000Z"),
+            record("session-a2", if cfg!(windows) { "c:\\a\\" } else { "C:/A/" }, "2026-11-01T11:00:00.000Z"),
+            record("session-b1", "C:/B", "2026-11-01T12:00:00.000Z"),
+        ]
+    };
+    let ids = |query: &RunQuery| -> Vec<String> { with_sessions_for(vec![o_run.clone()], sessions(), query).into_iter().map(|r| r.run_id).collect() };
+    // --project A: B's session is left out, and the O card's own session is not listed twice.
+    assert_eq!(ids(&RunQuery { limit: 50, project: Some("C:/A") }), ["session-a2", "20261101-100000-aaaa"]);
+    // --limit applies to the merged list.
+    assert_eq!(ids(&RunQuery { limit: 1, project: Some("C:/A") }), ["session-a2"]);
+    assert_eq!(ids(&RunQuery { limit: 1, project: None }), ["session-b1"]);
+    assert_eq!(ids(&RunQuery { limit: 50, project: None }).len(), 3);
 }

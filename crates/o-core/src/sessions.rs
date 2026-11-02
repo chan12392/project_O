@@ -859,9 +859,35 @@ pub fn with_sessions(runs: Vec<RunRecord>, sessions: Vec<RunRecord>) -> Vec<RunR
     newest_first(all)
 }
 
+/// Folder paths as the run index compares them: `/` slashes, no trailing one, any case on Windows.
+fn same_folder(a: &str, b: &str) -> bool {
+    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
+    let (a, b) = (norm(a), norm(b));
+    if cfg!(windows) {
+        a.eq_ignore_ascii_case(&b)
+    } else {
+        a == b
+    }
+}
+
+/// [`with_sessions`] under the same `--project` and `--limit` as the O runs: sessions of
+/// other projects are left out, and the merged list is cut to the limit.
+pub fn with_sessions_for(runs: Vec<RunRecord>, sessions: Vec<RunRecord>, query: &RunQuery) -> Vec<RunRecord> {
+    let sessions = match query.project {
+        Some(project) => sessions
+            .into_iter()
+            .filter(|s| s.events.first().and_then(|e| e.get("project")).and_then(Value::as_str).is_some_and(|p| same_folder(p, project)))
+            .collect(),
+        None => sessions,
+    };
+    let mut all = with_sessions(runs, sessions);
+    all.truncate(query.limit);
+    all
+}
+
 /// What `o runs --json --sessions` and the app read: O's runs, then this PC's recent sessions.
 pub fn read_runs_with_sessions(home: &Path, query: &RunQuery, since: Duration) -> io::Result<Vec<RunRecord>> {
     let runs = store::read_runs(home, query)?;
     let sessions = read_sessions(&default_roots(), Some(&cache_path(home)), Utc::now(), since);
-    Ok(with_sessions(runs, sessions))
+    Ok(with_sessions_for(runs, sessions, query))
 }
