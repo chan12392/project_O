@@ -7,7 +7,8 @@
           {
             "type": "command",
             "command": "o hook",
-            "timeout": 10
+            "timeout": 10,
+            "onFailure": "block"
           }
         ]
       }
