@@ -4,11 +4,14 @@
 //! Claude reports its windows inside every run's stream (see `providers`).
 //! Pure parsers; nothing here touches credentials or provider backends.
 
+pub mod budget;
+pub mod probe;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::js::{iso_from_secs, js_string, number_text, ser_num};
-use crate::plan::ProviderId;
+use crate::sys::js::{iso_from_secs, js_string, number_text, ser_num};
+use crate::run::plan::ProviderId;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

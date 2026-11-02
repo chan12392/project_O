@@ -29,8 +29,8 @@ use chrono::Utc;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
-use crate::js::{iso, parse_time};
-use crate::store::RunRecord;
+use crate::sys::js::{iso, parse_time};
+use crate::run::store::RunRecord;
 
 const SCHEMA_VERSION: i64 = 1;
 

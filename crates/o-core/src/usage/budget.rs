@@ -28,12 +28,12 @@ use rusqlite::{params, Connection, TransactionBehavior};
 use serde::Serialize;
 use serde_json::{Map, Value};
 
-use crate::index::{self, sql};
-use crate::js::{iso, parse_time};
-use crate::plan::ProviderId;
+use crate::run::index::{self, sql};
+use crate::sys::js::{iso, parse_time};
+use crate::run::plan::ProviderId;
 use crate::policy::EFFORTS;
-use crate::probe;
-use crate::store::to_pretty;
+use crate::usage::probe;
+use crate::run::store::to_pretty;
 use crate::usage::{UsageReading, UsageWindow};
 
 pub const DEFAULT_PERCENT: u8 = 13;

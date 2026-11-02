@@ -1,7 +1,7 @@
 //! Port of tests/usage.test.ts.
 
-use o_core::js::iso_from_secs;
-use o_core::plan::ProviderId;
+use o_core::sys::js::iso_from_secs;
+use o_core::run::plan::ProviderId;
 use o_core::usage::{parse_agy_usage, parse_codex_rate_limits, UsageWindow};
 use serde_json::json;
 

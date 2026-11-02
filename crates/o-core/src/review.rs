@@ -23,13 +23,13 @@ use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::events::{CardStatus, OEvent};
-use crate::js::{js_head, js_len, now_iso};
-use crate::plan::ProviderId;
+use crate::run::events::{CardStatus, OEvent};
+use crate::sys::js::{js_head, js_len, now_iso};
+use crate::run::plan::ProviderId;
 use crate::policy::LIMITS;
-use crate::proc;
-use crate::resolve::resolve_cli;
-use crate::store::{append_event, list_runs, read_events};
+use crate::sys::proc;
+use crate::sys::resolve::resolve_cli;
+use crate::run::store::{append_event, list_runs, read_events};
 
 /// The card's id and label; review cards are told apart from work cards by them.
 pub const CARD_ID: &str = "review";
@@ -466,11 +466,11 @@ pub fn build_plan(project: &str, number: u64, task: &str, provider: ProviderId, 
 
 /// Saves a checked review plan as a new run. The review card gets the PR and nothing else:
 /// no earlier work of the project goes into its prompt (shared context is off, ADR-0005).
-pub fn create_run(home: &Path, run_id: &str, plan: &crate::plan::Plan, clean: bool) -> std::io::Result<()> {
-    crate::store::create_run(home, run_id, plan)?;
+pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, clean: bool) -> std::io::Result<()> {
+    crate::run::store::create_run(home, run_id, plan)?;
     crate::context::mark_off(home, run_id)?;
     if clean {
-        crate::store::mark_clean(home, run_id)?;
+        crate::run::store::mark_clean(home, run_id)?;
     }
     Ok(())
 }

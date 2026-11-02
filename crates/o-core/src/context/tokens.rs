@@ -14,8 +14,8 @@ use rusqlite::params;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::index::{self, sql};
-use crate::store::is_clean;
+use crate::run::index::{self, sql};
+use crate::run::store::is_clean;
 
 use super::normalize_project;
 

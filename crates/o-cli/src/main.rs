@@ -8,15 +8,19 @@ use std::process::Command;
 use std::time::Duration;
 
 use chrono::Utc;
-use o_core::js::{collapse_spaces, js_head};
+use o_core::sys::js::{collapse_spaces, js_head};
 use o_core::policy::{check_plan, Violation};
-use o_core::index::RunQuery;
-use o_core::snapshot::snapshot;
-use o_core::store::{self, default_home, is_run_id, run_dir};
-use o_core::team::{self, Caller, Refused};
+use o_core::run::index::RunQuery;
+use o_core::run::snapshot::snapshot;
+use o_core::run::store::{self, default_home, is_run_id, run_dir};
+use o_core::run::team::{self, Caller, Refused};
 use o_core::usage::UsageReading;
-use o_core::plan::ProviderId;
-use o_core::{clean, mirror, probe, proc, review, runner, sessions};
+use o_core::run::plan::ProviderId;
+use o_core::agents::clean;
+use o_core::run::runner;
+use o_core::sys::{mirror, proc};
+use o_core::usage::probe;
+use o_core::{review, sessions};
 use serde_json::{json, Value};
 
 mod context_cmd;
@@ -202,7 +206,7 @@ fn attached(command: std::io::Result<Command>) -> i32 {
     }
 }
 
-/// `o agents path|login|shell|doctor`: clean agent profiles (see `o_core::clean`).
+/// `o agents path|login|shell|doctor`: clean agent profiles (see `o_core::agents::clean`).
 fn agents(args: &[String]) -> i32 {
     let root = clean::default_root();
     let (verb, rest) = match args.split_first() {
@@ -577,7 +581,7 @@ fn review(home: &Path, args: &[String]) -> i32 {
             if local_is_head { " · 이 폴더와 같음" } else { " · 이 폴더는 다른 커밋이라 로컬 파일로 보충하지 않음" }
         );
         eprintln!("작성: {} → 검토: {provider}{}", author.describe(), if args.provider.is_some() { " (지정)" } else { "" });
-        eprintln!("프롬프트 {}자 (상한 {}) · diff {}자 중 {}자 포함{cut}{redacted}", o_core::js::js_len(&task.text), o_core::policy::LIMITS.max_task_chars, task.diff_chars, task.diff_included);
+        eprintln!("프롬프트 {}자 (상한 {}) · diff {}자 중 {}자 포함{cut}{redacted}", o_core::sys::js::js_len(&task.text), o_core::policy::LIMITS.max_task_chars, task.diff_chars, task.diff_included);
     };
     if !args.detach || args.dry_run {
         summary();
@@ -592,7 +596,7 @@ fn review(home: &Path, args: &[String]) -> i32 {
         return 2;
     };
     if args.dry_run {
-        println!("정책 통과 — 실행하지 않음 (--dry-run). 검토: {provider}, 프롬프트 {}자", o_core::js::js_len(&task.text));
+        println!("정책 통과 — 실행하지 않음 (--dry-run). 검토: {provider}, 프롬프트 {}자", o_core::sys::js::js_len(&task.text));
         return 0;
     }
 
@@ -709,7 +713,7 @@ fn budget(home: &Path, args: &[String]) -> i32 {
             "--cached" => cached = true,
             "--percent" => {
                 let value = items.next().and_then(|v| v.parse::<f64>().ok()).map_or(Value::Null, |n| json!(n));
-                if let Err(error) = o_core::budget::write_percent(home, &value) {
+                if let Err(error) = o_core::usage::budget::write_percent(home, &value) {
                     return fail(&error);
                 }
             }
@@ -717,9 +721,9 @@ fn budget(home: &Path, args: &[String]) -> i32 {
         }
     }
     if !cached {
-        o_core::budget::refresh_if_stale(home, Utc::now());
+        o_core::usage::budget::refresh_if_stale(home, Utc::now());
     }
-    let report = match o_core::budget::report(home, Utc::now()) {
+    let report = match o_core::usage::budget::report(home, Utc::now()) {
         Ok(report) => report,
         Err(error) => return fail(&error.to_string()),
     };
@@ -727,7 +731,7 @@ fn budget(home: &Path, args: &[String]) -> i32 {
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         return 0;
     }
-    println!("하루 사용 예산: 주간 한도의 {}% (settings.json {})", report.percent, o_core::budget::PERCENT_KEY);
+    println!("하루 사용 예산: 주간 한도의 {}% (settings.json {})", report.percent, o_core::usage::budget::PERCENT_KEY);
     for b in &report.providers {
         let Some(spent) = b.spent else {
             println!("{:<6} 주간 기록 없음 — 조절하지 않음", b.provider.as_str());
@@ -737,7 +741,7 @@ fn budget(home: &Path, args: &[String]) -> i32 {
         let pace = b.pace.map_or("-".to_string(), |p| format!("{p:.2}"));
         let efforts: Vec<String> = b.efforts.iter().map(|c| format!("{}→{}", c.from.as_deref().unwrap_or("미지정"), c.to)).collect();
         let adjust = match b.state {
-            o_core::budget::Pace::Over => format!("새 카드 거부 ({})", b.message),
+            o_core::usage::budget::Pace::Over => format!("새 카드 거부 ({})", b.message),
             _ if efforts.is_empty() => "effort 그대로".to_string(),
             _ => format!("effort {}단계 낮춤: {}", b.steps_down, efforts.join(", ")),
         };

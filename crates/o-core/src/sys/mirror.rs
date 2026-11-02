@@ -9,8 +9,8 @@ use std::io::Write;
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::js::now_iso;
-use crate::proc;
+use crate::sys::js::now_iso;
+use crate::sys::proc;
 
 /// The protected branches; sync refuses any other checkout.
 pub const MIRROR_BRANCHES: [&str; 3] = o_guard::rules::READ_ONLY_BRANCHES;

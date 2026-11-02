@@ -25,10 +25,10 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use crate::plan::ProviderId;
-use crate::probe;
-use crate::resolve::resolve_cli;
-use crate::store::{to_pretty, user_home};
+use crate::run::plan::ProviderId;
+use crate::usage::probe;
+use crate::sys::resolve::resolve_cli;
+use crate::run::store::{to_pretty, user_home};
 use crate::usage::parse_agy_usage;
 
 /// `%LOCALAPPDATA%/project_O-agents`, or `~/.local/state/project_O-agents` elsewhere. Kept out of

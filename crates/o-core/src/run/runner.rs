@@ -16,17 +16,17 @@ use std::time::Duration;
 use chrono::Utc;
 use serde_json::Value;
 
-use crate::budget::{self, Pace};
-use crate::events::{CardInfo, CardStatus, OEvent, StreamSignal};
+use crate::usage::budget::{self, Pace};
+use crate::run::events::{CardInfo, CardStatus, OEvent, StreamSignal};
 use crate::usage::UsageWindow;
-use crate::js::{js_string, js_tail, now_iso, parse_time};
-use crate::plan::{Card, Plan, ProviderId};
+use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
+use crate::run::plan::{Card, Plan, ProviderId};
 use crate::policy::{check_plan, LIMITS};
-use crate::clean;
-use crate::proc;
+use crate::agents::clean;
+use crate::sys::proc;
 use crate::providers::{launch_spec_with, LaunchSpec, StreamReader, TeamChannel};
-use crate::resolve::resolve_cli;
-use crate::store::{
+use crate::sys::resolve::resolve_cli;
+use crate::run::store::{
     active_markers, append_event, clear_active, cooldown_times, is_clean, mark_active, policy_context, read_events, read_plan, record_start, run_dir,
     set_cooldown, started_on, stop_requested, ActiveMarker,
 };
@@ -342,7 +342,7 @@ pub fn stop_run(home: &Path, run_id: &str) -> io::Result<bool> {
     if !run_dir(home, run_id).exists() {
         return Ok(false);
     }
-    crate::store::request_stop(home, run_id)?;
+    crate::run::store::request_stop(home, run_id)?;
     for marker in active_markers(home).into_iter().filter(|m| m.run_id == run_id) {
         proc::kill_tree(marker.pid);
     }

@@ -11,10 +11,10 @@ use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
 
-use crate::js::now_iso;
-use crate::proc;
-use crate::resolve::resolve_cli;
-use crate::store::to_pretty;
+use crate::sys::js::now_iso;
+use crate::sys::proc;
+use crate::sys::resolve::resolve_cli;
+use crate::run::store::to_pretty;
 use crate::usage::{parse_agy_usage, parse_codex_rate_limits, Unavailable, UsageReading, UsageWindow};
 
 const TIMEOUT: Duration = Duration::from_secs(20);
@@ -161,8 +161,8 @@ pub fn save_usage(home: &Path, reading: &UsageReading) -> io::Result<()> {
     fs::create_dir_all(home)?;
     fs::write(home.join("usage.json"), to_pretty(reading)?)?;
     // The daily budget counts today's spend from these snapshots.
-    let at = crate::js::parse_time(&reading.at).unwrap_or_else(chrono::Utc::now);
-    crate::budget::record(home, &reading.windows, at)
+    let at = crate::sys::js::parse_time(&reading.at).unwrap_or_else(chrono::Utc::now);
+    crate::usage::budget::record(home, &reading.windows, at)
 }
 
 /// The last saved reading as written, without asking any CLI.

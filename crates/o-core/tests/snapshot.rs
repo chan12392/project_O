@@ -3,9 +3,9 @@
 
 use std::path::PathBuf;
 
-use o_core::events::OEvent;
-use o_core::snapshot::{describe_tool, snapshot, CardState, LogKind, RunStatus};
-use o_core::store::{newest_first, parse_event_values, parse_events, RunRecord};
+use o_core::run::events::OEvent;
+use o_core::run::snapshot::{describe_tool, snapshot, CardState, LogKind, RunStatus};
+use o_core::run::store::{newest_first, parse_event_values, parse_events, RunRecord};
 use serde_json::{json, Value};
 
 /// The app's demo fixture: real end-to-end runs, paths sanitised.
@@ -148,9 +148,9 @@ fn runs_come_newest_first_by_their_start_and_runs_without_a_start_are_left_out()
 /// Runs this machine already recorded (read only): every event line the TS port wrote is still an event.
 #[test]
 fn existing_local_runs_still_read() {
-    let home = o_core::store::default_home();
-    for run_id in o_core::store::list_runs(&home) {
-        for value in o_core::store::read_event_values(&home, &run_id) {
+    let home = o_core::run::store::default_home();
+    for run_id in o_core::run::store::list_runs(&home) {
+        for value in o_core::run::store::read_event_values(&home, &run_id) {
             let event: OEvent = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{run_id}: {e}: {value}"));
             // Written back byte for byte: same keys, same order, same numbers.
             assert_eq!(serde_json::to_string(&event).unwrap(), value.to_string(), "{run_id}");

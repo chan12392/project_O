@@ -10,13 +10,13 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{Duration as Span, Utc};
-use o_core::events::{CardStatus, OEvent};
-use o_core::js::{iso, parse_time};
-use o_core::plan::{Card, Plan, ProviderId};
+use o_core::run::events::{CardStatus, OEvent};
+use o_core::sys::js::{iso, parse_time};
+use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
-use o_core::runner::{run_plan, Spawner};
-use o_core::store::{
+use o_core::run::runner::{run_plan, Spawner};
+use o_core::run::store::{
     active_markers, clear_active, cooldown_times, create_run, mark_active, read_events, record_start, request_stop, set_cooldown, started_on,
     ActiveMarker,
 };
@@ -233,7 +233,7 @@ fn clean_run() {
 
 use std::sync::Mutex;
 
-use o_core::budget::{local_day_of, record};
+use o_core::usage::budget::{local_day_of, record};
 use o_core::usage::UsageWindow;
 
 /// Codex's weekly window: 20% at the start of today, `today` more now.
@@ -287,12 +287,12 @@ fn budget_lowers_effort() {
     assert!(has("hi", "model_reasoning_effort=medium") && has("plain", "model_reasoning_effort=low") && has("low", "model_reasoning_effort=low"));
     assert!(has("other", "high"));
     // The plan stays as written; the run's view shows the effort the card ran with.
-    assert_eq!(o_core::store::read_plan(&home, "r7").unwrap()["cards"][0]["effort"], "xhigh");
-    let view = o_core::snapshot::snapshot(&read_events(&home, "r7")).unwrap();
+    assert_eq!(o_core::run::store::read_plan(&home, "r7").unwrap()["cards"][0]["effort"], "xhigh");
+    let view = o_core::run::snapshot::snapshot(&read_events(&home, "r7")).unwrap();
     let hi = view.cards.iter().find(|c| c.id == "hi").unwrap();
     assert_eq!(hi.effort.as_deref(), Some("medium"));
-    assert!(hi.log.iter().any(|l| l.kind == o_core::snapshot::LogKind::Budget && l.text.contains("xhigh → medium")));
-    let claude: Vec<f64> = o_core::budget::weekly_snapshots(&home, ProviderId::Claude).unwrap().iter().map(|s| s.used).collect();
+    assert!(hi.log.iter().any(|l| l.kind == o_core::run::snapshot::LogKind::Budget && l.text.contains("xhigh → medium")));
+    let claude: Vec<f64> = o_core::usage::budget::weekly_snapshots(&home, ProviderId::Claude).unwrap().iter().map(|s| s.used).collect();
     assert_eq!(claude, [0.31]);
 }
 

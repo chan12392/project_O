@@ -6,9 +6,9 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 
-use crate::events::{CardStatus, OEvent};
-use crate::js::ser_num;
-use crate::plan::{card_label, ProviderId};
+use crate::run::events::{CardStatus, OEvent};
+use crate::sys::js::ser_num;
+use crate::run::plan::{card_label, ProviderId};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -308,7 +308,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
 
 /// "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budgetText` in src/core/snapshot.ts.
 pub fn budget_text(from: Option<&str>, to: &str, spent: f64, allowance: f64) -> String {
-    format!("사용 예산: effort {} → {to} (오늘 {}/{}%p)", from.unwrap_or("기본"), crate::js::number_text(spent), crate::js::number_text(allowance))
+    format!("사용 예산: effort {} → {to} (오늘 {}/{}%p)", from.unwrap_or("기본"), crate::sys::js::number_text(spent), crate::sys::js::number_text(allowance))
 }
 
 /// Tool names as each CLI reports them, grouped into what a person would call the act.

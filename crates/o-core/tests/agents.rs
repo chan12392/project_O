@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Once;
 
 use o_core::agents::{install, is_https_url, open_login, status};
-use o_core::plan::ProviderId;
+use o_core::run::plan::ProviderId;
 use serde_json::{json, Value};
 
 /// This test binary's own PATH: one empty folder.
@@ -67,7 +67,7 @@ fn sign_in_needs_the_cli() {
 
 #[test]
 fn console_command_lines_quote_like_the_c_runtime() {
-    let line = o_core::proc::command_line(Path::new(r"C:\Program Files\nodejs\node.exe"), &[
+    let line = o_core::sys::proc::command_line(Path::new(r"C:\Program Files\nodejs\node.exe"), &[
         r"C:\npm\codex.js".into(),
         "login".into(),
         "two words".into(),
@@ -88,8 +88,8 @@ fn console_window_starts_with_its_own_environment() {
     let system = std::env::var("SystemRoot").unwrap_or_else(|_| r"C:\Windows".into());
     let env = std::collections::BTreeMap::from([("SystemRoot".to_string(), system.clone())]);
     let program = PathBuf::from(&system).join("System32").join("hostname.exe");
-    o_core::proc::spawn_console(&program, &[], Some(&env), Some(&dir)).unwrap();
-    assert!(o_core::proc::spawn_console(&dir.join("missing.exe"), &[], None, None).is_err());
+    o_core::sys::proc::spawn_console(&program, &[], Some(&env), Some(&dir)).unwrap();
+    assert!(o_core::sys::proc::spawn_console(&dir.join("missing.exe"), &[], None, None).is_err());
 }
 
 #[test]

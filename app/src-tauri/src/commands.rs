@@ -8,10 +8,14 @@ use std::process::{Command, Stdio};
 use std::sync::Mutex;
 
 use o_core::agents::{self, ActionResult, AgentStatus};
-use o_core::index::RunQuery;
-use o_core::plan::ProviderId;
+use o_core::run::index::RunQuery;
+use o_core::run::plan::ProviderId;
 use o_core::usage::UsageReading;
-use o_core::{budget, clean, probe, proc, resolve, review, sessions, store};
+use o_core::agents::clean;
+use o_core::run::store;
+use o_core::sys::{proc, resolve};
+use o_core::usage::{budget, probe};
+use o_core::{review, sessions};
 use serde::Serialize;
 use serde_json::{json, Value};
 

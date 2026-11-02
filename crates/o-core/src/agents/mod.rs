@@ -4,6 +4,8 @@
 //! vendors' install scripts are shown to the person, never fetched and run here.
 //! Sign-in opens the CLI's own login in a console window the person drives.
 
+pub mod clean;
+
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::thread;
@@ -11,12 +13,12 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use crate::clean::{self, LoginState};
-use crate::plan::ProviderId;
-use crate::probe;
-use crate::proc;
-use crate::resolve::{resolve_cli, which, CliCommand};
-use crate::store::user_home;
+use clean::LoginState;
+use crate::run::plan::ProviderId;
+use crate::usage::probe;
+use crate::sys::proc;
+use crate::sys::resolve::{resolve_cli, which, CliCommand};
+use crate::run::store::user_home;
 
 /// One CLI as the Settings and onboarding screens show it (`AgentStatus` in app/src/backend.ts).
 #[derive(Clone, Debug, PartialEq, Serialize)]

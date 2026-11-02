@@ -2,7 +2,7 @@
 //! (it is on the guard's allowed-path list).
 
 use chrono::{DateTime, Utc};
-use o_core::plan::ProviderId;
+use o_core::run::plan::ProviderId;
 use o_core::policy::{check_message, check_plan, empty_counts, Checked, Parties, PolicyContext, LIMITS};
 use serde_json::{json, Value};
 

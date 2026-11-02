@@ -32,11 +32,11 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::events::OEvent;
-use crate::index::{self, sql};
-use crate::js::{now_iso, parse_time, squash_spaces};
-use crate::plan::{card_label, Plan, ProviderId};
-use crate::store::{append_event, run_dir};
+use crate::run::events::OEvent;
+use crate::run::index::{self, sql};
+use crate::sys::js::{now_iso, parse_time, squash_spaces};
+use crate::run::plan::{card_label, Plan, ProviderId};
+use crate::run::store::{append_event, run_dir};
 
 /// The most characters of earlier work a card prompt carries: the whole section, header and hint included.
 pub const INJECT_CHARS: usize = 1_500;

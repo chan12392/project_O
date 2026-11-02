@@ -5,7 +5,7 @@ use std::path::Path;
 
 use o_core::context::tokens::{self, Group, Report, TokenQuery};
 use o_core::context::{self, Hit};
-use o_core::js::parse_time;
+use o_core::sys::js::parse_time;
 use serde_json::json;
 
 const DEFAULT_LIMIT: usize = 5;
@@ -165,7 +165,7 @@ fn since_arg(text: &str) -> Option<String> {
     if let Ok(date) = chrono::NaiveDate::parse_from_str(text, "%Y-%m-%d") {
         return Some(format!("{date}T00:00:00.000Z"));
     }
-    parse_time(text).map(o_core::js::iso)
+    parse_time(text).map(o_core::sys::js::iso)
 }
 
 fn n(value: u64) -> String {

@@ -27,12 +27,12 @@ use serde::{Deserialize, Serialize};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
-use crate::events::OEvent;
-use crate::index::{self, sql, title_text, RunQuery};
-use crate::js::{iso, local_day, parse_time};
-use crate::plan::{Plan, ProviderId};
+use crate::run::events::OEvent;
+use crate::run::index::{self, sql, title_text, RunQuery};
+use crate::sys::js::{iso, local_day, parse_time};
+use crate::run::plan::{Plan, ProviderId};
 use crate::policy::{empty_counts, PolicyContext, Violation, LIMITS};
-use crate::proc;
+use crate::sys::proc;
 
 /// `%LOCALAPPDATA%/project_O`, or `~/.local/state/project_O` elsewhere.
 pub fn default_home() -> PathBuf {
@@ -262,7 +262,7 @@ pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyConte
         active_by_provider,
         started_today: started_on(home, now)?,
         cooldowns: cooldown_times(home)?,
-        over_budget: crate::budget::over_budget(home, now)?,
+        over_budget: crate::usage::budget::over_budget(home, now)?,
         project_exists: Box::new(|path| Path::new(path).exists()),
         is_mirror: Box::new(o_guard::is_mirror),
         o_home: home.to_string_lossy().into_owned(),
