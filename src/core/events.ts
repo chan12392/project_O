@@ -34,7 +34,9 @@ export type OEvent =
   | { t: "card.usage"; at: string; cardId: string; input: number; cached: number; output: number }
   /** A subscription window the provider reported: share used (0 to 1) and when it resets. */
   | { t: "quota"; at: string; provider: ProviderId; window: string; used: number; resetsAt: string }
-  | { t: "run.end"; at: string; runId: string; status: CardStatus };
+  | { t: "run.end"; at: string; runId: string; status: CardStatus }
+  /** `o review --post` commented the review card's answer on the PR (ADR-0006). */
+  | { t: "review.posted"; at: string; pr: number; url: string };
 
 /** What a provider stream line means, before it gets a timestamp and card id. */
 export type StreamSignal =

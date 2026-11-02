@@ -104,6 +104,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       run.quotas = [...run.quotas.filter((q) => q.provider !== e.provider || q.window !== e.window), { provider: e.provider, window: e.window, used: e.used, resetsAt: e.resetsAt, at: e.at }];
       continue;
     }
+    if (e.t === "review.posted") continue;
     const card = byId.get(e.cardId);
     if (!card) continue;
     switch (e.t) {

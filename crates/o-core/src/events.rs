@@ -101,6 +101,9 @@ pub enum OEvent {
     },
     #[serde(rename = "run.end")]
     RunEnd { at: String, run_id: String, status: CardStatus },
+    /// `o review --post` commented the review card's answer on the PR (ADR-0006).
+    #[serde(rename = "review.posted")]
+    ReviewPosted { at: String, pr: u64, url: String },
 }
 
 impl OEvent {
@@ -119,6 +122,7 @@ impl OEvent {
             OEvent::CardUsage { .. } => "card.usage",
             OEvent::Quota { .. } => "quota",
             OEvent::RunEnd { .. } => "run.end",
+            OEvent::ReviewPosted { .. } => "review.posted",
         }
     }
 }

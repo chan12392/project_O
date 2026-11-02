@@ -16,7 +16,7 @@ use o_core::store::{self, default_home, is_run_id, run_dir};
 use o_core::team::{self, Caller, Refused};
 use o_core::usage::UsageReading;
 use o_core::plan::ProviderId;
-use o_core::{clean, mirror, probe, proc, runner};
+use o_core::{clean, mirror, probe, proc, review, runner};
 use serde_json::{json, Value};
 
 const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬로 전달합니다.
@@ -32,6 +32,11 @@ const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬
   o msg read [--all]         나에게 온 새 메시지 (--all: 전체 대화)
   o msg post                 카드의 outbox 파일(첫 줄 \"to: <상대>\")을 팀 대화로 보내기
                              카드 밖에서는 --run <runId> 와 --as <카드|lead> 로 지정
+  o review <PR 번호|주소> [--provider claude|codex|agy] [--model M] [--effort E] [--clean] [--post] [--dry-run] [--detach]
+                             지금 폴더 저장소의 PR을 gh로 읽어 에이전트 카드 하나로 검토 (파일 변경 없음)
+                             --post: 끝나면 검토문을 PR 댓글로 게시 (승인·병합은 하지 않음)
+                             --dry-run: 실행 없이 프롬프트 크기·고른 에이전트·정책 결과만 출력
+                             --detach: 백그라운드로 시작하고 JSON 출력 (앱용)
   o usage [--json]           Codex·Antigravity 구독 한도를 각 CLI로 조회해 usage.json에 저장
   o usage --cached [--json]  조회하지 않고 저장된 usage.json만 출력
   o runs --json [--limit N] [--project <폴더>]
@@ -75,6 +80,8 @@ fn run(args: &[String]) -> i32 {
         Some("events") => run_id_arg(first).map_or(1, |id| events(&home, id, has("--follow"))),
         Some("stop") => run_id_arg(first).map_or(1, |id| stop(&home, id)),
         Some("msg") => message(&home, rest),
+        Some("review") => review(&home, rest),
+        Some("_review") => review_background(&home, rest),
         Some("usage") => usage(&home, has("--json"), has("--cached")),
         Some("runs") => runs(&home, rest),
         Some("hook") => o_guard::hook::hook_main(),
@@ -445,6 +452,113 @@ fn message(home: &Path, args: &[String]) -> i32 {
         },
         _ => fail(USAGE),
     }
+}
+
+/// `o review <pr> …`: reads the PR with gh in this folder, checks a one-card
+/// review plan like `o dispatch`, then runs it here (or in the background with
+/// `--detach`) and, with `--post`, comments the review on the PR.
+fn review(home: &Path, args: &[String]) -> i32 {
+    let args = match review::parse_args(args) {
+        Ok(args) => args,
+        Err(error) => return fail(&format!("{error}\n\n{USAGE}")),
+    };
+    let project = match std::env::current_dir() {
+        Ok(dir) => dir,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let gh = review::OfficialGh;
+    let (pr, diff) = match review::fetch(&gh, &project, &args.selector) {
+        Ok(found) => found,
+        Err(error) => return fail(&format!("PR을 읽지 못했습니다: {error}")),
+    };
+    let author = review::authorship(home, &pr);
+    let provider = args.provider.unwrap_or_else(|| review::choose_provider(author.provider));
+    let task = review::build_task(&pr, &diff, &review::new_nonce());
+    let project_text = project.to_string_lossy().into_owned();
+    let input = review::build_plan(&project_text, pr.number, &task.text, provider, args.model.as_deref(), args.effort.as_deref());
+
+    let now = Utc::now();
+    let ctx = match store::policy_context(home, now) {
+        Ok(ctx) => ctx,
+        Err(error) => return fail(&error.to_string()),
+    };
+    let checked = check_plan(&input, &ctx);
+    let summary = || {
+        let cut = if task.cut_files.is_empty() { String::new() } else { format!(", 잘린 파일 {}개", task.cut_files.len()) };
+        let redacted = if task.redacted_lines > 0 { format!(", 정책 규칙으로 뺀 줄 {}개", task.redacted_lines) } else { String::new() };
+        eprintln!("PR #{} {} — {}", pr.number, pr.title, pr.url);
+        eprintln!("작성: {} → 검토: {provider}{}", author.describe(), if args.provider.is_some() { " (지정)" } else { "" });
+        eprintln!("프롬프트 {}자 (상한 {}) · diff {}자 중 {}자 포함{cut}{redacted}", o_core::js::js_len(&task.text), o_core::policy::LIMITS.max_task_chars, task.diff_chars, task.diff_included);
+    };
+    if !args.detach || args.dry_run {
+        summary();
+    }
+    let Some(plan) = checked.plan else {
+        if !args.dry_run {
+            if let Err(error) = store::record_blocked(home, now, input.get("title"), &checked.violations) {
+                eprintln!("{error}");
+            }
+        }
+        print_violations(&checked.violations);
+        return 2;
+    };
+    if args.dry_run {
+        println!("정책 통과 — 실행하지 않음 (--dry-run). 검토: {provider}, 프롬프트 {}자", o_core::js::js_len(&task.text));
+        return 0;
+    }
+
+    let run_id = store::new_run_id(now);
+    if let Err(error) = store::create_run(home, &run_id, &plan).and_then(|()| if args.clean { store::mark_clean(home, &run_id) } else { Ok(()) }) {
+        return fail(&error.to_string());
+    }
+    let events = run_dir(home, &run_id).join("events.jsonl");
+    if args.detach {
+        // The PR and the post flag go to the background runner as arguments, out of the cards' reach.
+        let number = pr.number.to_string();
+        let mut background = vec!["_review", &run_id, &args.selector, &number];
+        if args.post {
+            background.push("--post");
+        }
+        let started = std::env::current_exe().and_then(|exe| proc::spawn_detached(Command::new(exe).args(&background).current_dir(&project)));
+        if let Err(error) = started {
+            return fail(&format!("실행기를 시작하지 못했습니다: {error}"));
+        }
+        let message = format!("PR #{} 검토를 시작했습니다 · {provider}{}", pr.number, if args.post { " · 끝나면 PR 댓글로 게시" } else { "" });
+        println!("{}", json!({ "ok": true, "message": message, "runId": run_id, "pr": pr.number, "provider": provider, "post": args.post, "events": events.to_string_lossy() }));
+        return 0;
+    }
+    eprintln!("실행 {run_id} — 검토 중… (다른 창에서 o events {run_id} --follow)");
+    review_run(home, &run_id, &args.selector, pr.number, args.post, &project)
+}
+
+/// Runs the review card (policy checked again, like `o _run`) and finishes: saves, and posts when asked.
+fn review_run(home: &Path, run_id: &str, selector: &str, number: u64, post: bool, project: &Path) -> i32 {
+    if let Err(message) = runner::run_detached(home, run_id) {
+        return fail(&message);
+    }
+    match review::finish(home, run_id, selector, number, post, project, &review::OfficialGh) {
+        Ok(done) => {
+            match (&done.review_file, &done.comment_url) {
+                (_, Some(url)) => println!("검토 댓글을 게시했습니다: {url}"),
+                (Some(file), None) => println!("검토문: {}\n게시하려면 --post를 붙여 다시 실행하거나 o status {run_id}로 확인하세요", file.to_string_lossy()),
+                (None, None) => println!("검토 카드가 {}로 끝나 검토문이 없습니다. o status {run_id}", done.status.as_str()),
+            }
+            i32::from(done.review_file.is_none())
+        }
+        Err(error) => fail(&error),
+    }
+}
+
+/// `o _review <runId> <pr> <number> [--post]`: the background half of `o review --detach`.
+fn review_background(home: &Path, args: &[String]) -> i32 {
+    let (Some(run_id), Some(selector), Some(number)) = (run_id_arg(args.first().map(String::as_str)), args.get(1), args.get(2).and_then(|n| n.parse().ok())) else {
+        return fail(USAGE);
+    };
+    if !review::is_selector(selector) {
+        return fail(&format!("PR 형식이 아닙니다: {selector}"));
+    }
+    let project = std::env::current_dir().unwrap_or_default();
+    review_run(home, run_id, selector, number, args.iter().any(|a| a == "--post"), &project)
 }
 
 fn usage(home: &Path, as_json: bool, cached: bool) -> i32 {

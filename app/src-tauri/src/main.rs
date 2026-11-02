@@ -18,6 +18,7 @@ fn main() {
             commands::agent_login,
             commands::open_external,
             commands::about,
+            commands::review,
         ])
         .run(tauri::generate_context!())
         .expect("Project O 창을 열지 못했습니다");
