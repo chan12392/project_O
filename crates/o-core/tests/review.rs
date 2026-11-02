@@ -163,6 +163,7 @@ fn ctx() -> PolicyContext {
         active_by_provider: empty_counts(),
         started_today: 0,
         cooldowns: Default::default(),
+        over_budget: Default::default(),
         project_exists: Box::new(|_| true),
         is_mirror: Box::new(|_| false),
         o_home: "C:/Users/me/AppData/Local/project_O".into(),

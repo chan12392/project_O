@@ -56,6 +56,8 @@ const AGENT_ACTION = /^\/agents\/(claude|codex|agy)\/(install|login)$/;
 const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
 /** An absolute folder; `o review`'s policy check decides whether it may be a project. */
 const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/;
+/** Settings → 에이전트 → 하루 사용 예산: the day's allowance, percent of the weekly window. */
+const BUDGET_PERCENT = /^1[234]$/;
 
 /** npm installs can take minutes. */
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
@@ -81,12 +83,19 @@ export function liveRuns(): Plugin {
           refreshing ??= o(["usage", "--json"]).finally(() => (refreshing = undefined));
           return void refreshing.then((out) => send(res, 200, out), error(res));
         }
-        const clean = new URLSearchParams(req.url?.split("?")[1] ?? "").get("clean") === "1" ? ["--clean"] : [];
+        const query = new URLSearchParams(req.url?.split("?")[1] ?? "");
+        if (req.method === "GET" && path === "/budget") return void o(["budget", "--json", "--cached"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/budget/percent") {
+          // `o budget` checks the range again; only these three ever reach it.
+          const percent = query.get("value") ?? "";
+          if (!BUDGET_PERCENT.test(percent)) return send(res, 400, JSON.stringify({ error: "하루 사용 예산은 12, 13, 14 중 하나입니다" }));
+          return void o(["budget", "--json", "--cached", "--percent", percent]).then((out) => send(res, 200, out), error(res));
+        }
+        const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/review") {
           // `o review <pr> --post --detach` in the project folder: reads the PR with gh, starts the review card, returns.
-          const query = new URLSearchParams(req.url?.split("?")[1] ?? "");
           const project = query.get("project") ?? "";
           const pr = query.get("pr") ?? "";
           if (!PR_SELECTOR.test(pr) || !ABSOLUTE.test(project) || !existsSync(project)) {

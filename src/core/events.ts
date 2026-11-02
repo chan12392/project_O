@@ -36,7 +36,12 @@ export type OEvent =
   | { t: "quota"; at: string; provider: ProviderId; window: string; used: number; resetsAt: string }
   | { t: "run.end"; at: string; runId: string; status: CardStatus }
   /** `o review --post` commented the review card's answer on the PR (ADR-0006). */
-  | { t: "review.posted"; at: string; pr: number; url: string };
+  | { t: "review.posted"; at: string; pr: number; url: string }
+  /**
+   * The runner lowered a card's effort before launching it to keep its provider within today's
+   * usage budget (ADR-0004). `spent` and `allowance` are percent points of the weekly window.
+   */
+  | { t: "card.budget"; at: string; cardId: string; provider: ProviderId; effortFrom?: string; effortTo: string; spent: number; allowance: number };
 
 /** What a provider stream line means, before it gets a timestamp and card id. */
 export type StreamSignal =

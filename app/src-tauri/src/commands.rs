@@ -11,9 +11,9 @@ use o_core::agents::{self, ActionResult, AgentStatus};
 use o_core::index::RunQuery;
 use o_core::plan::ProviderId;
 use o_core::usage::UsageReading;
-use o_core::{clean, probe, proc, resolve, review, store};
+use o_core::{budget, clean, probe, proc, resolve, review, store};
 use serde::Serialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// `o runs --json` lists this many by default.
 const DEFAULT_RUNS: usize = 50;
@@ -51,6 +51,17 @@ fn refresh_usage(home: &Path) -> Result<String, String> {
     Ok(json!(reading).to_string())
 }
 
+/// The text `o budget --json --cached` prints: today's usage budget per provider (ADR-0004).
+pub fn budget_json(home: &Path) -> Result<String, String> {
+    budget::report_now(home).map(|report| json!(report).to_string()).map_err(|e| e.to_string())
+}
+
+/// Saves the daily budget percent (12, 13 or 14; anything else is refused) and returns the new report.
+pub fn set_budget_percent(home: &Path, percent: &Value) -> Result<String, String> {
+    budget::write_percent(home, percent)?;
+    budget_json(home)
+}
+
 #[derive(Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct About {
@@ -80,6 +91,18 @@ pub async fn usage() -> Result<String, String> {
 #[tauri::command]
 pub async fn usage_refresh() -> Result<String, String> {
     blocking(|| refresh_usage(&store::default_home())).await?
+}
+
+/// Today's usage budget from the saved snapshots, without asking any CLI (`o budget --json --cached`).
+#[tauri::command]
+pub async fn budget() -> Result<String, String> {
+    blocking(|| budget_json(&store::default_home())).await?
+}
+
+/// Settings → 에이전트 → 하루 사용 예산 (`o budget --percent <n>`).
+#[tauri::command]
+pub async fn budget_set_percent(percent: Value) -> Result<String, String> {
+    blocking(move || set_budget_percent(&store::default_home(), &percent)).await?
 }
 
 #[tauri::command]
@@ -187,6 +210,18 @@ mod tests {
         let home = temp("usage");
         let body: Value = serde_json::from_str(&usage_json(&home).unwrap()).unwrap();
         assert_eq!(body, json!(UsageReading::empty()));
+    }
+
+    #[test]
+    fn budget_lists_providers_and_saves_only_12_to_14() {
+        let home = temp("budget");
+        let body: Value = serde_json::from_str(&budget_json(&home).unwrap()).unwrap();
+        assert_eq!(body["percent"], 13);
+        assert_eq!(body["providers"].as_array().unwrap().len(), 3);
+        assert!(set_budget_percent(&home, &json!(11)).is_err());
+        assert!(set_budget_percent(&home, &json!("14")).is_err());
+        let saved: Value = serde_json::from_str(&set_budget_percent(&home, &json!(14)).unwrap()).unwrap();
+        assert_eq!(saved["percent"], 14);
     }
 
     #[test]

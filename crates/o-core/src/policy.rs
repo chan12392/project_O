@@ -45,7 +45,8 @@ pub const LIMITS: Limits = Limits {
     default_cooldown_ms: 60 * 60 * 1000,
 };
 
-const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+/// The effort ladder, lowest first (the daily budget lowers along it, see `budget`).
+pub const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
@@ -66,6 +67,8 @@ pub struct PolicyContext {
     pub started_today: usize,
     /// Provider → ISO time until which it may not be used.
     pub cooldowns: HashMap<ProviderId, String>,
+    /// Provider → why it spent today's usage budget (ADR-0004, see `budget`).
+    pub over_budget: HashMap<ProviderId, String>,
     pub project_exists: Box<dyn Fn(&str) -> bool>,
     /// Whether the folder is a project_O protected-branch (test_1/test_2/main) mirror checkout.
     pub is_mirror: Box<dyn Fn(&str) -> bool>,
@@ -171,6 +174,9 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
                     Some(&card.id),
                 );
             }
+        }
+        if let Some(reason) = ctx.over_budget.get(&card.provider) {
+            found.add("daily-budget", reason.clone(), Some(&card.id));
         }
     }
 

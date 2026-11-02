@@ -9,7 +9,8 @@ export type CardState = "waiting" | "queued" | "running" | CardStatus;
 
 export interface CardLogEntry {
   at: string;
-  kind: "queued" | "tool" | "message" | "limit" | "end" | "team";
+  /** "budget": the runner lowered the card's effort for the daily usage budget. */
+  kind: "queued" | "tool" | "message" | "limit" | "end" | "team" | "budget";
   text: string;
   /** For tool entries: the act in words and the raw detail the CLI reported. */
   tool?: { word: string; detail: string };
@@ -129,6 +130,11 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.activity = `사용량 한도: ${e.until}까지 차단`;
         card.log.push({ at: e.at, kind: "limit", text: card.activity });
         break;
+      case "card.budget":
+        card.activity = budgetText(e.effortFrom, e.effortTo, e.spent, e.allowance);
+        card.effort = e.effortTo;
+        card.log.push({ at: e.at, kind: "budget", text: card.activity });
+        break;
       case "card.usage":
         card.usage = { input: card.usage.input + e.input, cached: card.usage.cached + e.cached, output: card.usage.output + e.output };
         break;
@@ -142,6 +148,11 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
   }
   return run;
+}
+
+/** "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budget_text` in crates/o-core/src/snapshot.rs. */
+export function budgetText(from: string | undefined, to: string, spent: number, allowance: number): string {
+  return `사용 예산: effort ${from ?? "기본"} → ${to} (오늘 ${spent}/${allowance}%p)`;
 }
 
 /** Tool names as each CLI reports them, grouped into what a person would call the act. */

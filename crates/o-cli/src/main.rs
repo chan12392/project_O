@@ -39,6 +39,10 @@ const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬
                              --detach: 백그라운드로 시작하고 JSON 출력 (앱용)
   o usage [--json]           Codex·Antigravity 구독 한도를 각 CLI로 조회해 usage.json에 저장
   o usage --cached [--json]  조회하지 않고 저장된 usage.json만 출력
+  o budget [--json] [--cached] [--percent 12|13|14]
+                             에이전트별 오늘 사용 예산(주간 한도의 12~14%)·속도·effort 조절
+                             (기록이 10분보다 오래되면 먼저 조회, --cached: 조회 안 함,
+                             --percent: settings.json의 하루 예산 비율 저장)
   o runs --json [--limit N] [--project <폴더>]
                              실행별 이벤트(최근 시작 순, 기본 50개) — 앱 화면용
   o hook                     에이전트 PreToolUse 훅 (도구 호출 JSON을 stdin으로 받음)
@@ -83,6 +87,7 @@ fn run(args: &[String]) -> i32 {
         Some("review") => review(&home, rest),
         Some("_review") => review_background(&home, rest),
         Some("usage") => usage(&home, has("--json"), has("--cached")),
+        Some("budget") => budget(&home, rest),
         Some("runs") => runs(&home, rest),
         Some("hook") => o_guard::hook::hook_main(),
         Some("scan") => o_guard::scan::scan_main(rest),
@@ -593,6 +598,59 @@ fn usage(home: &Path, as_json: bool, cached: bool) -> i32 {
     }
     for u in &reading.unavailable {
         println!("{:<6} 조회 실패: {}", u.provider, u.reason);
+    }
+    0
+}
+
+/// `o budget [--json] [--cached] [--percent N]`: today's usage budget per provider (ADR-0004).
+fn budget(home: &Path, args: &[String]) -> i32 {
+    let (mut as_json, mut cached) = (false, false);
+    let mut items = args.iter();
+    while let Some(arg) = items.next() {
+        match arg.as_str() {
+            "--json" => as_json = true,
+            "--cached" => cached = true,
+            "--percent" => {
+                let value = items.next().and_then(|v| v.parse::<f64>().ok()).map_or(Value::Null, |n| json!(n));
+                if let Err(error) = o_core::budget::write_percent(home, &value) {
+                    return fail(&error);
+                }
+            }
+            other => return fail(&format!("알 수 없는 인자: {other}\n\n{USAGE}")),
+        }
+    }
+    if !cached {
+        o_core::budget::refresh_if_stale(home, Utc::now());
+    }
+    let report = match o_core::budget::report(home, Utc::now()) {
+        Ok(report) => report,
+        Err(error) => return fail(&error.to_string()),
+    };
+    if as_json {
+        println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
+        return 0;
+    }
+    println!("하루 사용 예산: 주간 한도의 {}% (settings.json {})", report.percent, o_core::budget::PERCENT_KEY);
+    for b in &report.providers {
+        let Some(spent) = b.spent else {
+            println!("{:<6} 주간 기록 없음 — 조절하지 않음", b.provider.as_str());
+            continue;
+        };
+        let group = b.group.as_deref().map(|g| format!(" ({g})")).unwrap_or_default();
+        let pace = b.pace.map_or("-".to_string(), |p| format!("{p:.2}"));
+        let efforts: Vec<String> = b.efforts.iter().map(|c| format!("{}→{}", c.from.as_deref().unwrap_or("미지정"), c.to)).collect();
+        let adjust = match b.state {
+            o_core::budget::Pace::Over => format!("새 카드 거부 ({})", b.message),
+            _ if efforts.is_empty() => "effort 그대로".to_string(),
+            _ => format!("effort {}단계 낮춤: {}", b.steps_down, efforts.join(", ")),
+        };
+        println!(
+            "{:<6} 주간 {:.1}% · 오늘 {spent:.1}/{:.0}%p · {:.1}시간 남음 · 속도 {pace}{group} — {adjust}",
+            b.provider.as_str(),
+            b.weekly_used.unwrap_or_default(),
+            b.allowance,
+            b.remaining_hours.unwrap_or_default(),
+        );
     }
     0
 }

@@ -16,7 +16,9 @@ use std::time::Duration;
 use chrono::Utc;
 use serde_json::Value;
 
+use crate::budget::{self, Pace};
 use crate::events::{CardInfo, CardStatus, OEvent, StreamSignal};
+use crate::usage::UsageWindow;
 use crate::js::{js_string, js_tail, now_iso, parse_time};
 use crate::plan::{Card, Plan, ProviderId};
 use crate::policy::{check_plan, LIMITS};
@@ -101,7 +103,28 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
                 }
                 continue;
             }
+            // Today's usage budget, read the moment the card would start (ADR-0004).
+            let budget = budget::assess_now(home, card.provider, Utc::now())?;
+            if budget.state == Pace::Over {
+                take(&mut pending);
+                emit(ended(&card, CardStatus::Failed, Some(budget.message)))?;
+                results.push(CardStatus::Failed);
+                continue;
+            }
             take(&mut pending);
+            let mut card = card.clone();
+            if let Some(to) = budget::lower_effort(card.effort.as_deref(), budget.steps_down) {
+                emit(OEvent::CardBudget {
+                    at: now_iso(),
+                    card_id: card.id.clone(),
+                    provider: card.provider,
+                    effort_from: card.effort.clone(),
+                    effort_to: to.clone(),
+                    spent: budget.spent.unwrap_or_default(),
+                    allowance: budget.allowance,
+                })?;
+                card.effort = Some(to);
+            }
             let (home, run_id, plan, clean, spawner, done) =
                 (home.to_path_buf(), run_id.to_string(), Arc::clone(&shared_plan), clean.map(Path::to_path_buf), Arc::clone(&spawner), done_tx.clone());
             thread::spawn(move || {
@@ -261,6 +284,9 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, clean: Option<&
                     }
                     StreamSignal::Usage { input, cached, output } => emit(OEvent::CardUsage { at, card_id, input, cached, output })?,
                     StreamSignal::Quota { window, used, resets_at } => {
+                        // A snapshot for the daily budget; the event stays the record either way.
+                        let reading = UsageWindow { provider: card.provider, window: window.clone(), group: None, used, resets_at: resets_at.clone() };
+                        let _ = budget::record(home, &[reading], Utc::now());
                         emit(OEvent::Quota { at, provider: card.provider, window, used, resets_at })?
                     }
                     StreamSignal::Final { ok, text } => last = Some((ok, text)),
@@ -327,6 +353,11 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
         let plan = read_plan(home, run_id).map_err(|e| e.to_string())?;
         raw = Some(plan.clone());
+        // Codex and Antigravity report usage only when asked: a stale reading is read again before the budget check.
+        let probed = |c: &Value| matches!(c.get("provider").and_then(Value::as_str), Some("codex" | "agy"));
+        if plan.get("cards").and_then(Value::as_array).is_some_and(|cards| cards.iter().any(probed)) {
+            budget::refresh_if_stale(home, Utc::now());
+        }
         let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
         let checked = check_plan(&plan, &ctx);
         let Some(plan) = checked.plan else {

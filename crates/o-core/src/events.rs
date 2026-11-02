@@ -104,6 +104,22 @@ pub enum OEvent {
     /// `o review --post` commented the review card's answer on the PR (ADR-0006).
     #[serde(rename = "review.posted")]
     ReviewPosted { at: String, pr: u64, url: String },
+    /// The runner lowered a card's effort before launching it to keep its provider within
+    /// today's usage budget (ADR-0004). `spent` and `allowance` are percent points of the weekly window.
+    #[serde(rename = "card.budget")]
+    CardBudget {
+        at: String,
+        card_id: String,
+        provider: ProviderId,
+        /// The plan's effort; absent when the card named none.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort_from: Option<String>,
+        effort_to: String,
+        #[serde(serialize_with = "ser_num")]
+        spent: f64,
+        #[serde(serialize_with = "ser_num")]
+        allowance: f64,
+    },
 }
 
 impl OEvent {
@@ -123,6 +139,7 @@ impl OEvent {
             OEvent::Quota { .. } => "quota",
             OEvent::RunEnd { .. } => "run.end",
             OEvent::ReviewPosted { .. } => "review.posted",
+            OEvent::CardBudget { .. } => "card.budget",
         }
     }
 }
