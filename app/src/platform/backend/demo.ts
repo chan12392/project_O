@@ -104,6 +104,7 @@ const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 export const demoBackend: Backend = {
   kind: "demo",
+  agentsCatalog: async () => [],
   agents: async () => [
     { id: "claude", name: "Claude Code", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "" },
     { id: "codex", name: "Codex", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "" },

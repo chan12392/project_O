@@ -15,16 +15,19 @@ pub enum ProviderId {
     Claude,
     Codex,
     Agy,
+    /// OpenCode v2 (ADR-0015). Serialized "opencode".
+    OpenCode,
 }
 
 impl ProviderId {
-    pub const ALL: [ProviderId; 3] = [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy];
+    pub const ALL: [ProviderId; 4] = [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy, ProviderId::OpenCode];
 
     pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::Claude => "claude",
             ProviderId::Codex => "codex",
             ProviderId::Agy => "agy",
+            ProviderId::OpenCode => "opencode",
         }
     }
 

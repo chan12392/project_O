@@ -1,6 +1,6 @@
 //! The agent CLIs: status, the official install and sign-in (`o agents …`; dev `/api/agents`).
 
-use o_core::agents::{self, clean, ActionResult, AgentStatus};
+use o_core::agents::{self, catalog, clean, ActionResult, AgentStatus};
 use o_core::run::plan::ProviderId;
 
 use super::blocking;
@@ -12,6 +12,11 @@ fn provider(id: &str) -> Result<ProviderId, String> {
 #[tauri::command]
 pub async fn agents_status(clean: bool) -> Result<Vec<AgentStatus>, String> {
     blocking(move || agents::status(&clean::default_root(), clean)).await
+}
+
+#[tauri::command]
+pub async fn agents_catalog() -> Result<Vec<catalog::Listed>, String> {
+    blocking(catalog::list).await
 }
 
 #[tauri::command]

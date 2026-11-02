@@ -527,6 +527,10 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let stopped = || LeadEvent::Error { at: now_iso(), text: "총괄을 중지했습니다".into() };
     let command = spawner(&spec, req.project).and_then(|mut command| {
         if let Some(root) = req.clean {
+            // ADR-0015: a lead on the project_O profile needs that profile signed in.
+            if let Some(why) = clean::not_ready(root, &[req.provider]).remove(&req.provider) {
+                return Err(io::Error::other(why));
+            }
             command.env_clear().envs(clean::environment(root, req.provider)?);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.

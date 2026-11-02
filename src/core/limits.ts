@@ -7,6 +7,6 @@ import type { ProviderId } from "./plan.ts";
  */
 export const LIMITS = {
   maxActiveTotal: 6,
-  maxActivePerProvider: { claude: 3, codex: 3, agy: 2 } as Record<ProviderId, number>,
+  maxActivePerProvider: { claude: 3, codex: 3, agy: 2, opencode: 2 } as Record<ProviderId, number>,
   maxCardsPerDay: 60,
 } as const;

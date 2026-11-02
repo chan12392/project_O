@@ -331,7 +331,7 @@ fn every_lead_takes_the_model_it_is_given() {
 /// separately below (`yolo_leads_*`).
 #[test]
 fn lead_launches_never_write_and_never_turn_approvals_off() {
-    for provider in ProviderId::ALL {
+    for provider in ProviderId::ALL.into_iter().filter(|p| o_core::providers::can_lead(*p)) {
         for session in [None, Some("s")] {
             let spec = lead_spec(provider, session, Some("high"), &[]).unwrap_or_else(|| panic!("{provider} cannot lead"));
             let turn = LeadTurn { project: "C:/work/demo", prompt: "계획해 줘".into(), session, model: None, effort: Some("high"), files_dir: Some("C:/o-lead/t1"), images: &[] };
@@ -508,7 +508,88 @@ fn yolo_leads_may_edit_and_run_commands_but_never_send_work() {
 
 #[test]
 fn every_cli_with_a_read_only_resumable_mode_can_lead() {
-    for provider in ProviderId::ALL {
+    for provider in [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy] {
         assert!(o_core::providers::can_lead(provider), "{provider}");
     }
+    // OpenCode's `run` takes no session settings and its plan agent does not deny the shell, so
+    // nothing the CLI enforces keeps a lead read-only (ADR-0015): it takes cards only.
+    assert!(!o_core::providers::can_lead(ProviderId::OpenCode));
+    assert!(o_core::providers::get(ProviderId::OpenCode).lead(&LeadTurn::default()).is_none());
+}
+
+fn opencode_card(model: Option<&str>, effort: Option<&str>) -> LaunchSpec {
+    let p = Plan { cards: vec![card("oc", ProviderId::OpenCode, None, "구현", model, effort)], ..plan() };
+    launch_spec(&p.cards[0], &p, &TEAM)
+}
+
+#[test]
+fn the_opencode_card_runs_standalone_with_json_events_and_its_prompt_on_stdin() {
+    let spec = opencode_card(Some("opencode/deepseek-v4.1-flash-free"), Some("high"));
+    assert_eq!(spec.bin, "opencode");
+    assert_eq!(spec.args, ["run", "--format", "json", "--standalone", "-m", "opencode/deepseek-v4.1-flash-free#high"]);
+    assert!(spec.stdin.as_deref().unwrap().contains("구현"));
+    // No model, no variant to name: the effort is left to OpenCode's default.
+    assert_eq!(opencode_card(None, Some("high")).args, ["run", "--format", "json", "--standalone"]);
+    assert_eq!(opencode_card(Some("openrouter/x/y:free"), None).args[4..], ["-m", "openrouter/x/y:free"]);
+    // The default launch keeps approvals and removes the provider API key variables.
+    assert!(!spec.args.iter().any(|a| a == "--auto" || a.contains("dangerously")));
+    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
+        assert!(spec.env_remove.iter().any(|k| k == key), "{key}");
+    }
+    assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID"));
+    let p = Plan { cards: vec![card("oc", ProviderId::OpenCode, None, "구현", None, None)], ..plan() };
+    assert_eq!(launch_spec_for(&p.cards[0], &p, &TEAM, None, true).args, ["run", "--format", "json", "--standalone", "--auto"]);
+    assert!(!find_hits("opencode run --auto", code_rules()).is_empty());
+}
+
+/// `opencode run --format json --standalone -m opencode/deepseek-v4.1-flash-free` (v2.1.4), recorded
+/// 2026-11-03 in a throwaway project: a read tool step, then the answer. Ids shortened.
+const OPENCODE_READ: [&str; 4] = [
+    r#"{"type":"step_start","timestamp":1793633019926,"sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","part":{"id":"prt_1","sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","messageID":"msg_1","type":"step-start"}}"#,
+    r#"{"type":"tool_use","timestamp":1793633020122,"sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","part":{"partID":"prt_2","sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","messageID":"msg_1","type":"tool","id":"call_1","tool":"read","state":{"status":"completed","input":{"path":"a.txt"},"output":"Read file a.txt, lines 1-1\n1: banana42","title":"read","metadata":{"metadata":{"truncated":false}},"time":{"start":1793633019932,"end":1793633020122}}}}"#,
+    r#"{"type":"step_finish","timestamp":1793633020127,"sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","part":{"id":"prt_3","sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","messageID":"msg_1","type":"step-finish","reason":"tool-calls","cost":0,"tokens":{"input":12311,"output":38,"reasoning":0,"cache":{"read":1536,"write":0}}}}"#,
+    r#"{"type":"text","timestamp":1793633022734,"sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","part":{"id":"prt_4_text-0","sessionID":"ses_e6324313cffeEhZ5ayKEDFOU1B","messageID":"msg_2","type":"text","text":"banana42","time":{"start":1793633020190,"end":1793633022734}}}"#,
+];
+
+#[test]
+fn opencode_stream_session_tool_tokens_and_answer() {
+    let mut reader = StreamReader::new(ProviderId::OpenCode);
+    let signals: Vec<StreamSignal> = OPENCODE_READ.iter().flat_map(|line| reader.read(line)).collect();
+    assert_eq!(signals, [
+        StreamSignal::Session { session_id: "ses_e6324313cffeEhZ5ayKEDFOU1B".into() },
+        StreamSignal::Tool { name: "read".into(), summary: "a.txt".into() },
+        StreamSignal::Usage { input: 12311.0, cached: 1536.0, output: 38.0 },
+        StreamSignal::Message { text: "banana42".into() },
+        StreamSignal::Final { ok: true, text: "banana42".into() },
+    ]);
+    assert_eq!(reader.read(r#"{"type":"text","part":{"text":"끝"}}"#), [
+        StreamSignal::Message { text: "끝".into() },
+        StreamSignal::Final { ok: true, text: "banana42\n끝".into() },
+    ]);
+}
+
+#[test]
+fn opencode_denied_tools_and_errors() {
+    // Recorded with the project_O profile's rules: the shell outside `o msg`/`o context` is denied.
+    let denied = r#"{"type":"tool_use","sessionID":"ses_a","part":{"type":"tool","tool":"shell","state":{"status":"error","input":{"command":"echo hi > made.txt"},"error":"Permission denied: shell"}}}"#;
+    let mut reader = StreamReader::new(ProviderId::OpenCode);
+    assert_eq!(reader.read(denied)[1], StreamSignal::Tool { name: "shell".into(), summary: "거부·실패 echo hi > made.txt".into() });
+    // A model it cannot route to (recorded): the card fails with OpenCode's own words.
+    let error = r#"{"type":"error","timestamp":1793633043194,"sessionID":"ses_b","error":{"type":"provider.no-route","message":"Model unavailable: opencode/no-such-model-xyz"}}"#;
+    let mut reader = StreamReader::new(ProviderId::OpenCode);
+    assert_eq!(reader.read(error), [
+        StreamSignal::Session { session_id: "ses_b".into() },
+        StreamSignal::Final { ok: false, text: "Model unavailable: opencode/no-such-model-xyz".into() },
+    ]);
+    // A rate limit (shape from the error event above; the wording is the provider's).
+    let limited = r#"{"type":"error","sessionID":"ses_c","error":{"type":"provider.rate-limit","message":"Rate limit exceeded, try again later"}}"#;
+    let mut reader = StreamReader::new(ProviderId::OpenCode);
+    assert!(reader.read(limited).contains(&StreamSignal::Limit { until: String::new() }));
+}
+
+#[test]
+fn opencode_model_list_keeps_provider_model_lines() {
+    let out = "opencode/deepseek-v4.1-flash-free\nopenrouter/openrouter/free\n\nsome banner line\nollama/qwen3:0.6b\n";
+    let ids: Vec<String> = o_core::providers::opencode::parse_models(out).into_iter().map(|m| m.id).collect();
+    assert_eq!(ids, ["opencode/deepseek-v4.1-flash-free", "openrouter/openrouter/free", "ollama/qwen3:0.6b"]);
 }

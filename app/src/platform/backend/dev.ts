@@ -20,6 +20,7 @@ async function json<T>(res: Response): Promise<T> {
 export const devBackend: Backend = {
   kind: "dev",
   agents: (clean) => fetch(`/api/agents?clean=${clean ? 1 : 0}`).then((r) => json<AgentStatus[]>(r)),
+  agentsCatalog: () => fetch("/api/agents/catalog").then((r) => json<Awaited<ReturnType<Backend["agentsCatalog"]>>>(r)),
   install: (id) => fetch(`/api/agents/${id}/install`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),

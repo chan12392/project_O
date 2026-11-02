@@ -107,7 +107,7 @@ mod tests {
         let home = temp("budget");
         let body: Value = serde_json::from_str(&budget_json(&home).unwrap()).unwrap();
         assert_eq!(body["percent"], 13);
-        assert_eq!(body["providers"].as_array().unwrap().len(), 3);
+        assert_eq!(body["providers"].as_array().unwrap().len(), 4);
         assert!(set_budget_percent(&home, &json!(11)).is_err());
         assert!(set_budget_percent(&home, &json!("14")).is_err());
         let saved: Value = serde_json::from_str(&set_budget_percent(&home, &json!(14)).unwrap()).unwrap();
@@ -121,7 +121,7 @@ mod tests {
         assert_eq!(on["enabled"], true);
         let off: Value = serde_json::from_str(&set_budget_enabled(&home, false).unwrap()).unwrap();
         assert_eq!(off["enabled"], false);
-        assert!(off["providers"].as_array().unwrap().iter().all(|p| p["state"] == "off"));
+        assert!(off["providers"].as_array().unwrap().iter().all(|p| if p["provider"] == "opencode" { p["state"] == "notApplied" } else { p["state"] == "off" }));
         let again: Value = serde_json::from_str(&budget_json(&home).unwrap()).unwrap();
         assert_eq!((again["enabled"].clone(), again["percent"].clone()), (json!(false), json!(13)));
     }

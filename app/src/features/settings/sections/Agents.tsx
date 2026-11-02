@@ -2,7 +2,7 @@ import { Bot, RefreshCw } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { updateSettings, useSettings } from "../../../data/settings.ts";
-import { BUDGET_PERCENTS, type Backend, type BudgetPercent, type BudgetReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
+import { BUDGET_PERCENTS, type AgentCatalogEntry, type Backend, type BudgetPercent, type BudgetReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SubHeading, Switch } from "../../../ui/controls.tsx";
 import { AgentList, useAgents } from "../AgentSetup.tsx";
 import { Path, Rows, Section, type SettingsSectionDef } from "../Section.tsx";
@@ -65,8 +65,28 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           <AgentList state={agents} />
         </div>
       </div>
+      <AgentCatalog api={api} />
     </Section>
   );
+}
+
+function AgentCatalog({ api }: { api: Backend }) {
+  const [entries, setEntries] = useState<AgentCatalogEntry[]>();
+  const [error, setError] = useState("");
+  useEffect(() => {
+    let active = true;
+    void api.agentsCatalog().then((list) => { if (active) setEntries(list); }, (e) => { if (active) setError(String(e)); });
+    return () => { active = false; };
+  }, [api]);
+  return <div>
+    <SubHeading title="다른 에이전트 CLI" description="설치 여부와 연결 지원 상태를 확인하세요." />
+    {error && <p role="alert" className="text-sm text-destructive">목록을 읽지 못했습니다: {error}</p>}
+    {!entries && !error && <p role="status" className="text-sm text-muted-foreground">감지하는 중입니다</p>}
+    {entries && <ul className="mt-3 divide-y rounded-lg border">{entries.map((entry) => <li key={entry.id} className="flex flex-wrap items-start justify-between gap-3 px-4 py-3">
+      <div><p className="text-sm font-medium">{entry.name}</p><p className="text-xs text-muted-foreground">{entry.detected ? entry.version ?? "감지됨" : "설치되지 않음"} · {entry.status === "connected" ? "연결 지원" : entry.status === "planned" ? "연결 예정" : "지원하지 않음"}{entry.profileSupported ? "" : " · 프로필 미지원"}</p><p className="mt-1 text-xs text-muted-foreground">{entry.note}</p></div>
+      {entry.installUrl && <button type="button" className={BUTTON_SECONDARY} onClick={() => void api.openExternal(entry.installUrl!)}>공식 설치 안내</button>}
+    </li>)}</ul>}
+  </div>;
 }
 
 function YoloRows({ api }: { api: Backend }) {

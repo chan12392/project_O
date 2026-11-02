@@ -215,6 +215,9 @@ pub enum Pace {
     Over,
     /// The daily budget is switched off: nothing is adjusted or refused, the numbers stay.
     Off,
+    /// The CLI has no usage probe (`Provider::daily_budget` is false, ADR-0015): the budget
+    /// never applies to it, switched on or off. Nothing is adjusted or refused.
+    NotApplied,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -429,8 +432,20 @@ impl Budget {
 
 /// One provider's budget now, from this machine's snapshots and settings (percent and on/off).
 pub fn assess_now(home: &Path, provider: ProviderId, now: DateTime<Utc>) -> io::Result<Budget> {
+    if !crate::providers::get(provider).daily_budget() {
+        return Ok(not_applied(provider, read_percent(home)));
+    }
     let budget = assess(provider, read_percent(home), &weekly_snapshots(home, provider)?, now, local_day_of(now));
     Ok(if read_enabled(home) { budget } else { budget.switched_off() })
+}
+
+/// A provider without a usage probe: "예산 적용 안 됨", never refused or lowered.
+pub fn not_applied(provider: ProviderId, percent: u8) -> Budget {
+    Budget {
+        state: Pace::NotApplied,
+        message: format!("{provider} 예산 적용 안 됨 — 사용량 조회가 없는 CLI라 하루 예산으로 막거나 effort를 낮추지 않습니다"),
+        ..assess(provider, percent, &[], Utc::now(), local_day_of(Utc::now()))
+    }
 }
 
 /// Provider → why it may take no more cards today (policy rule `daily-budget`).

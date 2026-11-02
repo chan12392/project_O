@@ -29,6 +29,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         usage::yolo_get,
         usage::yolo_set,
         agents::agents_status,
+        agents::agents_catalog,
         agents::agent_install,
         agents::agent_login,
         agents::open_external,

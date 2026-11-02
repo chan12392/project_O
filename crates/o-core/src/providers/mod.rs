@@ -1,7 +1,7 @@
 //! Each official agent CLI behind one `Provider` table: how a card launches it
 //! headless and reads its stream, how it is installed and signed in, what its
 //! clean profile holds, and how its subscription windows are read. One file per
-//! CLI (`claude`, `codex`, `agy`); [`get`] is the registry. Only these files know
+//! CLI (`claude`, `codex`, `agy`, `opencode`); [`get`] is the registry. Only these files know
 //! provider flags.
 //!
 //! Every launch keeps the CLI's own sign-in: no token is injected. With YOLO off
@@ -19,6 +19,7 @@
 pub mod agy;
 pub mod claude;
 pub mod codex;
+pub mod opencode;
 mod stream;
 
 use std::collections::BTreeMap;
@@ -127,6 +128,20 @@ pub trait Provider: Sync {
     fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
         None
     }
+    /// Whether the daily budget (ADR-0004) can apply: the CLI reports subscription windows
+    /// (`usage_windows` or its stream). `false` reads "예산 적용 안 됨" and never refuses or
+    /// lowers effort (ADR-0015).
+    fn daily_budget(&self) -> bool {
+        true
+    }
+
+    // Models for cards (ADR-0015): the CLI's own list, for CLIs whose `--model` ids a person
+    // cannot guess (`provider/model`). `None`: no list command (a lead's list is `lead_models`).
+
+    fn card_models(&self) -> Option<Result<Vec<ModelChoice>, String>> {
+        None
+    }
+
 }
 
 /// The registry: every `ProviderId` has exactly one implementation.
@@ -135,6 +150,7 @@ pub fn get(id: ProviderId) -> &'static dyn Provider {
         ProviderId::Claude => &claude::Claude,
         ProviderId::Codex => &codex::Codex,
         ProviderId::Agy => &agy::Agy,
+        ProviderId::OpenCode => &opencode::OpenCode,
     }
 }
 
@@ -144,6 +160,7 @@ pub struct Official {
     /// The npm package the vendor documents (`npm install -g <package>`), if any.
     pub npm_package: Option<&'static str>,
     /// The vendor's PowerShell installer, for the person to run.
+    /// Shown as "PowerShell: <script>" when it is one (`irm …`), otherwise as written.
     pub script: &'static str,
     pub url: &'static str,
 }

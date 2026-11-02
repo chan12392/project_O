@@ -7,8 +7,8 @@ export function timeOf(iso: string | undefined): string {
   return iso ? clock.format(new Date(iso)) : "";
 }
 
-export const PROVIDER_NAME: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity" };
-export const PROVIDER_SHORT: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Agy" };
+export const PROVIDER_NAME: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", opencode: "OpenCode" };
+export const PROVIDER_SHORT: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Agy", opencode: "OpenCode" };
 
 /** Display names for team parties: a card's label and agent, "총괄" for the lead, "모두" for all. */
 export function names(run: RunView): (party: string) => string {

@@ -152,10 +152,12 @@ const TODAY_TONE: Record<ProviderBudget["state"], string> = {
   farBehind: "stroke-amber-500",
   over: "stroke-red-500",
   off: "stroke-muted-foreground",
+  notApplied: "stroke-muted-foreground",
 };
 
 /** Today's spend against the day's allowance (percent points of the weekly window). */
 function TodayRing({ name, budget }: { name: string; budget: ProviderBudget | undefined }) {
+  if (budget?.state === "notApplied") return <EmptyRing name={name} title={`${name}: 예산 적용 안 됨`} />;
   if (!budget || budget.spent === null) return <EmptyRing name={name} title={`${name}: 주간 사용량 기록이 없어 조절하지 않음${budget?.state === "off" ? " · 예산 꺼짐" : ""}`} />;
   const lines = [
     `${name}: 주간의 ${budget.spent}%p / ${budget.allowance}%p 사용`,
