@@ -99,7 +99,7 @@
 | CI (`.github/workflows/guard.yml`, `branch-flow.yml`, `merge-guard.yml`) | 전체 파일 정책 검사 + 테스트 + 타입 검사, PR 방향 검사, 대표 외 test_1·main 병합 경보 (읽기 전용 토큰) |
 | O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002) |
 
-- 카드 CLI에 열어 주는 권한은 팀 대화 명령(`o msg`)뿐이다: Claude는 `--allowedTools "Bash(o msg *)"`, Codex는 실행 폴더 `--add-dir`, Antigravity는 정확히 `o msg read`·`o msg post` 두 명령(그 CLI의 허용 규칙은 전체 일치만 지원). 그 밖의 권한 확인은 그대로 둔다.
+- 카드 CLI에 열어 주는 권한은 팀 대화 명령(`o msg`)과 읽기 전용 컨텍스트 검색(`o context`, ADR-0005)뿐이다: Claude는 `--allowedTools "Bash(o msg *)" "Bash(o context *)"`, Codex는 실행 폴더 `--add-dir`(셸 명령은 샌드박스 안에서 그대로 실행), Antigravity는 정확히 `o msg read`·`o msg post` 두 명령(그 CLI의 허용 규칙은 전체 일치만 지원해 `o context`는 열지 않고, 프롬프트에 주입된 컨텍스트만 쓴다). 카드 안의 `o context`는 o.db를 읽기만 하고 `o context add`는 거부한다. 그 밖의 권한 확인은 그대로 둔다.
 
 - 차단되면 우회하지 않는다. 사유를 그대로 상대에게 공유하고, 규칙이 틀렸다면 ADR로 바꾼다.
 - `crates/o-guard/src/rules.rs`의 규칙·허용 경로, `crates/o-core/src/policy.rs`의 `LIMITS`(화면 표시용 사본 `src/core/limits.ts`)는 공용 경계다(ADR + 두 사람 승인). 설정·환경변수로 상한을 올리는 길은 일부러 두지 않았다.
