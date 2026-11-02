@@ -48,7 +48,8 @@ export type OEvent =
    * The runner's own check right before the start (`o _run`) refused the plan: no card started.
    * The violations are the ones `o check` would print; `run.end failed` follows.
    */
-  | { t: "run.blocked"; at: string; runId: string; violations: Violation[] };
+  | { t: "run.blocked"; at: string; runId: string; violations: Violation[] }
+  | { t: "run.mode"; at: string; runId: string; efficiency?: "on" | "off"; clean: boolean; context: boolean; lowerEffort: boolean };
 
 /** One policy refusal, as crates/o-core/src/policy.rs `Violation` serializes it. */
 export interface Violation {

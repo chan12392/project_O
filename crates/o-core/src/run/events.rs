@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::policy::Violation;
 use crate::sys::js::ser_num;
+use crate::run::mode::Efficiency;
 use crate::run::plan::ProviderId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -136,6 +137,18 @@ pub enum OEvent {
     /// budget read again since dispatch). `run.end failed` follows.
     #[serde(rename = "run.blocked")]
     RunBlocked { at: String, run_id: String, violations: Vec<Violation> },
+    /// How the run's cards are set up (토큰 효율, ADR-0010), right after `run.start`. `efficiency`
+    /// is absent for a run dispatched before the switch existed.
+    #[serde(rename = "run.mode")]
+    RunMode {
+        at: String,
+        run_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        efficiency: Option<Efficiency>,
+        clean: bool,
+        context: bool,
+        lower_effort: bool,
+    },
 }
 
 impl OEvent {
@@ -158,6 +171,7 @@ impl OEvent {
             OEvent::CardBudget { .. } => "card.budget",
             OEvent::RunContext { .. } => "run.context",
             OEvent::RunBlocked { .. } => "run.blocked",
+            OEvent::RunMode { .. } => "run.mode",
         }
     }
 }

@@ -93,7 +93,7 @@ fn review(home: &Path, args: &[String]) -> i32 {
     }
 
     let run_id = store::new_run_id(now);
-    if let Err(error) = review::create_run(home, &run_id, &plan, args.clean) {
+    if let Err(error) = review::create_run(home, &run_id, &plan, args.mode) {
         return fail(&error.to_string());
     }
     let events = run_dir(home, &run_id).join("events.jsonl");
@@ -111,13 +111,13 @@ fn review(home: &Path, args: &[String]) -> i32 {
         let message = format!(
             "PR #{} 검토를 시작했습니다 · {provider}{} · 커밋 {}{}",
             pr.number,
-            if args.clean { " (깨끗한 에이전트)" } else { "" },
+            if args.mode.clean { " (깨끗한 에이전트)" } else { "" },
             review::short_sha(&pr.head_ref_oid),
             if args.post { " · 끝나면 PR 댓글로 게시 (그사이 새 커밋이 오면 게시하지 않음)" } else { "" }
         );
         println!(
             "{}",
-            json!({ "ok": true, "message": message, "runId": run_id, "pr": pr.number, "head": pr.head_ref_oid, "provider": provider, "post": args.post, "clean": args.clean, "events": events.to_string_lossy() })
+            json!({ "ok": true, "message": message, "runId": run_id, "pr": pr.number, "head": pr.head_ref_oid, "provider": provider, "post": args.post, "clean": args.mode.clean, "events": events.to_string_lossy() })
         );
         return 0;
     }

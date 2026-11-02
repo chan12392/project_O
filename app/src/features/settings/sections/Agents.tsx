@@ -22,10 +22,10 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
       <Rows>
         <SettingsRow
           id="clean-label"
-          label="깨끗한 에이전트로 실행"
+          label="토큰 효율"
           description={
             <>
-              개인 훅·전역 지침·스킬·플러그인·MCP·메모리 없이 공식 CLI만으로 실행합니다. 평소 쓰는 설정은 건드리지 않습니다. 아래 에이전트 CLI의 설치·로그인 확인과 연결도 이 선택의 프로필로 합니다.
+              켜면 깨끗한 프로필, 이전 작업 컨텍스트, 예산에 따른 노력 수준 조정을 사용합니다. 끄면 평소 프로필과 선택한 노력 수준을 쓰고 컨텍스트를 주입하지 않습니다. 예산 차단과 보안 규칙은 항상 적용됩니다.
               <span className="mt-1 block text-2xs">
                 프로필에 개인 설정이 섞였는지 검사하는 기능은 아직 앱에 없습니다. 개발자는 터미널의{" "}
                 <code className="rounded bg-muted px-1 py-0.5 font-mono text-2xs text-foreground">o agents doctor</code>로 볼 수 있습니다.

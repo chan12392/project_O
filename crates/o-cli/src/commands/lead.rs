@@ -8,6 +8,7 @@ use std::sync::Arc;
 
 use o_core::agents::clean;
 use o_core::lead::{self, DispatchError, SendRequest};
+use o_core::run::mode::{take_flags, RunMode};
 use o_core::run::plan::ProviderId;
 use o_core::run::runner::{official_command, Spawner};
 use o_core::sys::proc;
@@ -17,13 +18,15 @@ use super::{fail, print_violations, Command};
 
 pub const LEAD: Command = Command {
     name: "lead",
-    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--clean] <메시지|->
+    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--efficiency on|off] <메시지|->
                              총괄에게 메시지 (읽기 전용으로 프로젝트를 읽고 계획을 제안), 새 이벤트 JSON 출력
+                             --efficiency on(기본)이면 총괄도 깨끗한 프로필로, off면 평소 하네스로 실행
   o lead models --provider claude|codex|agy  총괄이 쓸 수 있는 모델 목록 JSON (CLI의 공식 목록·별칭)
   o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
   o lead new --project <폴더>               새 대화 시작
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
-  o lead dispatch <planId> [--clean]        제안된 계획을 정책 검사 후 한 번 실행, runId 출력
+  o lead dispatch <planId> [--efficiency on|off] [--clean] [--no-context]
+                             제안된 계획을 정책 검사 후 한 번 실행, runId 출력 (토큰 효율은 o dispatch와 같음)
   o lead stop [--project <폴더>]             답하는 중인 총괄 중지",
     run: lead_main,
 };
@@ -67,13 +70,15 @@ struct Args {
     name: Option<String>,
     attach: Vec<PathBuf>,
     fresh: bool,
-    clean: bool,
+    /// 토큰 효율 with its finer overrides (`run::mode::take_flags`).
+    mode: RunMode,
     json: bool,
     words: Vec<String>,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut out = Args::default();
+    let (mode, args) = take_flags(args)?;
+    let mut out = Args { mode, ..Args::default() };
     let mut items = args.iter();
     while let Some(arg) = items.next() {
         let mut value = |flag: &str| items.next().cloned().ok_or_else(|| format!("{flag} 뒤에 값이 필요합니다"));
@@ -85,7 +90,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--name" => out.name = Some(value("--name")?),
             "--attach" => out.attach.push(PathBuf::from(value("--attach")?)),
             "--new" => out.fresh = true,
-            "--clean" => out.clean = true,
             "--json" => out.json = true,
             other if other.starts_with("--") => return Err(format!("알 수 없는 인자: {other}")),
             other => out.words.push(other.to_string()),
@@ -119,7 +123,7 @@ fn send(home: &Path, args: &[String]) -> i32 {
     } else {
         a.words.join(" ")
     };
-    let root = a.clean.then(clean::default_root);
+    let root = a.mode.clean.then(clean::default_root);
     let req = SendRequest {
         project,
         provider,
@@ -129,6 +133,7 @@ fn send(home: &Path, args: &[String]) -> i32 {
         attach: &a.attach,
         fresh: a.fresh,
         clean: root.as_deref(),
+        efficiency: a.mode.efficiency,
     };
     let spawner: Arc<Spawner> = Arc::new(official_command);
     match lead::send(home, &req, spawner.as_ref()) {
@@ -230,12 +235,12 @@ fn dispatch(home: &Path, args: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
-    let [plan_id] = a.words.as_slice() else { return fail("o lead dispatch <planId> [--clean]") };
+    let [plan_id] = a.words.as_slice() else { return fail("o lead dispatch <planId> [--efficiency on|off]") };
     let start = |run_id: &str| -> std::io::Result<()> {
         let exe = std::env::current_exe()?;
         proc::spawn_detached(Process::new(exe).args(["_run", run_id])).map(|_| ())
     };
-    match lead::dispatch(home, plan_id, a.clean, &start) {
+    match lead::dispatch(home, plan_id, a.mode, &start) {
         Ok(done) => {
             println!("{}", json!(done));
             0

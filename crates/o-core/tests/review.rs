@@ -10,6 +10,7 @@ use chrono::{DateTime, Utc};
 use o_core::run::events::{CardInfo, CardStatus, OEvent};
 use o_core::sys::js::js_len;
 use o_core::run::plan::ProviderId;
+use o_core::run::mode::{Efficiency, RunMode};
 use o_core::policy::{check_plan, empty_counts, PolicyContext, LIMITS};
 use o_core::review::{self, Gh, PullRequest, ReviewArgs};
 use o_core::run::store::{append_event, read_events, run_dir};
@@ -30,7 +31,7 @@ fn arguments_parse_and_bad_ones_are_refused() {
             provider: Some(ProviderId::Codex),
             model: Some("gpt-6.1-sol".into()),
             effort: Some("high".into()),
-            clean: true,
+            mode: RunMode::of(Efficiency::On),
             post: true,
             dry_run: false,
             detach: false
@@ -448,13 +449,13 @@ fn a_review_run_gets_no_shared_context() {
     let home = temp_home("nocontext");
     let task = review::build_task(&pr(), "diff --git a/a.ts b/a.ts\n+x\n", "n", true);
     let checked = check_plan(&review::build_plan("C:/Users/me/projects/app", 7, &task.text, ProviderId::Codex, None, None), &ctx());
-    review::create_run(&home, "r2", &checked.plan.unwrap(), true).unwrap();
+    review::create_run(&home, "r2", &checked.plan.unwrap(), RunMode::of(Efficiency::On)).unwrap();
     assert!(!o_core::context::enabled(&home, "r2"));
     assert!(run_dir(&home, "r2").join("clean").exists());
 }
 
 #[test]
 fn the_app_asks_for_a_posted_background_review_on_its_profile() {
-    assert_eq!(review::request_args("7", false), args(&["review", "7", "--post", "--detach"]));
-    assert_eq!(review::request_args("7", true), args(&["review", "7", "--post", "--detach", "--clean"]));
+    assert_eq!(review::request_args("7", Efficiency::Off), args(&["review", "7", "--post", "--detach", "--efficiency", "off"]));
+    assert_eq!(review::request_args("7", Efficiency::On), args(&["review", "7", "--post", "--detach", "--efficiency", "on"]));
 }
