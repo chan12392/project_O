@@ -15,10 +15,15 @@ use o_core::run::runner::Spawner;
 use serde_json::{json, Value};
 
 const FAKE: &str = "O_FAKE_LEAD_LINES";
+const FAKE_SLEEP: &str = "O_FAKE_LEAD_SLEEP_MS";
 
 fn main() {
     if let Ok(lines) = std::env::var(FAKE) {
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
+        // A slow CLI (a turn still answering) waits before it answers.
+        if let Some(ms) = std::env::var(FAKE_SLEEP).ok().and_then(|v| v.parse().ok()) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
         // "{keys}" in a line becomes the API key variables this process inherited.
         let watched = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY"];
         let keys: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| watched.iter().any(|n| n.eq_ignore_ascii_case(k))).collect();
@@ -27,7 +32,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 15] = [
+    let tests: [(&str, fn()); 16] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -38,7 +43,8 @@ fn main() {
         ("a plan is dispatched once, after the policy check again", dispatch_once),
         ("a thread persists per project; new starts another", threads),
         ("attachments: type, size, name and link refusals", attachments),
-        ("a second message while the lead answers is refused", busy),
+        ("sends started together run one turn; the others are refused", busy),
+        ("a dead turn's marker holds nothing, even with its pid reused", stale_marker),
         ("bad requests start nothing", refused_requests),
         ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
         ("no project hook runs before a plan is approved, first turn or resumed", project_hooks_off),
@@ -74,15 +80,26 @@ fn setup(name: &str) -> (PathBuf, String) {
 
 /// A fake lead CLI printing `lines`; every spec it was asked to launch is kept.
 fn fake(lines: Vec<String>) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
+    fake_slow(lines, 0)
+}
+
+/// A fake lead CLI that waits `ms` before printing `lines`.
+fn fake_slow(lines: Vec<String>, ms: u64) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let keep = seen.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
         keep.lock().unwrap().push(spec.clone());
         let mut command = Command::new(std::env::current_exe()?);
-        command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap());
+        command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_SLEEP, ms.to_string());
         Ok(command)
     });
     (spawner, seen)
+}
+
+/// A process with nothing to do with the lead (this binary, idling), standing in for one
+/// that reused a dead turn's pid.
+fn bystander() -> std::process::Child {
+    Command::new(std::env::current_exe().unwrap()).env(FAKE, "[]").env(FAKE_SLEEP, "30000").spawn().unwrap()
 }
 
 /// Claude stream lines: a session, an answer and its result.
@@ -332,19 +349,84 @@ fn attachments() {
     assert!(spec.args.contains(&files::thread_files(&home, &thread).to_string_lossy().into_owned()));
 }
 
+/// Sends that start together: exactly one turn runs, every other is refused as busy, and
+/// while it runs the thread shows as busy. Repeated, since the old marker lost this race
+/// only sometimes (an empty or half-written marker read as "no turn").
 fn busy() {
-    let (home, project) = setup("busy");
+    // A sender that holds the turn (its OS lock on `turn.lock`) but has not finished writing
+    // its marker yet: an empty or half-written marker means "starting", not "no turn".
+    let (home, project) = setup("busy-mid");
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let dir = lead::thread_dir(&home, &thread);
+    let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
+    held.try_lock().unwrap();
+    let (spawner, seen) = fake(claude_answer("s", "ok"));
+    for partial in ["", "{\"provider\":\"cla"] {
+        std::fs::write(dir.join("running.json"), partial).unwrap();
+        let refused = lead::send(&home, &request(&project, "또"), spawner.as_ref()).unwrap_err();
+        assert!(refused.contains("답하는 중"), "{partial:?}: {refused}");
+        assert!(!lead::show(&home, Some(&project))["thread"]["busy"].is_null(), "{partial:?}");
+        assert!(dir.join("running.json").exists(), "another sender removed the owner's marker");
+    }
+    assert!(seen.lock().unwrap().is_empty());
+    // Its owner gone (the OS lets go of the lock with the process), the thread is free.
+    drop(held);
+    lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
+
+    const SENDERS: usize = 8;
+    for round in 0..4 {
+        let (home, project) = setup(&format!("busy{round}"));
+        lead::thread_for(&home, &project, false).unwrap();
+        let (spawner, seen) = fake_slow(claude_answer("s", "ok"), 1_500);
+        let gate = Arc::new(std::sync::Barrier::new(SENDERS + 1));
+        let handles: Vec<_> = (0..SENDERS)
+            .map(|_| {
+                let (home, project, spawner, gate) = (home.clone(), project.clone(), spawner.clone(), gate.clone());
+                std::thread::spawn(move || {
+                    gate.wait();
+                    lead::send(&home, &request(&project, "동시에"), spawner.as_ref())
+                })
+            })
+            .collect();
+        gate.wait();
+        // While the one turn answers, the thread is busy.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while seen.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "claude", "round {round}");
+        let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
+        let started = results.iter().filter(|r| r.is_ok()).count();
+        assert_eq!((started, seen.lock().unwrap().len()), (1, 1), "round {round}: {results:?}");
+        for refused in results.iter().filter_map(|r| r.as_ref().err()) {
+            assert!(refused.contains("답하는 중"), "{refused}");
+        }
+        assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    }
+}
+
+/// A marker left by a turn whose process died (an app crash, `app.exit` during an update)
+/// does not hold the thread, even when its pid now belongs to an unrelated live process;
+/// and a stop then ends nothing.
+fn stale_marker() {
+    let (home, project) = setup("stale");
     let thread = lead::thread_for(&home, &project, false).unwrap();
     let marker = lead::thread_dir(&home, &thread).join("running.json");
-    std::fs::write(&marker, json!({ "pid": std::process::id(), "provider": "claude" }).to_string()).unwrap();
+    let mut other = bystander();
+    let pid = other.id();
+    let stale = json!({ "pid": pid, "provider": "claude", "owner": pid, "token": "dead", "child": { "pid": pid, "started": 1 } });
+    std::fs::write(&marker, stale.to_string()).unwrap();
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null(), "a dead turn shows as answering");
+    assert!(!lead::stop(&home, Some(&project)));
+    std::thread::sleep(std::time::Duration::from_millis(300));
+    assert!(other.try_wait().unwrap().is_none(), "stop ended a process that only reused the dead turn's pid");
     let (spawner, seen) = fake(claude_answer("s", "ok"));
-    assert!(lead::send(&home, &request(&project, "또"), spawner.as_ref()).unwrap_err().contains("답하는 중"));
-    assert!(seen.lock().unwrap().is_empty());
-    assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "claude");
-    // A marker whose process is gone does not hold the thread.
-    std::fs::write(&marker, json!({ "pid": 4_000_000_000u32, "provider": "claude" }).to_string()).unwrap();
     lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
+    assert_eq!(seen.lock().unwrap().len(), 1);
     assert!(!marker.exists());
+    let _ = other.kill();
+    let _ = other.wait();
 }
 
 fn refused_requests() {

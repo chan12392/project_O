@@ -7,7 +7,8 @@
 //! leads/<threadId>/events.jsonl      the thread: lead.start · lead.user · lead.session · lead.reply
 //!                                    · lead.plan · lead.dispatch · lead.usage · lead.error
 //! leads/<threadId>/turn.raw.jsonl    the CLIs' stdout, for reading back a turn
-//! leads/<threadId>/running.json      the turn in progress ({ pid, provider }); stop: its stop request
+//! leads/<threadId>/turn.lock         held (OS lock) by the turn in progress, for as long as it runs
+//! leads/<threadId>/running.json      that turn's marker ({ provider, owner, token, child }); stop: its stop request
 //! leads/<threadId>/dispatched/<planId>   made once, when a plan is dispatched
 //! <base>/project_O-lead/<threadId>/  attachments (`files`), outside O's state folder
 //! ```
@@ -25,6 +26,7 @@ use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -151,59 +153,97 @@ fn thread_project(events: &[LeadEvent]) -> Option<String> {
     })
 }
 
+/// What a turn's owner says about it in `running.json` (written whole, by rename).
 #[derive(Clone, Debug, Deserialize, Serialize)]
 struct Running {
-    pid: u32,
     provider: ProviderId,
+    /// The process that holds the turn (the app, or `o lead send`).
+    owner: u32,
+    /// This turn's own id, so a turn never removes another turn's marker.
+    token: String,
+    /// The lead CLI, once it started.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    child: Option<u32>,
 }
+
+/// A turn holding a thread: its marker, or `None` while the owner has not written it yet.
+struct Busy {
+    marker: Option<Running>,
+}
+
+/// `busy` of a turn whose owner has not written its marker yet.
+const STARTING: &str = "starting";
+
+const BUSY: &str = "총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요";
 
 fn running_path(home: &Path, thread_id: &str) -> PathBuf {
     thread_dir(home, thread_id).join("running.json")
 }
 
-/// The live turn of a thread, if any; a marker whose process is gone does not count.
-fn running(home: &Path, thread_id: &str) -> Option<Running> {
-    let marker: Running = serde_json::from_str(&fs::read_to_string(running_path(home, thread_id)).ok()?).ok()?;
-    proc::is_alive(marker.pid).then_some(marker)
+/// The file a turn holds an OS lock on for as long as it runs. The OS lets go of the lock
+/// when the owning process ends, however it ends, so a crashed turn holds nothing.
+fn turn_lock(home: &Path, thread_id: &str) -> io::Result<fs::File> {
+    OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("turn.lock"))
 }
 
-/// Holds a thread's one turn: made with `create_new`, so two sends cannot both start; removed when dropped.
+/// The live turn of a thread, if any. Whether a turn runs is the lock, never the marker:
+/// a marker that is missing, empty or half-written under a held lock is a turn starting,
+/// and a marker without a held lock is a turn whose process is gone.
+fn running(home: &Path, thread_id: &str) -> Option<Busy> {
+    let lock = turn_lock(home, thread_id).ok()?;
+    match lock.try_lock() {
+        // Free: no turn. Dropping the file lets go of the lock again.
+        Ok(()) => return None,
+        Err(fs::TryLockError::WouldBlock) => {}
+        Err(fs::TryLockError::Error(_)) => return None,
+    }
+    let marker = fs::read_to_string(running_path(home, thread_id)).ok().and_then(|t| serde_json::from_str(&t).ok());
+    Some(Busy { marker })
+}
+
+/// Holds a thread's one turn: an OS lock on `turn.lock` that only one holder gets, and the
+/// marker beside it. Dropped, it removes its marker and lets go of the lock.
 struct TurnSlot {
+    _lock: fs::File,
     path: PathBuf,
+    marker: Running,
 }
 
 impl TurnSlot {
     fn take(home: &Path, thread_id: &str, provider: ProviderId) -> Result<TurnSlot, String> {
-        let path = running_path(home, thread_id);
-        for _ in 0..2 {
-            match OpenOptions::new().write(true).create_new(true).open(&path) {
-                Ok(mut file) => {
-                    let marker = serde_json::to_string(&Running { pid: std::process::id(), provider }).map_err(|e| e.to_string())?;
-                    file.write_all(marker.as_bytes()).map_err(|e| e.to_string())?;
-                    return Ok(TurnSlot { path });
-                }
-                Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-                    if running(home, thread_id).is_some() {
-                        return Err("총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요".into());
-                    }
-                    // Left by a turn whose process is gone.
-                    let _ = fs::remove_file(&path);
-                }
-                Err(e) => return Err(e.to_string()),
+        let lock = turn_lock(home, thread_id).map_err(|e| e.to_string())?;
+        // `show` holds the lock for an instant when it looks; only a turn holds it longer.
+        let deadline = Instant::now() + Duration::from_millis(300);
+        loop {
+            match lock.try_lock() {
+                Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+                Err(fs::TryLockError::WouldBlock) => return Err(BUSY.into()),
+                Err(fs::TryLockError::Error(e)) => return Err(format!("총괄 대화를 시작하지 못했습니다: {e}")),
             }
         }
-        Err("총괄 대화를 시작하지 못했습니다".into())
+        let marker = Running { provider, owner: std::process::id(), token: new_run_id(Utc::now()), child: None };
+        let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), marker };
+        slot.write().map_err(|e| format!("총괄 대화를 시작하지 못했습니다: {e}"))?;
+        Ok(slot)
     }
 
-    fn set_pid(&self, pid: u32, provider: ProviderId) {
-        if let Ok(text) = serde_json::to_string(&Running { pid, provider }) {
-            let _ = fs::write(&self.path, text);
-        }
+    /// Writes the marker whole: a reader sees the old one or the new one, never a part.
+    fn write(&self) -> io::Result<()> {
+        let temp = self.path.with_extension(format!("{}.tmp", self.marker.token));
+        fs::write(&temp, serde_json::to_string(&self.marker).map_err(io::Error::other)?)?;
+        fs::rename(&temp, &self.path)
+    }
+
+    fn set_child(&mut self, pid: u32) {
+        self.marker.child = Some(pid);
+        let _ = self.write();
     }
 }
 
 impl Drop for TurnSlot {
     fn drop(&mut self) {
+        // The marker before the lock: the next turn never finds this one's marker under its own lock.
         let _ = fs::remove_file(&self.path);
     }
 }
@@ -297,7 +337,7 @@ fn budget_lines(home: &Path) -> Vec<String> {
 pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<LeadEvent>, String> {
     check_request(home, req)?;
     let thread_id = thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?;
-    let slot = TurnSlot::take(home, &thread_id, req.provider)?;
+    let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
     let before = read_thread(home, &thread_id);
     let attachments = req.attach.iter().map(|path| files::import(home, &thread_id, path)).collect::<Result<Vec<_>, _>>()?;
 
@@ -374,7 +414,7 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
         }
     };
     let _tree = proc::contain(&child);
-    slot.set_pid(child.id(), req.provider);
+    slot.set_child(child.id());
     if let Some(mut stdin) = child.stdin.take() {
         let text = spec.stdin.clone().unwrap_or_default();
         thread::spawn(move || {
@@ -590,11 +630,11 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
     };
     let mut stopped = false;
     for thread_id in threads {
-        if let Some(marker) = running(home, &thread_id) {
+        if let Some(busy) = running(home, &thread_id) {
             let _ = fs::write(thread_dir(home, &thread_id).join("stop"), "");
-            // The marker names this process until the CLI starts; only a child is ended.
-            if marker.pid != std::process::id() {
-                proc::kill_tree(marker.pid);
+            // Only the lead CLI is ended, never the turn's owner (the app or `o lead send`).
+            if let Some(child) = busy.marker.and_then(|m| m.child) {
+                proc::kill_tree(child);
             }
             stopped = true;
         }
@@ -607,8 +647,8 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
 pub struct ThreadView {
     pub thread_id: String,
     pub project: String,
-    /// A turn is running; its provider.
-    pub busy: Option<ProviderId>,
+    /// A turn is running: its provider, or `"starting"` before its marker is written.
+    pub busy: Option<String>,
     /// Every event as written (screens ignore kinds they do not know).
     pub events: Vec<Value>,
 }
@@ -636,7 +676,7 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
     };
     let thread = thread_id.map(|id| ThreadView {
         project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
-        busy: running(home, &id).map(|r| r.provider),
+        busy: running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string())),
         events: event_values(home, &id),
         thread_id: id,
     });

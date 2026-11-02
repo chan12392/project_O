@@ -28,7 +28,7 @@
 
 - 프로젝트마다 현재 스레드 하나(키: 정규화한 프로젝트 경로, Windows는 대소문자 무시). `leads/current.json`이 프로젝트 → 스레드 id, 스레드는 `leads/<threadId>/events.jsonl`. "새 대화"는 새 스레드를 만들고 현재로 바꾼다. 지난 스레드는 지우지 않는다.
 - 이벤트(실행의 `events.jsonl`과 따로, 자기 타입 `LeadEvent`): `lead.start`, `lead.user`(글·첨부·에이전트·노력), `lead.session`(CLI 세션 id), `lead.reply`(계획 블록을 뺀 마크다운), `lead.plan`(planId·계획·정책 결과), `lead.dispatch`(planId → runId), `lead.usage`(토큰), `lead.error`. 실행 이벤트 계약(`OEvent`, `src/core/events.ts`)은 바꾸지 않았다.
-- 한 스레드에는 한 번에 한 턴만: `running.json`을 `create_new`로 만들고(프로세스가 사라진 표시는 무시), 턴이 끝나면 지운다. "중지"는 `stop` 표시 후 CLI 프로세스 트리를 끝낸다.
+- 한 스레드에는 한 번에 한 턴만: 턴은 `turn.lock`에 OS 배타 잠금을 잡고(개정 2), 표시 `running.json`은 통째로(이름 바꾸기로) 쓰며, 턴이 끝나면 지운다. "중지"는 `stop` 표시 후 CLI 프로세스 트리를 끝낸다.
 
 ### 총괄 실행 (`Provider::lead`, `lead_efforts`)
 
@@ -110,6 +110,11 @@ agy 1.4.12 `--help`에 `--mode plan`, `--sandbox`, `--settings`(세션 한정 �
 - `claude -p`는 폴더 신뢰 대화상자를 띄우지 않지만 프로젝트 설정 파일의 훅은 실행한다(code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder). 그래서 총괄은 첫 턴·이어 말하기 모두 `--setting-sources user`(깨끗한 프로필이면 그 프로필 설정이 user)와 `--settings {"disableAllHooks":true}`로 띄운다. 공식 문서가 권하는 두 옵션이다.
 - Codex는 신뢰한 프로젝트의 `.codex/`에서 훅을 싣는다. `--disable hooks`(`codex exec --help`: `-c features.hooks=false`와 같음, 모든 설정 층보다 우선)로 끈다.
 - agy는 프로젝트 `.agents/hooks.json`을 싣고(antigravity.google/docs/hooks) 한 번만 훅을 끄는 공식 옵션이 없다. 그 파일이 있는 프로젝트에서는 agy 총괄을 거절하고 Claude Code·Codex를 고르게 한다.
+
+### 한 턴 잠금
+
+- 턴이 도는지는 표시 파일이 아니라 `turn.lock`의 OS 배타 잠금(`File::try_lock`)으로 판단한다. 잠금은 그 프로세스가 어떻게 끝나든 OS가 풀어 주므로 앱이 답하는 도중 꺼져도 "답하는 중"에 갇히지 않고, pid가 다른 프로세스에 재사용돼도 상관없다.
+- 잠금을 잡은 채 표시가 비었거나 덜 쓰였으면 "시작하는 중"(`busy: "starting"`)이다. 다른 보내기가 그 표시를 지우고 두 번째 턴을 띄우던 경쟁을 막는다. 표시는 임시 파일에 쓰고 이름을 바꿔 통째로만 보인다.
 
 ### 첨부 경로
 
