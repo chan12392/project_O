@@ -1,5 +1,8 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
+import type { LeadAttachment, LeadEvent, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
 import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
+
+export type { LeadAttachment, LeadEvent, LeadProvider, LeadShow };
 
 export type AgentId = "claude" | "codex" | "agy";
 
@@ -136,10 +139,46 @@ export interface Backend {
   setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
   tokens(project?: string): Promise<TokenReport>;
+
+  // The lead chat (ADR-0008). The lead only reads and proposes; `leadDispatch` runs a plan once.
+
+  /** The project's current lead thread and every project that has one (`o lead show --json`). */
+  leadShow(project?: string): Promise<LeadShow>;
+  /** Starts a new thread for the project ("새 대화"). */
+  leadNew(project: string): Promise<{ threadId: string }>;
+  /** Saves one image or document for the project's current thread; rejects with the reason. */
+  leadAttach(project: string, file: File): Promise<LeadAttachment>;
+  /** One message; resolves when the lead has answered, with the events the turn added. */
+  leadSend(request: LeadSendRequest): Promise<{ threadId: string | null; events: LeadEvent[] }>;
+  /** Runs a proposed plan after the policy check; rejects with the policy's reasons when refused. */
+  leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
+  /** Stops the project's lead while it answers. */
+  leadStop(project?: string): Promise<{ stopped: boolean }>;
 }
+
+export interface LeadSendRequest {
+  project: string;
+  provider: LeadProvider;
+  effort?: string;
+  text: string;
+  /** Paths `leadAttach` returned. */
+  attachments: string[];
+  clean: boolean;
+}
+
+export interface LeadDispatched {
+  planId: string;
+  runId: string;
+  events: string;
+  cards: string[];
+  clean: boolean;
+}
+
+/** Tauri's invoke: named arguments, or raw bytes with headers (attachments). */
+export type Invoke = (cmd: string, args?: Record<string, unknown> | Uint8Array, options?: { headers?: Record<string, string> }) => Promise<unknown>;
 
 declare global {
   interface Window {
-    __TAURI_INTERNALS__?: { invoke: (cmd: string, args?: Record<string, unknown>) => Promise<unknown> };
+    __TAURI_INTERNALS__?: { invoke: Invoke };
   }
 }

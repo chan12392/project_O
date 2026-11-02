@@ -1,0 +1,242 @@
+//! `o lead`: the lead chat (ADR-0008). A message goes to a read-only lead CLI that
+//! proposes a plan; `o lead dispatch` runs a stored plan once, after the same check as `o dispatch`.
+
+use std::io::Read;
+use std::path::{Path, PathBuf};
+use std::process::Command as Process;
+use std::sync::Arc;
+
+use o_core::agents::clean;
+use o_core::lead::{self, DispatchError, SendRequest};
+use o_core::run::plan::ProviderId;
+use o_core::run::runner::{official_command, Spawner};
+use o_core::sys::proc;
+use serde_json::json;
+
+use super::{fail, print_violations, Command};
+
+pub const LEAD: Command = Command {
+    name: "lead",
+    usage: "  o lead send --project <폴더> [--provider claude|codex] [--model M] [--effort E] [--attach <파일>]... [--new] [--clean] <메시지|->
+                             총괄에게 메시지 (읽기 전용으로 프로젝트를 읽고 계획을 제안), 새 이벤트 JSON 출력
+  o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
+  o lead new --project <폴더>               새 대화 시작
+  o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
+  o lead dispatch <planId> [--clean]        제안된 계획을 정책 검사 후 한 번 실행, runId 출력
+  o lead stop [--project <폴더>]             답하는 중인 총괄 중지",
+    run: lead_main,
+};
+
+fn lead_main(home: &Path, args: &[String]) -> i32 {
+    let rest = args.get(1..).unwrap_or_default();
+    match args.first().map(String::as_str) {
+        Some("send") => send(home, rest),
+        Some("show") => show(home, rest),
+        Some("new") => new(home, rest),
+        Some("attach") => attach(home, rest),
+        Some("dispatch") => dispatch(home, rest),
+        Some("stop") => stop(home, rest),
+        _ => fail(LEAD.usage),
+    }
+}
+
+/// Flags with a value, repeatable ones collected, switches, and the words left over.
+#[derive(Default)]
+struct Args {
+    project: Option<String>,
+    provider: Option<String>,
+    model: Option<String>,
+    effort: Option<String>,
+    name: Option<String>,
+    attach: Vec<PathBuf>,
+    fresh: bool,
+    clean: bool,
+    json: bool,
+    words: Vec<String>,
+}
+
+fn parse(args: &[String]) -> Result<Args, String> {
+    let mut out = Args::default();
+    let mut items = args.iter();
+    while let Some(arg) = items.next() {
+        let mut value = |flag: &str| items.next().cloned().ok_or_else(|| format!("{flag} 뒤에 값이 필요합니다"));
+        match arg.as_str() {
+            "--project" => out.project = Some(value("--project")?),
+            "--provider" => out.provider = Some(value("--provider")?),
+            "--model" => out.model = Some(value("--model")?),
+            "--effort" => out.effort = Some(value("--effort")?),
+            "--name" => out.name = Some(value("--name")?),
+            "--attach" => out.attach.push(PathBuf::from(value("--attach")?)),
+            "--new" => out.fresh = true,
+            "--clean" => out.clean = true,
+            "--json" => out.json = true,
+            other if other.starts_with("--") => return Err(format!("알 수 없는 인자: {other}")),
+            other => out.words.push(other.to_string()),
+        }
+    }
+    Ok(out)
+}
+
+fn stdin_bytes() -> Result<Vec<u8>, String> {
+    let mut buf = Vec::new();
+    std::io::stdin().read_to_end(&mut buf).map_err(|e| e.to_string())?;
+    Ok(buf)
+}
+
+fn send(home: &Path, args: &[String]) -> i32 {
+    let a = match parse(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let Some(project) = a.project.as_deref() else { return fail("--project <폴더>가 필요합니다") };
+    let provider = match a.provider.as_deref().map(|p| ProviderId::parse(p).ok_or(p)) {
+        None => ProviderId::Claude,
+        Some(Ok(p)) => p,
+        Some(Err(p)) => return fail(&format!("알 수 없는 에이전트: {p}")),
+    };
+    let text = if a.words.len() == 1 && a.words[0] == "-" {
+        match stdin_bytes() {
+            Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+            Err(e) => return fail(&e),
+        }
+    } else {
+        a.words.join(" ")
+    };
+    let root = a.clean.then(clean::default_root);
+    let req = SendRequest {
+        project,
+        provider,
+        model: a.model.as_deref(),
+        effort: a.effort.as_deref(),
+        text: &text,
+        attach: &a.attach,
+        fresh: a.fresh,
+        clean: root.as_deref(),
+    };
+    let spawner: Arc<Spawner> = Arc::new(official_command);
+    match lead::send(home, &req, spawner.as_ref()) {
+        Ok(events) => {
+            let thread = lead::current_thread(home, project);
+            // A turn that ended in lead.error is still on record: the events say what happened.
+            println!("{}", json!({ "threadId": thread, "events": events }));
+            0
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn show(home: &Path, args: &[String]) -> i32 {
+    let a = match parse(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let view = lead::show(home, a.project.as_deref());
+    if a.json {
+        println!("{view}");
+        return 0;
+    }
+    let Some(thread) = view.get("thread").filter(|t| !t.is_null()) else {
+        println!("총괄 대화가 없습니다.");
+        return 0;
+    };
+    println!("대화 {} — {}", thread["threadId"].as_str().unwrap_or_default(), thread["project"].as_str().unwrap_or_default());
+    for event in thread["events"].as_array().into_iter().flatten() {
+        let text = |key: &str| event[key].as_str().unwrap_or_default().to_string();
+        match event["t"].as_str().unwrap_or_default() {
+            "lead.user" => println!("\n[나] {}", text("text")),
+            "lead.reply" => println!("\n[총괄 {}] {}", text("provider"), text("text")),
+            "lead.plan" => println!(
+                "\n[계획 {}] {} — {}",
+                text("planId"),
+                event["plan"]["title"].as_str().unwrap_or_default(),
+                if event["ok"] == true { "정책 통과" } else { "정책 차단" }
+            ),
+            "lead.dispatch" => println!("[실행] {} → {}", text("planId"), text("runId")),
+            "lead.error" => println!("\n[오류] {}", text("text")),
+            _ => {}
+        }
+    }
+    if let Some(busy) = thread["busy"].as_str() {
+        println!("\n({busy} 총괄이 답하는 중)");
+    }
+    0
+}
+
+fn new(home: &Path, args: &[String]) -> i32 {
+    let a = match parse(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let Some(project) = a.project.as_deref() else { return fail("--project <폴더>가 필요합니다") };
+    match lead::start(home, project) {
+        Ok(thread) => {
+            println!("{}", json!({ "threadId": thread, "project": project }));
+            0
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn attach(home: &Path, args: &[String]) -> i32 {
+    let a = match parse(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let (Some(project), Some(name), [file]) = (a.project.as_deref(), a.name.as_deref(), a.words.as_slice()) else {
+        return fail("o lead attach --project <폴더> --name <이름> <파일|->");
+    };
+    let thread = match lead::check_folder(home, project).and_then(|()| lead::thread_for(home, project, false).map_err(|e| e.to_string())) {
+        Ok(thread) => thread,
+        Err(e) => return fail(&e),
+    };
+    let saved = if file == "-" {
+        stdin_bytes().and_then(|bytes| {
+            if bytes.len() as u64 > lead::files::MAX_BYTES {
+                return Err("첨부 파일은 하나에 10MB까지입니다".into());
+            }
+            lead::files::save(home, &thread, name, &bytes)
+        })
+    } else {
+        lead::files::import(home, &thread, Path::new(file))
+    };
+    match saved {
+        Ok(attachment) => {
+            println!("{}", json!(attachment));
+            0
+        }
+        Err(e) => fail(&e),
+    }
+}
+
+fn dispatch(home: &Path, args: &[String]) -> i32 {
+    let a = match parse(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let [plan_id] = a.words.as_slice() else { return fail("o lead dispatch <planId> [--clean]") };
+    let start = |run_id: &str| -> std::io::Result<()> {
+        let exe = std::env::current_exe()?;
+        proc::spawn_detached(Process::new(exe).args(["_run", run_id])).map(|_| ())
+    };
+    match lead::dispatch(home, plan_id, a.clean, &start) {
+        Ok(done) => {
+            println!("{}", json!(done));
+            0
+        }
+        Err(DispatchError::Blocked(violations)) => {
+            print_violations(&violations);
+            2
+        }
+        Err(DispatchError::Other(message)) => fail(&message),
+    }
+}
+
+fn stop(home: &Path, args: &[String]) -> i32 {
+    let a = match parse(args) {
+        Ok(a) => a,
+        Err(e) => return fail(&e),
+    };
+    let stopped = lead::stop(home, a.project.as_deref());
+    println!("{}", json!({ "stopped": stopped }));
+    0
+}

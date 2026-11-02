@@ -15,7 +15,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, short, short_value};
-use super::{opt, strings, LaunchSpec, Official, Provider, ReadLine, TeamChannel};
+use super::{opt, strings, LaunchSpec, LeadTurn, Official, Provider, ReadLine, TeamChannel};
 use crate::agents::clean::LoginState;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -47,6 +47,36 @@ impl Provider for Codex {
 
     fn stream_reader(&self) -> ReadLine {
         Box::new(read_stream)
+    }
+
+    fn lead_efforts(&self) -> &'static [&'static str] {
+        &["minimal", "low", "medium", "high", "xhigh"]
+    }
+
+    /// A read-only sandbox in the project (it reads anywhere, writes nowhere); a later turn
+    /// resumes the session with `exec resume <id>`. Images go first (`-i` takes several
+    /// values, so a flag must follow them), the prompt is read from stdin (`-`).
+    fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let images: Vec<String> = turn.images.iter().flat_map(|path| ["-i".to_string(), path.clone()]).collect();
+        let effort = turn.effort.filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
+        let mut tail = vec!["--json".to_string()];
+        tail.extend(opt("-m", turn.model));
+        tail.extend(opt("-c", effort.as_deref()));
+        let mut args = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check"]);
+        match turn.session.filter(|s| !s.is_empty()) {
+            Some(session) => {
+                args.push("resume".into());
+                args.extend(images);
+                args.extend(tail);
+                args.push(session.to_string());
+            }
+            None => {
+                args.extend(images);
+                args.extend(tail);
+            }
+        }
+        args.push("-".into());
+        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
     }
 
     // https://github.com/openai/codex (npm, Homebrew, Windows installer)

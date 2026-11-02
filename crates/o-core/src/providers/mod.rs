@@ -8,7 +8,8 @@
 //! injected and no flag that disables approvals is ever added. The one opening
 //! is narrow: each CLI may run `o msg`, the run's team channel, and the
 //! read-only `o context` search (ADR-0005; Antigravity only gets the section
-//! injected into its prompt), and nothing more.
+//! injected into its prompt), and nothing more. A lead chat turn (`Provider::lead`,
+//! ADR-0008) gets less: reading the project, nothing else.
 
 pub mod agy;
 pub mod claude;
@@ -16,6 +17,7 @@ pub mod codex;
 mod stream;
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 
@@ -48,7 +50,19 @@ pub trait Provider: Sync {
     /// A fresh reader for one card's stdout, one JSON object per line.
     fn stream_reader(&self) -> ReadLine;
 
-    // Lead chat (headless prompt, session resume, attachments per CLI) goes here.
+    // Lead chat (`lead`, ADR-0008): a read-only headless turn that may resume the CLI's session.
+
+    /// The effort values a lead turn of this CLI takes. Empty: the CLI cannot be a lead
+    /// (no headless read-only mode with session resume that O can rely on).
+    fn lead_efforts(&self) -> &'static [&'static str] {
+        &[]
+    }
+    /// The lead's launch: read-only (it reads the project, never edits or runs commands),
+    /// no flag that turns approvals off, resumed when the turn names a session.
+    /// `None` when the CLI cannot be a lead.
+    fn lead(&self, _turn: &LeadTurn) -> Option<LaunchSpec> {
+        None
+    }
 
     // Install and sign-in (`agents`).
 
@@ -115,6 +129,53 @@ pub struct LaunchSpec {
     pub stdin: Option<String>,
     /// Run and card ids for `o msg`; never credentials.
     pub env: BTreeMap<String, String>,
+}
+
+/// One lead chat turn as a provider launches it.
+#[derive(Clone, Debug, Default)]
+pub struct LeadTurn<'a> {
+    /// The thread's project, where the CLI starts and what it reads.
+    pub project: &'a str,
+    pub prompt: String,
+    /// The CLI's own session id from an earlier turn of this thread, to resume.
+    pub session: Option<&'a str>,
+    pub model: Option<&'a str>,
+    pub effort: Option<&'a str>,
+    /// The thread's attachment folder (outside O's state folder), opened for reading.
+    pub files_dir: Option<&'a str>,
+    /// Image attachments, for CLIs that take images natively.
+    pub images: &'a [String],
+}
+
+/// API key variables a CLI prefers over its own sign-in when it runs headless.
+/// Left on the PC (an old key in a shell profile or `.env`), they would quietly
+/// bill the API instead of the subscription: `claude -p` always uses
+/// `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` when present, and `codex exec` puts
+/// `CODEX_API_KEY` ahead of the saved ChatGPT login. (Same API as B's card fix.)
+pub fn api_key_vars(provider: ProviderId) -> &'static [&'static str] {
+    match provider {
+        ProviderId::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+        ProviderId::Codex => &["CODEX_API_KEY"],
+        ProviderId::Agy => &[],
+    }
+}
+
+/// Names to take out of the inherited environment: the listed ones, plus any
+/// inherited spelling of them in another case (Windows reads names without case).
+pub fn names_to_remove(remove: &[String], inherited: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut names: Vec<OsString> = remove.iter().map(OsString::from).collect();
+    for key in inherited {
+        let listed = key.to_str().is_some_and(|k| remove.iter().any(|r| r.eq_ignore_ascii_case(k)));
+        if listed && !names.contains(&key) {
+            names.push(key);
+        }
+    }
+    names
+}
+
+/// Whether a provider can be the lead (`Provider::lead_efforts` is not empty).
+pub fn can_lead(id: ProviderId) -> bool {
+    !get(id).lead_efforts().is_empty()
 }
 
 pub struct TeamChannel<'a> {

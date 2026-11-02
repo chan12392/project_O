@@ -7,6 +7,7 @@
 
 mod about;
 mod agents;
+mod lead;
 mod review;
 mod runs;
 mod tokens;
@@ -28,11 +29,24 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         about::about,
         review::review,
         tokens::tokens,
+        lead::lead_show,
+        lead::lead_new,
+        lead::lead_attach,
+        lead::lead_send,
+        lead::lead_dispatch,
+        lead::lead_stop,
         update::update_check,
         update::update_install,
         update::update_pending,
         update::update_cancel,
     ]
+}
+
+/// The `o` built beside this app (target/release), else the one on PATH.
+fn o_binary() -> Option<std::path::PathBuf> {
+    let name = if cfg!(windows) { "o.exe" } else { "o" };
+    let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(name))).filter(|p| p.is_file());
+    beside.or_else(|| o_core::sys::resolve::which("o"))
 }
 
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {

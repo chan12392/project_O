@@ -7,6 +7,8 @@ description: Split a multi-part request into work cards and hand them to agent C
 
 총괄 에이전트는 계획만 세운다. 실행·권한·한도 판단은 O CLI가 한다.
 
+앱의 총괄 채팅(ADR-0008)에서는 O가 총괄 CLI를 읽기 전용으로 띄운다. 그때 총괄은 명령을 실행하지 않고, 답 끝의 ` ```o-plan ` 블록 하나로만 계획을 낸다(형식은 아래 1절과 같고 `project`는 O가 채운다). O가 정책을 검사해 계획 카드로 보여 주고, 사람이 "실행"을 눌러야 `o lead dispatch`로 전달된다. 터미널에서 같은 흐름을 쓰려면 `o lead send --project <폴더> "요청"` → `o lead show --project <폴더>` → `o lead dispatch <planId>`.
+
 ## 1. 계획 만들기
 
 사용자 요청을 서로 독립적인 카드 2~5개로 나눈다. 카드끼리 같은 파일을 동시에 고치지 않게 나눈다.

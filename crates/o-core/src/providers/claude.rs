@@ -8,7 +8,7 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use super::stream::{num, tool_summary};
-use super::{opt, strings, LaunchSpec, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
+use super::{opt, strings, LaunchSpec, LeadTurn, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
 use crate::context::CONTEXT_COMMAND;
 use crate::run::events::StreamSignal;
@@ -17,6 +17,9 @@ use crate::run::store::to_pretty;
 use crate::sys::js::{coalesce, iso_from_secs, js_string};
 
 pub struct Claude;
+
+/// The lead's whole tool set: reading files and searching them.
+const LEAD_TOOLS: &str = "Read,Grep,Glob";
 
 impl Provider for Claude {
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
@@ -39,6 +42,23 @@ impl Provider for Claude {
 
     fn stream_reader(&self) -> ReadLine {
         Box::new(read_stream)
+    }
+
+    fn lead_efforts(&self) -> &'static [&'static str] {
+        &["low", "medium", "high", "xhigh", "max"]
+    }
+
+    /// Only the read tools exist (`--tools`), they are the only ones allowed without a prompt,
+    /// the permission mode is the default one (a headless run denies anything else), and no
+    /// MCP server is loaded. The attachment folder is added for reading.
+    fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default"]);
+        args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
+        args.extend(opt("--resume", turn.session));
+        args.extend(opt("--model", turn.model));
+        args.extend(opt("--effort", turn.effort));
+        args.extend(opt("--add-dir", turn.files_dir));
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
     }
 
     // https://code.claude.com/docs/en/setup (native installer, WinGet, npm)
