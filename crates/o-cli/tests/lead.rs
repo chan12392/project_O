@@ -39,7 +39,7 @@ fn setup(name: &str) -> (PathBuf, String) {
 fn help_lists_the_lead_commands() {
     let (base, _) = setup("help");
     let help = String::from_utf8_lossy(&o(&base, &["help"], b"").stdout).into_owned();
-    for line in ["o lead send --project", "o lead dispatch <planId>", "o lead stop"] {
+    for line in ["o lead send --project", "o lead dispatch <planId>", "o lead stop", "o lead models --provider"] {
         assert!(help.contains(line), "{line}");
     }
 }
@@ -57,8 +57,14 @@ fn show_attach_send_and_stop_through_the_cli() {
     assert_eq!(fs::read(path).unwrap(), b"png bytes");
     assert_eq!(o(&base, &["lead", "attach", "--project", &project, "--name", "run.exe", "-"], b"MZ").status.code(), Some(1));
 
-    // Antigravity cannot lead; nothing is recorded.
-    assert_eq!(o(&base, &["lead", "send", "--project", &project, "--provider", "agy", "안녕"], b"").status.code(), Some(1));
+    // An effort the CLI does not take, or a model id of the wrong shape: refused, nothing recorded.
+    assert_eq!(o(&base, &["lead", "send", "--project", &project, "--provider", "agy", "--effort", "minimal", "안녕"], b"").status.code(), Some(1));
+    assert_eq!(o(&base, &["lead", "send", "--project", &project, "--model", "opus 5", "안녕"], b"").status.code(), Some(1));
+
+    // Claude's models are its documented aliases, listed without running the CLI.
+    let models = json_of(&o(&base, &["lead", "models", "--provider", "claude"], b""));
+    assert_eq!(models["models"][1], serde_json::json!({ "id": "opus", "label": "Opus" }));
+    assert_eq!(o(&base, &["lead", "models"], b"").status.code(), Some(1));
 
     // With no CLI on PATH the turn is still on record, ending in lead.error.
     let sent = json_of(&o(&base, &["lead", "send", "--project", &project, "--effort", "low", "--attach", path, "-"], "계획해 줘".as_bytes()));

@@ -2,11 +2,15 @@
 //! A turn runs the lead CLI read-only through o-core on a blocking thread; a plan is
 //! dispatched by `o _run` in the background, as `o dispatch` does.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use o_core::agents::clean;
 use o_core::lead::{self, files, DispatchError, SendRequest};
+use o_core::providers::{self, ModelChoice};
 use o_core::run::plan::ProviderId;
 use o_core::run::runner::official_command;
 use o_core::run::store;
@@ -87,6 +91,7 @@ pub async fn lead_attach(request: tauri::ipc::Request<'_>) -> Result<Value, Stri
 pub async fn lead_send(
     project: String,
     provider: String,
+    model: Option<String>,
     effort: Option<String>,
     text: String,
     attachments: Vec<String>,
@@ -101,7 +106,7 @@ pub async fn lead_send(
         let req = SendRequest {
             project: &project,
             provider,
-            model: None,
+            model: model.as_deref(),
             effort: effort.as_deref(),
             text: &text,
             attach: &attach,
@@ -131,6 +136,26 @@ pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String
         }
     })
     .await?
+}
+
+/// How long a lead model list is reused before the CLI is asked again.
+const MODELS_TTL: Duration = Duration::from_secs(10 * 60);
+
+static MODELS: Mutex<BTreeMap<ProviderId, (Instant, Vec<ModelChoice>)>> = Mutex::new(BTreeMap::new());
+
+/// The models a lead of this agent may name (`o lead models`), from the CLI's own list,
+/// kept for a few minutes. A failed listing is not kept, so the next open asks again.
+#[tauri::command]
+pub async fn lead_models(provider: String) -> Result<Value, String> {
+    let provider = ProviderId::parse(&provider).ok_or_else(|| format!("알 수 없는 에이전트: {provider}"))?;
+    if let Some((at, models)) = MODELS.lock().map_err(|e| e.to_string())?.get(&provider) {
+        if at.elapsed() < MODELS_TTL {
+            return Ok(json!({ "provider": provider, "models": models }));
+        }
+    }
+    let models = blocking(move || providers::lead_models(provider)).await??;
+    MODELS.lock().map_err(|e| e.to_string())?.insert(provider, (Instant::now(), models.clone()));
+    Ok(json!({ "provider": provider, "models": models }))
 }
 
 /// Stops the project's lead while it answers (`o lead stop`).

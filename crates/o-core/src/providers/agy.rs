@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, short, tool_summary};
-use super::{opt, outbox_path, strings, LaunchSpec, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
+use super::{list_command, opt, outbox_path, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -27,6 +27,10 @@ const NO_UPDATE: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
 
 /// agy's quota report in print mode: no model turn (agy 1.1.11 and later).
 const USAGE: [&str; 6] = ["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"];
+
+/// A lead session's deny rules (agy `--settings`): every kind of action that changes
+/// something — file writes (edits included), shell commands, MCP tools — and URL actions.
+const LEAD_DENY: [&str; 5] = ["write_file(*)", "command(*)", "mcp(*)", "read_url(*)", "execute_url(*)"];
 
 impl Provider for Agy {
     fn launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
@@ -68,9 +72,34 @@ impl Provider for Agy {
         false
     }
 
-    // No lead (`lead_efforts` stays empty): agy 1.4 can resume (`--conversation`), but none
-    // of its modes (accept-edits, auto, plan) is documented as read-only, so O cannot promise
-    // a lead that never edits. See ADR-0008.
+    fn lead_efforts(&self) -> &'static [&'static str] {
+        &["low", "medium", "high", "xhigh", "max"]
+    }
+
+    /// Plan mode alone only asks the model not to edit (agy 1.4.12 still tried `edit_file`
+    /// in it), so the session's own deny rules are what keep the lead read-only: agy's
+    /// permission check refuses every file write, shell command, MCP tool and URL action,
+    /// and `--sandbox` restricts the terminal on top. Reading stays open. The turn resumes
+    /// with `--conversation <id>` (the stream's `init` event names it). agy takes no image
+    /// input, so attachments are named in the prompt and their folder is added for reading.
+    fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let settings = json!({ "permissions": { "deny": LEAD_DENY } });
+        let mut args = strings(&["--output-format", "stream-json", "--mode", "plan", "--sandbox", "--settings"]);
+        args.push(settings.to_string());
+        args.extend(opt("--conversation", turn.session));
+        args.extend(opt("--add-dir", turn.files_dir));
+        args.extend(opt("--model", turn.model));
+        args.extend(opt("--effort", turn.effort));
+        args.push("-p".into());
+        args.push(turn.prompt.clone());
+        let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// `agy models` lists the models this sign-in may use, one `id<TAB>name` per line.
+    fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
+        list_command("agy", &["models"], ProviderId::Agy, &[NO_UPDATE]).map(|out| parse_agy_models(&out))
+    }
 
     fn stream_reader(&self) -> ReadLine {
         let mut text = String::new();
@@ -178,6 +207,18 @@ pub fn parse_agy_usage(stdout: &str) -> Vec<UsageWindow> {
         }
     }
     out
+}
+
+/// `agy models` output: `id<TAB>name` lines after a "Fetching…" line, which has no tab.
+pub fn parse_agy_models(stdout: &str) -> Vec<ModelChoice> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (id, label) = line.split_once('\t')?;
+            let id = id.trim();
+            (!id.is_empty()).then(|| ModelChoice { id: id.to_string(), label: Some(label.trim()).filter(|l| !l.is_empty()).unwrap_or(id).to_string() })
+        })
+        .collect()
 }
 
 /// agy streams its answer in deltas; `text` collects them until the step is done.
