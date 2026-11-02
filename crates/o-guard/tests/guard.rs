@@ -310,6 +310,31 @@ fn direct_merge_apis_follow_the_same_rule() {
     assert!(passes(&bash("gh pr view 1 --json baseRefName"), &MEMBER_GH));
 }
 
+/// A line break (LF or CRLF), a trailing command or a quoted separator must not hide a merge from the owner check.
+#[test]
+fn merge_checks_see_every_line_of_a_command() {
+    let into_protected = [
+        "gh pr merge 1\necho x",
+        "gh pr merge 1\r\necho x",
+        "gh pr merge 1 --merge\ngit log -1",
+        "gh pr merge --subject \"a; b\" 1",
+        "gh pr merge 1 --body \"first line\nsecond line\"",
+        "gh api -X PUT repos/chan12392/project_O/pulls/1/merge\necho x",
+        "gh api -X PUT repos/chan12392/project_O/pulls/1/merge\r\necho x",
+        "echo start\r\ngh api repos/chan12392/project_O/merges -f base=main -f head=test_1\r\nexit 0",
+        "gh api graphql -f query='mutation {\n  mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId }\n}'",
+    ];
+    for command in into_protected {
+        assert!(passes(&bash(command), &OWNER_GH), "{command:?}");
+        let reasons = review(&bash(command), &MEMBER_GH);
+        assert_eq!(reasons.len(), 1, "{command:?} → {reasons:?}");
+        assert!(reasons[0].contains("someone-else"), "{command:?} → {reasons:?}");
+    }
+    for free in ["gh pr merge 2\necho x", "gh pr merge 4 -d\r\necho x", "echo x\ngh api --method PUT repos/{owner}/{repo}/pulls/2/merge\necho y"] {
+        assert!(passes(&bash(free), &MEMBER_GH), "{free:?}");
+    }
+}
+
 fn project_hooks(path: &str) -> Vec<Value> {
     let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path);
     let config: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();

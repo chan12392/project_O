@@ -55,8 +55,8 @@ static NULL_REDIRECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\d?>\s
 static PATCH_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$").unwrap());
 static ROOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z]:)?[\\/]").unwrap());
 
-static GH_PR_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgh\s+pr\s+merge\b(.*)$").unwrap());
-static GH_API: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgh\s+api\b(.*)$").unwrap());
+/// `gh pr merge` (group 1) or `gh api`, wherever it appears: quoted or not, on any line.
+static GH_MERGE_CALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgh\s+(?:(pr\s+merge)|api)\b").unwrap());
 static API_PR_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge/?$").unwrap());
 static API_MERGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/[^/\s]+/[^/\s]+/merges/?$").unwrap());
 static GRAPHQL_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b").unwrap());
@@ -204,8 +204,8 @@ enum MergeTarget {
 /// or the signed-in gh user is the owner. Any lookup that fails blocks.
 fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
     let mut reasons = Vec::new();
-    for segment in SEGMENT_SPLIT.split(command) {
-        let Some(target) = merge_target(segment) else { continue };
+    for (is_pr_merge, arguments) in gh_calls(command) {
+        let Some(target) = merge_target(is_pr_merge, arguments) else { continue };
         let base = match &target {
             MergeTarget::Pr { selector, repo } => git.pr_base(cwd, selector.as_deref(), repo.as_deref()),
             MergeTarget::Base(base) => base.clone(),
@@ -239,16 +239,43 @@ fn is_free_base(base: &str) -> bool {
     base == FREE_MERGE_BRANCH || BRANCH_NAME.is_match(base)
 }
 
-/// Recognizes `gh pr merge …`, `gh api …/pulls/<n>/merge`, `gh api …/merges` and GraphQL merge mutations.
-fn merge_target(segment: &str) -> Option<MergeTarget> {
-    if let Some(captures) = GH_PR_MERGE.captures(segment) {
-        let words = shell_words(&captures[1]);
+/// Each `gh pr merge` (`true`) or `gh api` (`false`) call with its arguments: the text from the call
+/// to the first `;`, `&`, `|` or line break (LF, CR) outside quotes. Calls are found anywhere, so a
+/// line break or quoting cannot hide one; one inside an `echo` only costs a lookup.
+fn gh_calls(command: &str) -> Vec<(bool, &str)> {
+    GH_MERGE_CALL
+        .captures_iter(command)
+        .map(|c| {
+            let rest = &command[c.get(0).unwrap().end()..];
+            (c.get(1).is_some(), &rest[..unquoted_end(rest)])
+        })
+        .collect()
+}
+
+/// Where the command part starting `text` ends: the first `;`, `&`, `|`, LF or CR outside quotes.
+fn unquoted_end(text: &str) -> usize {
+    let mut quote: Option<char> = None;
+    for (i, c) in text.char_indices() {
+        match quote {
+            Some(q) if c == q => quote = None,
+            Some(_) => {}
+            None if c == '"' || c == '\'' => quote = Some(c),
+            None if matches!(c, ';' | '&' | '|' | '\n' | '\r') => return i,
+            None => {}
+        }
+    }
+    text.len()
+}
+
+/// Recognizes `gh pr merge …`, `gh api …/pulls/<n>/merge`, `gh api …/merges` and GraphQL merge mutations
+/// from the arguments that follow `gh pr merge` / `gh api`.
+fn merge_target(is_pr_merge: bool, arguments: &str) -> Option<MergeTarget> {
+    let words = shell_words(arguments);
+    if is_pr_merge {
         let (positional, flags) = split_flags(&words, &["-A", "--author-email", "-b", "--body", "-F", "--body-file", "--match-head-commit", "-R", "--repo", "-t", "--subject"]);
         let repo = flag_values(&flags, &["-R", "--repo"]).into_iter().next();
         return Some(MergeTarget::Pr { selector: positional.into_iter().next(), repo });
     }
-    let captures = GH_API.captures(segment)?;
-    let words = shell_words(&captures[1]);
     let (positional, flags) = split_flags(
         &words,
         &["-X", "--method", "-f", "--raw-field", "-F", "--field", "-H", "--header", "-q", "--jq", "-t", "--template", "--input", "--hostname", "--cache", "-p", "--preview"],
@@ -263,7 +290,7 @@ fn merge_target(segment: &str) -> Option<MergeTarget> {
         let base = fields.iter().find_map(|f| f.strip_prefix("base=")).map(str::to_string);
         return Some(MergeTarget::Base(base));
     }
-    (endpoint == "graphql" && GRAPHQL_MERGE.is_match(segment)).then_some(MergeTarget::Base(None))
+    (endpoint == "graphql" && GRAPHQL_MERGE.is_match(arguments)).then_some(MergeTarget::Base(None))
 }
 
 /// Positional words and `(flag, value)` pairs; `takes_value` flags consume the next word unless written `--flag=value`.
