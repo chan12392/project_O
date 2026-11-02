@@ -5,7 +5,7 @@
 //! ```text
 //! runs/<runId>/plan.json · events.jsonl · cards/<id>.raw.jsonl · stop · clean (o dispatch --clean)
 //! active/<runId>.<cardId>.json   running card markers ({ pid, provider })
-//! o.db                           the run index, card starts (daily cap), cooldowns and
+//! o.db                           the run index, card starts (daily cap), held slots, cooldowns and
 //!                                refused plans; dispatch and the runner write it, cards never (see `index`)
 //! ```
 //!
@@ -14,7 +14,7 @@
 //! renames them to `*.imported`.
 
 use std::collections::hash_map::RandomState;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
 use std::io::{self, Write};
@@ -204,12 +204,124 @@ pub fn record_start(home: &Path, run_id: &str, card_id: &str, provider: Provider
 /// Cards started on the local day of `day`. Start times are stored as UTC ISO
 /// text, which sorts like time: only the last two days can share a local day.
 pub fn started_on(home: &Path, day: DateTime<Utc>) -> io::Result<usize> {
-    let conn = index::open(home)?;
+    started_in(&index::open(home)?, day)
+}
+
+fn started_in(conn: &rusqlite::Connection, day: DateTime<Utc>) -> io::Result<usize> {
     let mut stmt = conn.prepare("SELECT at FROM starts WHERE at >= ?1").map_err(sql)?;
     let since = iso(day - Duration::days(2));
     let times: Vec<String> = stmt.query_map([since], |row| row.get(0)).map_err(sql)?.collect::<Result<_, _>>().map_err(sql)?;
     let today = local_day(day);
     Ok(times.iter().filter(|at| parse_time(at).is_some_and(|at| local_day(at) == today)).count())
+}
+
+/// A card's hold on a slot and on one of the day's starts, taken before its CLI starts
+/// (see `reserve_slot`). Given back with `release_slot`.
+#[derive(Debug)]
+pub struct Reservation {
+    pub run_id: String,
+    pub card_id: String,
+    pub provider: ProviderId,
+    slot_row: i64,
+    start_row: i64,
+}
+
+pub enum Reserved {
+    Granted(Reservation),
+    /// The slots are full; the reason says which cap.
+    Busy(String),
+    /// Today's starts are all used.
+    DayFull,
+}
+
+/// The providers of every card holding a slot: slots reserved in o.db whose holder is
+/// still alive, and live markers no reservation stands for (left by an older runner).
+/// Dead holders' slots are dropped on the way.
+fn held_slots(home: &Path, tx: &rusqlite::Transaction) -> io::Result<Vec<ProviderId>> {
+    let rows: Vec<(i64, String, String, String, u32, u32)> = {
+        let mut stmt = tx.prepare("SELECT rowid, run_id, card_id, provider, owner, pid FROM slots").map_err(sql)?;
+        let rows = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))).map_err(sql)?;
+        rows.collect::<Result<_, _>>().map_err(sql)?
+    };
+    let mut held = Vec::new();
+    let mut cards = HashSet::new();
+    for (rowid, run_id, card_id, provider, owner, pid) in rows {
+        // Before the CLI runs the runner holds the slot; after, the CLI does (its job dies with the runner).
+        let holder = if pid != 0 { pid } else { owner };
+        if !proc::is_alive(holder) {
+            tx.execute("DELETE FROM slots WHERE rowid = ?1", [rowid]).map_err(sql)?;
+            continue;
+        }
+        held.extend(ProviderId::parse(&provider));
+        cards.insert((run_id, card_id));
+    }
+    for marker in active_markers(home) {
+        if !cards.contains(&(marker.run_id, marker.card_id)) {
+            held.push(marker.provider);
+        }
+    }
+    Ok(held)
+}
+
+/// Every card holding a slot right now, by provider (what `o dispatch` checks against the caps).
+pub fn held_by_provider(home: &Path) -> io::Result<HashMap<ProviderId, usize>> {
+    let mut conn = index::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    let mut counts = empty_counts();
+    for provider in held_slots(home, &tx)? {
+        *counts.entry(provider).or_default() += 1;
+    }
+    tx.commit().map_err(sql)?;
+    Ok(counts)
+}
+
+/// Takes a slot and one of today's starts for a card in one write lock, so runners of
+/// separate dispatches never both see the last free slot or the day's last start.
+/// The start counts from here; `release_slot` gives it back if the CLI never starts.
+pub fn reserve_slot(home: &Path, run_id: &str, card_id: &str, provider: ProviderId, now: DateTime<Utc>) -> io::Result<Reserved> {
+    let mut conn = index::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    if started_in(&tx, now)? >= LIMITS.max_cards_per_day {
+        return Ok(Reserved::DayFull);
+    }
+    let held = held_slots(home, &tx)?;
+    if held.len() >= LIMITS.max_active_total {
+        tx.commit().map_err(sql)?;
+        return Ok(Reserved::Busy(format!("전체 동시 실행 {}개가 차서 대기", LIMITS.max_active_total)));
+    }
+    let max = LIMITS.max_active_per_provider(provider);
+    if held.iter().filter(|p| **p == provider).count() >= max {
+        tx.commit().map_err(sql)?;
+        return Ok(Reserved::Busy(format!("{provider} 동시 실행 {max}개가 차서 대기")));
+    }
+    tx.execute(
+        "INSERT INTO slots (run_id, card_id, provider, owner) VALUES (?1, ?2, ?3, ?4)",
+        params![run_id, card_id, provider.as_str(), std::process::id()],
+    )
+    .map_err(sql)?;
+    let slot_row = tx.last_insert_rowid();
+    tx.execute("INSERT INTO starts (run_id, card_id, provider, at) VALUES (?1, ?2, ?3, ?4)", params![run_id, card_id, provider.as_str(), iso(now)])
+        .map_err(sql)?;
+    let start_row = tx.last_insert_rowid();
+    tx.commit().map_err(sql)?;
+    Ok(Reserved::Granted(Reservation { run_id: run_id.to_string(), card_id: card_id.to_string(), provider, slot_row, start_row }))
+}
+
+/// The card's CLI is running: from now on the slot lives as long as that process.
+pub fn link_slot(home: &Path, reservation: &Reservation, pid: u32) -> io::Result<()> {
+    index::open(home)?.execute("UPDATE slots SET pid = ?1 WHERE rowid = ?2", params![pid, reservation.slot_row]).map_err(sql)?;
+    Ok(())
+}
+
+/// Frees the slot. `started: false` (the CLI never ran) also gives back the day's start.
+pub fn release_slot(home: &Path, reservation: &Reservation, started: bool) -> io::Result<()> {
+    let mut conn = index::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    tx.execute("DELETE FROM slots WHERE rowid = ?1", [reservation.slot_row]).map_err(sql)?;
+    if !started {
+        tx.execute("DELETE FROM starts WHERE rowid = ?1", [reservation.start_row]).map_err(sql)?;
+    }
+    tx.commit().map_err(sql)
 }
 
 /// Provider → ISO time it is blocked until.
@@ -253,13 +365,9 @@ pub fn record_blocked(home: &Path, at: DateTime<Utc>, title: Option<&Value>, vio
 }
 
 pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyContext> {
-    let mut active_by_provider = empty_counts();
-    for marker in active_markers(home) {
-        *active_by_provider.entry(marker.provider).or_default() += 1;
-    }
     Ok(PolicyContext {
         now,
-        active_by_provider,
+        active_by_provider: held_by_provider(home)?,
         started_today: started_on(home, now)?,
         cooldowns: cooldown_times(home)?,
         over_budget: crate::usage::budget::over_budget(home, now)?,

@@ -12,6 +12,8 @@
 //! runs      run_id PK · title · project · started_at · ended_at · status · cards · done · failed · tokens · ingested_bytes · events · prefix_hash · modified
 //! events    run_id · seq · json            every complete, parseable events.jsonl line, in file order
 //! starts    run_id · card_id · provider · at   one row per started card (the daily cap)
+//! slots     run_id · card_id · provider · owner · pid   cards holding a slot: reserved by the runner
+//!                                  (`owner`) before the CLI starts, the CLI's `pid` once it runs
 //! cooldowns provider PK · until            when a provider may be used again
 //! blocked   at · title · violations        plans the policy refused (an audit trail)
 //! ```
@@ -34,7 +36,8 @@ use crate::sys::js::{iso, parse_time};
 use crate::run::store::RunRecord;
 
 /// 2: `runs.prefix_hash` and `runs.modified`, so a rewritten file is told from an appended one.
-const SCHEMA_VERSION: i64 = 2;
+/// 3: `slots`, the card slots runners hold from before a CLI starts until it ends.
+const SCHEMA_VERSION: i64 = 3;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
@@ -48,6 +51,7 @@ CREATE INDEX IF NOT EXISTS runs_by_start ON runs (started_at);
 CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, json TEXT NOT NULL, PRIMARY KEY (run_id, seq)) WITHOUT ROWID;
 CREATE TABLE IF NOT EXISTS starts (run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS starts_by_at ON starts (at);
+CREATE TABLE IF NOT EXISTS slots (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, owner INTEGER NOT NULL, pid INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blocked (at TEXT NOT NULL, title TEXT, violations TEXT NOT NULL);
 ";

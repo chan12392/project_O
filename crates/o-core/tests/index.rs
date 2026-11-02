@@ -151,6 +151,23 @@ fn an_index_from_the_previous_build_is_upgraded() {
     assert_eq!(event_count(&home, "r1"), 2);
 }
 
+/// A slot reserved by a runner that died (or whose CLI ended) is not held forever.
+#[test]
+fn slots_of_dead_holders_are_dropped() {
+    let home = temp_home();
+    let mut gone = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
+    let dead = gone.id();
+    gone.wait().unwrap();
+    let conn = index::open(&home).unwrap();
+    conn.execute("INSERT INTO slots (run_id, card_id, provider, owner) VALUES ('r1', 'a', 'codex', ?1)", [dead]).unwrap();
+    conn.execute("INSERT INTO slots (run_id, card_id, provider, owner, pid) VALUES ('r1', 'b', 'codex', ?1, ?2)", [std::process::id(), dead]).unwrap();
+    conn.execute("INSERT INTO slots (run_id, card_id, provider, owner) VALUES ('r2', 'c', 'claude', ?1)", [std::process::id()]).unwrap();
+    let held = o_core::run::store::held_by_provider(&home).unwrap();
+    assert_eq!((held[&ProviderId::Codex], held[&ProviderId::Claude]), (0, 1));
+    let left: i64 = conn.query_row("SELECT count(*) FROM slots", [], |r| r.get(0)).unwrap();
+    assert_eq!(left, 1);
+}
+
 #[test]
 fn the_runs_row_sums_up_the_run() {
     let home = temp_home();
