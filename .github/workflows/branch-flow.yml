@@ -17,7 +17,7 @@ jobs:
           HEAD: ${{ github.head_ref }}
           BASE: ${{ github.base_ref }}
           # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
-          PERSONAL: "younchan yongwoo"
+          PERSONAL: "younchan yongwoo eunmi"
         run: |
           # 개인·작업 브랜치 ──PR──▶ test_2 ──PR──▶ test_1 ──PR──▶ main
           fail() { echo "::error::$1 (head=$HEAD, base=$BASE). AGENTS.md의 병합 흐름을 확인하세요."; exit 1; }

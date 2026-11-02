@@ -14,6 +14,9 @@ serde.workspace = true
 # Key order as written: events, plans and tool summaries keep the order the TS port wrote.
 serde_json = { workspace = true, features = ["preserve_order"] }
 
+[target.'cfg(target_os = "macos")'.dependencies]
+libc = "0.2"
+
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
   "Win32_Foundation",

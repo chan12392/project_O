@@ -33,7 +33,8 @@ fn missing_clis_show_the_official_installers() {
         assert!(agent.get("version").is_none() && agent.get("path").is_none());
         // Without npm nothing installs in-app; the hint is the vendor's own installer.
         assert_eq!(agent["canInstall"], false);
-        assert!(agent["installHint"].as_str().unwrap().starts_with("PowerShell: irm https://"), "{agent}");
+        let prefix = if cfg!(windows) { "PowerShell: irm https://" } else { "공식 설치 안내: https://" };
+        assert!(agent["installHint"].as_str().unwrap().starts_with(prefix), "{agent}");
         assert!(agent["installUrl"].as_str().unwrap().starts_with("https://"));
     }
     assert_eq!(value[0]["name"], "Claude Code");

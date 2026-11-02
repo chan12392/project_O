@@ -23,7 +23,7 @@ use crate::rules::{
 };
 
 /// Keep in sync with .github/workflows/branch-flow.yml.
-pub const PERSONAL_BRANCHES: [&str; 2] = ["younchan", "yongwoo"];
+pub const PERSONAL_BRANCHES: [&str; 3] = ["younchan", "yongwoo", "eunmi"];
 
 /// The free integration branch: anyone may merge PRs into it.
 const FREE_MERGE_BRANCH: &str = "test_2";

@@ -193,11 +193,25 @@ pub fn started_at(pid: u32) -> Option<u64> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn started_at(pid: u32) -> Option<u64> {
     // Field 22 of /proc/<pid>/stat, counted after the parenthesized command name.
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+/// macOS has no /proc. Ask the kernel for the process start time (microseconds),
+/// retaining the same PID-reuse check used before ending an orphaned CLI.
+#[cfg(target_os = "macos")]
+pub fn started_at(pid: u32) -> Option<u64> {
+    let pid = i32::try_from(pid).ok()?;
+    let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    // The kernel writes exactly one proc_bsdinfo; do not read partial results.
+    let read = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, info.as_mut_ptr().cast(), size as i32) };
+    if read != size as i32 { return None; }
+    let info = unsafe { info.assume_init() };
+    info.pbi_start_tvsec.checked_mul(1_000_000)?.checked_add(info.pbi_start_tvusec)
 }
 
 /// Ends a process and everything it started (`taskkill /T /F` on Windows).
@@ -302,7 +316,7 @@ pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<Stri
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<String, String>>, cwd: Option<&Path>) -> io::Result<()> {
     let mut command = Command::new(program);
     command.args(args);
@@ -313,6 +327,17 @@ pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<Stri
         command.current_dir(cwd);
     }
     command.spawn().map(drop)
+}
+
+#[cfg(target_os = "macos")]
+#[path = "macos_console.rs"]
+mod macos_console;
+
+/// A GUI process has no interactive stdin. Open a private, self-removing
+/// command file in Terminal; the official CLI still owns the entire login.
+#[cfg(target_os = "macos")]
+pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<String, String>>, cwd: Option<&Path>) -> io::Result<()> {
+    macos_console::spawn(program, args, env, cwd)
 }
 
 /// Opens a web page in the person's default browser.

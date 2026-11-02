@@ -422,14 +422,25 @@ pub fn known_projects(conn: &Connection) -> io::Result<Vec<String>> {
 /// The known project `cwd` is in (the deepest one), if any.
 pub fn project_for(cwd: &str, known: &[String]) -> Option<String> {
     let cwd = normalize_project(cwd);
+    // macOS exposes the same temporary folders under /var and /private/var.
+    // Compare resolved folders, but keep the stored project key for the index.
+    #[cfg(target_os = "macos")]
+    let cwd = comparison_path(&cwd);
     known
         .iter()
         .filter(|p| {
+            #[cfg(target_os = "macos")]
+            let p = &comparison_path(p);
             let inside = cwd.len() > p.len() && cwd.as_bytes()[p.len()] == b'/' && same_project(&cwd[..p.len()], p);
             same_project(&cwd, p) || inside
         })
         .max_by_key(|p| p.len())
         .cloned()
+}
+
+#[cfg(target_os = "macos")]
+fn comparison_path(path: &str) -> String {
+    std::fs::canonicalize(path).map(|p| normalize_project(&p.to_string_lossy())).unwrap_or_else(|_| normalize_project(path))
 }
 
 /// The project a run was dispatched to, as the run index (which cards cannot write) has it.

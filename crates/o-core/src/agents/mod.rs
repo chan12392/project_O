@@ -112,7 +112,8 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
     let npm_ready = o.npm_package.is_some() && npm().is_some();
     let install_hint = match o.npm_package {
         Some(package) if npm_ready => format!("npm install -g {package}"),
-        _ => format!("PowerShell: {}", o.script),
+        _ if cfg!(windows) => format!("PowerShell: {}", o.script),
+        _ => format!("공식 설치 안내: {}", o.url),
     };
     let found: Option<PathBuf> = which(provider.as_str());
     let cli = resolve_cli(provider.as_str());
@@ -153,7 +154,11 @@ const LOG_LIMIT: usize = 20_000;
 /// official installer is instead.
 pub fn install(provider: ProviderId) -> ActionResult {
     let o = providers::get(provider).official();
-    let manual = |why: &str| ActionResult::new(false, format!("{why} 공식 안내({})를 따라 설치하세요: {}", o.url, o.script));
+    let manual = |why: &str| ActionResult::new(false, if cfg!(windows) {
+        format!("{why} 공식 안내({})를 따라 설치하세요: {}", o.url, o.script)
+    } else {
+        format!("{why} 운영체제에 맞는 공식 설치 안내를 확인하세요: {}", o.url)
+    });
     let Some(package) = o.npm_package else {
         return manual(&format!("{}는 공식 설치 스크립트로만 설치합니다.", o.name));
     };

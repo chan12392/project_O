@@ -29,10 +29,11 @@ const APPROVED_BRANCH: &str = "test_1";
 static INSTALLING: Mutex<()> = Mutex::new(());
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 const CANCELLED_MESSAGE: &str = "업데이트를 취소했습니다";
+const WINDOWS_UPDATES_ONLY: &str = "이 빌드의 자동 업데이트는 Windows 전용입니다. macOS에서는 새 .app 또는 .dmg를 받아 교체해 주세요.";
 static PENDING: Mutex<Option<Update>> = Mutex::new(None);
 
 pub fn start_checks() {
-    if BUILD_SHA.is_empty() { return; }
+    if !cfg!(windows) || BUILD_SHA.is_empty() { return; }
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(10));
         loop {
@@ -82,7 +83,7 @@ pub struct UpdateStatus {
 
 #[tauri::command]
 pub fn update_status() -> UpdateStatus {
-    UpdateStatus { automatic: !BUILD_SHA.is_empty(), gh: gh_command(&[]).is_ok(), last_check: LAST_CHECK.lock().unwrap().clone() }
+    UpdateStatus { automatic: cfg!(windows) && !BUILD_SHA.is_empty(), gh: gh_command(&[]).is_ok(), last_check: LAST_CHECK.lock().unwrap().clone() }
 }
 
 #[tauri::command]
@@ -216,6 +217,8 @@ fn begin_install() -> Result<std::sync::MutexGuard<'static, ()>, String> {
 }
 
 fn latest() -> Result<Option<Update>, String> {
+    // Never offer or execute a Windows .exe on another operating system.
+    if !cfg!(windows) { return Err(WINDOWS_UPDATES_ONLY.into()); }
     let endpoint = format!("repos/{REPOSITORY}/releases?per_page=20");
     let body = gh(&["api", "--hostname", "github.com", &endpoint], Duration::from_secs(30))?;
     approved(select_release(&body, BUILD_SHA, BUILD_TIME)?, |target| {
@@ -290,6 +293,13 @@ pub async fn update_install(app: tauri::AppHandle, tag: String) -> Result<(), St
 mod tests {
     use super::*;
     const FIXTURE: &str = include_str!("../../tests/releases.json");
+
+    #[cfg(not(windows))]
+    #[test]
+    fn non_windows_never_fetches_or_offers_a_windows_installer() {
+        assert_eq!(latest().unwrap_err(), WINDOWS_UPDATES_ONLY);
+        assert!(!update_status().automatic);
+    }
 
     #[test]
     fn newest_uploaded_prerelease_only_and_commit_and_time_must_both_change() {
