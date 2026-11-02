@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command as Process;
 
 use chrono::Utc;
-use o_core::policy::check_plan;
+use o_core::policy::check_plan_for;
 use o_core::review;
 use o_core::run::runner;
 use o_core::run::store::{self, run_dir};
@@ -15,7 +15,7 @@ use super::{fail, help, print_violations, run_id_arg, Command};
 
 pub const REVIEW: Command = Command {
     name: "review",
-    usage: "  o review <PR 번호|주소> [--provider claude|codex|agy] [--model M] [--effort E] [--profile project-o|own] [--post] [--dry-run] [--detach]
+    usage: "  o review <PR 번호|주소> [--provider claude|codex|agy|devin] [--model M] [--effort E] [--profile project-o|own] [--post] [--dry-run] [--detach]
                              지금 폴더 저장소의 PR을 gh로 읽어 에이전트 카드 하나로 검토 (파일 변경 없음)
                              --post: 끝나면 검토문을 PR 댓글로 게시 (승인·병합은 하지 않음)
                              --dry-run: 실행 없이 프롬프트 크기·고른 에이전트·정책 결과만 출력
@@ -57,7 +57,7 @@ fn review(home: &Path, args: &[String]) -> i32 {
         Ok(ctx) => ctx,
         Err(error) => return fail(&error.to_string()),
     };
-    let checked = check_plan(&input, &ctx);
+    let checked = check_plan_for(&input, &ctx, args.mode.profile);
     let summary = || {
         let cut = if task.cut_files.is_empty() { String::new() } else { format!(", 잘린 파일 {}개", task.cut_files.len()) };
         let redacted = if task.redacted_lines > 0 { format!(", 정책 규칙으로 뺀 줄 {}개", task.redacted_lines) } else { String::new() };

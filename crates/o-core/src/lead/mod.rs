@@ -36,7 +36,7 @@ use serde_json::{json, Value};
 
 use crate::agents::clean;
 use crate::context::normalize_project;
-use crate::policy::{check_plan, check_project, is_model_id, Violation, LIMITS};
+use crate::policy::{check_plan_for, check_project, is_model_id, Violation, LIMITS};
 use crate::providers::{self, LeadTurn, StreamReader};
 use crate::run::events::StreamSignal;
 use crate::run::mode::{Profile, RunMode};
@@ -690,7 +690,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         Ok(None) => {}
         Ok(Some(plan)) => {
             let plans = before.iter().filter(|e| matches!(e, LeadEvent::Plan { .. })).count();
-            let (plan, violations) = check_lead_plan(home, req.project, plan);
+            let (plan, violations) = check_lead_plan(home, req.project, plan, Profile::of_clean(req.clean.is_some()));
             emit(LeadEvent::Plan { at: now_iso(), plan_id: format!("{thread_id}-p{}", plans + 1), plan, ok: violations.is_empty(), violations })?;
         }
         Err(message) => emit(LeadEvent::Error { at: now_iso(), text: message })?,
@@ -699,13 +699,14 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
 }
 
 /// A plan from the lead with its project forced to the thread's, and what the policy says
-/// of it now (`o dispatch`'s check: shape, providers, caps, cooldowns, today's budget).
-pub fn check_lead_plan(home: &Path, project: &str, mut plan: Value) -> (Value, Vec<Violation>) {
+/// of it now (`o dispatch`'s check: shape, providers, caps, cooldowns, today's budget, and
+/// the profile the lead ran on, which the app dispatches the plan with).
+pub fn check_lead_plan(home: &Path, project: &str, mut plan: Value, profile: Profile) -> (Value, Vec<Violation>) {
     if let Some(object) = plan.as_object_mut() {
         object.insert("project".into(), Value::String(project.to_string()));
     }
     let violations = match policy_context(home, Utc::now()) {
-        Ok(ctx) => check_plan(&plan, &ctx).violations,
+        Ok(ctx) => check_plan_for(&plan, &ctx, profile).violations,
         Err(error) => vec![Violation { rule: "policy-context".into(), message: error.to_string(), card_id: None }],
     };
     (plan, violations)
@@ -775,7 +776,7 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
         object.insert("project".into(), Value::String(project.clone()));
     }
     let ctx = policy_context(home, now).map_err(|e| e.to_string())?;
-    let checked = check_plan(&plan, &ctx);
+    let checked = check_plan_for(&plan, &ctx, mode.profile);
     let Some(plan) = checked.plan else {
         let _ = record_blocked(home, now, plan.get("title"), &checked.violations);
         return Err(DispatchError::Blocked(checked.violations));
@@ -825,7 +826,7 @@ pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, 
     lock.lock().map_err(|e| e.to_string())?;
     let events = read_thread(home, thread);
     let now = Utc::now();
-    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan(&plan, &ctx));
+    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_for(&plan, &ctx, Profile::of_clean(req.clean.is_some())));
     let valid = checked.ok().and_then(|result| result.plan);
     let running: Vec<String> = events.iter().filter_map(|e| match e {
         LeadEvent::Dispatch { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),

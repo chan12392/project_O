@@ -19,8 +19,8 @@ pub const AGENTS: Command = Command {
   o agents shell <claude|codex|agy|opencode> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행
   o agents doctor [--json]   로그인 상태와 프로필 오염 검사 (깨끗하면 종료 코드 0)
   o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
-  o agents install <claude|codex|agy|opencode> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
-  o agents open-login <claude|codex|agy|opencode> [--clean] [--json]   새 콘솔 창에서 공식 로그인
+  o agents install <claude|codex|agy|opencode|devin> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
+  o agents open-login <claude|codex|agy|opencode|devin> [--clean] [--json]   새 콘솔 창에서 공식 로그인
   o agents list [--all] [--json]   다른 에이전트 CLI 목록과 이 PC 감지(--version만 실행). --all 없이는 연결된 것만
   o agents models <opencode> [--json]   그 CLI의 모델 목록 (작업카드 model 값)",
     run: |_, args| run(args),
@@ -29,7 +29,7 @@ pub const AGENTS: Command = Command {
 fn provider_arg(value: Option<&String>) -> Option<ProviderId> {
     let found = value.and_then(|v| ProviderId::parse(v));
     if found.is_none() {
-        eprintln!("에이전트를 claude, codex, agy, opencode 중에서 지정하세요\n\n{}", help());
+        eprintln!("에이전트를 {} 중에서 지정하세요\n\n{}", ProviderId::ALL.map(ProviderId::as_str).join(", "), help());
     }
     found
 }
@@ -51,7 +51,10 @@ fn run(args: &[String]) -> i32 {
     match verb {
         "path" => {
             for provider in ProviderId::ALL {
-                println!("{:<6} {}", provider.as_str(), clean::profile_home(&root, provider).to_string_lossy());
+                match providers::get(provider).profile_unsupported() {
+                    Some(why) => println!("{:<6} 프로필 미지원 — {why}", provider.as_str()),
+                    None => println!("{:<6} {}", provider.as_str(), clean::profile_home(&root, provider).to_string_lossy()),
+                }
             }
             0
         }
@@ -81,6 +84,7 @@ fn run(args: &[String]) -> i32 {
             } else {
                 for a in &list {
                     let state = match (a.installed, a.logged_in) {
+                        (true, _) if a.profile_unsupported.is_some() => format!("프로필 미지원 — {}", a.profile_unsupported.as_deref().unwrap_or_default()),
                         (false, _) => format!("설치 안 됨 — {}", a.install_hint),
                         (true, Some(true)) => "로그인됨".into(),
                         (true, Some(false)) => "로그인 안 됨".into(),

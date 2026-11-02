@@ -26,7 +26,7 @@ fn missing_clis_show_the_official_installers() {
     let list = status(&root, false);
     let value = json!(list);
     let ids: Vec<&str> = value.as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["claude", "codex", "agy", "opencode"]);
+    assert_eq!(ids, ["claude", "codex", "agy", "opencode", "devin"]);
     for agent in value.as_array().unwrap() {
         assert_eq!(agent["installed"], false);
         assert_eq!(agent["loggedIn"], Value::Null, "unknown, not false: {agent}");
@@ -46,7 +46,9 @@ fn missing_clis_show_the_official_installers() {
     assert_eq!(value[0]["installUrl"], "https://code.claude.com/docs/en/setup");
     assert_eq!(value[1]["installUrl"], "https://github.com/openai/codex");
     // The clean variant reads the same and makes no profile for a CLI that is not there.
-    assert_eq!(json!(status(&root, true)), value);
+    let clean = json!(status(&root, true));
+    assert_eq!(&clean.as_array().unwrap()[..4], &value.as_array().unwrap()[..4]);
+    assert!(clean[4]["profileUnsupported"].as_str().unwrap().contains("프로필"));
     assert!(!root.exists());
 }
 

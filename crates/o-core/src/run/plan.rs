@@ -17,10 +17,12 @@ pub enum ProviderId {
     Agy,
     /// OpenCode v2 (ADR-0015). Serialized "opencode".
     OpenCode,
+    /// Cognition's Devin CLI: cards only (ADR-0016).
+    Devin,
 }
 
 impl ProviderId {
-    pub const ALL: [ProviderId; 4] = [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy, ProviderId::OpenCode];
+    pub const ALL: [ProviderId; 5] = [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy, ProviderId::OpenCode, ProviderId::Devin];
 
     pub fn as_str(self) -> &'static str {
         match self {
@@ -28,6 +30,7 @@ impl ProviderId {
             ProviderId::Codex => "codex",
             ProviderId::Agy => "agy",
             ProviderId::OpenCode => "opencode",
+            ProviderId::Devin => "devin",
         }
     }
 

@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::sys::js::{js_len, parse_time};
+use crate::run::mode::Profile;
 use crate::run::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
 
 pub struct Limits {
@@ -34,6 +35,8 @@ impl Limits {
             ProviderId::Agy => 2,
             // ADR-0015: no usage probe or daily budget, so no more than Antigravity.
             ProviderId::OpenCode => 2,
+            // A new CLI whose steps O sees only after the card ends (ADR-0016).
+            ProviderId::Devin => 2,
         }
     }
 }
@@ -232,6 +235,35 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     }
     let plan = Plan { title: title.unwrap_or_default().trim().to_string(), project: project.unwrap_or_default().to_string(), cards: valid };
     Checked { plan: Some(plan), violations: Vec::new() }
+}
+
+/// `check_plan` for a run on `profile` (ADR-0013): a card whose CLI cannot run on the
+/// project_O profile (`Provider::profile_unsupported`, Devin) is refused while it is on —
+/// never quietly run with the person's own setup instead.
+pub fn check_plan_for(input: &Value, ctx: &PolicyContext, profile: Profile) -> Checked {
+    let mut checked = check_plan(input, ctx);
+    let cards = input.get("cards").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    let named = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?)));
+    let refused = profile_violations(named, profile);
+    if !refused.is_empty() {
+        checked.plan = None;
+        checked.violations.extend(refused);
+    }
+    checked
+}
+
+/// The cards (id, provider) `profile` cannot run, each with its CLI's reason (rule `profile-unsupported`).
+pub fn profile_violations<'a>(cards: impl IntoIterator<Item = (&'a str, ProviderId)>, profile: Profile) -> Vec<Violation> {
+    if !profile.is_clean() {
+        return Vec::new();
+    }
+    let mut found = Found::default();
+    for (id, provider) in cards {
+        if let Some(why) = crate::providers::get(provider).profile_unsupported() {
+            found.add("profile-unsupported", why, Some(id));
+        }
+    }
+    found.0
 }
 
 /// Whether a folder may be a project: absolute, existing, not a protected mirror, and

@@ -269,7 +269,7 @@ fn an_exhausted_day_blocks_only_while_the_budget_is_on() {
     assert_eq!(off.spent, Some(14.0));
     assert!(off.message.contains("예산 꺼짐"), "{}", off.message);
     let r = report(&home, now).unwrap();
-    assert!(!r.enabled && r.providers.iter().all(|p| p.state == Pace::Off || (p.provider == ProviderId::OpenCode && p.state == Pace::NotApplied)));
+    assert!(!r.enabled && r.providers.iter().all(|p| p.state == Pace::Off || ([ProviderId::OpenCode, ProviderId::Devin].contains(&p.provider) && p.state == Pace::NotApplied)));
 }
 
 #[test]
@@ -293,4 +293,23 @@ fn a_fast_day_lowers_effort_only_while_the_budget_is_on() {
     let off = behind.switched_off();
     assert_eq!((off.state, off.steps_down), (Pace::Off, 0));
     assert!(off.efforts.is_empty());
+}
+
+#[test]
+fn the_budget_never_applies_to_devin_whose_usage_o_cannot_read() {
+    let home = temp_home("devin");
+    let now = Utc::now();
+    // Even a weekly reading saved under its name changes nothing: O has no probe for it.
+    record(&home, &[UsageWindow { provider: ProviderId::Devin, window: "seven_day".into(), group: None, used: 0.99, resets_at: NEXT_WEEK.into() }], now - Duration::hours(30)).unwrap();
+    for enabled in [true, false] {
+        write_enabled(&home, enabled).unwrap();
+        let budget = assess_now(&home, ProviderId::Devin, now).unwrap();
+        assert_eq!(budget.state, Pace::NotApplied);
+        assert_eq!((budget.steps_down, budget.spent), (0, None));
+        assert!(budget.efforts.is_empty());
+        assert!(budget.message.contains("예산 적용 안 됨"), "{}", budget.message);
+        assert!(!over_budget(&home, now).unwrap().contains_key(&ProviderId::Devin));
+    }
+    let report = report(&home, now).unwrap();
+    assert_eq!(serde_json::to_value(&report).unwrap()["providers"][3]["state"], "notApplied");
 }

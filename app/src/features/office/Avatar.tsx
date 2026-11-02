@@ -11,10 +11,11 @@ const RING: Record<Speaker, string> = {
   codex: "ring-sky-400/60",
   agy: "ring-emerald-400/60",
   opencode: "ring-violet-400/60",
+  devin: "ring-blue-400/60",
   lead: "ring-neutral-400/60",
 };
 
-const INITIAL: Record<Speaker, string> = { claude: "Cl", codex: "Cx", agy: "Ag", opencode: "Oc", lead: "총" };
+const INITIAL: Record<Speaker, string> = { claude: "Cl", codex: "Cx", agy: "Ag", opencode: "Oc", devin: "Dv", lead: "총" };
 
 /** Head and shoulders in a composed sheet's first idle frame: a square of CROP px from (CROP_X, CROP_Y). */
 const SHEET_WIDTH = 1024;

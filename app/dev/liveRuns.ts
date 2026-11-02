@@ -107,7 +107,7 @@ function sameOrigin(req: IncomingMessage): boolean {
 }
 
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
-const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode)\/(install|login)$/;
+const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode|devin)\/(install|login)$/;
 
 /** A PR number or github.com pull address, as `o review` takes it (platform/backend PR_SELECTOR). */
 const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;

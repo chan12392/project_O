@@ -5,7 +5,7 @@ import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates
 
 export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
 
-export type AgentId = "claude" | "codex" | "agy" | "opencode";
+export type AgentId = "claude" | "codex" | "agy" | "opencode" | "devin";
 
 export interface AgentCatalogEntry {
   id: string;
@@ -34,6 +34,7 @@ export interface AgentStatus {
   /** Whether Project O can run the install itself (otherwise it opens installUrl). */
   canInstall: boolean;
   installUrl: string;
+  profileUnsupported?: string;
 }
 
 export interface ActionResult {
