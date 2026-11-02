@@ -4,7 +4,7 @@
 use std::fs;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
@@ -94,14 +94,24 @@ fn codex_windows() -> Result<Vec<UsageWindow>, String> {
 fn agy_windows() -> Result<Vec<UsageWindow>, String> {
     let cli = resolve_cli("agy").ok_or("agy CLI를 찾지 못했습니다")?;
     let mut command = Command::new(&cli.command);
-    command
-        .args(&cli.prefix)
-        .args(["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"])
-        .env("AGY_CLI_DISABLE_AUTO_UPDATE", "true")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let child = proc::hide_window(&mut command).spawn().map_err(|e| format!("agy /usage 실행 실패: {e}"))?;
+    command.args(&cli.prefix).args(AGY_USAGE).env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
+    let (status, out, _) = capture(&mut command, TIMEOUT + Duration::from_secs(10)).map_err(|e| format!("agy /usage {e}"))?;
+    if !status.success() {
+        let code = proc::exit_code(status).map(|c| c.to_string()).unwrap_or_else(|| "시간 초과".into());
+        return Err(format!("agy /usage 실패 ({code})"));
+    }
+    Ok(parse_agy_usage(&out))
+}
+
+/// agy's quota report in print mode: no model turn.
+pub const AGY_USAGE: [&str; 6] = ["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"];
+
+/// Runs a short, non-interactive command with no window and a deadline, and
+/// returns its exit status, stdout and stderr. A command still running at the
+/// deadline is ended with its tree.
+pub fn capture(command: &mut Command, timeout: Duration) -> Result<(ExitStatus, String, String), String> {
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let child = proc::hide_window(command).spawn().map_err(|e| format!("실행 실패: {e}"))?;
     let tree = proc::contain(&child);
     let mut probe = Probe { child, _tree: tree };
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
@@ -110,27 +120,24 @@ fn agy_windows() -> Result<Vec<UsageWindow>, String> {
             if let Some(mut pipe) = pipe {
                 let _ = pipe.read_to_end(&mut out);
             }
-            out
+            String::from_utf8_lossy(&out).into_owned()
         })
     };
     let stdout = drain(probe.child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
-    let _stderr = drain(probe.child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let stderr = drain(probe.child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
 
-    let deadline = Instant::now() + TIMEOUT + Duration::from_secs(10);
+    let deadline = Instant::now() + timeout;
     let status = loop {
         match probe.child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-            Ok(None) => return Err("agy /usage 실패 (시간 초과)".into()),
-            Err(e) => return Err(format!("agy /usage 실행 실패: {e}")),
+            Ok(None) => return Err("실패 (시간 초과)".into()),
+            Err(e) => return Err(format!("실행 실패: {e}")),
         }
     };
-    if !status.success() {
-        let code = proc::exit_code(status).map(|c| c.to_string()).unwrap_or_else(|| "시간 초과".into());
-        return Err(format!("agy /usage 실패 ({code})"));
-    }
-    let out = stdout.join().unwrap_or_default();
-    Ok(parse_agy_usage(&String::from_utf8_lossy(&out)))
+    // Ends anything the command left behind holding the pipes open.
+    drop(probe);
+    Ok((status, stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default()))
 }
 
 /// Both CLIs at once; windows and failures keep the order codex, agy.

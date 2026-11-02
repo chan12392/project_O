@@ -60,6 +60,16 @@ yongwoo-<주제>  ──PR──▶ yongwoo  ──PR──▶ test ─┘
 - 구독 계정 인증 정보·토큰·`.env`는 커밋하지 않는다. 계정 데이터는 각자 PC에만 둔다.
 - 테스트·데모 데이터에 실제 계정명·이메일을 넣지 않는다.
 
+## 깨끗한 에이전트 (테스트용)
+
+개인 하네스(사용자 훅·전역 지시·스킬·플러그인·MCP·메모리)가 없는 공식 CLI로 테스트할 때 쓴다. 평소 설정(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`)은 건드리지 않는다.
+
+- 프로필: `%LOCALAPPDATA%/project_O/agents/<claude|codex|agy>/home` (`o agents path`). 로그인은 CLI마다 한 번 `o agents login <claude|codex>` (agy는 시스템 로그인을 그대로 씀).
+- 확인: `o agents doctor` — 로그인 상태와 프로필 오염 검사. 수동 테스트: `o agents shell <cli>`. 카드 실행: `o dispatch --clean plan.json`.
+- 테스트 프로젝트는 홈 폴더 밖에 둔다(Claude는 시작 폴더 위의 지시 파일을 읽는다. 홈 폴더의 것만 프로필이 뺀다).
+- Orca 터미널은 자체 훅을 더하므로 `o agents shell`이나 일반 터미널에서 쓴다.
+- O 코드는 로그인 파일을 만들거나 읽지 않는다. 로그인 상태는 각 CLI의 상태 명령으로만 본다.
+
 ## 프로바이더 정책 자동 차단
 
 사람이 매번 약관을 확인하지 않도록 아래 지점에서 자동으로 막는다. 규칙 원문은 `crates/o-guard/src/rules.rs`, 근거는 `docs/DESIGN.md` §8.

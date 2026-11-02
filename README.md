@@ -77,5 +77,20 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | `o runs --json` | 모든 실행 기록(화면용) |
 | `o hook` / `o scan --all\|--staged\|--pre-push` | 에이전트 훅 / 정책 검사 |
 | `o sync-mirror <폴더>` | test·main 거울 fast-forward (예약 작업용) |
+| `o agents path\|login\|shell\|doctor` | 깨끗한 에이전트 프로필 (아래) |
+
+### 깨끗한 에이전트 (테스트용)
+
+개인 하네스(사용자 훅·전역 AGENTS.md/CLAUDE.md·스킬·플러그인·MCP·메모리·사용자 설정)가 하나도 없는 공식 CLI를 평소 설정을 건드리지 않고 쓴다.
+
+| 명령 | 하는 일 |
+|---|---|
+| `o agents path` | 프로필 위치: `%LOCALAPPDATA%/project_O/agents/<claude\|codex\|agy>/home` |
+| `o agents login <claude\|codex\|agy>` | 그 프로필로 공식 로그인 (`claude auth login`, `codex login`). CLI마다 한 번. agy는 시스템 로그인을 그대로 써서 확인만 한다 |
+| `o agents shell <claude\|codex\|agy> [인자…]` | 지금 폴더에서 깨끗한 CLI를 대화형으로 실행 |
+| `o agents doctor [--json]` | 로그인 상태와 프로필 오염(훅·스킬·MCP·전역 지시) 검사. 깨끗하면 종료 코드 0 |
+| `o dispatch --clean plan.json` | 이 실행의 카드를 깨끗한 프로필로 실행 (계획 형식은 그대로) |
+
+깨끗한 실행은 환경변수를 시스템 기본값(PATH, SystemRoot, TEMP, APPDATA, LOCALAPPDATA, ProgramFiles 등)만 남기고 비운 뒤 홈(USERPROFILE/HOME)을 프로필로 바꾸고, Claude는 `CLAUDE_CONFIG_DIR`, Codex는 `CODEX_HOME`을 프로필 안으로 둔다. Claude는 시작 폴더 위의 지시 파일도 읽으므로 프로필 설정(`claudeMdExcludes`)이 홈 폴더의 AGENTS.md·CLAUDE.md를 뺀다. 그 밖의 상위 폴더 지시 파일은 `doctor`가 알려 준다 — 테스트 프로젝트는 홈 폴더 밖에 둔다. Orca 터미널은 자체 훅을 더하므로 `o agents shell`이나 일반 터미널을 쓴다.
 
 계획 형식과 총괄 에이전트 사용법은 [skills/o/SKILL.md](skills/o/SKILL.md). Claude Code에서 쓰려면 이 폴더를 `~/.claude/skills/o`로 복사하거나 링크한다.
