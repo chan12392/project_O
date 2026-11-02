@@ -104,8 +104,8 @@ const BUDGET_PERCENT = /^1[234]$/;
 
 /** npm installs can take minutes. */
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
-/** A lead turn reads the project before it answers. */
-const LEAD_TIMEOUT_MS = 15 * 60_000;
+/** A lead turn reads the project before it answers; `o` ends it at 15 minutes (lead::TURN_LIMIT) and records why, so this waits a little longer. */
+const LEAD_TIMEOUT_MS = 16 * 60_000;
 /** One attachment (10MB), with room for nothing else. */
 const ATTACH_LIMIT = 10 * 1024 * 1024;
 /** Lead ids, efforts and plan ids as `o lead` takes them; it checks every one again. */

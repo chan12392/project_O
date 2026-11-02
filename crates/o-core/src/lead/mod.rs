@@ -366,6 +366,14 @@ fn budget_lines(home: &Path) -> Vec<String> {
 /// project (resuming its session), and records the reply, the plan with its policy
 /// result, the tokens and any error. Returns the events this turn added.
 pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<LeadEvent>, String> {
+    send_within(home, req, spawner, TURN_LIMIT)
+}
+
+/// How long one lead turn may run before its CLI is ended (the dev server waited as long).
+pub const TURN_LIMIT: Duration = Duration::from_secs(15 * 60);
+
+/// [`send`] with its own time limit for the CLI.
+pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration) -> Result<Vec<LeadEvent>, String> {
     check_request(home, req)?;
     let thread_id = thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?;
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
@@ -455,17 +463,23 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
     slot.set_child(child.id());
     // The owner ends its own CLI when a stop comes, from this process or another: it holds the
     // child's handle, so the pid cannot have gone to another process. Checked at once, then often.
+    // Past the time limit it ends it the same way, and says so (`true`).
     let (done, finished) = mpsc::channel::<()>();
     let watcher = {
         let (stop, token, pid) = (slot.stop.clone(), slot.marker.token.clone(), child.id());
+        let deadline = Instant::now() + limit;
         thread::spawn(move || loop {
             if fs::read_to_string(&stop).is_ok_and(|t| t.is_empty() || t == token) {
                 proc::kill_tree(pid);
-                return;
+                return false;
+            }
+            if Instant::now() >= deadline {
+                proc::kill_tree(pid);
+                return true;
             }
             match finished.recv_timeout(STOP_POLL) {
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
-                _ => return,
+                _ => return false,
             }
         })
     };
@@ -538,7 +552,7 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
     }
     // The watcher is done before the child is reaped, so it never ends a pid reused since.
     drop(done);
-    let _ = watcher.join();
+    let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
     if used {
@@ -547,6 +561,11 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
 
     if slot.stop_asked() {
         emit(stopped())?;
+        return Ok(added);
+    }
+    if timed_out {
+        let minutes = limit.as_secs().div_ceil(60);
+        emit(LeadEvent::Error { at: now_iso(), text: format!("총괄이 제한 시간({minutes}분) 안에 답하지 않아 멈췄습니다. 요청을 나눠 다시 보내세요") })?;
         return Ok(added);
     }
     let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && exit == Some(0);

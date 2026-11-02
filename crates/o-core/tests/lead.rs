@@ -42,7 +42,7 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 18] = [
+    let tests: [(&str, fn()); 19] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -61,6 +61,7 @@ fn main() {
         ("an attachment reached through a linked parent folder is refused", attachment_parent_links),
         ("a stop while the turn starts keeps the CLI from running and never ends the owner", stop_while_starting),
         ("a stop ends a running CLI; an orphaned one only when its start time matches", stop_running_and_orphans),
+        ("a turn that outlasts its time limit is ended and says so", turn_time_limit),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -723,4 +724,19 @@ fn stop_running_and_orphans() {
     assert!(lead::stop(&home, Some(&project)));
     wait_until("the orphaned CLI to end", || orphan.try_wait().unwrap().is_some());
     assert!(!marker.exists(), "a dead turn's marker is cleared once its CLI is ended");
+}
+
+/// A CLI that hangs does not hold the thread forever: past the turn's limit it is ended and
+/// the thread says so (the desktop had no limit; the dev server stopped waiting at 15 minutes).
+fn turn_time_limit() {
+    let (home, project) = setup("limit");
+    let (spawner, _) = fake_slow(claude_answer("s", "너무 늦은 답"), 30_000);
+    let at = std::time::Instant::now();
+    let events = lead::send_within(&home, &request(&project, "멈춘 CLI"), spawner.as_ref(), std::time::Duration::from_secs(1)).unwrap();
+    assert!(at.elapsed() < std::time::Duration::from_secs(15), "waited {:?}", at.elapsed());
+    let lines = summary(&events);
+    assert!(lines.iter().any(|l| l.contains("시간")), "{lines:?}");
+    assert!(!lines.iter().any(|l| l.starts_with("reply")), "{lines:?}");
+    assert!(!is_busy(&home, &project));
+    assert_eq!(lead::TURN_LIMIT, std::time::Duration::from_secs(15 * 60));
 }
