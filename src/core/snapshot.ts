@@ -78,7 +78,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
   for (const e of events) {
     if (e.t === "run.start") {
       run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [], messages: [], quotas: [] };
+      byId.clear();
       for (const c of e.cards) {
+        // A repeated card id is one card: the first keeps it (as run/snapshot.rs does).
+        if (byId.has(c.id)) continue;
         // Runs recorded before labels existed carry only a role.
         const card: CardView = { ...c, label: c.label ?? cardLabel(c), state: "waiting", activity: "", log: [], usage: { input: 0, cached: 0, output: 0 } };
         byId.set(c.id, card);

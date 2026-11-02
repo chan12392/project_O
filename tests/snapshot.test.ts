@@ -82,6 +82,16 @@ test("a budget adjustment shows the effort the card ran with in its activity and
   assert.match(b.activity, /effort 기본 → low/);
 });
 
+// Same events as crates/o-core/tests/snapshot.rs `a_repeated_card_id_is_one_card_kept_by_the_first`.
+test("a repeated card id is one card, kept by the first", () => {
+  const run = snapshot([
+    { t: "run.start", at: "2026-11-02T10:00:00.000Z", runId: "r", title: "t", project: "C:/p", cards: [{ id: "a1", provider: "claude", label: "첫" }, { id: "b2", provider: "claude", label: "b" }, { id: "a1", provider: "claude", label: "둘" }] },
+    { t: "card.start", at: "2026-11-02T10:00:01.000Z", cardId: "a1", pid: undefined },
+    { t: "card.end", at: "2026-11-02T10:00:02.000Z", cardId: "a1", status: "done", result: "결과", exitCode: null },
+  ]);
+  assert.deepEqual(run?.cards.map((c) => [c.id, c.label, c.state, c.result]), [["a1", "첫", "done", "결과"], ["b2", "b", "waiting", undefined]]);
+});
+
 test("no run.start means nothing to show", () => {
   assert.equal(snapshot([]), undefined);
 });

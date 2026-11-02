@@ -137,6 +137,53 @@ fn main_thread_and_two_subagents_one_failed() {
     assert_eq!(said, [("lead", "둘로 나눠 봅니다"), ("lead", "테스트가 깨졌습니다")]);
 }
 
+/// Claude Code resumes a subagent with a new Agent call whose result names the same agentId.
+fn resume_aaa1(main: &Path, base: DateTime<Utc>, finished: bool) {
+    let mut text = fs::read_to_string(main).unwrap();
+    text.push_str(&lines(&[assistant(
+        &at(base, 320),
+        json!([
+            { "type": "tool_use", "id": "toolu_C", "name": "Agent", "input": { "description": "코드 더 찾기", "subagent_type": "Explore", "prompt": "keep looking", "resume": "aaa1" } }
+        ]),
+    )]));
+    if finished {
+        text.push_str(&lines(&[
+            json!({ "type": "user", "isSidechain": false, "timestamp": at(base, 400), "message": { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "toolu_C", "content": "also in src/session.rs" }] }, "toolUseResult": { "status": "completed", "agentId": "aaa1" } }),
+        ]));
+    }
+    fs::write(main, text).unwrap();
+}
+
+#[test]
+fn a_resumed_subagent_stays_one_card_with_its_latest_call() {
+    let root = temp("resumed");
+    let main = write_session(&root, base());
+    resume_aaa1(&main, base(), true);
+    let (now, since) = recent();
+    let runs = read_sessions(std::slice::from_ref(&root), None, now, since);
+    let start = runs[0].events.iter().find(|e| e["t"] == "run.start").unwrap();
+    let ids: Vec<&str> = start["cards"].as_array().unwrap().iter().map(|c| c["id"].as_str().unwrap()).collect();
+    assert_eq!(ids, ["aaa1", "bbb2"], "one card per agentId");
+    let run = view(&runs[0]);
+    let found = &run.cards[0];
+    assert_eq!(found.label, "코드 찾기", "the first call names the card");
+    assert_eq!(found.state, CardState::Done);
+    assert_eq!(found.result.as_deref(), Some("also in src/session.rs"), "the latest call's result");
+    assert_eq!(found.ended_at.as_deref(), Some(at(base(), 400).as_str()));
+    let ends = runs[0].events.iter().filter(|e| e["t"] == "card.end" && e["cardId"] == "aaa1").count();
+    assert_eq!(ends, 1);
+
+    // Resumed and still working: the card runs again until the session goes quiet.
+    let live = temp("resumed-live");
+    let now = Utc::now();
+    let main = write_session(&live, now - Duration::seconds(400));
+    resume_aaa1(&main, now - Duration::seconds(400), false);
+    let run = view(&read_sessions(&[live], None, now, Duration::hours(24))[0]);
+    assert_eq!(run.cards.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), ["aaa1", "bbb2"]);
+    assert_eq!(run.cards[0].state, CardState::Running);
+    assert_eq!(run.status, RunStatus::Running);
+}
+
 #[test]
 fn older_sidechains_in_the_main_file_are_subagents_too() {
     let root = temp("sidechain");
