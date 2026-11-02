@@ -5,8 +5,8 @@ import { isSessionRun, nextUpByProject, projectName, recommend, type NextItem, t
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { clip } from "../../lib/format.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
-import { NextTicket, STAMP, TicketGroups, actionCount, useHandled } from "./NextUp.tsx";
-import { Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
+import { DoneBox, NextTicket, STAMP, TicketGroups, actionCount, useHandled } from "./NextUp.tsx";
+import { Stamp, TICKET_PRIMARY, Ticket } from "./Ticket.tsx";
 
 interface Props {
   runs: RunView[];
@@ -113,7 +113,10 @@ function PickTicket({ pick, now, onOpen, onProject, onSkip }: { pick: Suggestion
   const item = pick.item;
   return (
     <Ticket since={pick.since} now={now} code={projectName(pick.project)} stamp={<Stamp tone={stamp.tone}>{stamp.label}</Stamp>}>
-      <h3 className="min-w-0 text-[13px] leading-snug font-semibold [overflow-wrap:anywhere]">{pick.title}</h3>
+      <div className="flex items-start gap-2">
+        <DoneBox title={pick.title} onToggle={onSkip} />
+        <h3 className="min-w-0 text-[13px] leading-snug font-semibold [overflow-wrap:anywhere]">{pick.title}</h3>
+      </div>
       <p className="text-xs font-semibold text-[var(--ink)]">{pick.reason}</p>
       {item?.detail && <p className="text-xs leading-relaxed text-[var(--ink-dim)] [overflow-wrap:anywhere]">{clip(item.detail, 140)}</p>}
       <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -132,9 +135,6 @@ function PickTicket({ pick, now, onOpen, onProject, onSkip }: { pick: Suggestion
             프로젝트 열기
           </button>
         )}
-        <button type="button" onClick={onSkip} className={TICKET_GHOST} aria-label={`${pick.title} 처리함으로 표시`}>
-          처리함
-        </button>
       </div>
     </Ticket>
   );

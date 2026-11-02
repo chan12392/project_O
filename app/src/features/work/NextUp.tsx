@@ -54,6 +54,23 @@ export function useHandled() {
 
 const OPEN_LABEL: Partial<Record<NextItem["kind"], string>> = { check: "결과 보기", answer: "대화 보기" };
 
+/** The tick that marks a ticket handled; every ticket (and recommendation) uses this one control. */
+export function DoneBox({ title, done, onToggle }: { title: string; done?: boolean; onToggle: () => void }) {
+  return (
+    <button
+      type="button"
+      role="checkbox"
+      aria-checked={Boolean(done)}
+      aria-label={`${title} ${done ? "처리 취소" : "처리함으로 표시"}`}
+      title={done ? "처리 취소" : "처리함"}
+      onClick={onToggle}
+      className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-[3px] border-[1.5px] border-[var(--ink-dim)] text-[var(--paper)] aria-checked:bg-[var(--ink)] focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:outline-none"
+    >
+      {done && <Check className="size-3" strokeWidth={3} aria-hidden="true" />}
+    </button>
+  );
+}
+
 export function NextTicket({ item, now, onOpen, onDone, done }: { item: NextItem; now: Date; onOpen: (item: NextItem) => void; onDone?: (key: string) => void; done?: boolean }) {
   const [note, setNote] = useState<string>();
   // A note to the lead that asks nothing only needs reading, not an answer.
@@ -67,19 +84,7 @@ export function NextTicket({ item, now, onOpen, onDone, done }: { item: NextItem
   return (
     <Ticket since={item.since} now={now} done={done} code={`${clip(item.runTitle, 28)}${item.provider ? ` · ${PROVIDER_SHORT[item.provider]}` : ""}`} stamp={<Stamp tone={stamp.tone}>{stamp.label}</Stamp>}>
       <div className="flex items-start gap-2">
-        {onDone && (
-          <button
-            type="button"
-            role="checkbox"
-            aria-checked={Boolean(done)}
-            aria-label={`${item.title} ${done ? "처리 취소" : "처리함으로 표시"}`}
-            title={done ? "처리 취소" : "처리함"}
-            onClick={() => onDone(item.key)}
-            className="mt-0.5 grid size-4 shrink-0 place-items-center rounded-[3px] border-[1.5px] border-[var(--ink-dim)] text-[var(--paper)] aria-checked:bg-[var(--ink)] focus-visible:ring-2 focus-visible:ring-[var(--focus)] focus-visible:outline-none"
-          >
-            {done && <Check className="size-3" strokeWidth={3} aria-hidden="true" />}
-          </button>
-        )}
+        {onDone && <DoneBox title={item.title} done={done} onToggle={() => onDone(item.key)} />}
         <h4 className={`min-w-0 text-[13px] leading-snug font-semibold [overflow-wrap:anywhere] ${done ? "line-through decoration-[var(--ink-faint)]" : ""}`}>{item.title}</h4>
       </div>
       {item.detail && (
