@@ -39,7 +39,12 @@ impl Provider for Agy {
         args.extend(opt("--effort", card.effort.as_deref()));
         args.push("-p".into());
         args.push(prompt);
-        LaunchSpec { bin: "agy".into(), args, stdin: None, env }
+        LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) }
+    }
+
+    /// agy signs in through the system; no key variable is taken out.
+    fn api_key_vars(&self) -> &'static [&'static str] {
+        &[]
     }
 
     fn tool_note(&self) -> Option<String> {

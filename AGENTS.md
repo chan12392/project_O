@@ -97,7 +97,7 @@
 
 | 지점 | 무엇을 막나 |
 |---|---|
-| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `o hook`, `crates/o-guard`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / 보호 브랜치(test_1·test_2·main) 커밋·push / 대표 외 test_1·main 병합(`gh pr merge`·`gh api`) / 규칙 밖 브랜치 이름. 훅이나 gh 확인이 실패하면 막는다 |
+| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `o hook`, `crates/o-guard`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / 보호 브랜치(test_1·test_2·main) 커밋·push / 대표 외 test_1·main 병합(`gh pr merge`·`gh api`) / 규칙 밖 브랜치 이름. 훅이나 gh 확인이 실패하면 막는다. `o`가 PATH에 없거나 훅이 오류로 끝나도 막는다: Claude는 `"onFailure": "block"`(Claude Code 2.1.295 이상, 시간 초과도 막음), Codex는 `o hook \|\| exit 2`(Codex는 시간 초과를 통과시킨다) |
 | git 훅 (`.githooks/` → `o scan`, `npm install` 시 자동 설정) | 같은 코드 규칙으로 커밋 검사, 보호 브랜치 커밋·push |
 | CI (`.github/workflows/guard.yml`, `branch-flow.yml`, `merge-guard.yml`) | 전체 파일 정책 검사 + 테스트 + 타입 검사, PR 방향 검사, 대표 외 test_1·main 병합 경보 (읽기 전용 토큰) |
 | O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002), 오늘 사용 예산을 다 쓴 서비스(`daily-budget`, 카드 시작 직전에도 확인 — ADR-0004) |
@@ -107,7 +107,7 @@
 
 - 차단되면 우회하지 않는다. 사유를 그대로 상대에게 공유하고, 규칙이 틀렸다면 ADR로 바꾼다.
 - `crates/o-guard/src/rules.rs`의 규칙·허용 경로, `crates/o-core/src/policy.rs`의 `LIMITS`(화면 표시용 사본 `src/core/limits.ts`)는 공용 경계다(ADR + 두 사람 승인). 설정·환경변수로 상한을 올리는 길은 일부러 두지 않았다.
-- Codex는 프로젝트 훅을 처음 쓸 때 신뢰 승인을 요구할 수 있다. 훅이 안 돌아도 git 훅과 CI가 같은 검사를 한다.
+- Codex는 프로젝트 훅을 처음 쓸 때와 훅 명령이 바뀔 때 신뢰 승인을 요구할 수 있다. 훅이 안 돌아도 git 훅과 CI가 같은 검사를 한다.
 
 ## 커밋·PR
 

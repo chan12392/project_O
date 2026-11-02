@@ -34,7 +34,12 @@ impl Provider for Codex {
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env }
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
+    }
+
+    /// `codex exec` puts this ahead of the saved ChatGPT login (codex-rs/login/src/auth/manager.rs).
+    fn api_key_vars(&self) -> &'static [&'static str] {
+        &["CODEX_API_KEY"]
     }
 
     fn tool_note(&self) -> Option<String> {
@@ -76,7 +81,7 @@ impl Provider for Codex {
             }
         }
         args.push("-".into());
-        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
+        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
     }
 
     // https://github.com/openai/codex (npm, Homebrew, Windows installer)
@@ -150,6 +155,8 @@ fn app_server_windows() -> Result<Vec<UsageWindow>, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    // The windows of the ChatGPT sign-in cards use, not of a leftover API key.
+    super::without_api_keys(&mut command, ProviderId::Codex);
     let mut probe = Contained::spawn(&mut command).map_err(|e| e.to_string())?;
     let mut stdin = probe.child.stdin.take().ok_or("codex app-server stdin")?;
     let stdout = probe.child.stdout.take().ok_or("codex app-server stdout")?;

@@ -94,6 +94,8 @@ fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> Lo
     let p = providers::get(provider);
     let mut command = cli_command(cli, p.status_args());
     command.envs(p.check_env().iter().copied());
+    // A leftover API key would read as signed in, though cards never get it.
+    providers::without_api_keys(&mut command, provider);
     let home = user_home();
     if home.is_dir() {
         command.current_dir(home);

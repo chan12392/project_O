@@ -309,3 +309,46 @@ fn direct_merge_apis_follow_the_same_rule() {
     assert!(passes(&bash("gh api repos/chan12392/project_O/pulls/1"), &MEMBER_GH));
     assert!(passes(&bash("gh pr view 1 --json baseRefName"), &MEMBER_GH));
 }
+
+fn project_hooks(path: &str) -> Vec<Value> {
+    let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path);
+    let config: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();
+    config["hooks"]["PreToolUse"].as_array().unwrap().iter().flat_map(|m| m["hooks"].as_array().unwrap().clone()).collect()
+}
+
+/// A hook that cannot run (no `o` on PATH, a crash, a timeout) must block, not wave the call through:
+/// Claude Code lets any failure other than exit 2 pass unless the hook sets `onFailure: "block"`.
+#[test]
+fn claude_project_hook_blocks_when_it_fails() {
+    let hooks = project_hooks(".claude/settings.json");
+    assert!(!hooks.is_empty());
+    for hook in hooks {
+        assert_eq!(hook["command"], "o hook");
+        assert_eq!(hook["onFailure"], "block", "{hook}");
+    }
+}
+
+/// Codex has no fail-closed switch and runs hooks with `cmd.exe /C` (Windows) or `sh -lc`, so the
+/// command turns a missing `o` (or any error) into exit 2, Codex's blocking code. Run as Codex does,
+/// with a PATH where `o` cannot be found.
+#[test]
+fn codex_project_hook_blocks_when_o_is_missing() {
+    let hooks = project_hooks(".codex/hooks.json");
+    assert!(!hooks.is_empty());
+    let empty = std::env::temp_dir().join(format!("o-guard-no-o-{}", std::process::id()));
+    std::fs::create_dir_all(&empty).unwrap();
+    for hook in hooks {
+        let line = hook["command"].as_str().unwrap();
+        assert_eq!(line, "o hook || exit 2");
+        #[cfg(windows)]
+        let status = {
+            use std::os::windows::process::CommandExt;
+            let shell = std::env::var("COMSPEC").unwrap_or_else(|_| "cmd.exe".into());
+            std::process::Command::new(shell).arg("/C").raw_arg(format!("\"{line}\"")).env("PATH", &empty).status().unwrap()
+        };
+        #[cfg(not(windows))]
+        let status = std::process::Command::new("/bin/sh").arg("-c").arg(line).env("PATH", &empty).status().unwrap();
+        assert_eq!(status.code(), Some(2), "{line}");
+    }
+    std::fs::remove_dir(&empty).ok();
+}

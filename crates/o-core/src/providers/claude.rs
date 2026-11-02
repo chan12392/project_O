@@ -7,7 +7,7 @@ use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
-use super::stream::{num, tool_summary};
+use super::stream::{limit_from_text, num, tool_summary};
 use super::{opt, strings, LaunchSpec, LeadTurn, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
 use crate::context::CONTEXT_COMMAND;
@@ -28,7 +28,12 @@ impl Provider for Claude {
         args.push(format!("Bash({CONTEXT_COMMAND} *)"));
         args.extend(opt("--model", card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
-        LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env }
+        LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
+    }
+
+    /// `claude -p` always uses these when present (code.claude.com/docs/en/authentication).
+    fn api_key_vars(&self) -> &'static [&'static str] {
+        &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
     }
 
     /// Headless runs cannot answer permission prompts, so a denied command ends the turn.
@@ -58,7 +63,7 @@ impl Provider for Claude {
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));
         args.extend(opt("--add-dir", turn.files_dir));
-        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
     }
 
     // https://code.claude.com/docs/en/setup (native installer, WinGet, npm)
@@ -220,6 +225,8 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
             });
         }
         let text = coalesce([data.get("result")]).map(js_string).unwrap_or_default().trim().to_string();
+        // Usually a rejected rate_limit_event comes first; the text still catches a limit without one.
+        out.extend(limit_from_text(&text, ok));
         out.push(StreamSignal::Final { ok, text });
         return out;
     }

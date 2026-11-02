@@ -86,7 +86,7 @@
 
 ### (a) 에이전트 CLI 프로바이더
 
-1. `crates/o-core/src/providers/<cli>.rs`를 만들고 `Provider`를 구현한다: `launch`(권한 확인을 끄는 옵션 금지, 허용 명령은 `o msg`·`o context`만), `tool_note`, `searches_context`, `stream_reader`, `official`, `login_args`·`status_args`·`read_login`, `clean_env`·`prepare_profile`·`inspect_profile`, 필요하면 `usage_windows`.
+1. `crates/o-core/src/providers/<cli>.rs`를 만들고 `Provider`를 구현한다: `launch`(권한 확인을 끄는 옵션 금지, 허용 명령은 `o msg`·`o context`만), `api_key_vars`(헤드리스 실행에서 로그인보다 먼저 쓰이는 API 키 환경변수 — 카드 실행에서 뺀다), `tool_note`, `searches_context`, `stream_reader`, `official`, `login_args`·`status_args`·`read_login`, `clean_env`·`prepare_profile`·`inspect_profile`, 필요하면 `usage_windows`.
 2. 등록: `run/plan.rs`의 `ProviderId`에 변형을 더하고(`ALL`·`as_str` 포함) `providers/mod.rs`의 `get`에 한 줄을 더한다. 컴파일러가 빠진 `match`를 알려 준다.
 3. `policy.rs`의 `max_active_per_provider`와 화면 사본 `src/core/limits.ts`는 공용 경계다. ADR과 두 사람 승인 뒤에 바꾼다(`tests/limits.test.ts`가 둘을 비교한다).
 4. 화면: `src/core/plan.ts`의 `PROVIDERS`, `platform/backend/types.ts`의 `AgentId`에 id를 더하면 TypeScript가 `PROVIDER_NAME`·`Avatar` 등 빠진 표를 알려 준다.

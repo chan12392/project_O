@@ -76,6 +76,9 @@ pub struct PolicyContext {
     pub o_home: String,
     /// The user's home: a project may be inside it, never be it or above it.
     pub user_home: String,
+    /// The folder a path names on disk (links, junctions and short names
+    /// resolved), or the path itself when it cannot be resolved.
+    pub resolve: Box<dyn Fn(&str) -> String>,
 }
 
 pub struct Checked {
@@ -83,11 +86,42 @@ pub struct Checked {
     pub violations: Vec<Violation>,
 }
 
-/// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any case).
+/// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any
+/// case) after `.` and `..` are resolved, so `C:/Users/me/x/..` is `C:/Users/me`.
 fn within(path: &str, dir: &str) -> bool {
-    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
-    let (p, d) = (norm(path), norm(dir));
+    let (p, d) = (lexical(path), lexical(dir));
     p == d || p.starts_with(&format!("{d}/"))
+}
+
+/// A path with every slash as `/`, in lower case, with `.` and `..` resolved by
+/// text alone: no disk access, and `..` never climbs above the drive or the root.
+fn lexical(path: &str) -> String {
+    let lowered = path.replace('\\', "/").to_lowercase();
+    let mut parts: Vec<&str> = Vec::new();
+    for (i, part) in lowered.split('/').enumerate() {
+        match part {
+            "" if i > 0 => {}
+            "." => {}
+            ".." => {
+                // The first part is the root: "" for "/…" or a drive such as "c:".
+                if parts.len() > 1 || parts.first().is_some_and(|p| !p.is_empty() && !p.ends_with(':')) {
+                    parts.pop();
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
+
+/// A card may write inside its project: O's own state and the home folder (CLI
+/// settings) must stay out of reach, however either path is spelled.
+fn reaches_protected(project: &str, ctx: &PolicyContext) -> bool {
+    let o_homes = [ctx.o_home.clone(), (ctx.resolve)(&ctx.o_home)];
+    let user_homes = [ctx.user_home.clone(), (ctx.resolve)(&ctx.user_home)];
+    [project.to_string(), (ctx.resolve)(project)]
+        .iter()
+        .any(|p| o_homes.iter().any(|h| within(p, h) || within(h, p)) || user_homes.iter().any(|u| within(u, p)))
 }
 
 fn is_absolute(path: &str) -> bool {
@@ -206,8 +240,7 @@ pub fn check_project(project: Option<&str>, ctx: &PolicyContext) -> Vec<Violatio
                     format!("{project}는 project_O의 보호 브랜치(test_1·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
                     None,
                 );
-            } else if within(project, &ctx.o_home) || within(&ctx.o_home, project) || within(&ctx.user_home, project) {
-                // A card may write inside its project: O's own state and the home folder (CLI settings) must stay out of reach.
+            } else if reaches_protected(project, ctx) {
                 found.add(
                     "protected-project",
                     format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),

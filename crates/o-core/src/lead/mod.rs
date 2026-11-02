@@ -356,10 +356,7 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
             command.env_clear().envs(clean::environment(root, req.provider)?);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.
-        let keys: Vec<String> = providers::api_key_vars(req.provider).iter().map(|k| k.to_string()).collect();
-        for name in providers::names_to_remove(&keys, std::env::vars_os().map(|(k, _)| k)) {
-            command.env_remove(name);
-        }
+        providers::remove_inherited(&mut command, &spec.env_remove);
         command.envs(&spec.env);
         proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
     });
