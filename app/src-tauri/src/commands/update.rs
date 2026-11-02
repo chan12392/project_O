@@ -187,6 +187,16 @@ mod tests {
         for asset in ["../project_O_0.3.0_x64-setup.exe", "project_O_0.3.0_x64-setup.exe\n", "project_O_*_x64-setup.exe", "--help", "project_O_0.3.0_x64-setup.cmd"] { assert!(!ASSET.is_match(asset), "{asset}"); }
     }
 
+    /// The updater offers test_1-* pre-releases, so the workflow publishes them only from test_1,
+    /// even when someone runs it by hand on another branch.
+    #[test]
+    fn release_workflow_publishes_only_from_test_1() {
+        let workflow = include_str!("../../../../.github/workflows/release.yml").replace("\r\n", "\n");
+        let jobs = workflow.matches("\n    runs-on:").count();
+        assert!(jobs > 0);
+        assert_eq!(workflow.matches("\n    if: github.ref == 'refs/heads/test_1'\n").count(), jobs, "모든 job이 test_1에서만 돌아야 합니다");
+    }
+
     #[test]
     fn download_size_and_unique_directory_are_checked() {
         let first = fresh_dir(&std::env::temp_dir(), "project_O-update-test").unwrap();

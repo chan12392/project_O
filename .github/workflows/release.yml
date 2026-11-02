@@ -1,7 +1,8 @@
 name: release
 
-# Windows installer for every push to test_1 (and on demand): built with
+# Windows installer for every push to test_1 (and on demand from test_1): built with
 # scripts/build-installer.ps1, published as a GitHub pre-release and a workflow artifact.
+# The app's updater offers these releases, so a manual run from any other ref publishes nothing.
 on:
   push:
     branches: [test_1]
@@ -16,6 +17,7 @@ permissions: {}
 
 jobs:
   installer:
+    if: github.ref == 'refs/heads/test_1'
     runs-on: windows-latest
     permissions:
       contents: write
