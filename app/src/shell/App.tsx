@@ -330,7 +330,7 @@ function MainWindow() {
                 onView={(view: PanelView) => select({ view })}
                 onCard={(target) => (target ? openCard(target.run, target.card) : select({ card: undefined }))}
                 onClose={() => layout.setOpen(false)}
-                onPopout={() => layout.popout({ ...selection, project: project?.path, run: current?.view.runId })}
+                onPopout={() => layout.popout({ ...selection, project: project?.path, run: current?.view.runId }, source === "pending" ? undefined : source)}
               />
             </div>
           </>
