@@ -65,8 +65,8 @@ test("a run's chips sum up per agent and per state, and cards needing a look sta
   assert.equal(summary.providers.reduce((n, p) => n + p.count, 0), total);
   assert.equal(new Set(summary.providers.map((p) => p.provider)).size, summary.providers.length, "one entry per agent");
   assert.equal(summary.states.reduce((n, s) => n + s.count, 0), total);
-  // The card that asked the lead and got no answer, and the one that failed, are shown on their own.
-  assert.deepEqual(summary.attention.map((a) => [a.card.id, a.why]), [["a", "answer"], ["c", "failed"]]);
+  // The card that failed is shown on its own; card a only reported to the lead ("b의 답장 수신: …"), a note to read.
+  assert.deepEqual(summary.attention.map((a) => [a.card.id, a.why]), [["c", "failed"]]);
 
   const failed = byId("20261101-100916-402x");
   const failedSummary = chipSummary(failed, after(failed.endedAt ?? failed.startedAt, 60_000));
@@ -77,6 +77,18 @@ test("a run's chips sum up per agent and per state, and cards needing a look sta
     ["done", "running", "waiting", "failed", "stopped"].filter((s) => failedSummary.states.some((x) => x.state === s)),
     "states keep a fixed reading order",
   );
+});
+
+test("a finished card's report that asks nothing is a note, not a chip waiting for an answer", () => {
+  const run = byId("20261101-162328-9p0b");
+  const card = { ...run.cards[0], id: "w", state: "done" as const };
+  const report = { from: "w", to: "lead", at: run.endedAt ?? run.startedAt, text: "README에 한 줄을 더했습니다." };
+  const done: RunView = { ...run, cards: [card], messages: [report] };
+  const now = after(report.at, 60_000);
+  assert.deepEqual(chipSummary(done, now).attention, [], "the same note rule as the badges");
+
+  const asking: RunView = { ...done, messages: [{ ...report, text: "어느 폴더에 둘까요?" }] };
+  assert.deepEqual(chipSummary(asking, now).attention.map((a) => [a.card.id, a.why]), [["w", "answer"]]);
 });
 
 test("four cards of one agent read as one chip", () => {
