@@ -381,6 +381,26 @@ pub fn project_for(cwd: &str, known: &[String]) -> Option<String> {
         .cloned()
 }
 
+/// The project a run was dispatched to, as the run index (which cards cannot write) has it.
+pub fn run_project(conn: &Connection, run_id: &str) -> Option<String> {
+    let project: Option<String> = conn.query_row("SELECT project FROM runs WHERE run_id = ?1", [run_id], |r| r.get(0)).ok().flatten();
+    project.filter(|p| !p.trim().is_empty()).map(|p| normalize_project(&p))
+}
+
+/// What a card may search: only its own run's project. A `given` folder must be that
+/// project or a folder inside it; a run whose project is unknown searches nothing.
+pub fn card_project(conn: &Connection, run_id: &str, given: Option<&str>) -> Result<String, String> {
+    let Some(project) = run_project(conn, run_id) else {
+        return Err(format!("카드 실행({run_id})의 프로젝트를 확인하지 못해 검색하지 않습니다"));
+    };
+    match given {
+        Some(given) if project_for(given, std::slice::from_ref(&project)).is_none() => {
+            Err(format!("카드는 자기 프로젝트({project})만 검색할 수 있습니다: {given}"))
+        }
+        _ => Ok(project),
+    }
+}
+
 /// `given`, else the known project the current folder is in.
 pub fn default_project(conn: &Connection, given: Option<&str>) -> Option<String> {
     given.map(normalize_project).or_else(|| {

@@ -84,6 +84,54 @@ fn context_search_add_and_the_card_side_are_read_only() {
     assert_eq!(o_in(&base, &base, "", &["context", "x", "--limit", "0"]).status.code(), Some(1));
 }
 
+fn o_card(base: &Path, cwd: &Path, run: &str, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_o")).args(args).current_dir(cwd).env("LOCALAPPDATA", base).env("O_RUN_ID", run).env("O_CARD_ID", "c").output().unwrap()
+}
+
+#[test]
+fn a_card_searches_only_its_own_runs_project() {
+    let (base, home, project) = setup("card-scope");
+    // Project B has its own run with a result a card of project A must not see.
+    let other = base.join("other");
+    fs::create_dir_all(&other).unwrap();
+    let dir = home.join("runs").join("b1");
+    fs::create_dir_all(&dir).unwrap();
+    let at = "2026-11-02T11:00:00.000Z";
+    let events = [
+        json!({ "t": "run.start", "at": at, "runId": "b1", "title": "b", "project": other.to_string_lossy(), "cards": [{ "id": "x", "provider": "codex" }] }),
+        json!({ "t": "card.end", "at": at, "cardId": "x", "status": "done", "result": "비밀 배포 키 위치를 정리했습니다", "exitCode": 0 }),
+    ];
+    fs::write(dir.join("events.jsonl"), events.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+    // The host indexes everything once (cards never re-index).
+    assert_eq!(ok_json(o_in(&base, &base, "", &["context", "배포", "--json"]))["hits"].as_array().unwrap().len(), 1);
+
+    let p = project.to_string_lossy().replace('\\', "/");
+    let b = other.to_string_lossy().into_owned();
+    // A card of A asking for B is refused, with and without matching words.
+    let refused = o_card(&base, &project, "r1", &["context", "배포", "--project", &b, "--json"]);
+    assert_eq!(refused.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("자기 프로젝트"));
+    assert!(!String::from_utf8_lossy(&refused.stdout).contains("비밀"));
+    // Without --project, even from B's folder, a card of A searches A only.
+    let own = ok_json(o_card(&base, &other, "r1", &["context", "배포", "--json"]));
+    assert_eq!(own["project"], p.as_str());
+    assert_eq!(own["hits"], json!([]));
+    // A folder inside A is A.
+    let sub = project.join("src").to_string_lossy().into_owned();
+    assert_eq!(ok_json(o_card(&base, &project, "r1", &["context", "캐릭터", "--project", &sub, "--json"]))["hits"].as_array().unwrap().len(), 1);
+    if cfg!(windows) {
+        // Windows folders compare in any case and with either slash.
+        let shouted = project.to_string_lossy().to_uppercase().replace('/', "\\") + "\\";
+        assert_eq!(ok_json(o_card(&base, &project, "r1", &["context", "캐릭터", "--project", &shouted, "--json"]))["project"], p.as_str());
+    }
+    // A run the index does not know (no resolved project) searches nothing.
+    for run in ["", "nope"] {
+        let unknown = o_card(&base, &project, run, &["context", "배포", "--json"]);
+        assert_eq!(unknown.status.code(), Some(1), "{run}");
+        assert!(String::from_utf8_lossy(&unknown.stderr).contains("프로젝트를 확인하지 못해"));
+    }
+}
+
 #[test]
 fn tokens_report_and_compare() {
     let (base, _home, project) = setup("tokens");

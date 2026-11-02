@@ -63,7 +63,16 @@ pub fn context_main(home: &Path, args: &[String]) -> i32 {
     };
     let (project, hits) = match &conn {
         Some(conn) => {
-            let project = context::default_project(conn, parsed.project.as_deref());
+            // A card searches its own run's project only, never another one or all of them.
+            let project = if in_card() {
+                let run_id = std::env::var("O_RUN_ID").unwrap_or_default();
+                match context::card_project(conn, &run_id, parsed.project.as_deref()) {
+                    Ok(project) => Some(project),
+                    Err(message) => return fail(&message),
+                }
+            } else {
+                context::default_project(conn, parsed.project.as_deref())
+            };
             match context::search(conn, &query, project.as_deref(), parsed.limit) {
                 Ok(hits) => (project, hits),
                 Err(error) => return fail(&error.to_string()),
