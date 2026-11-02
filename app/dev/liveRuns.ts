@@ -70,7 +70,9 @@ export function liveRuns(): Plugin {
         const path = req.url?.split("?")[0];
         if (!localHost(req)) return send(res, 403, JSON.stringify({ error: "이 PC의 주소로만 열 수 있습니다" }));
         if (!sameOrigin(req)) return send(res, 403, JSON.stringify({ error: "다른 출처의 요청은 받지 않습니다" }));
-        if (req.method === "GET" && path === "/runs") return void o(["runs", "--json"]).then((out) => send(res, 200, out), error(res));
+        // ?sessions=1: this PC's recent Claude Code sessions too (`o runs --json --sessions`, read-only).
+        const withSessions = new URLSearchParams(req.url?.split("?")[1] ?? "").get("sessions") === "1" ? ["--sessions"] : [];
+        if (req.method === "GET" && path === "/runs") return void o(["runs", "--json", ...withSessions]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/usage") return void o(["usage", "--cached", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/usage/refresh") {
           refreshing ??= o(["usage", "--json"]).finally(() => (refreshing = undefined));

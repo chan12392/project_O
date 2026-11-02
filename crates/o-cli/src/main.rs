@@ -16,7 +16,7 @@ use o_core::store::{self, default_home, is_run_id, run_dir};
 use o_core::team::{self, Caller, Refused};
 use o_core::usage::UsageReading;
 use o_core::plan::ProviderId;
-use o_core::{clean, mirror, probe, proc, runner};
+use o_core::{clean, mirror, probe, proc, runner, sessions};
 use serde_json::{json, Value};
 
 const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬로 전달합니다.
@@ -34,8 +34,10 @@ const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬
                              카드 밖에서는 --run <runId> 와 --as <카드|lead> 로 지정
   o usage [--json]           Codex·Antigravity 구독 한도를 각 CLI로 조회해 usage.json에 저장
   o usage --cached [--json]  조회하지 않고 저장된 usage.json만 출력
-  o runs --json [--limit N] [--project <폴더>]
+  o runs --json [--limit N] [--project <폴더>] [--sessions [--since H]]
                              실행별 이벤트(최근 시작 순, 기본 50개) — 앱 화면용
+                             --sessions: 최근 H시간(기본 24) Claude Code 세션도 실행으로 함께
+  o sessions [--json] [--since H]   최근 H시간(기본 24) Claude Code 세션과 서브에이전트 (읽기 전용)
   o hook                     에이전트 PreToolUse 훅 (도구 호출 JSON을 stdin으로 받음)
   o scan [--all|--staged|--pre-push]   저장소 정책 검사 (git 훅·CI용)
   o sync-mirror <거울 폴더>   거울 폴더(test_2, test_1, main)를 fast-forward (예약 작업용)
@@ -77,6 +79,7 @@ fn run(args: &[String]) -> i32 {
         Some("msg") => message(&home, rest),
         Some("usage") => usage(&home, has("--json"), has("--cached")),
         Some("runs") => runs(&home, rest),
+        Some("sessions") => sessions(&home, rest),
         Some("hook") => o_guard::hook::hook_main(),
         Some("scan") => o_guard::scan::scan_main(rest),
         Some("sync-mirror") => {
@@ -346,13 +349,71 @@ fn events(home: &Path, run_id: &str, follow: bool) -> i32 {
     }
 }
 
-/// `o runs --json [--limit N] [--project <folder>]`: always JSON, the app's shape.
+/// `--since <hours>`: a positive number of hours.
+fn since_arg(value: Option<&String>) -> Result<f64, i32> {
+    match value.and_then(|h| h.parse::<f64>().ok()).filter(|h| h.is_finite() && *h > 0.0) {
+        Some(hours) => Ok(hours),
+        None => Err(fail("--since 뒤에 0보다 큰 시간(시간 단위)이 필요합니다")),
+    }
+}
+
+/// `o sessions [--json] [--since H]`: this PC's recent Claude Code sessions, read-only.
+fn sessions(home: &Path, args: &[String]) -> i32 {
+    let mut since = sessions::DEFAULT_SINCE_HOURS;
+    let mut as_json = false;
+    let mut items = args.iter();
+    while let Some(arg) = items.next() {
+        match arg.as_str() {
+            "--json" => as_json = true,
+            "--since" => match since_arg(items.next()) {
+                Ok(hours) => since = hours,
+                Err(code) => return code,
+            },
+            other => return fail(&format!("알 수 없는 인자: {other}\n\n{USAGE}")),
+        }
+    }
+    let list = sessions::read_sessions(&sessions::default_roots(), Some(&sessions::cache_path(home)), Utc::now(), sessions::hours(since));
+    if as_json {
+        println!("{}", json!({ "sessions": list }));
+        return 0;
+    }
+    if list.is_empty() {
+        println!("최근 {since}시간 동안 Claude Code 세션이 없습니다.");
+    }
+    for record in &list {
+        let events: Vec<_> = record.events.iter().filter_map(|e| serde_json::from_value(e.clone()).ok()).collect();
+        let Some(run) = snapshot(&events) else { continue };
+        let count = |state: &str| run.cards.iter().filter(|c| c.state.as_str() == state).count();
+        println!(
+            "{}  [{}]  {}  서브에이전트 {} (진행 {} · 완료 {} · 실패 {} · 중지 {})  {}",
+            run.run_id,
+            run.status.as_str(),
+            run.project,
+            run.cards.len(),
+            count("running"),
+            count("done"),
+            count("failed"),
+            count("stopped"),
+            js_head(&collapse_spaces(&run.title), 60)
+        );
+    }
+    0
+}
+
+/// `o runs --json [--limit N] [--project <folder>] [--sessions [--since H]]`: always JSON, the app's shape.
 fn runs(home: &Path, args: &[String]) -> i32 {
     let mut query = RunQuery { limit: 50, project: None };
+    let mut with_sessions = false;
+    let mut since = sessions::DEFAULT_SINCE_HOURS;
     let mut items = args.iter();
     while let Some(arg) = items.next() {
         match arg.as_str() {
             "--json" => {}
+            "--sessions" => with_sessions = true,
+            "--since" => match since_arg(items.next()) {
+                Ok(hours) => since = hours,
+                Err(code) => return code,
+            },
             "--limit" => match items.next().and_then(|n| n.parse().ok()) {
                 Some(limit) => query.limit = limit,
                 None => return fail("--limit 뒤에 0 이상의 정수가 필요합니다"),
@@ -364,7 +425,8 @@ fn runs(home: &Path, args: &[String]) -> i32 {
             other => return fail(&format!("알 수 없는 인자: {other}\n\n{USAGE}")),
         }
     }
-    match store::read_runs(home, &query) {
+    let read = if with_sessions { sessions::read_runs_with_sessions(home, &query, sessions::hours(since)) } else { store::read_runs(home, &query) };
+    match read {
         Ok(runs) => {
             println!("{}", json!({ "runs": runs }));
             0
