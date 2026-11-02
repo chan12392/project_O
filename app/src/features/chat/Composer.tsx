@@ -168,7 +168,8 @@ export function Composer({
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
     if (!canSend || !agent || !project) {
-      if (text.trim() && blocker) setNotice(blocker);
+      // A send that cannot go says why, the lead still answering included.
+      if (text.trim() && (blocker || busy)) setNotice(blocker ?? "총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요");
       return;
     }
     const from = key;
@@ -216,7 +217,7 @@ export function Composer({
 
   return (
     <form className="shrink-0 bg-chat-canvas px-6 pb-4" noValidate onSubmit={submit} onDragOver={(e) => e.dataTransfer.types.includes("Files") && e.preventDefault()} onDrop={onDrop}>
-      <div className="mx-auto max-w-3xl rounded-xl border border-chat-composer-border bg-chat-composer-surface px-2.5 pt-2.5 pb-2 focus-within:ring-2 focus-within:ring-ring/50">
+      <div className="@container mx-auto max-w-3xl rounded-xl border border-chat-composer-border bg-chat-composer-surface px-2.5 pt-2.5 pb-2 focus-within:ring-2 focus-within:ring-ring/50">
         {files.length > 0 && (
           <ul aria-label="첨부" className="mb-2 flex flex-wrap gap-1.5 px-0.5">
             {files.map((f) => (
@@ -300,7 +301,8 @@ export function Composer({
             </p>
           </div>
         )}
-        <div className="mt-1.5 flex items-center gap-1">
+        {/* Wraps instead of overflowing in a narrow chat (1100×700 with the panel open). */}
+        <div className="mt-1.5 flex flex-wrap items-center gap-1">
           <input
             ref={fileInput}
             type="file"
@@ -330,7 +332,8 @@ export function Composer({
             trigger={
               <>
                 <ShieldCheck className="size-3.5 shrink-0" aria-hidden="true" />
-                {settings.clean ? "깨끗한 에이전트" : "기본 하네스"}
+                {/* Narrow: the icon alone; the menu's label still names the profile. */}
+                <span className="@max-md:sr-only">{settings.clean ? "깨끗한 에이전트" : "기본 하네스"}</span>
               </>
             }
             groups={[
@@ -413,8 +416,13 @@ export function Composer({
           </div>
         </div>
       </div>
-      <p id="ask-help" aria-live="polite" className={notice ? "mx-auto mt-1.5 max-w-3xl px-1 text-xs text-destructive" : "sr-only"}>
-        {notice ?? (busy ? "총괄이 프로젝트를 읽고 답하는 중입니다. 중지할 수 있습니다." : `${SEND_KEY}로 보내기. 총괄은 계획만 제안하고, 실행은 계획 카드의 실행 버튼으로 합니다.`)}
+      {/* Always on screen: Enter makes a new line here, so the send key has to be visible. */}
+      <p
+        id="ask-help"
+        aria-live="polite"
+        className={`mx-auto mt-1.5 max-w-3xl px-1 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
+      >
+        {notice ?? (busy ? "총괄이 프로젝트를 읽고 답하는 중입니다. ■로 중지할 수 있습니다." : `${SEND_KEY} 보내기 · Enter 줄바꿈 · 총괄은 계획만 제안하고 실행은 계획 카드에서 합니다`)}
       </p>
     </form>
   );
