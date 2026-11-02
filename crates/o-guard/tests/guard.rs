@@ -162,6 +162,50 @@ fn protected_branch_checkouts_are_read_only_for_agents() {
     assert!(passes(&elsewhere("git -C C:/ws/test_2 status"), &ByFolder));
 }
 
+/// Relative targets are resolved against the folder the command runs in, following `cd`;
+/// a move or path the hook cannot resolve allows only read-only commands.
+#[test]
+fn relative_shell_targets_reach_the_mirror_too() {
+    let personal = |command: &str| json!({ "tool_name": "Bash", "tool_input": { "command": command }, "cwd": "C:/ws/younchan" });
+    let refused = [
+        "echo x > ../test_2/a.txt",
+        "echo x >../test_2/a.txt",
+        "touch ..\\test_2\\a.txt",
+        "cp a.txt ../test_2/",
+        "cd ../test_2 && touch a.txt",
+        "cd ..\\test_2; Remove-Item a.txt",
+        "Set-Location -Path ../test_2\nRemove-Item a.txt",
+        "cd src && echo x > ../../test_2/a.txt",
+        "git -C ../test_2 commit -m x",
+        "npm install --prefix=../test_2",
+        // Unresolvable moves or paths: only read-only commands may follow.
+        "cd $o_guard_unset_dir && touch a.txt",
+        "touch $o_guard_unset_dir/a.txt",
+        "cd - && touch a.txt",
+        "cd $(git rev-parse --show-toplevel) && touch a.txt",
+        // More folders than the hook asks git about.
+        "touch C:/x/1 C:/x/2 C:/x/3 C:/x/4 C:/x/5 C:/x/6 C:/x/7 C:/x/8 C:/ws/test_2/a.txt",
+    ];
+    for bad in refused {
+        assert!(blocked(&personal(bad), &ByFolder), "{bad:?}");
+    }
+    let allowed = [
+        "cd ../test_2 && git status",
+        "cat ../test_2/README.md",
+        "git -C ../test_2 log -1",
+        "touch ../younchan-other/a.txt",
+        "echo x > out/a.txt",
+        "cd src && cargo test",
+        "cd ../younchan-other && touch a.txt",
+        "git diff origin/test_2..HEAD -- crates/o-guard/src/hook.rs",
+        "cd $o_guard_unset_dir && git status",
+        "ls C:/x/1 C:/x/2 C:/x/3 C:/x/4 C:/x/5 C:/x/6 C:/x/7 C:/x/8 C:/x/9",
+    ];
+    for ok in allowed {
+        assert!(passes(&personal(ok), &ByFolder), "{ok:?}");
+    }
+}
+
 #[test]
 fn sign_in_files_are_off_limits_to_read_tools_too() {
     let read = |file_path: String| json!({ "tool_name": "Read", "tool_input": { "file_path": file_path } });

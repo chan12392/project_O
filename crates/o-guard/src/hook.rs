@@ -44,13 +44,26 @@ static PUSH_TO_PROTECTED: LazyLock<Regex> =
 static PUSH_WITH_TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\s+\S+\s+\S+").unwrap());
 static HISTORY_CHANGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(commit|merge|cherry-pick|rebase)\b").unwrap());
 
-static GIT_DASH_C: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"\bgit\s+-C\s+("[^"]+"|'[^']+'|\S+)"#).unwrap());
 static ABSOLUTE_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:[A-Za-z]:[\\/]|/)[^\s"'|;&<>]+"#).unwrap());
 static LEADING_GIT_DASH_C: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^git\s+-C\s+("[^"]+"|'[^']+'|\S+)\s+"#).unwrap());
 static RISKY_OPTION: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s(--pre\b|-O\S*|--open-files-in-pager\b|--output\b)").unwrap());
 static FD_REDIRECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\d?>&\d").unwrap());
 static NULL_REDIRECT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\d?>\s*(/dev/null|\$null|NUL)\b").unwrap());
+
+/// How many folders a shell command may name before the hook stops asking git about each one
+/// and allows only read-only commands.
+const MAX_SHELL_TARGETS: usize = 8;
+/// Commands that change the folder the rest of the command runs in (lower case).
+const MOVE_COMMANDS: [&str; 6] = ["cd", "chdir", "pushd", "set-location", "sl", "push-location"];
+const POP_COMMANDS: [&str; 2] = ["popd", "pop-location"];
+/// A redirect (`>`, `2>>`, `<`) or `--flag=` / `-Flag:` glued to the front of a path word.
+static PATH_WORD_PREFIX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^(?:\d*(?:>>?|<)&?|--?[A-Za-z][\w-]*[=:])").unwrap());
+/// A word that starts with an environment variable: `${NAME}`, `$env:NAME`, `$NAME`, `%NAME%` (rest in group 5).
+static VARIABLE_PREFIX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?s)^(?:\$\{(\w+)\}|\$env:(\w+)|\$(\w+)|%(\w+)%)(.*)$").unwrap());
+static PERCENT_VARIABLE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"%\w+%").unwrap());
+static PARENT_STEP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?:^|[\\/])\.\.(?:[\\/]|$)").unwrap());
 
 static PATCH_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\*\*\* (?:Add|Update|Delete) File: (.+)$").unwrap());
 static ROOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z]:)?[\\/]").unwrap());
@@ -106,8 +119,15 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         reasons.extend(git_reasons(&command, &current_branch));
         reasons.extend(merge_reasons(&command, &cwd, git));
         // A mirror is read-only whether the command runs in it or names it from elsewhere.
-        if git.is_mirror(&cwd) || paths_in(&command).iter().any(|p| git.is_mirror(p)) {
+        let targets = shell_targets(&command, &cwd);
+        if git.is_mirror(&cwd) || targets.as_ref().is_ok_and(|found| found.iter().any(|p| git.is_mirror(p))) {
             reasons.extend(read_only_shell_reasons(&command));
+        } else if let Err(unknown) = &targets {
+            if !read_only_shell_reasons(&command).is_empty() {
+                reasons.push(format!(
+                    "명령이 고칠 수 있는 폴더를 확인하지 못했습니다({unknown}). 거울(test_1·test_2·main 작업 폴더)일 수 있어 읽기 전용 명령만 허용합니다. 경로를 변수 없이 그대로 적으세요"
+                ));
+            }
         }
         return reasons;
     }
@@ -348,21 +368,142 @@ fn shell_words(text: &str) -> Vec<String> {
     words
 }
 
-/// Absolute paths and `git -C` targets a command names, so a mirror can't be changed from another folder.
-fn paths_in(command: &str) -> Vec<String> {
-    let found = GIT_DASH_C
-        .captures_iter(command)
-        .map(|c| c.get(1).unwrap().as_str())
-        .chain(ABSOLUTE_PATH.find_iter(command).map(|m| m.as_str()));
-    let mut paths: Vec<String> = Vec::new();
-    for raw in found {
-        let unquoted = strip_quotes(raw).to_string();
-        if !paths.contains(&unquoted) {
-            paths.push(unquoted);
+/// The folders and files a shell command names outside the folder it runs in, so a mirror can't be
+/// changed from another folder: absolute paths anywhere in it, `git -C` targets, `cd`/`Set-Location`/
+/// `pushd` targets, and `..`, `~` or `$VAR/` paths resolved against the folder each part runs in
+/// (following those moves). Both the quoted words and the text with quotes dropped are read, so a
+/// nested `bash -c "cd ../x && …"` is seen too. `Err` says why the targets can't be told: a move or
+/// path built from an unknown variable or substitution, `cd -`, or more than `MAX_SHELL_TARGETS`.
+/// Plain relative words inside the current folder stay in the folder already checked.
+fn shell_targets(command: &str, cwd: &str) -> Result<Vec<String>, String> {
+    let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
+    let home = home.as_deref();
+    let mut targets: Vec<String> = Vec::new();
+    for found in ABSOLUTE_PATH.find_iter(command) {
+        // `../x`, `~/x`, `origin/main`, `s/a/b`: the tail of a relative word, not an absolute path (`-o/abs` still is one).
+        let tail_of_word = found.as_str().starts_with('/')
+            && match command.as_bytes()[..found.start()] {
+                [.., b'-', p] if p.is_ascii_alphanumeric() => false,
+                [.., p] => matches!(p, b'.' | b'~' | b'_') || p.is_ascii_alphanumeric(),
+                [] => false,
+            };
+        if !tail_of_word {
+            push_unique(&mut targets, normalize(&strip_quotes(found.as_str()).replace('\\', "/")));
         }
     }
-    paths.truncate(6);
-    paths
+    let start = normalize(&cwd.replace('\\', "/"));
+    for text in [command.to_string(), command.replace(['"', '\''], " ")] {
+        let mut here = start.clone();
+        let mut pushed: Vec<String> = Vec::new();
+        for segment in split_unquoted(&text) {
+            let words = shell_words(segment);
+            let Some(first) = words.first() else { continue };
+            let name = first.to_ascii_lowercase();
+            if POP_COMMANDS.contains(&name.as_str()) {
+                here = pushed.pop().ok_or_else(|| format!("{first}로 돌아갈 폴더"))?;
+                continue;
+            }
+            if MOVE_COMMANDS.contains(&name.as_str()) {
+                if words[1..].iter().any(|w| w == "-") {
+                    return Err(format!("{first} -"));
+                }
+                let to = words[1..].iter().find(|w| !w.starts_with('-') && !w.eq_ignore_ascii_case("/d")).map_or("~", String::as_str);
+                let dir = resolve(to, &here, home).ok_or_else(|| format!("{first} {to}"))?;
+                if name.contains("push") {
+                    pushed.push(here);
+                }
+                push_unique(&mut targets, dir.clone());
+                here = dir;
+                continue;
+            }
+            for (i, word) in words.iter().enumerate() {
+                let after_git_dash_c = i >= 2 && words[i - 1] == "-C" && matches!(words[i - 2].as_str(), "git" | "git.exe");
+                let word = PATH_WORD_PREFIX.replace(word, "");
+                let is_variable = VARIABLE_PREFIX.captures(&word).is_some_and(|c| !c[5].is_empty());
+                if !(after_git_dash_c || is_variable || word.starts_with('~') || PARENT_STEP.is_match(&word)) {
+                    continue;
+                }
+                let path = resolve(&word, &here, home).ok_or_else(|| word.to_string())?;
+                if after_git_dash_c || !inside(&path, &here) {
+                    push_unique(&mut targets, path);
+                }
+            }
+        }
+    }
+    if targets.len() > MAX_SHELL_TARGETS {
+        return Err(format!("경로 {}개 — {MAX_SHELL_TARGETS}개까지만 확인", targets.len()));
+    }
+    Ok(targets)
+}
+
+fn push_unique(list: &mut Vec<String>, item: String) {
+    if !list.contains(&item) {
+        list.push(item);
+    }
+}
+
+/// The command parts of `text` between `;`, `&`, `|` and line breaks outside quotes.
+fn split_unquoted(text: &str) -> Vec<&str> {
+    let mut parts = Vec::new();
+    let mut rest = text;
+    loop {
+        let end = unquoted_end(rest);
+        parts.push(&rest[..end]);
+        if end == rest.len() {
+            return parts;
+        }
+        rest = &rest[end + 1..]; // every separator is one ASCII byte
+    }
+}
+
+/// `word` as an absolute forward-slash path from `base`, expanding a leading `~` or environment
+/// variable; `None` when that can't be done (unknown variable, `~user`, a `$` or `%VAR%` left inside).
+fn resolve(word: &str, base: &str, home: Option<&str>) -> Option<String> {
+    let word = word.replace('\\', "/");
+    let expanded = if let Some(rest) = word.strip_prefix('~') {
+        if !(rest.is_empty() || rest.starts_with('/')) {
+            return None;
+        }
+        format!("{}{rest}", home?.replace('\\', "/"))
+    } else if let Some(c) = VARIABLE_PREFIX.captures(&word) {
+        let name = (1..=4).find_map(|i| c.get(i))?.as_str();
+        format!("{}{}", std::env::var(name).ok()?.replace('\\', "/"), &c[5])
+    } else {
+        word
+    };
+    if expanded.contains('$') || expanded.contains('`') || PERCENT_VARIABLE.is_match(&expanded) {
+        return None;
+    }
+    let joined = if ROOTED.is_match(&expanded) { expanded } else { format!("{base}/{expanded}") };
+    Some(normalize(&joined))
+}
+
+/// Drops `.`, empty steps and `..` (with the step before it) from a forward-slash path, keeping `C:/` or `/`.
+fn normalize(path: &str) -> String {
+    let bytes = path.as_bytes();
+    let root_len = if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
+        3
+    } else {
+        usize::from(path.starts_with('/'))
+    };
+    let mut parts: Vec<&str> = Vec::new();
+    for part in path[root_len..].split('/') {
+        match part {
+            "" | "." => {}
+            ".." => {
+                parts.pop();
+            }
+            step => parts.push(step),
+        }
+    }
+    format!("{}{}", &path[..root_len], parts.join("/"))
+}
+
+/// Whether `path` lies strictly under `dir` (both normalized; drive letters compare case-insensitively).
+fn inside(path: &str, dir: &str) -> bool {
+    let dir = dir.trim_end_matches('/');
+    let n = dir.len();
+    path.len() > n && path.as_bytes()[..n].eq_ignore_ascii_case(dir.as_bytes()) && path.as_bytes()[n] == b'/'
 }
 
 /// Drops one leading and one trailing quote (`/^["']|["']$/g`).
@@ -603,8 +744,18 @@ mod tests {
     }
 
     #[test]
-    fn paths_in_unquotes_dedupes_and_caps() {
-        assert_eq!(paths_in(r#"git -C "C:/ws/test" status && cat C:/ws/test"#), vec!["C:/ws/test".to_string()]);
-        assert_eq!(paths_in("ls /a /b /c /d /e /f /g").len(), 6);
+    fn shell_targets_unquote_dedupe_resolve_and_refuse_too_many() {
+        assert_eq!(shell_targets(r#"git -C "C:/ws/test" status && cat C:/ws/test"#, "C:/ws/me"), Ok(vec!["C:/ws/test".to_string()]));
+        assert_eq!(shell_targets("cd .. && cd other && touch ../x/a", "C:\\ws\\me"), Ok(vec!["C:/ws".into(), "C:/ws/other".into(), "C:/ws/x/a".into()]));
+        assert_eq!(shell_targets("touch src/a.rs ./b ../me/c", "C:/ws/me"), Ok(vec![]));
+        assert!(shell_targets("ls /a /b /c /d /e /f /g /h /i", "/").is_err());
+        assert!(shell_targets("pushd ../x && popd && popd", "/ws/me").is_err());
+    }
+
+    #[test]
+    fn normalize_drops_dot_steps_and_keeps_roots() {
+        assert_eq!(normalize("C:/ws/me/../test_2/./a.txt"), "C:/ws/test_2/a.txt");
+        assert_eq!(normalize("C:/../.."), "C:/");
+        assert_eq!(normalize("/ws//me/.."), "/ws");
     }
 }
