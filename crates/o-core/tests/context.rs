@@ -338,7 +338,9 @@ fn tokens_are_grouped_by_mode_and_context_with_averages_per_card_and_provider() 
     assert_eq!(keys, ["normal", "clean", "clean+context"]);
     let normal = &all.groups[0];
     assert_eq!((normal.runs, normal.cards), (2, 3));
-    let in_project = report(&home, &TokenQuery { project: Some(r"c:\work\game"), since: None }).unwrap();
+    // Slashes are normalized everywhere; letter case only on Windows.
+    let filter = if cfg!(windows) { r"c:\work\game\" } else { r"C:\work\game\" };
+    let in_project = report(&home, &TokenQuery { project: Some(filter), since: None }).unwrap();
     let normal = &in_project.groups[0];
     assert_eq!((normal.runs, normal.cards), (1, 2));
     assert_eq!(json!(normal.per_card), json!({ "input": 200, "cached": 50, "output": 20, "total": 270 }));
