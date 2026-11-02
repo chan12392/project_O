@@ -48,6 +48,7 @@ pub struct AgentSpec {
     pub vendor: &'static str,
     /// Binary names to look for on PATH, first match wins.
     pub bins: &'static [&'static str],
+    pub connection: Option<&'static Connection>,
     /// The vendor's official install page (https), when there is one.
     pub install_url: Option<&'static str>,
     pub plan: Plan,
@@ -69,36 +70,34 @@ pub enum PromptDelivery { Stdin, Argument, AfterSeparator }
 pub type Entry = AgentSpec;
 
 /// Only connected providers have launch recipes; policy and parsers remain code.
+#[derive(Debug)]
 pub struct Connection {
-    pub id: &'static str,
     pub headless: Headless,
     pub models: &'static [&'static str],
 }
 
-pub const CONNECTIONS: &[Connection] = &[
-    Connection { id: "claude", headless: Headless { fixed: &["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools"], model_flag: "--model", prompt: PromptDelivery::Stdin }, models: &[] },
-    Connection { id: "codex", headless: Headless { fixed: &["exec", "--json", "-s", "workspace-write"], model_flag: "-m", prompt: PromptDelivery::Stdin }, models: &["debug", "models"] },
-    Connection { id: "agy", headless: Headless { fixed: &["--output-format", "stream-json", "--mode", "accept-edits"], model_flag: "--model", prompt: PromptDelivery::Argument }, models: &["models"] },
-    Connection { id: "opencode", headless: Headless { fixed: &["run", "--format", "json", "--standalone"], model_flag: "-m", prompt: PromptDelivery::Stdin }, models: &["models", "--standalone"] },
-    Connection { id: "devin", headless: Headless { fixed: &["-p"], model_flag: "--model", prompt: PromptDelivery::AfterSeparator }, models: &[] },
-];
+const CLAUDE: Connection = Connection { headless: Headless { fixed: &["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools"], model_flag: "--model", prompt: PromptDelivery::Stdin }, models: &[] };
+const CODEX: Connection = Connection { headless: Headless { fixed: &["exec", "--json", "-s", "workspace-write"], model_flag: "-m", prompt: PromptDelivery::Stdin }, models: &["debug", "models"] };
+const AGY: Connection = Connection { headless: Headless { fixed: &["--output-format", "stream-json", "--mode", "accept-edits"], model_flag: "--model", prompt: PromptDelivery::Argument }, models: &["models"] };
+const OPENCODE: Connection = Connection { headless: Headless { fixed: &["run", "--format", "json", "--standalone"], model_flag: "-m", prompt: PromptDelivery::Stdin }, models: &["models", "--standalone"] };
+const DEVIN: Connection = Connection { headless: Headless { fixed: &["-p"], model_flag: "--model", prompt: PromptDelivery::AfterSeparator }, models: &[] };
 
 pub fn connection(id: &str) -> &'static Connection {
-    CONNECTIONS.iter().find(|c| c.id == id).expect("connected provider has a recipe")
+    entry(id).and_then(|agent| agent.connection).expect("connected provider has a recipe")
 }
 
 macro_rules! extra {
     ($id:literal, $name:literal, [$($bin:literal),+], $url:literal) => {
-        AgentSpec { id: $id, name: $name, vendor: "", bins: &[$($bin),+], install_url: Some($url),
+        AgentSpec { id: $id, name: $name, vendor: "", bins: &[$($bin),+], connection: None, install_url: Some($url),
             plan: Plan::Unsupported("연결 방식 미검증"), profile: Profile::Unsupported("독립 프로필 경로 미검증"), note: "" }
     };
 }
 
-/// CLI identities and aliases; launch and model recipes are in `CONNECTIONS`.
+/// CLI identities, aliases, launch recipes and model discovery.
 pub const CATALOG: &[Entry] = &[
-    Entry { id: "claude", name: "Claude Code", vendor: "Anthropic", bins: &["claude"], install_url: Some("https://code.claude.com/docs/en/setup"), plan: Plan::Planned(0), profile: Profile::Relocatable("CLAUDE_CONFIG_DIR"), note: "" },
-    Entry { id: "codex", name: "Codex", vendor: "OpenAI", bins: &["codex"], install_url: Some("https://github.com/openai/codex"), plan: Plan::Planned(0), profile: Profile::Relocatable("CODEX_HOME"), note: "" },
-    Entry { id: "agy", name: "Antigravity", vendor: "Google", bins: &["agy"], install_url: Some("https://antigravity.google/docs/cli-overview"), plan: Plan::Planned(0), profile: Profile::Relocatable("USERPROFILE"), note: "" },
+    Entry { id: "claude", name: "Claude Code", vendor: "Anthropic", bins: &["claude"], connection: Some(&CLAUDE), install_url: Some("https://code.claude.com/docs/en/setup"), plan: Plan::Planned(0), profile: Profile::Relocatable("CLAUDE_CONFIG_DIR"), note: "" },
+    Entry { id: "codex", name: "Codex", vendor: "OpenAI", bins: &["codex"], connection: Some(&CODEX), install_url: Some("https://github.com/openai/codex"), plan: Plan::Planned(0), profile: Profile::Relocatable("CODEX_HOME"), note: "" },
+    Entry { id: "agy", name: "Antigravity", vendor: "Google", bins: &["agy"], connection: Some(&AGY), install_url: Some("https://antigravity.google/docs/cli-overview"), plan: Plan::Planned(0), profile: Profile::Relocatable("USERPROFILE"), note: "" },
     extra!("claude-agent-teams", "Claude Agent Teams", ["orca", "orca-dev", "orca-ide"], "https://code.claude.com/docs/en/agent-teams"),
     extra!("openclaude", "OpenClaude", ["openclaude"], "https://openclaude.gitlawb.com"),
     extra!("opencode2", "OpenCode 2", ["opencode2"], "https://opencode.ai/v2/docs/"),
@@ -120,6 +119,7 @@ pub const CATALOG: &[Entry] = &[
     extra!("jcode", "Jcode", ["jcode"], "https://github.com/1jehuang/jcode"),
     Entry {
         id: "omp",
+        connection: None,
         name: "Oh My Pi",
         vendor: "Stencil Labs",
         bins: &["omp"],
@@ -130,6 +130,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "commandcode",
+        connection: None,
         name: "Command Code",
         vendor: "Command Code AI",
         bins: &["command-code", "commandcode"],
@@ -140,6 +141,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "opencode",
+        connection: Some(&OPENCODE),
         name: "OpenCode",
         vendor: "Anomaly (구 SST), 오픈소스",
         bins: &["opencode"],
@@ -150,6 +152,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "devin",
+        connection: Some(&DEVIN),
         name: "Devin CLI",
         vendor: "Cognition",
         bins: &["devin"],
@@ -160,6 +163,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "cursor",
+        connection: None,
         name: "Cursor CLI",
         vendor: "Cursor",
         bins: &["cursor-agent"],
@@ -170,6 +174,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "gemini",
+        connection: None,
         name: "Gemini CLI",
         vendor: "Google",
         bins: &["gemini"],
@@ -180,6 +185,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "qwen",
+        connection: None,
         name: "Qwen Code",
         vendor: "Alibaba (QwenLM)",
         bins: &["qwen"],
@@ -190,6 +196,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "droid",
+        connection: None,
         name: "Factory Droid",
         vendor: "Factory",
         bins: &["droid"],
@@ -200,6 +207,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "copilot",
+        connection: None,
         name: "GitHub Copilot CLI",
         vendor: "GitHub",
         bins: &["copilot"],
@@ -210,6 +218,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "pi",
+        connection: None,
         name: "pi",
         vendor: "Earendil (badlogic)",
         bins: &["pi"],
@@ -220,6 +229,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "hermes",
+        connection: None,
         name: "Hermes Agent",
         vendor: "Nous Research",
         bins: &["hermes"],
@@ -230,6 +240,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "openclaw",
+        connection: None,
         name: "OpenClaw",
         vendor: "오픈소스",
         bins: &["openclaw"],
@@ -240,6 +251,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "grok",
+        connection: None,
         name: "Grok Build",
         vendor: "xAI",
         bins: &["grok"],
@@ -250,6 +262,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "goose",
+        connection: None,
         name: "goose",
         vendor: "AAIF (Block)",
         bins: &["goose"],
@@ -260,6 +273,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "kilo",
+        connection: None,
         name: "Kilo Code CLI",
         vendor: "Kilo-Org",
         bins: &["kilo", "kilocode"],
@@ -270,6 +284,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "vibe",
+        connection: None,
         name: "Mistral Vibe",
         vendor: "Mistral AI",
         bins: &["vibe", "mistral-vibe"],
@@ -280,6 +295,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "kimi",
+        connection: None,
         name: "Kimi Code CLI",
         vendor: "Moonshot AI",
         bins: &["kimi", "kimi-code"],
@@ -290,6 +306,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "amp",
+        connection: None,
         name: "Amp",
         vendor: "Amp (구 Sourcegraph)",
         bins: &["amp"],
@@ -300,6 +317,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "aider",
+        connection: None,
         name: "Aider",
         vendor: "Aider-AI, 오픈소스",
         bins: &["aider"],
@@ -310,6 +328,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "crush",
+        connection: None,
         name: "Crush",
         vendor: "Charm",
         bins: &["crush"],
@@ -320,6 +339,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "auggie",
+        connection: None,
         name: "Auggie",
         vendor: "Augment Code",
         bins: &["auggie"],
@@ -330,6 +350,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "kiro",
+        connection: None,
         name: "Kiro CLI",
         vendor: "AWS",
         bins: &["kiro-cli"],
@@ -340,6 +361,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "warp",
+        connection: None,
         name: "Warp (oz)",
         vendor: "Warp",
         bins: &["warp", "oz"],
@@ -350,6 +372,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "continue",
+        connection: None,
         name: "Continue CLI",
         vendor: "Continue",
         bins: &["cn"],
@@ -360,6 +383,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "iflow",
+        connection: None,
         name: "iFlow CLI",
         vendor: "iFlow",
         bins: &["iflow"],
@@ -370,6 +394,7 @@ pub const CATALOG: &[Entry] = &[
     },
     Entry {
         id: "qodo",
+        connection: None,
         name: "Qodo Command",
         vendor: "Qodo",
         bins: &["qodo"],
