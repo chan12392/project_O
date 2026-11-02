@@ -48,7 +48,7 @@ npm run check      # TypeScript
 
 ### 데스크톱 앱 (project_O.exe)
 
-`app/src-tauri`의 Tauri 2 셸. 같은 화면을 창 하나로 띄우고, 실행 기록·사용량·에이전트 CLI 상태를 `o-core`로 직접 읽는다(개발 서버의 `/api` 대신 Tauri 명령: `runs`, `usage`, `usage_refresh`, `agents_status`, `agent_install`, `agent_login`, `open_external`, `about`).
+`app/src-tauri`의 Tauri 2 셸. 같은 화면을 창 하나로 띄우고, 실행 기록·사용량·에이전트 CLI 상태를 `o-core`로 직접 읽는다(개발 서버의 `/api` 대신 Tauri 명령: `runs`, `usage`, `usage_refresh`, `agents_status`, `agent_install`, `agent_login`, `open_external`, `about`, `review`).
 
 ```sh
 cd app
@@ -89,6 +89,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | `o events <runId> [--follow]` | 정규화 이벤트(JSONL) |
 | `o stop <runId>` | 중지 |
 | `o msg send / read / post` | 팀 대화: 카드끼리, 카드와 총괄(`lead`)이 메시지를 주고받음 |
+| `o review <PR 번호\|주소> [--provider P] [--model M] [--effort E] [--clean] [--post] [--dry-run]` | 지금 폴더 저장소의 PR을 `gh`로 읽어 카드 하나로 검토(파일 변경 없음). `--post`는 검토문을 PR 댓글로 게시 — 승인·병합은 하지 않음 ([ADR-0006](docs/decisions/0006-pr-cross-review.md)) |
 | `o usage [--json] [--cached]` | Codex·Antigravity 구독 한도를 각 CLI로 조회 |
 | `o runs --json` | 모든 실행 기록(화면용) |
 | `o hook` / `o scan --all\|--staged\|--pre-push` | 에이전트 훅 / 정책 검사 |
