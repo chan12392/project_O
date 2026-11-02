@@ -246,8 +246,13 @@ struct GroupSpend<'a> {
     period_start: DateTime<Utc>,
 }
 
-fn group_spend<'a>(series: &[&'a Snapshot], day: Day) -> Option<GroupSpend<'a>> {
+fn group_spend<'a>(series: &[&'a Snapshot], day: Day, now: DateTime<Utc>) -> Option<GroupSpend<'a>> {
     let current = *series.last()?;
+    // The latest reading's window has reset by now: its spend belongs to the old week, and
+    // nothing is known of the new one yet, so the old window's use must not keep blocking.
+    if let Some(reset) = parse_time(&current.resets_at).filter(|r| *r <= now) {
+        return Some(GroupSpend { current, spent: 0.0, counted_from: "weeklyReset", period_start: reset.max(day.start) });
+    }
     let before = series.iter().rev().find(|s| s.at <= day.start);
     if let Some(base) = before {
         let reset = parse_time(&base.resets_at);
@@ -259,6 +264,11 @@ fn group_spend<'a>(series: &[&'a Snapshot], day: Day) -> Option<GroupSpend<'a>> 
         if let Some(reset) = reset.filter(|r| *r > day.start && *r <= current.at) {
             return Some(GroupSpend { current, spent: current.used, counted_from: "weeklyReset", period_start: reset });
         }
+    }
+    // No reading before midnight, but an earlier window seen today reset today: count from that reset.
+    let previous_reset = series.iter().rev().find(|s| s.resets_at != current.resets_at).and_then(|s| parse_time(&s.resets_at));
+    if let Some(reset) = previous_reset.filter(|r| *r > day.start && *r <= current.at) {
+        return Some(GroupSpend { current, spent: current.used, counted_from: "weeklyReset", period_start: reset });
     }
     // No usable reading at the start of the day: count from today's first reading of this window.
     let first = series.iter().find(|s| s.at > day.start && s.resets_at == current.resets_at).copied().unwrap_or(current);
@@ -275,7 +285,7 @@ pub fn assess(provider: ProviderId, percent: u8, snapshots: &[Snapshot], now: Da
         .into_iter()
         .filter_map(|g| {
             let series: Vec<&Snapshot> = snapshots.iter().filter(|s| s.group == g).collect();
-            group_spend(&series, day)
+            group_spend(&series, day, now)
         })
         .max_by(|a, b| a.spent.total_cmp(&b.spent).then(a.current.used.total_cmp(&b.current.used)));
     let Some(g) = worst else {

@@ -101,6 +101,42 @@ fn without_a_reading_before_today_the_first_reading_today_is_the_baseline() {
 }
 
 #[test]
+fn a_window_that_reset_since_the_last_reading_no_longer_blocks() {
+    // 23:59 70%, 05:00 84% (14%p today, over 13), the window resets at 06:00, no reading since.
+    let resets = "2026-11-02T06:00:00.000Z";
+    let snaps = [snap("", 0.70, resets, "2026-11-01T23:59:00Z"), snap("", 0.84, resets, "2026-11-02T05:00:00Z")];
+    let before = assess(ProviderId::Codex, 13, &snaps, t("2026-11-02T05:30:00Z"), day());
+    assert_eq!(before.state, Pace::Over);
+    let after = assess(ProviderId::Codex, 13, &snaps, t("2026-11-02T07:00:00Z"), day());
+    assert_ne!(after.state, Pace::Over);
+    assert_eq!((after.spent, after.weekly_used, after.counted_from), (Some(0.0), Some(0.0), Some("weeklyReset")));
+}
+
+#[test]
+fn an_expired_window_is_not_over_budget_in_the_policy_context() {
+    let home = temp_home("expired");
+    let now = Utc::now();
+    let start = local_day_of(now).start;
+    let old = |used: f64| UsageWindow { provider: ProviderId::Codex, window: "seven_day".into(), group: None, used, resets_at: o_core::js::iso(now - Duration::seconds(30)) };
+    record(&home, &[old(0.20)], start - Duration::minutes(1)).unwrap();
+    record(&home, &[old(0.34)], now - Duration::minutes(1)).unwrap();
+    assert!(!over_budget(&home, now).unwrap().contains_key(&ProviderId::Codex));
+    assert!(!policy_context(&home, now).unwrap().over_budget.contains_key(&ProviderId::Codex));
+}
+
+#[test]
+fn a_window_switch_today_without_a_reading_before_midnight_counts_from_the_reset() {
+    // 01:00 90% of the window ending 06:00, then 07:00 14% of the next one: 14%p used since the reset.
+    let snaps = [
+        snap("", 0.90, "2026-11-02T06:00:00.000Z", "2026-11-02T01:00:00Z"),
+        snap("", 0.14, "2026-11-09T06:00:00.000Z", "2026-11-02T07:00:00Z"),
+    ];
+    let b = assess(ProviderId::Codex, 13, &snaps, t("2026-11-02T08:00:00Z"), day());
+    assert_eq!((b.counted_from, b.spent), (Some("weeklyReset"), Some(14.0)));
+    assert_eq!(b.state, Pace::Over);
+}
+
+#[test]
 fn no_weekly_reading_means_unknown_and_no_adjustment() {
     let b = assess(ProviderId::Claude, 13, &[], t("2026-11-02T12:00:00Z"), day());
     assert_eq!((b.state, b.steps_down, b.spent), (Pace::Unknown, 0, None));
