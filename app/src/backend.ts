@@ -31,6 +31,86 @@ export interface ActionResult {
   log?: string;
 }
 
+/** What `o review <pr> --post --detach` answers: the review run started in the background. */
+export interface ReviewStarted {
+  ok: boolean;
+  message: string;
+  runId?: string;
+  pr?: number;
+  provider?: AgentId;
+  /** The PR head commit being reviewed; the comment is posted only while it is still the head. */
+  head?: string;
+  clean?: boolean;
+}
+
+/** A PR number or a github.com pull address: the only forms `o review` takes. */
+export const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
+
+/** How a provider's spend today compares with how much of the day is left (ADR-0004). */
+export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over";
+
+/** One provider in `o budget --json`: shares are 0 to 1, weeklyUsed/allowance/spent percent points of the weekly window. */
+export interface ProviderBudget {
+  provider: AgentId;
+  state: BudgetState;
+  allowance: number;
+  group: string | null;
+  weeklyUsed: number | null;
+  spent: number | null;
+  remaining: number | null;
+  remainingHours: number | null;
+  timeShare: number | null;
+  remainingShare: number | null;
+  pace: number | null;
+  stepsDown: number;
+  /** What each effort becomes on a card started now (`from` null: a card that named none). */
+  efforts: { from: string | null; to: string }[];
+  countedFrom: "dayStart" | "firstReading" | "weeklyReset" | null;
+  periodEnd: string | null;
+  weeklyResetsAt: string | null;
+  readAt: string | null;
+  /** One Korean line for people. */
+  message: string;
+}
+
+export interface BudgetReport {
+  at: string;
+  /** The day's allowance, percent of the weekly window (12–14). */
+  percent: number;
+  /** When `o usage` last asked Codex and Antigravity; empty when never. */
+  usageAt: string;
+  providers: ProviderBudget[];
+}
+
+export const BUDGET_PERCENTS = [12, 13, 14] as const;
+export type BudgetPercent = (typeof BUDGET_PERCENTS)[number];
+
+/** Tokens as the CLIs report them: fresh input (cache writes included), cached input, output. */
+export interface TokenCounts {
+  input: number;
+  cached: number;
+  output: number;
+  total: number;
+}
+
+/** One way of running cards (`o tokens --json`): the default harness or clean agents, with or without shared context. */
+export interface TokenGroup {
+  key: "normal" | "normal+context" | "clean" | "clean+context";
+  label: string;
+  clean: boolean;
+  context: boolean;
+  runs: number;
+  cards: number;
+  tokens: TokenCounts;
+  perCard: TokenCounts;
+  byProvider: { provider: AgentId; cards: number; perCard: TokenCounts }[];
+}
+
+export interface TokenReport {
+  groups: TokenGroup[];
+  compare: { baseline: TokenGroup | null; shared: TokenGroup | null };
+}
+
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
@@ -43,6 +123,18 @@ export interface Backend {
   openExternal(url: string): Promise<void>;
   /** App version and where O keeps its state, for Settings → About. */
   about(): Promise<{ version: string; home: string; agentsHome: string }>;
+  /**
+   * Asks an agent to review a PR of the project folder and comment the review on it
+   * (`o review <pr> --post` there). It never approves or merges. Rejects with the
+   * reason (gh failed, policy refused) when the review did not start.
+   */
+  review(project: string, pr: string, clean: boolean): Promise<ReviewStarted>;
+  /** Today's usage budget per provider from saved readings (`o budget --json --cached`). */
+  budget(): Promise<BudgetReport>;
+  /** Settings → 에이전트: saves the day's allowance (the machine refuses anything but 12–14). */
+  setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
+  /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
+  tokens(project?: string): Promise<TokenReport>;
 }
 
 declare global {
@@ -59,6 +151,10 @@ function tauriBackend(invoke: (cmd: string, args?: Record<string, unknown>) => P
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
     openExternal: (url) => invoke("open_external", { url }) as Promise<void>,
     about: () => invoke("about") as Promise<{ version: string; home: string; agentsHome: string }>,
+    review: (project, pr, clean) => invoke("review", { project, pr, clean }) as Promise<ReviewStarted>,
+    budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
+    setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
+    tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
   };
 }
 
@@ -74,7 +170,68 @@ const devBackend: Backend = {
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: () => fetch("/api/about").then((r) => json<{ version: string; home: string; agentsHome: string }>(r)),
+  review: async (project, pr, clean) => {
+    const res = await fetch(`/api/review?${new URLSearchParams({ project, pr, clean: clean ? "1" : "0" })}`, { method: "POST" });
+    const body = (await res.json().catch(() => undefined)) as (ReviewStarted & { error?: string }) | undefined;
+    if (!res.ok || !body) throw new Error(body?.error ?? `HTTP ${res.status}`);
+    return body;
+  },
+  budget: () => fetch("/api/budget").then((r) => json<BudgetReport>(r)),
+  setBudgetPercent: (percent) => fetch(`/api/budget/percent?value=${percent}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
+  tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),
 };
+
+/** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread. */
+function demoBudget(percent: number): BudgetReport {
+  const at = new Date().toISOString();
+  const known = (provider: AgentId, spent: number, state: BudgetState, stepsDown: number, efforts: ProviderBudget["efforts"], message: string): ProviderBudget => ({
+    provider,
+    state,
+    allowance: percent,
+    group: null,
+    weeklyUsed: 30 + spent,
+    spent,
+    remaining: Math.max(0, percent - spent),
+    remainingHours: 9.5,
+    timeShare: 0.4,
+    remainingShare: Math.max(0, percent - spent) / percent,
+    pace: Math.max(0, percent - spent) / percent / 0.4,
+    stepsDown,
+    efforts,
+    countedFrom: "dayStart",
+    periodEnd: at,
+    weeklyResetsAt: at,
+    readAt: at,
+    message,
+  });
+  return {
+    at,
+    percent,
+    usageAt: at,
+    providers: [
+      { ...known("claude", 0, "unknown", 0, [], "claude 주간 사용량 기록이 없어 예산을 조절하지 않습니다"), weeklyUsed: null, spent: null, remaining: null, pace: null, countedFrom: null },
+      known("codex", 4.2, "ok", 0, [], `codex 오늘 주간의 4.2%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 여유 있음`),
+      known("agy", 9.1, "behind", 1, [{ from: null, to: "low" }, { from: "high", to: "medium" }], `agy 오늘 주간의 9.1%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 쓰는 속도가 빨라 effort를 한 단계 낮춥니다`),
+    ],
+  };
+}
+
+let demoPercent = 13;
+
+const demoTokens = (input: number, cached: number, output: number): TokenCounts => ({ input, cached, output, total: input + cached + output });
+const demoGroup = (key: TokenGroup["key"], label: string, runs: number, cards: number, perCard: TokenCounts): TokenGroup => ({
+  key,
+  label,
+  clean: key.startsWith("clean"),
+  context: key.endsWith("context"),
+  runs,
+  cards,
+  tokens: demoTokens(perCard.input * cards, perCard.cached * cards, perCard.output * cards),
+  perCard,
+  byProvider: [{ provider: "codex", cards, perCard }],
+});
+const DEMO_BASELINE = demoGroup("normal", "기본 하네스", 3, 9, demoTokens(18_400, 41_200, 3_100));
+const DEMO_SHARED = demoGroup("clean+context", "깨끗한+세션 공유", 3, 9, demoTokens(6_900, 12_800, 2_700));
 
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 const demoBackend: Backend = {
@@ -88,6 +245,10 @@ const demoBackend: Backend = {
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: async () => ({ version: "preview", home: "", agentsHome: "" }),
+  review: async () => ({ ok: false, message: "미리보기에서는 검토를 요청하지 않습니다" }),
+  budget: async () => demoBudget(demoPercent),
+  setBudgetPercent: async (percent) => demoBudget((demoPercent = percent)),
+  tokens: async () => ({ groups: [DEMO_BASELINE, DEMO_SHARED], compare: { baseline: DEMO_BASELINE, shared: DEMO_SHARED } }),
 };
 
 /** The desktop app when Tauri is present, the dev server's /api otherwise; `demo` forces the recorded preview. */

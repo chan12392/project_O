@@ -159,7 +159,10 @@ pub fn read_usage() -> UsageReading {
 
 pub fn save_usage(home: &Path, reading: &UsageReading) -> io::Result<()> {
     fs::create_dir_all(home)?;
-    fs::write(home.join("usage.json"), to_pretty(reading)?)
+    fs::write(home.join("usage.json"), to_pretty(reading)?)?;
+    // The daily budget counts today's spend from these snapshots.
+    let at = crate::js::parse_time(&reading.at).unwrap_or_else(chrono::Utc::now);
+    crate::budget::record(home, &reading.windows, at)
 }
 
 /// The last saved reading as written, without asking any CLI.

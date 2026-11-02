@@ -1,8 +1,9 @@
 import { CircleCheckBig, Pause, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 
+import { isSessionRun } from "../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_SHORT, STATE_WORD } from "../format.ts";
+import { PROVIDER_SHORT, STATE_WORD, clip } from "../format.ts";
 import { lookOf } from "../characters.ts";
 import { useReducedMotion } from "../settings.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
@@ -55,6 +56,9 @@ function homeFor(card: CardView, index: number): { spot: Point; roam: Point[] } 
 /** The office: agents at their desks while they work, wandering otherwise, saying what they do. */
 export function Office({ run, selected, leadResting, onSelect }: { run: RunView; selected?: string; leadResting?: boolean; onSelect: (id: string) => void }) {
   const finished = run.cards.filter((c) => c.endedAt).length;
+  // A Claude Code session: its main thread stands in the lead's place, each subagent is a person.
+  const session = isSessionRun(run);
+  const lead = session ? "메인 대화" : "총괄";
   // Reduced motion (Settings → 모양, else the system) starts the office held; the button still overrides it.
   const reduced = useReducedMotion();
   const [held, setHeld] = useState(reduced);
@@ -62,7 +66,11 @@ export function Office({ run, selected, leadResting, onSelect }: { run: RunView;
   return (
     <div>
       <div className="flex items-center justify-between gap-3 px-5 pt-4">
-        <p className="text-xs text-muted-foreground">카드마다 한 사람. 일하면 자기 책상에, 끝나면 휴게 공간으로 갑니다. 총괄은 할 일이 없으면 쉽니다.</p>
+        <p className="text-xs text-muted-foreground">
+          {session
+            ? "Claude Code 세션: 메인 대화가 총괄 자리에 서고, 서브에이전트마다 한 사람이 일합니다. 끝나면 휴게 공간으로 갑니다."
+            : "카드마다 한 사람. 일하면 자기 책상에, 끝나면 휴게 공간으로 갑니다. 총괄은 할 일이 없으면 쉽니다."}
+        </p>
         <button
           type="button"
           onClick={() => setHeld((h) => !h)}
@@ -75,13 +83,13 @@ export function Office({ run, selected, leadResting, onSelect }: { run: RunView;
       <div className="p-5">
         <div
           role="group"
-          aria-label="사무실: 카드마다 한 사람이 상태에 따라 움직이는 다이어그램"
+          aria-label={`사무실: ${session ? "메인 대화와 서브에이전트마다" : "카드마다"} 한 사람이 상태에 따라 움직이는 다이어그램`}
           className="relative mx-auto aspect-[3/2] w-full max-w-[960px] overflow-hidden rounded-xl border bg-amber-950/40"
         >
           <img src="/office/office.png" alt="" className="absolute inset-0 size-full object-cover [image-rendering:pixelated]" onError={(e) => (e.currentTarget.style.display = "none")} />
           <Person
             speaker="lead"
-            label={leadResting ? "총괄 · 쉬는 중" : "총괄"}
+            label={leadResting ? `${lead} · 쉬는 중` : lead}
             spot={leadResting ? REST : BOARD}
             roam={leadResting ? STAY : LEAD_ROUND}
             held={held}
@@ -112,7 +120,7 @@ export function Office({ run, selected, leadResting, onSelect }: { run: RunView;
                 key={card.id}
                 speaker={card.provider}
                 look={lookOf(run, card.id)}
-                label={card.label}
+                label={personLabel(card, session)}
                 spot={home.spot}
                 roam={home.roam}
                 held={held}
@@ -128,6 +136,15 @@ export function Office({ run, selected, leadResting, onSelect }: { run: RunView;
       </div>
     </div>
   );
+}
+
+/**
+ * A subagent goes by its type and what it was asked to do ("Explore · 코드 찾기"); a card by its label.
+ * The default type says nothing, and its long name would push the label out of the room.
+ */
+function personLabel(card: CardView, session: boolean): string {
+  if (!session || !card.role || card.role === card.label || card.role === "general-purpose") return card.label;
+  return `${card.role} · ${clip(card.label, 20)}`;
 }
 
 /** What a person last said: their newest team message, else what their card last did. */

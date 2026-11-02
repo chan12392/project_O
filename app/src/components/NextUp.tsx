@@ -1,14 +1,14 @@
 import { Check, Copy, ExternalLink } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 
-import type { NextItem, StoppedKind, TodoKind } from "../../../src/core/attention.ts";
+import { ticketCommand, type NextItem, type StoppedKind, type TodoKind } from "../../../src/core/attention.ts";
 import { PROVIDER_SHORT, clip } from "../format.ts";
 import { readStored, writeStored } from "../storage.ts";
 import { Rail, Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket, type StampTone } from "./Ticket.tsx";
 
-const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
+export const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
   answer: { label: "답하기", tone: "rush" },
-  review: { label: "PR 검토", tone: "info" },
+  review: { label: "사람 검토 필요", tone: "info" },
   check: { label: "결과 확인", tone: "done" },
   queued: { label: "곧 시작", tone: "heat" },
   failed: { label: "실패", tone: "rush" },
@@ -23,28 +23,33 @@ const HANDLED_MAX = 500;
 const loadHandled = () =>
   readStored(HANDLED_KEY, new Set<string>(), (saved) => (Array.isArray(saved) ? new Set(saved.filter((k): k is string => typeof k === "string")) : undefined));
 
-/** Tickets a person has ticked off, kept in this browser (newest last, capped). */
-export function useHandled() {
-  const [handled, setHandled] = useState(loadHandled);
-  const toggle = useCallback((key: string) => {
-    setHandled((prev) => {
-      const next = new Set(prev);
-      if (next.has(key)) next.delete(key);
-      else next.add(key);
-      return new Set([...next].slice(-HANDLED_MAX));
-    });
-  }, []);
-  useEffect(() => writeStored(HANDLED_KEY, [...handled]), [handled]);
-  return { handled, toggle };
+/*
+ * Ticked tickets are one store for the window: the project's Next up, the
+ * all-projects view and the sidebar's count tick off the same set.
+ */
+let handledNow = loadHandled();
+const handledListeners = new Set<() => void>();
+
+function toggleHandled(key: string) {
+  const next = new Set(handledNow);
+  if (next.has(key)) next.delete(key);
+  else next.add(key);
+  handledNow = new Set([...next].slice(-HANDLED_MAX));
+  writeStored(HANDLED_KEY, [...handledNow]);
+  for (const listener of handledListeners) listener();
 }
 
-/** The O command that acts on a ticket, for a person to paste into a terminal. */
-function commandFor(item: NextItem): { label: string; text: string } | undefined {
-  if (item.kind === "answer") return { label: "답장 명령", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId} "답장 내용"` };
-  if (item.kind === "silent") return { label: "중지 명령", text: `o stop ${item.runId}` };
-  if (item.kind === "failed" || item.kind === "limit" || item.kind === "stopped") return { label: "상태 명령", text: `o status ${item.runId}` };
-  return undefined;
+function subscribeHandled(listener: () => void) {
+  handledListeners.add(listener);
+  return () => void handledListeners.delete(listener);
 }
+
+/** Tickets a person has ticked off, kept in this browser (newest last, capped). */
+export function useHandled() {
+  const handled = useSyncExternalStore(subscribeHandled, () => handledNow);
+  return { handled, toggle: toggleHandled };
+}
+
 
 const OPEN_LABEL: Partial<Record<NextItem["kind"], string>> = { check: "결과 보기", answer: "대화 보기" };
 
@@ -53,7 +58,7 @@ export function NextTicket({ item, now, onOpen, onDone, done }: { item: NextItem
   // A note to the lead that asks nothing only needs reading, not an answer.
   const asks = item.kind !== "answer" || /[?？]|까요|할지|주세요|부탁|알려/.test(item.detail ?? "");
   const stamp = asks ? STAMP[item.kind] : { label: "읽기", tone: "heat" as const };
-  const command = commandFor(item);
+  const command = ticketCommand(item);
   const copy = (text: string, what: string) =>
     void navigator.clipboard.writeText(text).then(
       () => setNote(`${what} 복사함`),

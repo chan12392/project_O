@@ -1,8 +1,8 @@
 import { ArrowLeft, Bell, Bot, Info, Keyboard, LogIn, Palette, RefreshCw, SlidersHorizontal, UserRound, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import type { Backend } from "../backend.ts";
-import { updateSettings, useReducedMotion, useSettings, type FontSize, type Motion, type StartScreen, type Theme } from "../settings.ts";
+import { BUDGET_PERCENTS, type Backend, type BudgetPercent } from "../backend.ts";
+import { sessionsShown, updateSettings, useReducedMotion, useSettings, type FontSize, type Motion, type StartScreen, type Theme } from "../settings.ts";
 import { AgentList, useAgents } from "./AgentSetup.tsx";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SoonBadge, SubHeading, Switch } from "./controls.tsx";
 
@@ -98,7 +98,7 @@ export function Settings({ api, section, source, onSection, onBack, onOnboarding
       <div className="scrollbar-sleek min-h-0 min-w-0 overflow-y-auto bg-background [scrollbar-gutter:stable]">
         <div key={section} className="mx-auto w-full max-w-3xl px-8 pt-10 pb-24">
           {section === "account" && <AccountSection />}
-          {section === "general" && <GeneralSection />}
+          {section === "general" && <GeneralSection demo={source === "demo"} />}
           {section === "appearance" && <AppearanceSection />}
           {section === "agents" && <AgentsSection api={api} agentsHome={about.data?.agentsHome} onOnboarding={onOnboarding} />}
           {section === "notifications" && <NotificationsSection />}
@@ -178,11 +178,22 @@ function AccountSection() {
   );
 }
 
-function GeneralSection() {
+function GeneralSection({ demo }: { demo: boolean }) {
   const settings = useSettings();
+  const sessions = sessionsShown(settings, demo);
   return (
     <Section title="일반" description="앱을 열 때의 화면과 실행 기록을 읽는 방식입니다.">
       <Rows>
+        <SettingsRow
+          id="sessions-label"
+          label="Claude Code 세션도 보기"
+          description={
+            demo
+              ? "미리보기에서는 예시 세션 하나(블로그 프로젝트)를 보여 줍니다. 메인 대화가 총괄 자리에, 서브에이전트가 사무실의 사람으로 나옵니다."
+              : "O로 보내지 않고 Claude Code에서 바로 한 작업도 최근 24시간 것을 읽기 전용으로 불러옵니다. 메인 대화는 총괄 자리에, 서브에이전트는 사무실의 사람으로 보이고 다음 할 일에도 잡힙니다. 대화 기록 폴더(projects)만 읽고 로그인 정보는 읽지 않습니다."
+          }
+          control={<Switch checked={sessions} onChange={(next) => updateSettings({ sessions: next })} labelledBy="sessions-label" />}
+        />
         <SettingsRow
           label="시작 화면"
           description={
@@ -299,6 +310,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           }
           control={<Switch checked={settings.clean} onChange={(clean) => updateSettings({ clean })} labelledBy="clean-label" />}
         />
+        <BudgetRow api={api} />
         <SettingsRow
           label="프로필 위치"
           description={
@@ -329,6 +341,61 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
         </div>
       </div>
     </Section>
+  );
+}
+
+/**
+ * 하루 사용 예산 (ADR-0004): kept by the machine in O's settings.json, not in this
+ * window's storage, because `o dispatch` reads it too. The machine checks the range again.
+ */
+function BudgetRow({ api }: { api: Backend }) {
+  const [percent, setPercent] = useState<number>();
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    let live = true;
+    api.budget().then(
+      (report) => live && setPercent(report.percent),
+      () => live && setNote("지금 값을 읽지 못했습니다. 터미널에서 o budget으로 확인할 수 있습니다."),
+    );
+    return () => {
+      live = false;
+    };
+  }, [api]);
+  const choose = async (value: string) => {
+    const next = Number(value) as BudgetPercent;
+    setSaving(true);
+    try {
+      setPercent((await api.setBudgetPercent(next)).percent);
+      setNote("");
+    } catch (e) {
+      setNote(`저장하지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <SettingsRow
+      label="하루 사용 예산"
+      description={
+        <>
+          에이전트마다 하루에 쓸 양을 주간 한도의 {percent ?? 13}%로 잡습니다. 하루가 지나는 속도보다 빨리 쓰면 작업카드의 effort를 한두 단계 낮추고(올리지는 않음), 다 쓰면 다음 날(또는 주간 초기화)까지 그 에이전트로 새 작업을 보내지 않습니다. 사용량 기록이 없는 에이전트는 조절하지 않습니다.
+          {note && (
+            <span role="status" className="mt-1 block text-destructive">
+              {note}
+            </span>
+          )}
+        </>
+      }
+      control={
+        <Segmented
+          label="하루 사용 예산"
+          value={String(percent ?? "")}
+          onChange={percent === undefined || saving ? undefined : (value) => void choose(value)}
+          options={BUDGET_PERCENTS.map((p) => ({ value: String(p), label: `${p}%` }))}
+        />
+      }
+    />
   );
 }
 

@@ -13,11 +13,15 @@ fn main() {
             commands::runs,
             commands::usage,
             commands::usage_refresh,
+            commands::budget,
+            commands::budget_set_percent,
             commands::agents_status,
             commands::agent_install,
             commands::agent_login,
             commands::open_external,
             commands::about,
+            commands::review,
+            commands::tokens,
         ])
         .run(tauri::generate_context!())
         .expect("Project O 창을 열지 못했습니다");

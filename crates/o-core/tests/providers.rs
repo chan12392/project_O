@@ -228,6 +228,6 @@ fn card_prompt_text_is_unchanged() {
     let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", "C:/o/runs/r1", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
     assert_eq!(codex.args, expected_args);
     let claude = launch_spec(&p.cards[1], &p, &TEAM);
-    let expected_args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "--effort", "high"];
+    let expected_args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "Bash(o context *)", "--effort", "high"];
     assert_eq!(claude.args, expected_args);
 }

@@ -1,9 +1,13 @@
 import { PanelRightOpen, SquareArrowOutUpRight } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { nextUp, type NextItem } from "../../src/core/attention.ts";
 import type { RunView } from "../../src/core/snapshot.ts";
 import { backend } from "./backend.ts";
 import { AccountMenu, SETTINGS_BUTTON_ID } from "./components/AccountMenu.tsx";
+import { AllNextUp } from "./components/AllNextUp.tsx";
+import { useHandled } from "./components/NextUp.tsx";
+import { useNow } from "./components/WorkTab.tsx";
 import { Composer } from "./components/Composer.tsx";
 import { LeadGate } from "./components/LeadGate.tsx";
 import { Onboarding } from "./components/Onboarding.tsx";
@@ -24,7 +28,7 @@ const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
 const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
 
-type Screen = "app" | "onboarding" | "settings";
+type Screen = "app" | "onboarding" | "settings" | "nextup";
 
 export function App() {
   return initial.popout ? <PopoutPanel /> : <MainWindow />;
@@ -138,6 +142,21 @@ function MainWindow() {
   };
   const showPanel = layout.open && !layout.popped;
 
+  // Next up across every project: the sidebar's count and the view it opens.
+  const now = useNow(data.clock);
+  const { handled } = useHandled();
+  const views = useMemo(() => (state === "full" ? runs.map((r) => r.view) : []), [runs, state]);
+  const nextCount = useMemo(() => {
+    const { todo, stopped } = nextUp(views, now, handled);
+    return todo.length + stopped.length;
+  }, [views, now, handled]);
+  const openItem = (item: NextItem) => {
+    setScreen("app");
+    const card = item.cardId ?? runs.find((r) => r.view.runId === item.runId)?.view.cards[0]?.id;
+    if (card) openCard(item.runId, card);
+    else select({ project: projectOf(item.runId), run: item.runId, card: undefined });
+  };
+
   return (
     <div className="grid h-full grid-cols-[16rem_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] max-md:grid-cols-[minmax(0,1fr)]">
       {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
@@ -175,6 +194,9 @@ function MainWindow() {
             setScreen("app");
             compose();
           }}
+          nextCount={nextCount}
+          nextOpen={screen === "nextup"}
+          onNextUp={() => setScreen("nextup")}
           footer={
             <AccountMenu
               onSettings={() => openSettings()}
@@ -186,6 +208,18 @@ function MainWindow() {
         />
       </div>
       {screen === "onboarding" && <Onboarding api={api} onDone={finishOnboarding} onSettings={() => openSettings("agents")} />}
+      {screen === "nextup" && (
+        <AllNextUp
+          runs={views}
+          now={now}
+          loading={state === "loading"}
+          onOpen={openItem}
+          onProject={(path) => {
+            setScreen("app");
+            select({ project: path, run: undefined, card: undefined });
+          }}
+        />
+      )}
       <main ref={layout.container} hidden={screen !== "app"} className="flex min-h-0 min-w-0 max-lg:flex-col">
         <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
           <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs">

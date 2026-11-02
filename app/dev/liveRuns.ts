@@ -16,9 +16,9 @@ function oBinary(): string {
 }
 
 /** Runs `o` with fixed arguments (no shell) and returns its stdout. */
-function o(args: string[], timeout = 60_000): Promise<string> {
+function o(args: string[], timeout = 60_000, cwd?: string): Promise<string> {
   return new Promise((resolve, reject) =>
-    execFile(oBinary(), args, { windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout }, (error, stdout, stderr) =>
+    execFile(oBinary(), args, { windowsHide: true, maxBuffer: 256 * 1024 * 1024, timeout, cwd }, (error, stdout, stderr) =>
       error ? reject(new Error(stderr.trim() || error.message)) : resolve(stdout),
     ),
   );
@@ -52,6 +52,13 @@ function sameOrigin(req: IncomingMessage): boolean {
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
 const AGENT_ACTION = /^\/agents\/(claude|codex|agy)\/(install|login)$/;
 
+/** A PR number or github.com pull address, as `o review` takes it (backend.ts PR_SELECTOR). */
+const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
+/** An absolute folder; `o review`'s policy check decides whether it may be a project. */
+const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/;
+/** Settings → 에이전트 → 하루 사용 예산: the day's allowance, percent of the weekly window. */
+const BUDGET_PERCENT = /^1[234]$/;
+
 /** npm installs can take minutes. */
 const INSTALL_TIMEOUT_MS = 10 * 60_000;
 
@@ -70,15 +77,38 @@ export function liveRuns(): Plugin {
         const path = req.url?.split("?")[0];
         if (!localHost(req)) return send(res, 403, JSON.stringify({ error: "이 PC의 주소로만 열 수 있습니다" }));
         if (!sameOrigin(req)) return send(res, 403, JSON.stringify({ error: "다른 출처의 요청은 받지 않습니다" }));
-        if (req.method === "GET" && path === "/runs") return void o(["runs", "--json"]).then((out) => send(res, 200, out), error(res));
+        // ?sessions=1: this PC's recent Claude Code sessions too (`o runs --json --sessions`, read-only).
+        const withSessions = new URLSearchParams(req.url?.split("?")[1] ?? "").get("sessions") === "1" ? ["--sessions"] : [];
+        if (req.method === "GET" && path === "/runs") return void o(["runs", "--json", ...withSessions]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/usage") return void o(["usage", "--cached", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/usage/refresh") {
           refreshing ??= o(["usage", "--json"]).finally(() => (refreshing = undefined));
           return void refreshing.then((out) => send(res, 200, out), error(res));
         }
-        const clean = new URLSearchParams(req.url?.split("?")[1] ?? "").get("clean") === "1" ? ["--clean"] : [];
+        const query = new URLSearchParams(req.url?.split("?")[1] ?? "");
+        if (req.method === "GET" && path === "/budget") return void o(["budget", "--json", "--cached"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/budget/percent") {
+          // `o budget` checks the range again; only these three ever reach it.
+          const percent = query.get("value") ?? "";
+          if (!BUDGET_PERCENT.test(percent)) return send(res, 400, JSON.stringify({ error: "하루 사용 예산은 12, 13, 14 중 하나입니다" }));
+          return void o(["budget", "--json", "--cached", "--percent", percent]).then((out) => send(res, 200, out), error(res));
+        }
+        const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/review") {
+          // `o review <pr> --post --detach` in the project folder: reads the PR with gh, starts the review card, returns.
+          const project = query.get("project") ?? "";
+          const pr = query.get("pr") ?? "";
+          if (!PR_SELECTOR.test(pr) || !ABSOLUTE.test(project) || !existsSync(project)) {
+            return send(res, 400, JSON.stringify({ error: "PR 번호(또는 github.com PR 주소)와 프로젝트 폴더가 필요합니다" }));
+          }
+          return void o(["review", pr, "--post", "--detach", ...clean], 120_000, project).then((out) => send(res, 200, out), error(res));
+        }
+        if (req.method === "GET" && path === "/tokens") {
+          const project = query.get("project");
+          return void o(["tokens", "--json", ...(project ? ["--project", project] : [])]).then((out) => send(res, 200, out), error(res));
+        }
         const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
         if (action) {
           const [, id, verb] = action;

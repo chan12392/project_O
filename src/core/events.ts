@@ -34,7 +34,16 @@ export type OEvent =
   | { t: "card.usage"; at: string; cardId: string; input: number; cached: number; output: number }
   /** A subscription window the provider reported: share used (0 to 1) and when it resets. */
   | { t: "quota"; at: string; provider: ProviderId; window: string; used: number; resetsAt: string }
-  | { t: "run.end"; at: string; runId: string; status: CardStatus };
+  | { t: "run.end"; at: string; runId: string; status: CardStatus }
+  /** `o review --post` commented the review card's answer on the PR (ADR-0006). */
+  | { t: "review.posted"; at: string; pr: number; url: string; head?: string }
+  /**
+   * The runner lowered a card's effort before launching it to keep its provider within today's
+   * usage budget (ADR-0004). `spent` and `allowance` are percent points of the weekly window.
+   */
+  | { t: "card.budget"; at: string; cardId: string; provider: ProviderId; effortFrom?: string; effortTo: string; spent: number; allowance: number }
+  /** Cards whose prompt got a shared context section (ADR-0005), and its characters in all. */
+  | { t: "run.context"; at: string; runId: string; cards: number; chars: number; cardIds: string[] };
 
 /** What a provider stream line means, before it gets a timestamp and card id. */
 export type StreamSignal =

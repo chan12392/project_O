@@ -6,6 +6,7 @@ import { PROVIDER_NAME, STATE_WORD, clip, compact, modelLine, timeOf } from "../
 import { lookOf } from "../characters.ts";
 import { Avatar } from "./Avatar.tsx";
 import { KanbanBoard, KanbanCard, KanbanCards, KanbanHeader, KanbanProvider, type KanbanColumn } from "./Kanban.tsx";
+import { ReviewButton, isReviewCard } from "./ReviewRequest.tsx";
 
 type ColumnId = "waiting" | "running" | "review" | "done" | "blocked";
 const COLUMNS: (KanbanColumn & { id: ColumnId; tone: string })[] = [
@@ -59,38 +60,48 @@ function BoardCard({ card, run, onOpen }: { card: CardView; run: RunView; onOpen
   const pr = prOf(card);
   const tools = card.log.filter((l) => l.kind === "tool").length;
   const tokens = tokensOf(card);
+  const reviewer = isReviewCard(card);
   return (
-    <KanbanCard action="카드 기록 열기" onOpen={onOpen}>
-      <span className="flex items-center gap-2">
-        <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
-        <span className="min-w-0">
-          <span className="block truncate text-sm font-medium">{card.label}</span>
-          <span className="block truncate font-mono text-2xs text-muted-foreground">
-            {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
+    <div className="flex flex-col gap-1">
+      <KanbanCard action="카드 기록 열기" onOpen={onOpen}>
+        <span className="flex items-center gap-2">
+          <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
+          <span className="min-w-0">
+            <span className="block truncate text-sm font-medium">{card.label}</span>
+            <span className="block truncate font-mono text-2xs text-muted-foreground">
+              {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
+            </span>
           </span>
         </span>
-      </span>
-      <span className="line-clamp-2 text-xs text-muted-foreground">{clip(card.activity || "아직 기록 없음", 90)}</span>
-      <Progress state={card.state} />
-      <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-muted-foreground">
-        <span className="max-w-full truncate rounded-sm bg-muted px-1 text-foreground">{run.title}</span>
-        <span>{STATE_WORD[card.state]}</span>
-        {card.startedAt && (
-          <span>
-            {timeOf(card.startedAt)}
-            {card.endedAt && `–${timeOf(card.endedAt)}`}
-          </span>
-        )}
-        {tools > 0 && <span>도구 {tools}회</span>}
-        {tokens > 0 && <span>{compact.format(tokens)} 토큰</span>}
-      </span>
+        <span className="line-clamp-2 text-xs text-muted-foreground">{clip(card.activity || "아직 기록 없음", 90)}</span>
+        <Progress state={card.state} />
+        <span className="flex flex-wrap items-center gap-x-2 gap-y-1 text-2xs text-muted-foreground">
+          <span className="max-w-full truncate rounded-sm bg-muted px-1 text-foreground">{run.title}</span>
+          <span>{STATE_WORD[card.state]}</span>
+          {card.startedAt && (
+            <span>
+              {timeOf(card.startedAt)}
+              {card.endedAt && `–${timeOf(card.endedAt)}`}
+            </span>
+          )}
+          {tools > 0 && <span>도구 {tools}회</span>}
+          {tokens > 0 && <span>{compact.format(tokens)} 토큰</span>}
+        </span>
+      </KanbanCard>
+      {/* Outside the card's button: the PR link and the review request are their own controls. */}
       {pr && (
-        <span className="flex items-center gap-1 truncate text-2xs text-sky-400">
-          <GitPullRequest className="size-3 shrink-0" aria-hidden="true" />
-          {pr.replace("https://github.com/", "")}
-        </span>
+        <div className="flex flex-col gap-1 px-1 pb-1">
+          <span className="flex min-w-0 items-center gap-2 text-2xs">
+            <a href={pr} target="_blank" rel="noreferrer" className="flex min-w-0 items-center gap-1 truncate text-sky-400 hover:underline focus-ring">
+              <GitPullRequest className="size-3 shrink-0" aria-hidden="true" />
+              {pr.replace("https://github.com/", "")}
+            </a>
+            <span className="shrink-0 text-muted-foreground">{reviewer ? "에이전트 검토 완료 · 사람 판단" : "사람 검토 필요"}</span>
+          </span>
+          {!reviewer && <ReviewButton project={run.project} pr={pr} />}
+        </div>
       )}
-    </KanbanCard>
+    </div>
   );
 }
 

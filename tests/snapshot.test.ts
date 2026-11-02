@@ -68,6 +68,20 @@ test("team messages land on the run and in each party's log", () => {
   assert.equal(run?.cards[0].label, "코딩");
 });
 
+test("a budget adjustment shows the effort the card ran with in its activity and log", () => {
+  const run = snapshot([
+    { t: "run.start", at: "2026-11-02T10:00:00.000Z", runId: "r", title: "t", project: "C:/p", cards: [{ id: "a", provider: "codex", label: "a", effort: "xhigh" }, { id: "b", provider: "codex", label: "b" }] },
+    { t: "card.budget", at: "2026-11-02T10:00:01.000Z", cardId: "a", provider: "codex", effortFrom: "xhigh", effortTo: "medium", spent: 9.5, allowance: 13 },
+    { t: "card.budget", at: "2026-11-02T10:00:01.000Z", cardId: "b", provider: "codex", effortTo: "low", spent: 9.5, allowance: 13 },
+  ]);
+  const [a, b] = run?.cards ?? [];
+  assert.equal(a.effort, "medium");
+  assert.equal(a.activity, "사용 예산: effort xhigh → medium (오늘 9.5/13%p)");
+  assert.deepEqual(a.log.map((l) => l.kind), ["budget"]);
+  assert.equal(b.effort, "low");
+  assert.match(b.activity, /effort 기본 → low/);
+});
+
 test("no run.start means nothing to show", () => {
   assert.equal(snapshot([]), undefined);
 });

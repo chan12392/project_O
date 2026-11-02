@@ -6,7 +6,9 @@
 //! both sit on top of this.
 
 pub mod agents;
+pub mod budget;
 pub mod clean;
+pub mod context;
 pub mod events;
 pub mod index;
 pub mod js;
@@ -17,7 +19,9 @@ pub mod probe;
 pub mod proc;
 pub mod providers;
 pub mod resolve;
+pub mod review;
 pub mod runner;
+pub mod sessions;
 pub mod snapshot;
 pub mod store;
 pub mod team;

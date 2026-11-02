@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, FilePen, FileText, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
+import { CircleAlert, CircleCheck, FilePen, FileText, Gauge, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
 
 import type { CardLogEntry, CardView, RunView } from "../../../src/core/snapshot.ts";
 import { lookOf } from "../characters.ts";
@@ -102,8 +102,8 @@ function Entry({
     );
   }
   const failed = entry.kind === "end" && cardFailed;
-  const Icon = entry.kind === "end" ? (failed ? CircleAlert : CircleCheck) : entry.kind === "queued" ? Hourglass : CircleAlert;
-  const tone = entry.kind === "end" && !failed ? "text-emerald-500" : entry.kind === "queued" ? "text-chat-foreground-faint" : "text-destructive";
+  const Icon = entry.kind === "end" ? (failed ? CircleAlert : CircleCheck) : entry.kind === "queued" ? Hourglass : entry.kind === "budget" ? Gauge : CircleAlert;
+  const tone = entry.kind === "end" && !failed ? "text-emerald-500" : entry.kind === "queued" ? "text-chat-foreground-faint" : entry.kind === "budget" ? "text-amber-500" : "text-destructive";
   return (
     <li className="mt-3 flex items-start gap-2 rounded-lg border bg-card px-3 py-2.5 text-card-foreground">
       <Icon className={`mt-0.5 size-4 shrink-0 ${tone}`} aria-hidden="true" />

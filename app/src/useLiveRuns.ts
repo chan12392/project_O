@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { OEvent } from "../../src/core/events.ts";
 import { snapshot, type RunView } from "../../src/core/snapshot.ts";
+import { isSessionRun } from "../../src/core/attention.ts";
 import type { UsageWindow } from "../../src/core/usage.ts";
+import { sessionsShown, useSettings } from "./settings.ts";
 import { USAGE_WINDOWS, useDemoRuns, type Message } from "./useRun.ts";
 
 /** Where the screen's runs come from: this machine's O home, or the recorded demo. */
@@ -27,17 +29,18 @@ const RUN_LIMIT = 50;
 /**
  * The desktop app (project_O.exe) answers through Tauri commands with the same JSON text
  * the dev server's /api sends (`o runs --json`, `o usage --cached --json`, `o usage --json`).
+ * With `sessions`, this PC's recent Claude Code sessions come along as runs (`o runs --json --sessions`).
  */
-async function readRuns(): Promise<{ runsText: string; usageText: string }> {
+async function readRuns(sessions: boolean): Promise<{ runsText: string; usageText: string }> {
   const tauri = window.__TAURI_INTERNALS__;
   if (tauri) {
     const [runsText, usageText] = await Promise.all([
-      tauri.invoke("runs", { limit: RUN_LIMIT }) as Promise<string>,
+      tauri.invoke("runs", { limit: RUN_LIMIT, sessions }) as Promise<string>,
       (tauri.invoke("usage") as Promise<string>).catch(() => ""),
     ]);
     return { runsText, usageText };
   }
-  const [runsRes, usageRes] = await Promise.all([fetch("/api/runs"), fetch("/api/usage")]);
+  const [runsRes, usageRes] = await Promise.all([fetch(sessions ? "/api/runs?sessions=1" : "/api/runs"), fetch("/api/usage")]);
   if (!runsRes.ok) throw new Error(`/api/runs ${runsRes.status}`);
   return { runsText: await runsRes.text(), usageText: usageRes.ok ? await usageRes.text() : "" };
 }
@@ -60,7 +63,7 @@ function requestedSource(): Source | undefined {
  * the page is visible. Lead chat transcripts are not stored by O yet, so messages stay empty.
  * `runs` is undefined until the first answer; a failed first answer counts as no runs.
  */
-function useLiveRuns(enabled: boolean) {
+function useLiveRuns(enabled: boolean, sessions: boolean) {
   const [runs, setRuns] = useState<RunEntry[]>();
   const [usage, setUsage] = useState<UsageReading>();
   const [failed, setFailed] = useState(false);
@@ -85,7 +88,7 @@ function useLiveRuns(enabled: boolean) {
       if (inflight) return;
       inflight = true;
       try {
-        const { runsText, usageText } = await readRuns();
+        const { runsText, usageText } = await readRuns(sessions);
         if (stopped) return;
         if (runsText !== lastRuns) {
           lastRuns = runsText;
@@ -128,7 +131,7 @@ function useLiveRuns(enabled: boolean) {
       window.clearTimeout(timer);
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [enabled]);
+  }, [enabled, sessions]);
 
   /** Asks the official CLIs again, the same reading `o usage` takes. */
   const refreshUsage = useCallback(async () => {
@@ -153,13 +156,18 @@ function useLiveRuns(enabled: boolean) {
  */
 export function useRunSource(initialRun: string | undefined, initialFraction: number) {
   const [source, setSource] = useState(requestedSource);
-  const live = useLiveRuns(source !== "demo");
+  const settings = useSettings();
+  const live = useLiveRuns(source !== "demo", sessionsShown(settings, false));
   useEffect(() => {
     if (!source && live.runs) setSource(live.runs.length > 0 ? "live" : "demo");
   }, [source, live.runs]);
   const demo = useDemoRuns(initialRun, initialFraction, source === "demo");
 
-  if (source === "demo") return { pending: false, ...demo, usageWindows: USAGE_WINDOWS, live: undefined };
+  if (source === "demo") {
+    // The demo's sample Claude Code session shows only once Settings → 일반 asks for sessions.
+    const runs = sessionsShown(settings, true) ? demo.runs : demo.runs.filter((r) => !isSessionRun(r.view));
+    return { pending: false, ...demo, runs, usageWindows: USAGE_WINDOWS, live: undefined };
+  }
   return {
     /** Waiting for the first answer before deciding or showing anything. */
     pending: !live.runs,
