@@ -289,6 +289,88 @@ fn opens_nothing_outside_the_transcript_folders() {
     assert_eq!(cached, ["C--work-app/s1.jsonl", "C--work-app/s1/subagents/agent-aaa1.jsonl", "C--work-app/s1/subagents/agent-bbb2.jsonl"]);
 }
 
+/// A folder link, or None where this machine does not allow making one.
+fn link_dir(target: &Path, link: &Path) -> Option<()> {
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_dir(target, link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    made.ok()
+}
+
+fn link_file(target: &Path, link: &Path) -> Option<()> {
+    #[cfg(windows)]
+    let made = std::os::windows::fs::symlink_file(target, link);
+    #[cfg(unix)]
+    let made = std::os::unix::fs::symlink(target, link);
+    made.ok()
+}
+
+/// A Windows junction (no special rights needed), made with the system's own mklink.
+#[cfg(windows)]
+fn junction(target: &Path, link: &Path) -> bool {
+    std::process::Command::new("cmd").arg("/C").arg("mklink").arg("/J").arg(link).arg(target).output().is_ok_and(|o| o.status.success())
+}
+
+fn ids(root: &Path) -> Vec<String> {
+    transcript_files(root, UNIX_EPOCH).into_iter().map(|s| s.session_id).collect()
+}
+
+#[test]
+fn links_anywhere_below_the_config_root_are_not_followed() {
+    // Outside: a real transcript folder that must never be read through a link.
+    let outside = temp("links-outside");
+    write_session(&outside, base());
+    let outside_projects = outside.join("projects");
+    let outside_folder = outside_projects.join("C--work-app");
+
+    // `projects` itself is a link.
+    let root = temp("links-projects");
+    if link_dir(&outside_projects, &root.join("projects")).is_none() {
+        eprintln!("skipped: this machine does not allow symlinks");
+        return;
+    }
+    assert!(ids(&root).is_empty(), "projects link");
+
+    // A project folder is a link.
+    let root = temp("links-folder");
+    fs::create_dir_all(root.join("projects")).unwrap();
+    link_dir(&outside_folder, &root.join("projects").join("C--evil")).unwrap();
+    assert!(ids(&root).is_empty(), "folder link");
+
+    // The session's folder or its subagents folder is a link: the main file is read, no subagent.
+    let root = temp("links-subagents");
+    write_session(&root, base());
+    let folder = root.join("projects").join("C--work-app");
+    fs::remove_dir_all(folder.join("s1")).unwrap();
+    link_dir(&outside_folder.join("s1"), &folder.join("s1")).unwrap();
+    let found = transcript_files(&root, UNIX_EPOCH);
+    assert_eq!(found.len(), 1);
+    assert!(found[0].subagents.is_empty(), "session folder link");
+
+    // A transcript or meta file is a link.
+    let root = temp("links-file");
+    fs::create_dir_all(root.join("projects").join("C--work-app")).unwrap();
+    link_file(&outside_folder.join("s1.jsonl"), &root.join("projects").join("C--work-app").join("s7.jsonl")).unwrap();
+    assert!(ids(&root).is_empty(), "file link");
+
+    #[cfg(windows)]
+    {
+        let root = temp("links-junction");
+        assert!(junction(&outside_projects, &root.join("projects")));
+        assert!(ids(&root).is_empty(), "projects junction");
+        let root = temp("links-junction-folder");
+        fs::create_dir_all(root.join("projects")).unwrap();
+        assert!(junction(&outside_folder, &root.join("projects").join("C--evil")));
+        assert!(ids(&root).is_empty(), "folder junction");
+    }
+
+    // A config root that is itself a link is the user's choice and still read.
+    let linked_root = temp("links-root").join("claude");
+    link_dir(&outside, &linked_root).unwrap();
+    assert_eq!(ids(&linked_root), ["s1"]);
+}
+
 #[test]
 fn only_sessions_inside_the_window_are_read() {
     let root = temp("window");

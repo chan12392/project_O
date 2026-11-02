@@ -109,13 +109,27 @@ fn plain_id(text: &str) -> bool {
     !text.is_empty() && text.len() <= 56 && text.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
-/// A file entry that is a regular file and no link.
-fn regular_file(path: &Path) -> Option<fs::Metadata> {
-    fs::symlink_metadata(path).ok().filter(|m| m.file_type().is_file())
+/// No reparse point of any kind (symlink, junction, mount point, …) on Windows.
+#[cfg(windows)]
+fn not_reparse(meta: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT == 0
 }
 
+#[cfg(not(windows))]
+fn not_reparse(_: &fs::Metadata) -> bool {
+    true
+}
+
+/// A file entry that is a regular file and no link.
+fn regular_file(path: &Path) -> Option<fs::Metadata> {
+    fs::symlink_metadata(path).ok().filter(|m| m.file_type().is_file() && not_reparse(m))
+}
+
+/// A folder entry that is a real folder: no link, junction or other reparse point.
 fn real_dir(path: &Path) -> bool {
-    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir())
+    fs::symlink_metadata(path).is_ok_and(|m| m.file_type().is_dir() && not_reparse(&m))
 }
 
 fn modified(meta: &fs::Metadata) -> SystemTime {
@@ -130,8 +144,18 @@ fn names(dir: &Path) -> Vec<String> {
 }
 
 /// Sessions under `<root>/projects` written to at or after `since`.
+///
+/// The config root may itself be a link (it is the trusted place the user named), but
+/// nothing below it is followed: `projects` and every folder and file under it must be a
+/// real folder or file — no symlink, junction or other reparse point — and every file
+/// must resolve inside the real `<root>/projects`.
 pub fn transcript_files(root: &Path, since: SystemTime) -> Vec<SessionFiles> {
     let projects = root.join("projects");
+    let Ok(real_projects) = fs::canonicalize(root).map(|r| r.join("projects")) else { return Vec::new() };
+    if !real_dir(&projects) {
+        return Vec::new();
+    }
+    let inside = |path: &Path| fs::canonicalize(path).is_ok_and(|p| p.starts_with(&real_projects));
     let mut found = Vec::new();
     for folder in names(&projects) {
         let folder = projects.join(folder);
@@ -141,7 +165,7 @@ pub fn transcript_files(root: &Path, since: SystemTime) -> Vec<SessionFiles> {
         for name in names(&folder) {
             let Some(session_id) = name.strip_suffix(".jsonl").filter(|id| plain_id(id)) else { continue };
             let main = folder.join(&name);
-            let Some(meta) = regular_file(&main) else { continue };
+            let Some(meta) = regular_file(&main).filter(|_| inside(&main)) else { continue };
             let mut latest = modified(&meta);
             let mut subagents = Vec::new();
             let dir = folder.join(session_id).join("subagents");
@@ -149,10 +173,10 @@ pub fn transcript_files(root: &Path, since: SystemTime) -> Vec<SessionFiles> {
                 for file in names(&dir) {
                     let Some(agent_id) = file.strip_prefix("agent-").and_then(|f| f.strip_suffix(".jsonl")).filter(|id| plain_id(id)) else { continue };
                     let thread = dir.join(&file);
-                    let Some(thread_meta) = regular_file(&thread) else { continue };
+                    let Some(thread_meta) = regular_file(&thread).filter(|_| inside(&thread)) else { continue };
                     latest = latest.max(modified(&thread_meta));
                     let meta_file = dir.join(format!("agent-{agent_id}.meta.json"));
-                    let meta_file = regular_file(&meta_file).filter(|m| m.len() <= META_MAX_BYTES).map(|_| meta_file);
+                    let meta_file = regular_file(&meta_file).filter(|m| m.len() <= META_MAX_BYTES && inside(&meta_file)).map(|_| meta_file);
                     subagents.push((agent_id.to_string(), thread, meta_file));
                 }
             }
