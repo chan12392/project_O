@@ -1,16 +1,30 @@
 import { ArrowUp, FileText, Image as ImageIcon, LoaderCircle, Plus, ShieldCheck, Square, X } from "lucide-react";
 import { useEffect, useRef, useState, type ClipboardEvent, type DragEvent, type FormEvent, type KeyboardEvent, type RefObject } from "react";
 
-import { ATTACH_ACCEPT, EFFORT_WORD, LEAD_EFFORTS, attachProblem, effortFor, fileSize, isLeadProvider, type LeadProvider } from "../../../../src/core/lead.ts";
+import {
+  ATTACH_ACCEPT,
+  EFFORT_WORD,
+  LEAD_EFFORTS,
+  LEAD_NAME,
+  LEAD_PROVIDERS,
+  MODEL_ID,
+  attachProblem,
+  effortFor,
+  fileSize,
+  isLeadProvider,
+  modelLabel,
+  type LeadProvider,
+} from "../../../../src/core/lead.ts";
 import { updateSettings, useSettings } from "../../data/settings.ts";
-import type { LeadState } from "../../data/useLead.ts";
+import { useLeadModels, type LeadState } from "../../data/useLead.ts";
 import type { AgentStatus, Backend, LeadAttachment } from "../../platform/backend/index.ts";
-import { ChoiceMenu } from "../../ui/Menu.tsx";
+import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
 const MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
 const SEND_KEY = MAC ? "⌘Enter" : "Ctrl+Enter";
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
-const LEAD_NAME: Record<LeadProvider, string> = { claude: "Claude Code", codex: "Codex" };
+/** The model menu's "type an id" row; a leading space never starts a model id. */
+const TYPE_MODEL = " 직접 입력";
 
 /** One file in the composer: uploading, saved for the thread, or refused. */
 interface Pending {
@@ -39,7 +53,15 @@ function useLeadAgents(api: Backend, clean: boolean) {
     };
   }, [api, clean]);
   const usable = (agents ?? []).filter((a) => a.installed && a.loggedIn === true && isLeadProvider(a.id));
-  return { checking: agents === undefined, usable: usable.map((a) => a.id as LeadProvider) };
+  /** Why a lead agent cannot be picked now; the menu shows it on the disabled row. */
+  const why = (id: LeadProvider): string | undefined => {
+    const status = agents?.find((a) => a.id === id);
+    if (!status?.installed) return "설치되지 않았습니다 · 설정 → 에이전트";
+    if (status.loggedIn === false) return "로그인이 필요합니다 · 설정 → 에이전트";
+    if (status.loggedIn !== true) return "로그인 상태를 확인하지 못했습니다";
+    return undefined;
+  };
+  return { checking: agents === undefined, usable: usable.map((a) => a.id as LeadProvider), why };
 }
 
 /**
@@ -61,16 +83,48 @@ export function Composer({
   onAgents: () => void;
 }) {
   const settings = useSettings();
-  const { checking, usable } = useLeadAgents(api, settings.clean);
+  const { checking, usable, why } = useLeadAgents(api, settings.clean);
   const [text, setText] = useState("");
   const [files, setFiles] = useState<Pending[]>([]);
   const [notice, setNotice] = useState<string>();
-  const [picked, setPicked] = useState<{ agent: LeadProvider; effort: string }>();
+  /** `model` "" is the CLI's default (no `--model`). */
+  const [picked, setPicked] = useState<{ agent: LeadProvider; model: string; effort: string }>();
   const fileInput = useRef<HTMLInputElement>(null);
+  const leadButton = useRef<HTMLButtonElement>(null);
 
   // The message's agent: the one picked here, else Settings → 총괄, else the first that can lead.
   const agent: LeadProvider | undefined = [picked?.agent, settings.leadAgent, ...usable].find((a): a is LeadProvider => !!a && usable.includes(a));
-  const effort = agent ? effortFor(agent, picked?.agent === agent ? picked.effort : settings.leadEffort) : undefined;
+  const mine = picked?.agent === agent ? picked : undefined;
+  const effort = agent ? effortFor(agent, mine ? mine.effort : settings.leadEffort) : undefined;
+  // The model: picked here for this agent, else its default in Settings → 총괄.
+  const model = mine ? mine.model : agent ? (settings.leadModels[agent] ?? "") : "";
+  const models = useLeadModels(api, agent);
+  const [typing, setTyping] = useState<{ draft: string; error?: string }>();
+
+  const finishTyping = (apply: boolean) => {
+    if (apply && agent && effort) {
+      const id = typing?.draft.trim() ?? "";
+      if (!MODEL_ID.test(id)) {
+        setTyping({ draft: typing?.draft ?? "", error: "영문·숫자로 시작하고 영문·숫자·._:-/[] 만 쓰는 80자 이내의 모델 id를 적어 주세요" });
+        return;
+      }
+      setPicked({ agent, model: id, effort });
+    }
+    setTyping(undefined);
+    leadButton.current?.focus();
+  };
+
+  const modelChoices: MenuChoice[] = agent
+    ? [
+        { value: "", label: "기본 모델", hint: `${LEAD_NAME[agent]}에 설정된 모델` },
+        ...models.models.map((m) => ({ value: m.id, label: m.label })),
+        // A typed-in or saved id the list does not have still shows, so the person sees what runs.
+        ...(model && !models.models.some((m) => m.id === model) ? [{ value: model, label: model, hint: "직접 입력한 모델" }] : []),
+        ...(models.loading ? [{ value: " 불러오는 중", label: "모델 목록을 불러오는 중…", disabled: true }] : []),
+        ...(models.failed ? [{ value: TYPE_MODEL, label: "직접 입력…", hint: "모델 목록을 불러오지 못했습니다" }] : []),
+      ]
+    : [];
+  const modelName = agent ? modelLabel(models.models, model) : undefined;
 
   const uploading = files.some((f) => !f.saved && !f.error);
   const busy = lead.busy;
@@ -118,7 +172,7 @@ export function Composer({
     setFiles([]);
     setNotice(undefined);
     try {
-      await lead.send({ provider: agent, effort, text: message, attachments, clean: settings.clean });
+      await lead.send({ provider: agent, model: model || undefined, effort, text: message, attachments, clean: settings.clean });
     } catch (e) {
       // Nothing was recorded: give the message back.
       setText((now) => now || message);
@@ -203,6 +257,44 @@ export function Composer({
           onPaste={onPaste}
           className="block max-h-48 w-full resize-none bg-transparent px-1 text-sm text-chat-foreground outline-none placeholder:text-chat-foreground-faint"
         />
+        {typing && agent && (
+          <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-chat-composer-border bg-background/40 px-2 py-1.5">
+            <label htmlFor="lead-model" className="shrink-0 text-xs text-chat-foreground">
+              {LEAD_NAME[agent]} 모델 id
+            </label>
+            <input
+              id="lead-model"
+              autoFocus
+              spellCheck={false}
+              autoComplete="off"
+              value={typing.draft}
+              placeholder="예: gpt-6.1-sol"
+              aria-invalid={typing.error ? true : undefined}
+              aria-describedby="lead-model-help"
+              onChange={(e) => setTyping({ draft: e.target.value })}
+              onKeyDown={(e) => {
+                // Enter applies the id here; it must not send the message.
+                if (e.key === "Enter") {
+                  e.preventDefault();
+                  finishTyping(true);
+                } else if (e.key === "Escape") {
+                  e.preventDefault();
+                  finishTyping(false);
+                }
+              }}
+              className="h-7 min-w-40 flex-1 rounded-md border bg-background px-2 font-mono text-xs text-chat-foreground outline-none placeholder:text-chat-foreground-faint focus-ring aria-invalid:border-destructive"
+            />
+            <button type="button" onClick={() => finishTyping(true)} className="h-7 rounded-md bg-primary px-2.5 text-xs font-medium text-primary-foreground hover:bg-primary/90 focus-ring">
+              적용
+            </button>
+            <button type="button" onClick={() => finishTyping(false)} className="h-7 rounded-md px-2 text-xs text-chat-foreground-faint hover:bg-accent hover:text-chat-foreground focus-ring">
+              취소
+            </button>
+            <p id="lead-model-help" className={`basis-full text-2xs ${typing.error ? "text-destructive" : "text-chat-foreground-faint"}`}>
+              {typing.error ?? "모델 목록을 불러오지 못해 id를 직접 받습니다. CLI가 모르는 모델이면 총괄이 오류로 답합니다."}
+            </p>
+          </div>
+        )}
         <div className="mt-1.5 flex items-center gap-1">
           <input
             ref={fileInput}
@@ -249,29 +341,39 @@ export function Composer({
             ]}
           />
           <div className="ml-auto flex min-w-0 items-center gap-1.5">
-            {agent ? (
+            {agent && effort ? (
               <ChoiceMenu
-                label={`총괄 에이전트와 노력 수준: ${LEAD_NAME[agent]} ${EFFORT_WORD[effort ?? ""] ?? ""}`}
+                label={`총괄 에이전트·모델·노력 수준: ${LEAD_NAME[agent]}, ${modelName ?? "기본 모델"}, ${EFFORT_WORD[effort] ?? effort}`}
                 align="right"
-                stayOpen={(group) => group === "에이전트"}
+                triggerRef={leadButton}
+                stayOpen={(group, value) => group === "에이전트" || (group === "모델" && value !== TYPE_MODEL)}
                 triggerClass="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-accent focus-ring disabled:opacity-50"
                 trigger={
                   <span className="min-w-0 truncate">
-                    <span className="font-medium text-chat-foreground">{LEAD_NAME[agent]}</span>{" "}
-                    <span className="text-chat-foreground-faint">{EFFORT_WORD[effort ?? ""]}</span>
+                    <span className="font-medium text-chat-foreground">{LEAD_NAME[agent]}</span>
+                    <span className="text-chat-foreground-faint">
+                      {modelName ? ` · ${modelName}` : ""} · {EFFORT_WORD[effort] ?? effort}
+                    </span>
                   </span>
                 }
                 groups={[
                   {
                     label: "에이전트",
                     value: agent,
-                    onChoose: (v) => isLeadProvider(v) && setPicked({ agent: v, effort: effortFor(v, effort) }),
-                    choices: usable.map((id) => ({ value: id, label: LEAD_NAME[id] })),
+                    onChoose: (v) => isLeadProvider(v) && setPicked({ agent: v, model: settings.leadModels[v] ?? "", effort: effortFor(v, effort) }),
+                    // Every agent that can lead is listed; one that cannot be used now says why.
+                    choices: LEAD_PROVIDERS.map((id) => ({ value: id, label: LEAD_NAME[id], disabled: !usable.includes(id), hint: usable.includes(id) ? undefined : why(id) })),
+                  },
+                  {
+                    label: "모델",
+                    value: model,
+                    onChoose: (v) => (v === TYPE_MODEL ? setTyping({ draft: model }) : setPicked({ agent, model: v, effort })),
+                    choices: modelChoices,
                   },
                   {
                     label: "노력 수준",
-                    value: effort ?? "",
-                    onChoose: (v) => setPicked({ agent, effort: v }),
+                    value: effort,
+                    onChoose: (v) => setPicked({ agent, model, effort: v }),
                     choices: LEAD_EFFORTS[agent].map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e })),
                   },
                 ]}

@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { ATTACH, LEAD_EFFORTS, attachProblem, effortFor, fileSize, leadItems, type LeadEvent } from "../src/core/lead.ts";
+import { ATTACH, LEAD_EFFORTS, MODEL_ID, attachProblem, effortFor, fileSize, leadItems, modelLabel, type LeadEvent } from "../src/core/lead.ts";
 
 const rust = (path: string) => readFileSync(new URL(`../crates/o-core/src/${path}`, import.meta.url), "utf8");
 /** The string list a Rust fn or const returns, e.g. `fn lead_efforts ... &["low", "medium"]`. */
@@ -14,9 +14,18 @@ const list = (text: string, after: string) => {
 test("the composer offers the efforts each lead CLI takes, as the O CLI checks them", () => {
   assert.deepEqual(LEAD_EFFORTS.claude, list(rust("providers/claude.rs"), "fn lead_efforts"));
   assert.deepEqual(LEAD_EFFORTS.codex, list(rust("providers/codex.rs"), "fn lead_efforts"));
-  // Antigravity cannot lead (no read-only mode O can rely on).
-  assert.ok(!rust("providers/agy.rs").includes("fn lead_efforts"));
-  assert.ok(!("agy" in LEAD_EFFORTS));
+  assert.deepEqual(LEAD_EFFORTS.agy, list(rust("providers/agy.rs"), "fn lead_efforts"));
+});
+
+test("a typed-in model id is checked by the same rule as a card's model", () => {
+  const source = /static MODEL: [^\n]*Regex::new\(r"([^"]+)"\)/.exec(rust("policy.rs"))?.[1];
+  // The same pattern; a JS character class needs no escape before its literal "[".
+  assert.equal(MODEL_ID.source, source?.replace("\\[\\]", "[\\]"));
+  for (const ok of ["opus", "gpt-6.1-sol", "claude-opus-5-5[1m]", "models/gemini:x"]) assert.ok(MODEL_ID.test(ok), ok);
+  for (const bad of ["", "-opus", ".x", "opus 5", "a;b", "x".repeat(81)]) assert.ok(!MODEL_ID.test(bad), bad);
+  assert.equal(modelLabel([{ id: "opus", label: "Opus" }], "opus"), "Opus");
+  assert.equal(modelLabel([], "my-model"), "my-model");
+  assert.equal(modelLabel([], undefined), undefined);
 });
 
 test("attachment limits match the O CLI's", () => {
