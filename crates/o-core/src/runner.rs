@@ -24,7 +24,7 @@ use crate::plan::{Card, Plan, ProviderId};
 use crate::policy::{check_plan, LIMITS};
 use crate::clean;
 use crate::proc;
-use crate::providers::{launch_spec, LaunchSpec, StreamReader, TeamChannel};
+use crate::providers::{launch_spec_with, LaunchSpec, StreamReader, TeamChannel};
 use crate::resolve::resolve_cli;
 use crate::store::{
     active_markers, append_event, clear_active, cooldown_times, is_clean, mark_active, policy_context, read_events, read_plan, record_start, run_dir,
@@ -59,6 +59,8 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
             .collect(),
     })?;
 
+    // What earlier work of the project each card gets (ADR-0005); empty with `--no-context`.
+    let contexts = Arc::new(crate::context::prepare(home, run_id, plan));
     let shared_plan = Arc::new(plan.clone());
     let mut pending: Vec<Card> = plan.cards.clone();
     let mut queued: HashSet<String> = HashSet::new();
@@ -127,8 +129,10 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, sp
             }
             let (home, run_id, plan, clean, spawner, done) =
                 (home.to_path_buf(), run_id.to_string(), Arc::clone(&shared_plan), clean.map(Path::to_path_buf), Arc::clone(&spawner), done_tx.clone());
+            let contexts = Arc::clone(&contexts);
             thread::spawn(move || {
-                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, clean.as_deref(), spawner.as_ref())))
+                let context = contexts.get(&card.id).map(String::as_str);
+                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, context, clean.as_deref(), spawner.as_ref())))
                     .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))));
                 let _ = done.send(outcome);
             });
@@ -189,12 +193,12 @@ fn append_bytes(path: &Path, bytes: &[u8]) {
     }
 }
 
-fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, clean: Option<&Path>, spawner: &Spawner) -> io::Result<CardStatus> {
+fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, context: Option<&str>, clean: Option<&Path>, spawner: &Spawner) -> io::Result<CardStatus> {
     let emit = |event: OEvent| append_event(home, run_id, &event);
     let dir = run_dir(home, run_id);
     let cards_dir = dir.join("cards");
     let dir_text = dir.to_string_lossy().into_owned();
-    let spec = launch_spec(card, plan, &TeamChannel { run_id, run_dir: &dir_text });
+    let spec = launch_spec_with(card, plan, &TeamChannel { run_id, run_dir: &dir_text }, context);
     let end = |status: CardStatus, result: Option<String>, exit_code: Option<i64>| OEvent::CardEnd {
         at: now_iso(),
         card_id: card.id.clone(),

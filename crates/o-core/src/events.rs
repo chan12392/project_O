@@ -120,6 +120,9 @@ pub enum OEvent {
         #[serde(serialize_with = "ser_num")]
         allowance: f64,
     },
+    /// Cards whose prompt got a shared context section (`context`), and its characters in all.
+    #[serde(rename = "run.context")]
+    RunContext { at: String, run_id: String, cards: usize, chars: usize, card_ids: Vec<String> },
 }
 
 impl OEvent {
@@ -140,6 +143,7 @@ impl OEvent {
             OEvent::RunEnd { .. } => "run.end",
             OEvent::ReviewPosted { .. } => "review.posted",
             OEvent::CardBudget { .. } => "card.budget",
+            OEvent::RunContext { .. } => "run.context",
         }
     }
 }

@@ -106,6 +106,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       continue;
     }
     if (e.t === "review.posted") continue;
+    if (e.t === "run.context") continue;
     const card = byId.get(e.cardId);
     if (!card) continue;
     switch (e.t) {

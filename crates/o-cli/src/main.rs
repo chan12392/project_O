@@ -19,12 +19,15 @@ use o_core::plan::ProviderId;
 use o_core::{clean, mirror, probe, proc, review, runner};
 use serde_json::{json, Value};
 
+mod context_cmd;
+
 const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬로 전달합니다.
 
   o check [plan.json|-]      정책 검사만 (실행 안 함)
-  o dispatch [--clean] [plan.json|-]
+  o dispatch [--clean] [--no-context] [plan.json|-]
                              정책 검사 후 백그라운드 실행, runId 출력
                              --clean: 카드를 깨끗한 에이전트 프로필로 실행 (o agents)
+                             --no-context: 이전 작업 컨텍스트를 카드에 넣지 않음 (토큰 A/B 기준선)
   o status [runId]           카드별 상태 (runId 없으면 최근 5개 실행)
   o events <runId> [--follow]  정규화된 이벤트(JSONL) — UI·총괄 에이전트용
   o stop <runId>             실행 중지
@@ -37,6 +40,12 @@ const USAGE: &str = "O CLI — 작업카드를 공식 에이전트 CLI에 병렬
                              --post: 끝나면 검토문을 PR 댓글로 게시 (승인·병합은 하지 않음)
                              --dry-run: 실행 없이 프롬프트 크기·고른 에이전트·정책 결과만 출력
                              --detach: 백그라운드로 시작하고 JSON 출력 (앱용)
+  o context <질문> [--project <폴더>] [--limit N] [--json]
+                             이전 작업 결과·팀 대화·메모에서 관련 내용 찾기 (카드도 읽기 전용으로 사용)
+  o context add [--project <폴더>] \"내용\"   프로젝트 컨텍스트에 메모 추가
+  o tokens [--project <폴더>] [--since 날짜] [--compare] [--json]
+                             카드별 토큰(새 입력·캐시·출력)과 모드별 평균
+                             --compare: 기본 하네스 vs 깨끗한 에이전트+세션 공유
   o usage [--json]           Codex·Antigravity 구독 한도를 각 CLI로 조회해 usage.json에 저장
   o usage --cached [--json]  조회하지 않고 저장된 usage.json만 출력
   o budget [--json] [--cached] [--percent 12|13|14]
@@ -73,8 +82,10 @@ fn run(args: &[String]) -> i32 {
     let first = rest.first().map(String::as_str);
     let has = |flag: &str| rest.iter().any(|a| a == flag);
     match command {
-        Some("check") => check(&home, plan_arg(rest), false, false),
-        Some("dispatch") => check(&home, plan_arg(rest), true, has("--clean")),
+        Some("check") => check(&home, plan_arg(rest), false, false, false),
+        Some("dispatch") => check(&home, plan_arg(rest), true, has("--clean"), has("--no-context")),
+        Some("context") => context_cmd::context_main(&home, rest),
+        Some("tokens") => context_cmd::tokens_main(&home, rest),
         Some("agents") => agents(rest),
         Some("about") => about(&home, has("--json")),
         Some("status") => match first {
@@ -124,12 +135,12 @@ fn read_input(path: Option<&str>) -> Result<Value, String> {
     Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
 }
 
-/// The plan file among `check`/`dispatch` arguments (`--clean` is a flag).
+/// The plan file among `check`/`dispatch` arguments (`--clean`, `--no-context` are flags).
 fn plan_arg(args: &[String]) -> Option<&str> {
-    args.iter().map(String::as_str).find(|a| *a != "--clean")
+    args.iter().map(String::as_str).find(|a| *a != "--clean" && *a != "--no-context")
 }
 
-fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool) -> i32 {
+fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool, no_context: bool) -> i32 {
     let input = match read_input(path) {
         Ok(input) => input,
         Err(error) => return fail(&error),
@@ -156,7 +167,10 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool) -> i32 {
         return 0;
     }
     let run_id = store::new_run_id(now);
-    if let Err(error) = store::create_run(home, &run_id, &plan).and_then(|()| if clean { store::mark_clean(home, &run_id) } else { Ok(()) }) {
+    let created = store::create_run(home, &run_id, &plan)
+        .and_then(|()| if clean { store::mark_clean(home, &run_id) } else { Ok(()) })
+        .and_then(|()| if no_context { o_core::context::mark_off(home, &run_id) } else { Ok(()) });
+    if let Err(error) = created {
         return fail(&error.to_string());
     }
     let started = std::env::current_exe().and_then(|exe| proc::spawn_detached(Command::new(exe).args(["_run", &run_id])));

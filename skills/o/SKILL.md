@@ -32,13 +32,17 @@ description: Split a multi-part request into work cards and hand them to agent C
 - `role`은 선택 사항인 사람용 이름표다("코딩", "검토" 등). 모델이나 권한과 아무 관계가 없다. 없으면 화면에 카드 id로 보인다.
 - 허용 필드는 `id, provider, task, role, model, effort`뿐이다. 실행 파일·인자·환경변수·계정은 넣을 수 없다.
 - `task`는 짧고 자족적으로 쓴다: 목표, 범위(파일·폴더), 완료 기준. 다른 카드와 주고받아야 할 것이 있으면 task에 적는다("끝나면 ui 카드에게 바꾼 파일을 알려 줄 것").
+- 이전 작업은 O가 카드마다 task와 관련된 조각만(최대 1,500자) 자동으로 넣는다. 그러니 task에 지난 결과를 길게 옮겨 적지 않는다. 계획 전에 `o context "<핵심어>"`로 이 프로젝트에서 이미 한 일을 확인하고, 다음 카드들이 꼭 알아야 할 결정은 `o context add "내용"`으로 남긴다.
 
 ## 2. 검사 후 전달
 
 ```sh
 o check plan.json      # 정책 검사만
 o dispatch plan.json   # 통과하면 백그라운드 병렬 실행, runId 출력
+o dispatch --clean plan.json   # 깨끗한 에이전트(하네스 없음) + 주입된 컨텍스트만으로 실행
 ```
+
+토큰은 `o tokens --compare`로 기본 하네스와 깨끗한+세션 공유를 비교한다(`docs/token-benchmark.md`).
 
 명령은 셸 도구로 **한 줄에 하나씩**, 계획 파일은 **절대 경로**로 실행한다(`cd ... &&`, `; echo $?` 같은 덧붙임 없이). 덧붙인 명령은 따로 승인을 요구해 흐름이 멈춘다. 성공·차단은 출력으로 판단한다: 통과는 `정책 통과`, 전달 성공은 runId JSON, 차단은 `차단됨`으로 시작한다.
 

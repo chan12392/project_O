@@ -103,6 +103,10 @@ export function liveRuns(): Plugin {
           }
           return void o(["review", pr, "--post", "--detach"], 120_000, project).then((out) => send(res, 200, out), error(res));
         }
+        if (req.method === "GET" && path === "/tokens") {
+          const project = query.get("project");
+          return void o(["tokens", "--json", ...(project ? ["--project", project] : [])]).then((out) => send(res, 200, out), error(res));
+        }
         const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
         if (action) {
           const [, id, verb] = action;

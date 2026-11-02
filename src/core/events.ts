@@ -41,7 +41,9 @@ export type OEvent =
    * The runner lowered a card's effort before launching it to keep its provider within today's
    * usage budget (ADR-0004). `spent` and `allowance` are percent points of the weekly window.
    */
-  | { t: "card.budget"; at: string; cardId: string; provider: ProviderId; effortFrom?: string; effortTo: string; spent: number; allowance: number };
+  | { t: "card.budget"; at: string; cardId: string; provider: ProviderId; effortFrom?: string; effortTo: string; spent: number; allowance: number }
+  /** Cards whose prompt got a shared context section (ADR-0005), and its characters in all. */
+  | { t: "run.context"; at: string; runId: string; cards: number; chars: number; cardIds: string[] };
 
 /** What a provider stream line means, before it gets a timestamp and card id. */
 export type StreamSignal =

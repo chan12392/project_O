@@ -21,6 +21,7 @@ fn main() {
             commands::open_external,
             commands::about,
             commands::review,
+            commands::tokens,
         ])
         .run(tauri::generate_context!())
         .expect("Project O 창을 열지 못했습니다");
