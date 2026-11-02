@@ -2,7 +2,8 @@
 name = "project-o"
 description = "project_O desktop app: the React screens on top of o-core, as one project_O.exe."
 edition.workspace = true
-version.workspace = true
+# The desktop app (and its installer) is versioned on its own; the crates follow the workspace.
+version = "0.3.0"
 publish.workspace = true
 
 [[bin]]
