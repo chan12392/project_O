@@ -24,7 +24,7 @@ use crate::run::plan::{Card, Plan, ProviderId};
 use crate::policy::{check_plan, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
-use crate::providers::{launch_spec_with, names_to_remove, LaunchSpec, StreamReader, TeamChannel};
+use crate::providers::{launch_spec_with, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
     active_markers, append_event, clear_active, cooldown_times, is_clean, mark_active, policy_context, read_events, read_plan, record_start, run_dir,
@@ -213,9 +213,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, context: Option
         if let Some(root) = clean {
             command.env_clear().envs(clean::environment(root, card.provider)?);
         }
-        for name in names_to_remove(&spec.env_remove, std::env::vars_os().map(|(k, _)| k)) {
-            command.env_remove(name);
-        }
+        remove_inherited(&mut command, &spec.env_remove);
         command.envs(&spec.env);
         proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
     });

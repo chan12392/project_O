@@ -125,6 +125,8 @@ fn app_server_windows() -> Result<Vec<UsageWindow>, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    // The windows of the ChatGPT sign-in cards use, not of a leftover API key.
+    super::without_api_keys(&mut command, ProviderId::Codex);
     let mut probe = Contained::spawn(&mut command).map_err(|e| e.to_string())?;
     let mut stdin = probe.child.stdin.take().ok_or("codex app-server stdin")?;
     let stdout = probe.child.stdout.take().ok_or("codex app-server stdout")?;

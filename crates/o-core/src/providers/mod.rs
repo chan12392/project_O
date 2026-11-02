@@ -19,6 +19,7 @@ use std::collections::BTreeMap;
 use std::ffi::OsString;
 use std::io;
 use std::path::Path;
+use std::process::Command;
 
 use serde_json::{Map, Value};
 
@@ -137,6 +138,19 @@ pub fn names_to_remove(remove: &[String], inherited: impl IntoIterator<Item = Os
         }
     }
     names
+}
+
+/// Takes `names` (in any inherited spelling) out of what `command` inherits.
+pub fn remove_inherited(command: &mut Command, names: &[String]) {
+    for name in names_to_remove(names, std::env::vars_os().map(|(k, _)| k)) {
+        command.env_remove(name);
+    }
+}
+
+/// Takes the provider's API key variables out of a command that runs its CLI
+/// with the person's own environment, so it sees the sign-in a card would.
+pub fn without_api_keys(command: &mut Command, provider: ProviderId) {
+    remove_inherited(command, &strings(get(provider).api_key_vars()));
 }
 
 pub struct TeamChannel<'a> {
