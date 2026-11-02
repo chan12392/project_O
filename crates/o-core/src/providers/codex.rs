@@ -62,28 +62,28 @@ impl Provider for Codex {
     /// resumes the session with `exec resume <id>`. Images go first (`-i` takes several
     /// values, so a flag must follow them), the prompt is read from stdin (`-`).
     fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
-        let images: Vec<String> = turn.images.iter().flat_map(|path| ["-i".to_string(), path.clone()]).collect();
-        let effort = turn.effort.filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
-        let mut tail = vec!["--json".to_string()];
-        tail.extend(opt("-m", turn.model));
-        tail.extend(opt("-c", effort.as_deref()));
         // A trusted project's `.codex/` may add hooks; `--disable hooks` (`-c features.hooks=false`,
         // `codex exec --help`) outranks every config layer, so none runs before a plan is approved.
-        let mut args = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
-        match turn.session.filter(|s| !s.is_empty()) {
-            Some(session) => {
-                args.push("resume".into());
-                args.extend(images);
-                args.extend(tail);
-                args.push(session.to_string());
-            }
-            None => {
-                args.extend(images);
-                args.extend(tail);
-            }
-        }
+        let head = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
+        Some(self.lead_with(head, turn))
+    }
+
+    /// No approvals and no sandbox. Codex has no flag that adds a hook for one run, so hooks
+    /// are left on as they are for cards: a trusted project's own `.codex/hooks.json` (O's
+    /// repositories run `o hook` there) still blocks protected-branch pushes and merges.
+    fn yolo_lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let head = strings(&["exec", "--dangerously-bypass-approvals-and-sandbox", "-C", turn.project, "--skip-git-repo-check"]);
+        Some(self.lead_with(head, turn))
+    }
+
+    /// Without a sandbox there is nothing to open for `o msg`, so the run folder is not added.
+    fn yolo_launch(&self, card: &Card, plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
+        let mut args = strings(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", &plan.project]);
+        args.extend(opt("-m", card.model.as_deref()));
+        let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
+        args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) })
     }
 
     /// `codex debug models` (in `codex --help`) prints the CLI's model catalog as JSON.
@@ -145,6 +145,33 @@ impl Provider for Codex {
 
     fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
         Some(app_server_windows())
+    }
+}
+
+impl Codex {
+    /// A lead turn after `head` (`exec` and its sandbox flags): a later turn resumes the session
+    /// with `exec resume <id>`. Images go first (`-i` takes several values, so a flag must follow
+    /// them), the prompt is read from stdin (`-`).
+    fn lead_with(&self, mut args: Vec<String>, turn: &LeadTurn) -> LaunchSpec {
+        let images: Vec<String> = turn.images.iter().flat_map(|path| ["-i".to_string(), path.clone()]).collect();
+        let effort = turn.effort.filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
+        let mut tail = vec!["--json".to_string()];
+        tail.extend(opt("-m", turn.model));
+        tail.extend(opt("-c", effort.as_deref()));
+        match turn.session.filter(|s| !s.is_empty()) {
+            Some(session) => {
+                args.push("resume".into());
+                args.extend(images);
+                args.extend(tail);
+                args.push(session.to_string());
+            }
+            None => {
+                args.extend(images);
+                args.extend(tail);
+            }
+        }
+        args.push("-".into());
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) }
     }
 }
 

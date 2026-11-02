@@ -7,7 +7,9 @@ use o_core::sys::js::iso_from_secs;
 use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::providers::agy::parse_agy_models;
 use o_core::providers::codex::parse_codex_models;
-use o_core::providers::{card_prompt, is_limit_text, launch_spec, names_to_remove, unwrap_shell, LaunchSpec, LeadTurn, ModelChoice, StreamReader, TeamChannel};
+use o_core::providers::{
+    card_prompt, is_limit_text, launch_spec, launch_spec_for, launch_spec_with, names_to_remove, unwrap_shell, LaunchSpec, LeadTurn, ModelChoice, StreamReader, TeamChannel,
+};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
 use serde_json::{json, Value};
@@ -325,11 +327,15 @@ fn every_lead_takes_the_model_it_is_given() {
     }
 }
 
+/// With YOLO off (the default, ADR-0014) the lead reads only; the YOLO-on launches are fixed
+/// separately below (`yolo_leads_*`).
 #[test]
 fn lead_launches_never_write_and_never_turn_approvals_off() {
     for provider in ProviderId::ALL {
         for session in [None, Some("s")] {
             let spec = lead_spec(provider, session, Some("high"), &[]).unwrap_or_else(|| panic!("{provider} cannot lead"));
+            let turn = LeadTurn { project: "C:/work/demo", prompt: "계획해 줘".into(), session, model: None, effort: Some("high"), files_dir: Some("C:/o-lead/t1"), images: &[] };
+            assert_eq!(o_core::providers::lead_spec(provider, &turn, false).as_ref(), Some(&spec), "{provider}: YOLO off is the read-only lead");
             let line = spec.args.join(" ");
             assert!(find_hits(&line, code_rules()).is_empty(), "{provider}: {line}");
             for word in ["acceptEdits", "accept-edits", "auto", "workspace-write", "danger-full-access", "Bash", "Edit", "Write", "NotebookEdit"] {
@@ -414,6 +420,90 @@ fn a_claude_limit_shows_in_its_error_text_too_but_one_limit_per_card_keeps_the_e
         [StreamSignal::Limit { until: "2026-11-01T09:40:00.000Z".into() }]
     );
     assert!(matches!(r.read(failed).as_slice(), [StreamSignal::Final { ok: false, .. }]));
+}
+
+// YOLO mode (ADR-0014). This file and the provider files are the only code that may spell
+// the CLIs' "never ask" flags (o_guard::rules BYPASS_PATHS).
+
+const GUARD_HOOK: &str = r#"{"hooks":{"PreToolUse":[{"matcher":"Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob","hooks":[{"type":"command","command":"o hook","timeout":10,"onFailure":"block"}]}]}}"#;
+const CLAUDE_DENY: [&str; 5] = ["Bash(o dispatch*)", "Bash(o lead*)", "Bash(o review*)", "Bash(o _run*)", "Bash(o _review*)"];
+const AGY_DENY: &str = r#"{"permissions":{"deny":["command(o dispatch*)","command(o lead*)","command(o review*)","command(o _run*)","command(o _review*)"]}}"#;
+
+fn yolo_specs(plan: &Plan, yolo: bool) -> Vec<LaunchSpec> {
+    plan.cards.iter().map(|c| launch_spec_for(c, plan, &TEAM, None, yolo)).collect()
+}
+
+#[test]
+fn yolo_off_launches_are_the_launches_cards_always_had() {
+    let p = plan();
+    assert_eq!(yolo_specs(&p, false), specs(&p));
+    assert_eq!(launch_spec_for(&p.cards[0], &p, &TEAM, Some("맥락"), false), launch_spec_with(&p.cards[0], &p, &TEAM, Some("맥락")));
+}
+
+#[test]
+fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
+    let p = plan();
+    let [codex, claude, agy] = <[LaunchSpec; 3]>::try_from(yolo_specs(&p, true)).unwrap();
+    let mut expected: Vec<&str> = vec!["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools"];
+    expected.extend(CLAUDE_DENY);
+    expected.extend(["--settings", GUARD_HOOK, "--effort", "high"]);
+    assert_eq!(claude.args, expected);
+    assert_eq!(
+        codex.args,
+        ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "C:/work/demo", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"]
+    );
+    let prompt = agy.args.last().unwrap().clone();
+    assert_eq!(
+        agy.args,
+        ["--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", "C:/o/runs/r1", "--settings", AGY_DENY, "--model", "gemini-3.8-flash-high", "-p", prompt.as_str()]
+    );
+    for spec in [&codex, &claude, &agy] {
+        // Same identity for `o msg`, same API keys taken out, the prompt says YOLO and what stays closed.
+        assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID"));
+        let text = spec.stdin.clone().unwrap_or_else(|| prompt.clone());
+        assert!(text.contains("YOLO 모드") && text.contains("o dispatch"), "{text}");
+        for flag in ["acceptEdits", "accept-edits", "workspace-write", "--allowedTools"] {
+            assert!(!has(&spec.args, flag), "{flag}");
+        }
+    }
+    assert_eq!(claude.env_remove, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
+    // The headless-shell warning of YOLO off is not in the YOLO prompt.
+    assert!(!claude.stdin.unwrap().contains("셸 명령은 승인할 사람이 없어"));
+}
+
+fn yolo_lead(provider: ProviderId, session: Option<&str>) -> LaunchSpec {
+    let turn = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session, model: None, effort: Some("low"), files_dir: Some("C:/o-lead/t1"), images: &[] };
+    o_core::providers::lead_spec(provider, &turn, true).unwrap()
+}
+
+#[test]
+fn yolo_leads_may_edit_and_run_commands_but_never_send_work() {
+    let mut expected: Vec<&str> = vec!["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools"];
+    expected.extend(CLAUDE_DENY);
+    expected.extend(["--strict-mcp-config", "--setting-sources", "user", "--settings", GUARD_HOOK, "--resume", "s-1", "--effort", "low", "--add-dir", "C:/o-lead/t1"]);
+    assert_eq!(yolo_lead(ProviderId::Claude, Some("s-1")).args, expected);
+
+    assert_eq!(
+        yolo_lead(ProviderId::Codex, None).args,
+        ["exec", "--dangerously-bypass-approvals-and-sandbox", "-C", "C:/work/demo", "--skip-git-repo-check", "--json", "-c", "model_reasoning_effort=low", "-"]
+    );
+    assert_eq!(
+        yolo_lead(ProviderId::Codex, Some("th-9")).args,
+        ["exec", "--dangerously-bypass-approvals-and-sandbox", "-C", "C:/work/demo", "--skip-git-repo-check", "resume", "--json", "-c", "model_reasoning_effort=low", "th-9", "-"]
+    );
+
+    let agy = yolo_lead(ProviderId::Agy, Some("c-1"));
+    assert_eq!(
+        agy.args,
+        ["--output-format", "stream-json", "--dangerously-skip-permissions", "--settings", AGY_DENY, "--conversation", "c-1", "--add-dir", "C:/o-lead/t1", "--effort", "low", "-p", "고쳐 줘"]
+    );
+    assert_eq!(agy.env.get("AGY_CLI_DISABLE_AUTO_UPDATE").map(String::as_str), Some("true"));
+    // Of the read-only lead's rules only the send-work block is left; no plan mode, no sandbox.
+    for gone in ["--mode", "--sandbox", "--tools", "disableAllHooks", "--disable"] {
+        for spec in [yolo_lead(ProviderId::Claude, None), yolo_lead(ProviderId::Codex, None), agy.clone()] {
+            assert!(!spec.args.iter().any(|a| a == gone || a.contains("disableAllHooks")), "{gone}: {:?}", spec.args);
+        }
+    }
 }
 
 #[test]

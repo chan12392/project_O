@@ -11,7 +11,7 @@ use std::time::Duration;
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, short, tool_summary};
-use super::{list_command, opt, outbox_path, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
+use super::{list_command, opt, outbox_path, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -96,6 +96,35 @@ impl Provider for Agy {
         Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
     }
 
+    /// Every tool call approved without asking (agy's skip-permissions flag, which outranks the
+    /// mode). The team commands need no allow rule then; the run folder stays added for the
+    /// outbox. The session's deny rules keep the commands that send work closed (whether agy
+    /// holds deny rules under this flag is not documented; `o` refuses them itself too).
+    fn yolo_launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
+        let mut args = strings(&["--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", team.run_dir, "--settings"]);
+        args.push(yolo_settings());
+        args.extend(opt("--model", card.model.as_deref()));
+        args.extend(opt("--effort", card.effort.as_deref()));
+        args.push("-p".into());
+        args.push(prompt);
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// The lead with every tool approved: no plan mode, no sandbox, and of the read-only deny
+    /// rules only the block on the commands that send work.
+    fn yolo_lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let mut args = strings(&["--output-format", "stream-json", "--dangerously-skip-permissions", "--settings"]);
+        args.push(yolo_settings());
+        args.extend(opt("--conversation", turn.session));
+        args.extend(opt("--add-dir", turn.files_dir));
+        args.extend(opt("--model", turn.model));
+        args.extend(opt("--effort", turn.effort));
+        args.push("-p".into());
+        args.push(turn.prompt.clone());
+        let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+    }
+
     /// `agy models` lists the models this sign-in may use, one `id<TAB>name` per line.
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
         list_command("agy", &["models"], ProviderId::Agy, &[NO_UPDATE]).map(|out| parse_agy_models(&out))
@@ -162,6 +191,12 @@ impl Provider for Agy {
     fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
         Some(usage_report())
     }
+}
+
+/// YOLO mode's session settings: deny the commands no agent may run (`AGENT_ONLY_COMMANDS`).
+fn yolo_settings() -> String {
+    let deny: Vec<String> = AGENT_ONLY_COMMANDS.iter().map(|c| format!("command({c}*)")).collect();
+    json!({ "permissions": { "deny": deny } }).to_string()
 }
 
 /// Print-mode /usage, within agy's own print timeout and a margin.
