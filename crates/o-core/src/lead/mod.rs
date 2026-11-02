@@ -5,7 +5,7 @@
 //! ```text
 //! leads/current.json                 project (normalized) → its current thread id
 //! leads/<threadId>/events.jsonl      the thread: lead.start · lead.user · lead.session · lead.reply
-//!                                    · lead.plan · lead.dispatch · lead.usage · lead.error
+//!                                    · lead.plan · lead.dispatch · lead.usage · lead.error · lead.seen
 //! leads/<threadId>/turn.raw.jsonl    the CLIs' stdout, for reading back a turn
 //! leads/<threadId>/turn.lock         held (OS lock) by the turn in progress, for as long as it runs
 //! leads/<threadId>/running.json      that turn's marker ({ provider, owner, token, child }); stop: its stop request
@@ -82,6 +82,10 @@ pub enum LeadEvent {
     Usage { at: String, provider: ProviderId, input: f64, cached: f64, output: f64 },
     #[serde(rename = "lead.error")]
     Error { at: String, text: String },
+    /// A CLI session got the turn whose `lead.user` is event `through` of the thread (as
+    /// [`read_thread`] counts): it has seen the thread up to that turn, its own answer included.
+    #[serde(rename = "lead.seen")]
+    Seen { at: String, provider: ProviderId, session_id: String, through: usize },
 }
 
 fn leads_dir(home: &Path) -> PathBuf {
@@ -358,6 +362,27 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent]) -> Vec<String> {
         .collect()
 }
 
+/// The messages a resumed session has not seen: those of every turn after the last one it
+/// got (`lead.seen`; a thread written before that event counts its last turn to this agent).
+fn missed_turns(events: &[LeadEvent], provider: ProviderId, session_id: &str) -> Vec<(String, String)> {
+    let seen = events.iter().rev().find_map(|e| match e {
+        LeadEvent::Seen { provider: p, session_id: s, through, .. } if *p == provider && s == session_id => Some(*through),
+        _ => None,
+    });
+    let seen = seen.or_else(|| events.iter().rposition(|e| matches!(e, LeadEvent::User { provider: p, .. } if *p == provider)));
+    let Some(seen) = seen else { return Vec::new() };
+    // Its own turn's answer follows its message; what it missed starts at the next message.
+    let Some(next) = events.iter().skip(seen + 1).position(|e| matches!(e, LeadEvent::User { .. })) else { return Vec::new() };
+    events[seen + 1 + next..]
+        .iter()
+        .filter_map(|e| match e {
+            LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
+            LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
+            _ => None,
+        })
+        .collect()
+}
+
 fn budget_lines(home: &Path) -> Vec<String> {
     budget::report_now(home).map(|r| r.providers.into_iter().map(|p| p.message).filter(|m| !m.is_empty()).collect()).unwrap_or_default()
 }
@@ -407,6 +432,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
             _ => None,
         })
         .collect();
+    let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
     let runs = dispatched_runs(home, &before);
     let budget = budget_lines(home);
     let text = prompt::build(&prompt::PromptInput {
@@ -417,6 +443,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         runs: &runs,
         resumed: session.is_some(),
         history: &history,
+        missed: &missed,
     });
     let files_dir = files::thread_files(home, &thread_id);
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
@@ -505,6 +532,8 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     });
 
     let mut reader = StreamReader::new(req.provider);
+    // The session this turn ran in: the resumed one, or the one the stream names.
+    let mut used_session = session.clone();
     let (mut input, mut cached, mut output) = (0.0, 0.0, 0.0);
     let mut used = false;
     let mut last_message = String::new();
@@ -529,8 +558,9 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
                 match signal {
                     StreamSignal::Session { session_id } => {
                         if session.as_deref() != Some(session_id.as_str()) {
-                            emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id })?;
+                            emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone() })?;
                         }
+                        used_session = Some(session_id);
                     }
                     StreamSignal::Message { text } => last_message = text,
                     StreamSignal::Usage { input: i, cached: c, output: o } => {
@@ -555,6 +585,10 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
+    // The CLI got this turn's message: its session has seen the thread through it.
+    if let Some(session_id) = used_session {
+        emit(LeadEvent::Seen { at: now_iso(), provider: req.provider, session_id, through: before.len() })?;
+    }
     if used {
         emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output })?;
     }

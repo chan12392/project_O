@@ -42,7 +42,7 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 19] = [
+    let tests: [(&str, fn()); 20] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -62,6 +62,7 @@ fn main() {
         ("a stop while the turn starts keeps the CLI from running and never ends the owner", stop_while_starting),
         ("a stop ends a running CLI; an orphaned one only when its start time matches", stop_running_and_orphans),
         ("a turn that outlasts its time limit is ended and says so", turn_time_limit),
+        ("back from another agent, a resumed session hears the turns it missed", round_trip),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -163,7 +164,7 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[] };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[], missed: &[] };
     let first = build(&input);
     for part in ["[O 총괄] 프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");
@@ -185,10 +186,11 @@ fn send_records_a_plan() {
             LeadEvent::Reply { .. } => "reply",
             LeadEvent::Plan { .. } => "plan",
             LeadEvent::Error { .. } => "error",
+            LeadEvent::Seen { .. } => "seen",
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["user", "session", "usage", "reply", "plan"]);
+    assert_eq!(kinds, ["user", "session", "seen", "usage", "reply", "plan"]);
     let spec = &seen.lock().unwrap()[0];
     assert!(spec.stdin.as_deref().unwrap().contains("README에 한 줄 추가"));
     assert!(!spec.args.contains(&"--resume".to_string()));
@@ -201,7 +203,7 @@ fn send_records_a_plan() {
     }
     // Saved, and counted as planning overhead.
     let thread = lead::current_thread(&home, &project).unwrap();
-    assert_eq!(lead::read_thread(&home, &thread).len(), 6);
+    assert_eq!(lead::read_thread(&home, &thread).len(), 7);
     assert_eq!(lead::tokens(&home, Some(&project), None).total, 135);
     // Its CLI session is the lead's, not separate work for `o runs --sessions`.
     assert_eq!(lead::session_ids(&home), ["sess-1"]);
@@ -739,4 +741,28 @@ fn turn_time_limit() {
     assert!(!lines.iter().any(|l| l.starts_with("reply")), "{lines:?}");
     assert!(!is_busy(&home, &project));
     assert_eq!(lead::TURN_LIMIT, std::time::Duration::from_secs(15 * 60));
+}
+/// Claude → Codex → Claude: the resumed Claude session never saw the Codex turns, so its
+/// prompt carries them (here a constraint the person gave Codex); turns it saw are not repeated.
+fn round_trip() {
+    let (home, project) = setup("round-trip");
+    let (claude, seen) = fake(claude_answer("sess-r", "어느 파일인가요?"));
+    lead::send(&home, &request(&project, "README 고쳐 줘"), claude.as_ref()).unwrap();
+    let (codex, _) = fake(vec![
+        json!({ "type": "thread.started", "thread_id": "th-r" }).to_string(),
+        json!({ "type": "item.completed", "item": { "type": "agent_message", "text": "알겠습니다. main 브랜치는 건드리지 않겠습니다" } }).to_string(),
+        json!({ "type": "turn.completed", "usage": {} }).to_string(),
+    ]);
+    lead::send(&home, &SendRequest { provider: ProviderId::Codex, ..request(&project, "main 브랜치는 절대 건드리지 마") }, codex.as_ref()).unwrap();
+    lead::send(&home, &request(&project, "이제 계획 세워 줘"), claude.as_ref()).unwrap();
+    let specs = seen.lock().unwrap().clone();
+    assert_eq!(arg_after(&specs[1].args, "--resume"), Some("sess-r"));
+    let prompt = specs[1].stdin.clone().unwrap();
+    assert!(prompt.contains("main 브랜치는 절대 건드리지 마"), "{prompt}");
+    assert!(prompt.contains("main 브랜치는 건드리지 않겠습니다"), "{prompt}");
+    assert!(!prompt.contains("README 고쳐 줘"), "a turn the session saw is sent again: {prompt}");
+    // Once it has heard them, the next resumed turn does not repeat them.
+    lead::send(&home, &request(&project, "좋아"), claude.as_ref()).unwrap();
+    let prompt = seen.lock().unwrap()[2].stdin.clone().unwrap();
+    assert!(!prompt.contains("main 브랜치는 절대"), "{prompt}");
 }

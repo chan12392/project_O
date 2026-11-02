@@ -35,7 +35,9 @@ export type LeadEvent =
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
-  | { t: "lead.error"; at: string; text: string };
+  | { t: "lead.error"; at: string; text: string }
+  /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
+  | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number };
 
 /** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
 export interface LeadShow {
@@ -80,7 +82,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         items.push({ kind: "error", at: e.at, text: e.text });
         break;
       default:
-        // lead.start, lead.session, lead.usage and kinds this build does not know draw nothing.
+        // lead.start, lead.session, lead.usage, lead.seen and kinds this build does not know draw nothing.
         break;
     }
   }
