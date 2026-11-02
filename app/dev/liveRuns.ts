@@ -79,6 +79,10 @@ export function liveRuns(): Plugin {
         const clean = new URLSearchParams(req.url?.split("?")[1] ?? "").get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "GET" && path === "/tokens") {
+          const project = new URLSearchParams(req.url?.split("?")[1] ?? "").get("project");
+          return void o(["tokens", "--json", ...(project ? ["--project", project] : [])]).then((out) => send(res, 200, out), error(res));
+        }
         const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
         if (action) {
           const [, id, verb] = action;

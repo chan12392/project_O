@@ -5,6 +5,7 @@ import { activity, fleetStats, type ActivityItem, type NextItem } from "../../..
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
 import { PROVIDER_SHORT, STATE_WORD, clip, compact, timeOf } from "../format.ts";
 import { NextTicket } from "./NextUp.tsx";
+import { TokenCard } from "./TokenCard.tsx";
 import { timeScale } from "../timeScale.ts";
 import { age } from "./Ticket.tsx";
 
@@ -73,6 +74,7 @@ export function WorkDashboard({ runs, todo, stopped, now, onOpen, onToggle, onNe
         </div>
       </div>
 
+      <TokenCard project={runs[0]?.project} />
       <WorkFlow runs={runs} now={now} onCard={onCard} />
       <Activity items={activity(runs, 10)} now={now} onCard={onCard} />
     </div>

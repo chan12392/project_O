@@ -31,6 +31,32 @@ export interface ActionResult {
   log?: string;
 }
 
+/** Tokens as the CLIs report them: fresh input (cache writes included), cached input, output. */
+export interface TokenCounts {
+  input: number;
+  cached: number;
+  output: number;
+  total: number;
+}
+
+/** One way of running cards (`o tokens --json`): the default harness or clean agents, with or without shared context. */
+export interface TokenGroup {
+  key: "normal" | "normal+context" | "clean" | "clean+context";
+  label: string;
+  clean: boolean;
+  context: boolean;
+  runs: number;
+  cards: number;
+  tokens: TokenCounts;
+  perCard: TokenCounts;
+  byProvider: { provider: AgentId; cards: number; perCard: TokenCounts }[];
+}
+
+export interface TokenReport {
+  groups: TokenGroup[];
+  compare: { baseline: TokenGroup | null; shared: TokenGroup | null };
+}
+
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
@@ -43,6 +69,8 @@ export interface Backend {
   openExternal(url: string): Promise<void>;
   /** App version and where O keeps its state, for Settings → About. */
   about(): Promise<{ version: string; home: string; agentsHome: string }>;
+  /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
+  tokens(project?: string): Promise<TokenReport>;
 }
 
 declare global {
@@ -59,6 +87,7 @@ function tauriBackend(invoke: (cmd: string, args?: Record<string, unknown>) => P
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
     openExternal: (url) => invoke("open_external", { url }) as Promise<void>,
     about: () => invoke("about") as Promise<{ version: string; home: string; agentsHome: string }>,
+    tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
   };
 }
 
@@ -74,7 +103,23 @@ const devBackend: Backend = {
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: () => fetch("/api/about").then((r) => json<{ version: string; home: string; agentsHome: string }>(r)),
+  tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),
 };
+
+const demoTokens = (input: number, cached: number, output: number): TokenCounts => ({ input, cached, output, total: input + cached + output });
+const demoGroup = (key: TokenGroup["key"], label: string, runs: number, cards: number, perCard: TokenCounts): TokenGroup => ({
+  key,
+  label,
+  clean: key.startsWith("clean"),
+  context: key.endsWith("context"),
+  runs,
+  cards,
+  tokens: demoTokens(perCard.input * cards, perCard.cached * cards, perCard.output * cards),
+  perCard,
+  byProvider: [{ provider: "codex", cards, perCard }],
+});
+const DEMO_BASELINE = demoGroup("normal", "기본 하네스", 3, 9, demoTokens(18_400, 41_200, 3_100));
+const DEMO_SHARED = demoGroup("clean+context", "깨끗한+세션 공유", 3, 9, demoTokens(6_900, 12_800, 2_700));
 
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 const demoBackend: Backend = {
@@ -88,6 +133,7 @@ const demoBackend: Backend = {
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: async () => ({ version: "preview", home: "", agentsHome: "" }),
+  tokens: async () => ({ groups: [DEMO_BASELINE, DEMO_SHARED], compare: { baseline: DEMO_BASELINE, shared: DEMO_SHARED } }),
 };
 
 /** The desktop app when Tauri is present, the dev server's /api otherwise; `demo` forces the recorded preview. */
