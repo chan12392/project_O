@@ -10,7 +10,7 @@ import { fileURLToPath } from "node:url";
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const exe = process.platform === "win32" ? ".exe" : "";
 
-execFileSync("cargo", ["build", "--release", "-p", "o-cli"], { cwd: root, stdio: "inherit" });
+execFileSync("cargo", ["build", "--release", "-p", "o-cli"], { cwd: root, stdio: "inherit", windowsHide: true });
 
 const host = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (\S+)$/m)?.[1];
 if (!host) throw new Error("rustc -vV did not report a host target triple");

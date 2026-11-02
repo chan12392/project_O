@@ -68,12 +68,14 @@ pub fn set_budget_percent(home: &Path, percent: &Value) -> Result<String, String
 #[serde(rename_all = "camelCase")]
 pub struct About {
     pub version: String,
+    pub commit: String,
+    pub built_at: String,
     pub home: String,
     pub agents_home: String,
 }
 
 pub fn about_info(home: &Path, agents_home: &Path) -> About {
-    About { version: env!("CARGO_PKG_VERSION").into(), home: home.to_string_lossy().into_owned(), agents_home: agents_home.to_string_lossy().into_owned() }
+    About { version: env!("CARGO_PKG_VERSION").into(), commit: crate::update::BUILD_SHA.into(), built_at: crate::update::BUILD_TIME.into(), home: home.to_string_lossy().into_owned(), agents_home: agents_home.to_string_lossy().into_owned() }
 }
 
 /// Runs with every event, newest first, as JSON text (the shape `o runs --json` prints);

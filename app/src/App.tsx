@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { nextUp, type NextItem } from "../../src/core/attention.ts";
 import type { RunView } from "../../src/core/snapshot.ts";
 import { backend } from "./backend.ts";
+import { UpdatePrompt } from "./UpdatePrompt.tsx";
 import { AccountMenu, SETTINGS_BUTTON_ID } from "./components/AccountMenu.tsx";
 import { AllNextUp } from "./components/AllNextUp.tsx";
 import { useHandled } from "./components/NextUp.tsx";
@@ -159,6 +160,7 @@ function MainWindow() {
 
   return (
     <div className="grid h-full grid-cols-[16rem_minmax(0,1fr)] grid-rows-[minmax(0,1fr)_auto] max-md:grid-cols-[minmax(0,1fr)]">
+      <UpdatePrompt api={api} />
       {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
       {screen === "settings" && (
         <Settings api={api} section={section} source={source} onSection={setSection} onBack={closeSettings} onOnboarding={() => setScreen("onboarding")} />

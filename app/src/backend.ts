@@ -4,6 +4,8 @@
  * desktop app (project_O.exe) these are Tauri commands; under the dev server they are
  * /api routes (app/dev/liveRuns.ts); in the recorded demo they are a fixed answer.
  */
+import { DESKTOP_UPDATES_ONLY, type About, type UpdateCheck, type UpdateRelease } from "./updates.ts";
+
 export type AgentId = "claude" | "codex" | "agy";
 
 export interface AgentStatus {
@@ -122,7 +124,11 @@ export interface Backend {
   /** Opens a web page in the person's browser. */
   openExternal(url: string): Promise<void>;
   /** App version and where O keeps its state, for Settings → About. */
-  about(): Promise<{ version: string; home: string; agentsHome: string }>;
+  about(): Promise<About>;
+  checkUpdate(): Promise<UpdateCheck>;
+  pendingUpdate(): Promise<UpdateRelease | null>;
+  installUpdate(tag: string): Promise<void>;
+  cancelUpdate(): Promise<void>;
   /**
    * Asks an agent to review a PR of the project folder and comment the review on it
    * (`o review <pr> --post` there). It never approves or merges. Rejects with the
@@ -150,7 +156,11 @@ function tauriBackend(invoke: (cmd: string, args?: Record<string, unknown>) => P
     install: (id) => invoke("agent_install", { id }) as Promise<ActionResult>,
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
     openExternal: (url) => invoke("open_external", { url }) as Promise<void>,
-    about: () => invoke("about") as Promise<{ version: string; home: string; agentsHome: string }>,
+    about: () => invoke("about") as Promise<About>,
+    checkUpdate: () => invoke("update_check") as Promise<UpdateCheck>,
+    pendingUpdate: () => invoke("update_pending") as Promise<UpdateRelease | null>,
+    installUpdate: (tag) => invoke("update_install", { tag }) as Promise<void>,
+    cancelUpdate: () => invoke("update_cancel") as Promise<void>,
     review: (project, pr, clean) => invoke("review", { project, pr, clean }) as Promise<ReviewStarted>,
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
@@ -169,7 +179,11 @@ const devBackend: Backend = {
   install: (id) => fetch(`/api/agents/${id}/install`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
-  about: () => fetch("/api/about").then((r) => json<{ version: string; home: string; agentsHome: string }>(r)),
+  about: () => fetch("/api/about").then((r) => json<About>(r)),
+  checkUpdate: () => fetch("/api/updates").then((r) => json<UpdateCheck>(r)),
+  pendingUpdate: async () => null,
+  installUpdate: async () => { throw new Error(DESKTOP_UPDATES_ONLY); },
+  cancelUpdate: async () => {},
   review: async (project, pr, clean) => {
     const res = await fetch(`/api/review?${new URLSearchParams({ project, pr, clean: clean ? "1" : "0" })}`, { method: "POST" });
     const body = (await res.json().catch(() => undefined)) as (ReviewStarted & { error?: string }) | undefined;
@@ -244,7 +258,11 @@ const demoBackend: Backend = {
   install: async () => ({ ok: false, message: "미리보기에서는 설치하지 않습니다" }),
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
-  about: async () => ({ version: "preview", home: "", agentsHome: "" }),
+  about: async () => ({ version: "preview", home: "", agentsHome: "", commit: "", builtAt: "" }),
+  checkUpdate: async () => ({ release: null, message: DESKTOP_UPDATES_ONLY }),
+  pendingUpdate: async () => null,
+  installUpdate: async () => { throw new Error(DESKTOP_UPDATES_ONLY); },
+  cancelUpdate: async () => {},
   review: async () => ({ ok: false, message: "미리보기에서는 검토를 요청하지 않습니다" }),
   budget: async () => demoBudget(demoPercent),
   setBudgetPercent: async (percent) => demoBudget((demoPercent = percent)),

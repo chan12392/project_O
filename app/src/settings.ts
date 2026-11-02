@@ -24,6 +24,7 @@ export interface Settings {
   notify: boolean;
   /** Show this PC's Claude Code sessions as runs; unset follows the source (see `sessionsShown`). */
   sessions?: boolean;
+  skippedUpdate?: string;
 }
 
 const KEY = "project-o.settings";
@@ -51,6 +52,7 @@ function load(): Settings {
       clean: typeof s.clean === "boolean" ? s.clean : DEFAULTS.clean,
       notify: typeof s.notify === "boolean" ? s.notify : DEFAULTS.notify,
       sessions: typeof s.sessions === "boolean" ? s.sessions : undefined,
+      skippedUpdate: typeof s.skippedUpdate === "string" ? s.skippedUpdate : undefined,
     };
   });
 }
