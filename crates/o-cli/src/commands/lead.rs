@@ -168,12 +168,12 @@ fn new(home: &Path, args: &[String]) -> i32 {
         Err(e) => return fail(&e),
     };
     let Some(project) = a.project.as_deref() else { return fail("--project <폴더>가 필요합니다") };
-    match lead::new_thread(home, project) {
+    match lead::start(home, project) {
         Ok(thread) => {
             println!("{}", json!({ "threadId": thread, "project": project }));
             0
         }
-        Err(e) => fail(&e.to_string()),
+        Err(e) => fail(&e),
     }
 }
 
@@ -185,9 +185,9 @@ fn attach(home: &Path, args: &[String]) -> i32 {
     let (Some(project), Some(name), [file]) = (a.project.as_deref(), a.name.as_deref(), a.words.as_slice()) else {
         return fail("o lead attach --project <폴더> --name <이름> <파일|->");
     };
-    let thread = match lead::thread_for(home, project, false) {
+    let thread = match lead::check_folder(home, project).and_then(|()| lead::thread_for(home, project, false).map_err(|e| e.to_string())) {
         Ok(thread) => thread,
-        Err(e) => return fail(&e.to_string()),
+        Err(e) => return fail(&e),
     };
     let saved = if file == "-" {
         stdin_bytes().and_then(|bytes| {

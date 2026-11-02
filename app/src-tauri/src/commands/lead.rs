@@ -34,7 +34,7 @@ pub async fn lead_show(project: Option<String>) -> Result<Value, String> {
 pub async fn lead_new(project: String) -> Result<Value, String> {
     project_arg(&project)?;
     blocking(move || {
-        let thread = lead::new_thread(&store::default_home(), &project).map_err(|e| e.to_string())?;
+        let thread = lead::start(&store::default_home(), &project)?;
         Ok(json!({ "threadId": thread, "project": project }))
     })
     .await?
@@ -75,6 +75,7 @@ pub async fn lead_attach(request: tauri::ipc::Request<'_>) -> Result<Value, Stri
     let bytes = bytes.clone();
     blocking(move || {
         let home = store::default_home();
+        lead::check_folder(&home, &project)?;
         let thread = lead::thread_for(&home, &project, false).map_err(|e| e.to_string())?;
         files::save(&home, &thread, &name, &bytes).map(|a| json!(a))
     })

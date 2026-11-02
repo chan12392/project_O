@@ -19,12 +19,15 @@ const FAKE: &str = "O_FAKE_LEAD_LINES";
 fn main() {
     if let Ok(lines) = std::env::var(FAKE) {
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
+        // "{keys}" in a line becomes the API key variables this process inherited.
+        let watched = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY"];
+        let keys: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| watched.iter().any(|n| n.eq_ignore_ascii_case(k))).collect();
         for line in lines {
-            println!("{line}");
+            println!("{}", line.replace("{keys}", &keys.join(",")));
         }
         return;
     }
-    let tests: [(&str, fn()); 11] = [
+    let tests: [(&str, fn()); 12] = [
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -36,6 +39,7 @@ fn main() {
         ("attachments: type, size, name and link refusals", attachments),
         ("a second message while the lead answers is refused", busy),
         ("bad requests start nothing", refused_requests),
+        ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -338,4 +342,41 @@ fn refused_requests() {
     let user_home = o_core::run::store::user_home();
     assert!(lead::send(&home, &request(&user_home.to_string_lossy(), "a"), spawner.as_ref()).is_err());
     assert!(seen.lock().unwrap().is_empty());
+    // "새 대화" on a folder that may not have a lead starts nothing.
+    assert!(lead::start(&home, &home_text).is_err());
+    assert!(lead::start(&home, &user_home.to_string_lossy()).is_err());
+    assert!(lead::start(&home, &project).is_ok());
+}
+
+fn api_keys_removed() {
+    let (home, project) = setup("keys");
+    // Tests here run one after another on this thread, so changing this process's variables is safe.
+    let planted = ["anthropic_api_key", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY"];
+    for name in planted {
+        std::env::set_var(name, "planted");
+    }
+    let reply = |provider: ProviderId, lines: Vec<String>| {
+        let (spawner, _) = fake(lines);
+        let req = SendRequest { provider, effort: None, ..request(&project, "키?") };
+        let events = lead::send(&home, &req, spawner.as_ref()).unwrap();
+        events.iter().find_map(|e| match e {
+            LeadEvent::Reply { text, .. } => Some(text.clone()),
+            _ => None,
+        })
+    };
+    let claude = reply(ProviderId::Claude, claude_answer("s", "keys:{keys}"));
+    let codex = reply(
+        ProviderId::Codex,
+        vec![
+            json!({ "type": "item.completed", "item": { "type": "agent_message", "text": "keys:{keys}" } }).to_string(),
+            json!({ "type": "turn.completed", "usage": {} }).to_string(),
+        ],
+    );
+    for name in planted {
+        std::env::remove_var(name);
+    }
+    // Each CLI loses its own keys (any spelling) and keeps the other's, which it never reads.
+    assert_eq!(claude.as_deref(), Some("keys:CODEX_API_KEY"));
+    let codex = codex.unwrap();
+    assert!(codex.contains("anthropic_api_key") && codex.contains("ANTHROPIC_AUTH_TOKEN") && !codex.contains("CODEX_API_KEY"), "{codex}");
 }

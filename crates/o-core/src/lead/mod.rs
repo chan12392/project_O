@@ -248,13 +248,23 @@ pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
     if req.attach.len() > files::MAX_PER_MESSAGE {
         return Err(format!("첨부는 메시지당 {}개까지입니다", files::MAX_PER_MESSAGE));
     }
-    // The lead reads its project: the same folders a card may not work in are refused here.
+    check_folder(home, req.project)
+}
+
+/// Whether a folder may have a lead: the lead reads its project, so the folders a card
+/// may not work in (O's state folder, the home folder itself, mirrors) are refused.
+pub fn check_folder(home: &Path, project: &str) -> Result<(), String> {
     let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
-    let violations = check_project(Some(req.project), &ctx);
-    if let Some(v) = violations.first() {
-        return Err(v.message.clone());
+    match check_project(Some(project), &ctx).first() {
+        Some(v) => Err(v.message.clone()),
+        None => Ok(()),
     }
-    Ok(())
+}
+
+/// "새 대화" or a first folder: a new thread for a folder that may have a lead.
+pub fn start(home: &Path, project: &str) -> Result<String, String> {
+    check_folder(home, project)?;
+    new_thread(home, project).map_err(|e| e.to_string())
 }
 
 /// How each run the thread dispatched is doing, oldest first.
@@ -344,6 +354,11 @@ pub fn send(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<Lea
     let spawned = spawner(&spec, req.project).and_then(|mut command| {
         if let Some(root) = req.clean {
             command.env_clear().envs(clean::environment(root, req.provider)?);
+        }
+        // An inherited API key would bill the API instead of the subscription the CLI signed in with.
+        let keys: Vec<String> = providers::api_key_vars(req.provider).iter().map(|k| k.to_string()).collect();
+        for name in providers::names_to_remove(&keys, std::env::vars_os().map(|(k, _)| k)) {
+            command.env_remove(name);
         }
         command.envs(&spec.env);
         proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
