@@ -294,6 +294,28 @@ fn earlier_work_is_fenced_as_reference_data_and_the_whole_section_is_capped() {
 }
 
 #[test]
+fn the_section_carries_the_part_that_matched_even_far_into_a_long_entry() {
+    let home = temp_home();
+    // The constraint sits ~900 characters in, past one entry's 600-character share.
+    let long = format!("{} 마이그레이션은 반드시 롤백 스크립트와 함께 배포한다. {}", "앞부분 설명 문장입니다. ".repeat(65), "뒷부분 정리 문장입니다. ".repeat(40));
+    assert!(long.find("롤백").unwrap() > 600 * 3);
+    append(&home, "r1", &[start("r1", "2026-11-01T10:00:00.000Z", "C:/work/game", &[("db", "codex")]), end("db", "done", &long)]);
+    let hits = search(&home, "롤백 스크립트", Some("C:/work/game"));
+    assert_eq!(ids(&hits), ["r1/db"]);
+    for provider in [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy] {
+        let section = context::section(&hits, provider).unwrap();
+        assert!(section.chars().count() <= INJECT_CHARS);
+        let entry = section.lines().find(|l| l.starts_with("- [")).unwrap();
+        assert!(entry.contains("롤백 스크립트와 함께 배포한다"), "{provider}: {entry}");
+        assert!(entry.chars().count() <= 600 + 80, "{provider}: still one entry's share");
+    }
+    // A short entry is passed whole.
+    let short = hit("r2", "짧은 결과입니다.");
+    let section = context::section(&[short], ProviderId::Codex).unwrap();
+    assert!(section.contains("- [결과 · r2/art · ") && section.contains("] 짧은 결과입니다."));
+}
+
+#[test]
 fn each_cli_may_run_o_context_only_where_its_rules_allow() {
     let p = plan("C:/work/game", vec![card("c", ProviderId::Claude, "t"), card("x", ProviderId::Codex, "t"), card("g", ProviderId::Agy, "t")]);
     let specs: Vec<_> = p.cards.iter().map(|c| launch_spec(c, &p, &TEAM)).collect();
