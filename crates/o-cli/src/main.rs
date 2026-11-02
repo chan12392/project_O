@@ -222,7 +222,7 @@ fn agents(args: &[String]) -> i32 {
         }
         "login" => {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
-            match clean::login_args(provider) {
+            match o_core::providers::get(provider).login_args() {
                 Some(args) => attached(clean::command(&root, provider, args)),
                 None => {
                     println!("Antigravity는 이 PC의 시스템 로그인(OS 자격 증명 저장소)을 그대로 씁니다. 따로 로그인하지 않습니다.");

@@ -1,13 +1,15 @@
 //! Process plumbing: hidden windows, detached runners, kill-on-close job
-//! objects, liveness checks and tree kills. Windows first; elsewhere the
-//! nearest equivalent.
+//! objects, short captured commands, liveness checks and tree kills. Windows
+//! first; elsewhere the nearest equivalent.
 
 use std::collections::BTreeMap;
 #[cfg(windows)]
 use std::ffi::OsStr;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, ExitStatus, Stdio};
+use std::thread;
+use std::time::{Duration, Instant};
 
 #[cfg(windows)]
 mod win {
@@ -93,6 +95,60 @@ pub fn contain(child: &Child) -> Option<KillOnClose> {
 #[cfg(not(windows))]
 pub fn contain(_child: &Child) -> Option<KillOnClose> {
     None
+}
+
+/// A short-lived child with no window whose process tree is stopped however
+/// the caller lets go of it (usage probes, status checks, installs).
+pub struct Contained {
+    pub child: Child,
+    _tree: Option<KillOnClose>,
+}
+
+impl Contained {
+    pub fn spawn(command: &mut Command) -> io::Result<Contained> {
+        let child = hide_window(command).spawn()?;
+        let tree = contain(&child);
+        Ok(Contained { child, _tree: tree })
+    }
+}
+
+impl Drop for Contained {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+/// Runs a short, non-interactive command with no window and a deadline, and
+/// returns its exit status, stdout and stderr. A command still running at the
+/// deadline is ended with its tree.
+pub fn capture(command: &mut Command, timeout: Duration) -> Result<(ExitStatus, String, String), String> {
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut probe = Contained::spawn(command).map_err(|e| format!("실행 실패: {e}"))?;
+    let drain = |pipe: Option<Box<dyn Read + Send>>| {
+        thread::spawn(move || {
+            let mut out = Vec::new();
+            if let Some(mut pipe) = pipe {
+                let _ = pipe.read_to_end(&mut out);
+            }
+            String::from_utf8_lossy(&out).into_owned()
+        })
+    };
+    let stdout = drain(probe.child.stdout.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+    let stderr = drain(probe.child.stderr.take().map(|p| Box::new(p) as Box<dyn Read + Send>));
+
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match probe.child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Ok(None) => return Err("실패 (시간 초과)".into()),
+            Err(e) => return Err(format!("실행 실패: {e}")),
+        }
+    };
+    // Ends anything the command left behind holding the pipes open.
+    drop(probe);
+    Ok((status, stdout.join().unwrap_or_default(), stderr.join().unwrap_or_default()))
 }
 
 /// Whether a process with this id is running (one we may not open still counts).

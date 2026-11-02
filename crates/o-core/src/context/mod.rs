@@ -32,11 +32,12 @@ use rusqlite::{params, Connection, OpenFlags, OptionalExtension, TransactionBeha
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::providers;
 use crate::run::events::OEvent;
 use crate::run::index::{self, sql};
-use crate::sys::js::{now_iso, parse_time, squash_spaces};
 use crate::run::plan::{card_label, Plan, ProviderId};
 use crate::run::store::{append_event, run_dir};
+use crate::sys::js::{now_iso, parse_time, squash_spaces};
 
 /// The most characters of earlier work a card prompt carries: the whole section, header and hint included.
 pub const INJECT_CHARS: usize = 1_500;
@@ -452,8 +453,8 @@ const CONTEXT_NOTE: &str = "아래 두 표식 사이는 이전 카드가 남긴 
 /// data" fence, and for CLIs that may run `o context` a line on how to ask for more.
 /// `None` without entries.
 pub fn section(hits: &[Hit], provider: ProviderId) -> Option<String> {
-    // Antigravity may run fixed commands only, so it gets this section and nothing more.
-    let hint = (provider != ProviderId::Agy).then(|| format!("더 필요하면 셸에서 {CONTEXT_COMMAND} \"<질문>\" 으로 이전 작업을 찾아볼 수 있습니다."));
+    // A CLI that may run fixed commands only (Antigravity) gets this section and nothing more.
+    let hint = providers::get(provider).searches_context().then(|| format!("더 필요하면 셸에서 {CONTEXT_COMMAND} \"<질문>\" 으로 이전 작업을 찾아볼 수 있습니다."));
     let fixed: usize = [SECTION_HEADER, CONTEXT_NOTE, CONTEXT_BEGIN, CONTEXT_END].iter().map(|l| l.chars().count() + 1).sum::<usize>()
         + hint.as_ref().map_or(0, |h| h.chars().count() + 1);
     let mut entries: Vec<String> = Vec::new();

@@ -13,14 +13,14 @@ use std::time::Duration;
 
 use serde::Serialize;
 
-use clean::LoginState;
+use crate::providers;
 use crate::run::plan::ProviderId;
-use crate::usage::probe;
+use crate::run::store::user_home;
 use crate::sys::proc;
 use crate::sys::resolve::{resolve_cli, which, CliCommand};
-use crate::run::store::user_home;
+use clean::LoginState;
 
-/// One CLI as the Settings and onboarding screens show it (`AgentStatus` in app/src/backend.ts).
+/// One CLI as the Settings and onboarding screens show it (`AgentStatus` in app/src/platform/backend/types.ts).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentStatus {
@@ -38,7 +38,7 @@ pub struct AgentStatus {
     pub install_url: String,
 }
 
-/// What an install or sign-in did (`ActionResult` in app/src/backend.ts).
+/// What an install or sign-in did (`ActionResult` in app/src/platform/backend/types.ts).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct ActionResult {
     pub ok: bool,
@@ -50,42 +50,6 @@ pub struct ActionResult {
 impl ActionResult {
     fn new(ok: bool, message: impl Into<String>) -> Self {
         ActionResult { ok, message: message.into(), log: None }
-    }
-}
-
-/// Each vendor's own install channels for Windows.
-struct Official {
-    name: &'static str,
-    /// The npm package the vendor documents (`npm install -g <package>`), if any.
-    npm_package: Option<&'static str>,
-    /// The vendor's PowerShell installer, for the person to run.
-    script: &'static str,
-    url: &'static str,
-}
-
-fn official(provider: ProviderId) -> Official {
-    match provider {
-        // https://code.claude.com/docs/en/setup (native installer, WinGet, npm)
-        ProviderId::Claude => Official {
-            name: "Claude Code",
-            npm_package: Some("@anthropic-ai/claude-code"),
-            script: "irm https://claude.ai/install.ps1 | iex",
-            url: "https://code.claude.com/docs/en/setup",
-        },
-        // https://github.com/openai/codex (npm, Homebrew, Windows installer)
-        ProviderId::Codex => Official {
-            name: "Codex",
-            npm_package: Some("@openai/codex"),
-            script: "irm https://chatgpt.com/codex/install.ps1 | iex",
-            url: "https://github.com/openai/codex",
-        },
-        // https://antigravity.google/docs/getting-started (installer script only)
-        ProviderId::Agy => Official {
-            name: "Antigravity",
-            npm_package: None,
-            script: "irm https://antigravity.google/cli/install.ps1 | iex",
-            url: "https://antigravity.google/docs/getting-started",
-        },
     }
 }
 
@@ -114,10 +78,8 @@ fn cli_command(cli: &CliCommand, args: &[&str]) -> Command {
 /// The first line `<cli> --version` prints, within a few seconds.
 fn version(provider: ProviderId, cli: &CliCommand) -> Option<String> {
     let mut command = cli_command(cli, &["--version"]);
-    if provider == ProviderId::Agy {
-        command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
-    }
-    let (status, out, err) = probe::capture(&mut command, Duration::from_secs(15)).ok()?;
+    command.envs(providers::get(provider).check_env().iter().copied());
+    let (status, out, err) = proc::capture(&mut command, Duration::from_secs(15)).ok()?;
     let text = if out.trim().is_empty() { err } else { out };
     let line = text.lines().map(str::trim).find(|l| !l.is_empty())?;
     status.success().then(|| line.chars().take(80).collect())
@@ -129,15 +91,14 @@ fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> Lo
     if clean {
         return clean::login_state(root, provider);
     }
-    let mut command = cli_command(cli, clean::status_args(provider));
-    if provider == ProviderId::Agy {
-        command.env("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
-    }
+    let p = providers::get(provider);
+    let mut command = cli_command(cli, p.status_args());
+    command.envs(p.check_env().iter().copied());
     let home = user_home();
     if home.is_dir() {
         command.current_dir(home);
     }
-    match probe::capture(&mut command, Duration::from_secs(30)) {
+    match proc::capture(&mut command, Duration::from_secs(30)) {
         Ok((status, out, err)) => clean::read_login(provider, status.success(), &out, &err),
         Err(error) => LoginState { logged_in: None, detail: format!("상태 확인 {error}") },
     }
@@ -145,7 +106,7 @@ fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> Lo
 
 /// One CLI's status. A CLI on PATH that cannot be started without a shell counts as not installed.
 pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus {
-    let o = official(provider);
+    let o = providers::get(provider).official();
     let npm_ready = o.npm_package.is_some() && npm().is_some();
     let install_hint = match o.npm_package {
         Some(package) if npm_ready => format!("npm install -g {package}"),
@@ -189,7 +150,7 @@ const LOG_LIMIT: usize = 20_000;
 /// waits for it. Without npm, or for a CLI npm does not carry, it says where the
 /// official installer is instead.
 pub fn install(provider: ProviderId) -> ActionResult {
-    let o = official(provider);
+    let o = providers::get(provider).official();
     let manual = |why: &str| ActionResult::new(false, format!("{why} 공식 안내({})를 따라 설치하세요: {}", o.url, o.script));
     let Some(package) = o.npm_package else {
         return manual(&format!("{}는 공식 설치 스크립트로만 설치합니다.", o.name));
@@ -198,7 +159,7 @@ pub fn install(provider: ProviderId) -> ActionResult {
         return manual("npm을 찾지 못했습니다.");
     };
     let mut command = cli_command(&npm, &["install", "-g", package]);
-    match probe::capture(&mut command, INSTALL_TIMEOUT) {
+    match proc::capture(&mut command, INSTALL_TIMEOUT) {
         Ok((status, out, err)) => {
             let log = format!("{out}\n{err}").trim().to_string();
             let tail: String = log.chars().rev().take(LOG_LIMIT).collect::<Vec<_>>().into_iter().rev().collect();
@@ -218,11 +179,12 @@ pub fn install(provider: ProviderId) -> ActionResult {
 /// console window of its own, with the clean profile when `clean`. Antigravity
 /// signs in through the system: its official page opens instead.
 pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResult {
-    let o = official(provider);
-    let Some(args) = clean::login_args(provider) else {
+    let p = providers::get(provider);
+    let o = p.official();
+    let Some(args) = p.login_args() else {
         let opened = proc::open_url(o.url).is_ok();
         let then = if opened { "공식 안내 페이지를 열었습니다." } else { "공식 안내 페이지를 열지 못했습니다." };
-        return ActionResult::new(opened, format!("Antigravity는 이 PC의 시스템 로그인(Google 계정)을 그대로 씁니다. {then} {}", o.url));
+        return ActionResult::new(opened, format!("{}는 이 PC의 시스템 로그인(Google 계정)을 그대로 씁니다. {then} {}", o.name, o.url));
     };
     let Some(cli) = resolve_cli(provider.as_str()) else {
         return ActionResult::new(false, format!("{}가 설치되어 있지 않습니다.", o.name));
