@@ -13,6 +13,8 @@ fn main() {
             commands::runs,
             commands::usage,
             commands::usage_refresh,
+            commands::budget,
+            commands::budget_set_percent,
             commands::agents_status,
             commands::agent_install,
             commands::agent_login,

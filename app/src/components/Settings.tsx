@@ -1,7 +1,7 @@
 import { ArrowLeft, Bell, Bot, Info, Keyboard, LogIn, Palette, RefreshCw, SlidersHorizontal, UserRound, type LucideIcon } from "lucide-react";
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
-import type { Backend } from "../backend.ts";
+import { BUDGET_PERCENTS, type Backend, type BudgetPercent } from "../backend.ts";
 import { updateSettings, useReducedMotion, useSettings, type FontSize, type Motion, type StartScreen, type Theme } from "../settings.ts";
 import { AgentList, useAgents } from "./AgentSetup.tsx";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SoonBadge, SubHeading, Switch } from "./controls.tsx";
@@ -299,6 +299,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           }
           control={<Switch checked={settings.clean} onChange={(clean) => updateSettings({ clean })} labelledBy="clean-label" />}
         />
+        <BudgetRow api={api} />
         <SettingsRow
           label="프로필 위치"
           description={
@@ -329,6 +330,61 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
         </div>
       </div>
     </Section>
+  );
+}
+
+/**
+ * 하루 사용 예산 (ADR-0004): kept by the machine in O's settings.json, not in this
+ * window's storage, because `o dispatch` reads it too. The machine checks the range again.
+ */
+function BudgetRow({ api }: { api: Backend }) {
+  const [percent, setPercent] = useState<number>();
+  const [saving, setSaving] = useState(false);
+  const [note, setNote] = useState("");
+  useEffect(() => {
+    let live = true;
+    api.budget().then(
+      (report) => live && setPercent(report.percent),
+      () => live && setNote("지금 값을 읽지 못했습니다. 터미널에서 o budget으로 확인할 수 있습니다."),
+    );
+    return () => {
+      live = false;
+    };
+  }, [api]);
+  const choose = async (value: string) => {
+    const next = Number(value) as BudgetPercent;
+    setSaving(true);
+    try {
+      setPercent((await api.setBudgetPercent(next)).percent);
+      setNote("");
+    } catch (e) {
+      setNote(`저장하지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <SettingsRow
+      label="하루 사용 예산"
+      description={
+        <>
+          에이전트마다 하루에 쓸 양을 주간 한도의 {percent ?? 13}%로 잡습니다. 하루가 지나는 속도보다 빨리 쓰면 작업카드의 effort를 한두 단계 낮추고(올리지는 않음), 다 쓰면 다음 날(또는 주간 초기화)까지 그 에이전트로 새 작업을 보내지 않습니다. 사용량 기록이 없는 에이전트는 조절하지 않습니다.
+          {note && (
+            <span role="status" className="mt-1 block text-destructive">
+              {note}
+            </span>
+          )}
+        </>
+      }
+      control={
+        <Segmented
+          label="하루 사용 예산"
+          value={String(percent ?? "")}
+          onChange={percent === undefined || saving ? undefined : (value) => void choose(value)}
+          options={BUDGET_PERCENTS.map((p) => ({ value: String(p), label: `${p}%` }))}
+        />
+      }
+    />
   );
 }
 

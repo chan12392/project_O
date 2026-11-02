@@ -31,6 +31,45 @@ export interface ActionResult {
   log?: string;
 }
 
+/** How a provider's spend today compares with how much of the day is left (ADR-0004). */
+export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over";
+
+/** One provider in `o budget --json`: shares are 0 to 1, weeklyUsed/allowance/spent percent points of the weekly window. */
+export interface ProviderBudget {
+  provider: AgentId;
+  state: BudgetState;
+  allowance: number;
+  group: string | null;
+  weeklyUsed: number | null;
+  spent: number | null;
+  remaining: number | null;
+  remainingHours: number | null;
+  timeShare: number | null;
+  remainingShare: number | null;
+  pace: number | null;
+  stepsDown: number;
+  /** What each effort becomes on a card started now (`from` null: a card that named none). */
+  efforts: { from: string | null; to: string }[];
+  countedFrom: "dayStart" | "firstReading" | "weeklyReset" | null;
+  periodEnd: string | null;
+  weeklyResetsAt: string | null;
+  readAt: string | null;
+  /** One Korean line for people. */
+  message: string;
+}
+
+export interface BudgetReport {
+  at: string;
+  /** The day's allowance, percent of the weekly window (12–14). */
+  percent: number;
+  /** When `o usage` last asked Codex and Antigravity; empty when never. */
+  usageAt: string;
+  providers: ProviderBudget[];
+}
+
+export const BUDGET_PERCENTS = [12, 13, 14] as const;
+export type BudgetPercent = (typeof BUDGET_PERCENTS)[number];
+
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
@@ -43,6 +82,10 @@ export interface Backend {
   openExternal(url: string): Promise<void>;
   /** App version and where O keeps its state, for Settings → About. */
   about(): Promise<{ version: string; home: string; agentsHome: string }>;
+  /** Today's usage budget per provider from saved readings (`o budget --json --cached`). */
+  budget(): Promise<BudgetReport>;
+  /** Settings → 에이전트: saves the day's allowance (the machine refuses anything but 12–14). */
+  setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
 }
 
 declare global {
@@ -59,6 +102,8 @@ function tauriBackend(invoke: (cmd: string, args?: Record<string, unknown>) => P
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
     openExternal: (url) => invoke("open_external", { url }) as Promise<void>,
     about: () => invoke("about") as Promise<{ version: string; home: string; agentsHome: string }>,
+    budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
+    setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
   };
 }
 
@@ -74,7 +119,46 @@ const devBackend: Backend = {
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: () => fetch("/api/about").then((r) => json<{ version: string; home: string; agentsHome: string }>(r)),
+  budget: () => fetch("/api/budget").then((r) => json<BudgetReport>(r)),
+  setBudgetPercent: (percent) => fetch(`/api/budget/percent?value=${percent}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
 };
+
+/** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread. */
+function demoBudget(percent: number): BudgetReport {
+  const at = new Date().toISOString();
+  const known = (provider: AgentId, spent: number, state: BudgetState, stepsDown: number, efforts: ProviderBudget["efforts"], message: string): ProviderBudget => ({
+    provider,
+    state,
+    allowance: percent,
+    group: null,
+    weeklyUsed: 30 + spent,
+    spent,
+    remaining: Math.max(0, percent - spent),
+    remainingHours: 9.5,
+    timeShare: 0.4,
+    remainingShare: Math.max(0, percent - spent) / percent,
+    pace: Math.max(0, percent - spent) / percent / 0.4,
+    stepsDown,
+    efforts,
+    countedFrom: "dayStart",
+    periodEnd: at,
+    weeklyResetsAt: at,
+    readAt: at,
+    message,
+  });
+  return {
+    at,
+    percent,
+    usageAt: at,
+    providers: [
+      { ...known("claude", 0, "unknown", 0, [], "claude 주간 사용량 기록이 없어 예산을 조절하지 않습니다"), weeklyUsed: null, spent: null, remaining: null, pace: null, countedFrom: null },
+      known("codex", 4.2, "ok", 0, [], `codex 오늘 주간의 4.2%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 여유 있음`),
+      known("agy", 9.1, "behind", 1, [{ from: null, to: "low" }, { from: "high", to: "medium" }], `agy 오늘 주간의 9.1%p 사용 / 하루 예산 ${percent}%p, 9.5시간 남음 — 쓰는 속도가 빨라 effort를 한 단계 낮춥니다`),
+    ],
+  };
+}
+
+let demoPercent = 13;
 
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 const demoBackend: Backend = {
@@ -88,6 +172,8 @@ const demoBackend: Backend = {
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: async () => ({ version: "preview", home: "", agentsHome: "" }),
+  budget: async () => demoBudget(demoPercent),
+  setBudgetPercent: async (percent) => demoBudget((demoPercent = percent)),
 };
 
 /** The desktop app when Tauri is present, the dev server's /api otherwise; `demo` forces the recorded preview. */
