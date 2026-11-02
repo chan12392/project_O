@@ -377,6 +377,15 @@ fn busy() {
     let dir = lead::thread_dir(&home, &thread);
     let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
     held.try_lock().unwrap();
+    assert_eq!(lead::active_count(&home).unwrap(), 1);
+    lead::start(&home, &project).unwrap();
+    assert_eq!(lead::active_count(&home).unwrap(), 1, "a superseded thread still owns its running turn");
+    // Return to the original thread for the remaining busy checks.
+    drop(held);
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let dir = lead::thread_dir(&home, &thread);
+    let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
+    held.try_lock().unwrap();
     let (spawner, seen) = fake(claude_answer("s", "ok"));
     for partial in ["", "{\"provider\":\"cla"] {
         std::fs::write(dir.join("running.json"), partial).unwrap();

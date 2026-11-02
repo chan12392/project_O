@@ -859,6 +859,27 @@ fn thread_ids(home: &Path) -> Vec<String> {
     entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|id| is_run_id(id)).collect()
 }
 
+/// All active turns, including a thread replaced by a newer one for the same project.
+pub fn active_count(home: &Path) -> io::Result<usize> {
+    let entries = match fs::read_dir(leads_dir(home)) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(0),
+        Err(error) => return Err(error),
+    };
+    let mut count = 0;
+    for entry in entries {
+        let id = entry?.file_name().to_string_lossy().into_owned();
+        if !is_run_id(&id) { continue; }
+        let lock = turn_lock(home, &id)?;
+        match lock.try_lock() {
+            Ok(()) => {},
+            Err(fs::TryLockError::WouldBlock) => count += 1,
+            Err(fs::TryLockError::Error(error)) => return Err(error),
+        }
+    }
+    Ok(count)
+}
+
 fn sessions_path(home: &Path, thread_id: &str) -> PathBuf {
     thread_dir(home, thread_id).join("sessions.txt")
 }
