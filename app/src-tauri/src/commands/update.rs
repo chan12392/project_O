@@ -20,6 +20,11 @@ const HELP: &str = "GitHub CLI(gh)를 설치하고 gh auth login --hostname gith
 const MAX_SETUP_SIZE: u64 = 1024 * 1024 * 1024;
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Atest_1-[0-9]{8}-[0-9a-f]{7}\z").unwrap());
 static ASSET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Aproject_O_[0-9]+\.[0-9]+\.[0-9]+_x64-setup\.exe\z").unwrap());
+static COMMIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\A[0-9a-f]{40}\z").unwrap());
+/// Who publishes releases: the release workflow's token, never a person.
+const RELEASE_AUTHOR: &str = "github-actions[bot]";
+/// The approved channel: a release is offered only when its commit is already in this branch.
+const APPROVED_BRANCH: &str = "test_1";
 static INSTALLING: Mutex<()> = Mutex::new(());
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 static PENDING: Mutex<Option<Update>> = Mutex::new(None);
@@ -53,6 +58,9 @@ pub struct Update {
     notes: String,
     asset: String,
     size: u64,
+    /// The commit the release was built from; checked against test_1 before it is offered.
+    #[serde(skip)]
+    target: String,
 }
 
 #[derive(Serialize)]
@@ -64,11 +72,18 @@ pub struct Check {
 #[derive(Deserialize)]
 struct Release {
     tag_name: String,
+    target_commitish: Option<String>,
+    author: Option<Author>,
     prerelease: bool,
     draft: bool,
     published_at: Option<String>,
     body: Option<String>,
     assets: Vec<Asset>,
+}
+
+#[derive(Deserialize)]
+struct Author {
+    login: String,
 }
 
 #[derive(Deserialize)]
@@ -90,9 +105,12 @@ fn select_release(json: &str, sha: &str, built_at: &str) -> Result<Option<Update
     let releases: Vec<Release> = serde_json::from_str(json).map_err(|_| "릴리스 응답을 읽지 못했습니다")?;
     let newest = releases.into_iter().filter_map(|r| {
         if !r.prerelease || r.draft || !valid_tag(&r.tag_name) { return None; }
+        // Only the release workflow publishes, and it pins the release to the commit named in the tag.
+        if r.author.as_ref().is_none_or(|a| a.login != RELEASE_AUTHOR) { return None; }
+        let target = r.target_commitish.filter(|t| COMMIT.is_match(t) && t.starts_with(&r.tag_name[16..]))?;
         let date = r.published_at.as_deref().and_then(published)?;
         let asset = r.assets.into_iter().find(|a| ASSET.is_match(&a.name) && a.state == "uploaded" && (1..=MAX_SETUP_SIZE).contains(&a.size))?;
-        Some((date, Update { tag: r.tag_name, published_at: r.published_at?, notes: r.body.unwrap_or_default(), asset: asset.name, size: asset.size }))
+        Some((date, Update { tag: r.tag_name, published_at: r.published_at?, notes: r.body.unwrap_or_default(), asset: asset.name, size: asset.size, target }))
     }).max_by_key(|(date, _)| *date);
     Ok(newest.and_then(|(date, update)| {
         // A local build can only reach this path through the manual button.
@@ -117,7 +135,21 @@ fn gh(args: &[&str], timeout: Duration) -> Result<String, String> {
 fn latest() -> Result<Option<Update>, String> {
     let endpoint = format!("repos/{REPOSITORY}/releases?per_page=20");
     let body = gh(&["api", "--hostname", "github.com", &endpoint], Duration::from_secs(30))?;
-    select_release(&body, BUILD_SHA, BUILD_TIME)
+    approved(select_release(&body, BUILD_SHA, BUILD_TIME)?, |target| {
+        let compare = format!("repos/{REPOSITORY}/compare/{APPROVED_BRANCH}...{target}");
+        gh(&["api", "--hostname", "github.com", &compare, "--jq", ".status"], Duration::from_secs(30))
+    })
+}
+
+/// Offers a release only when its commit is already in test_1 (`compare/test_1...<sha>` is
+/// identical or behind). A failed lookup or any other answer refuses it.
+fn approved(update: Option<Update>, compare_status: impl FnOnce(&str) -> Result<String, String>) -> Result<Option<Update>, String> {
+    let Some(update) = update else { return Ok(None) };
+    if !COMMIT.is_match(&update.target) { return Err("릴리스의 커밋을 확인하지 못했습니다".into()); }
+    match compare_status(&update.target)?.trim() {
+        "identical" | "behind" => Ok(Some(update)),
+        _ => Err(format!("릴리스 {}의 커밋이 {APPROVED_BRANCH}에 없어 설치를 제안하지 않습니다", update.tag)),
+    }
 }
 
 #[tauri::command]
@@ -185,6 +217,30 @@ mod tests {
         for tag in ["--help", "test_1-20261302-123abcd", "test_1-20261102-123abcd\n", "test_1-20261102-123ABCD", "../test_1-20261102-123abcd", "test_1-20261102-123abcd --repo evil/x"] { assert!(!valid_tag(tag), "{tag}"); }
         assert!(ASSET.is_match("project_O_0.3.0_x64-setup.exe"));
         for asset in ["../project_O_0.3.0_x64-setup.exe", "project_O_0.3.0_x64-setup.exe\n", "project_O_*_x64-setup.exe", "--help", "project_O_0.3.0_x64-setup.cmd"] { assert!(!ASSET.is_match(asset), "{asset}"); }
+    }
+
+    #[test]
+    fn only_workflow_releases_of_the_tagged_commit_are_selected() {
+        // Newer releases by a person, with a branch name as target, with a commit that is not the
+        // tag's, or with no author/target at all are all passed over.
+        let next = select_release(FIXTURE, "", "").unwrap().unwrap();
+        assert_eq!(next.tag, "test_1-20261102-1234567");
+        assert_eq!(next.target, "1234567890abcdef1234567890abcdef12345678");
+    }
+
+    #[test]
+    fn a_release_is_offered_only_when_its_commit_is_in_test_1() {
+        let update = || select_release(FIXTURE, "", "").unwrap();
+        let mut asked = String::new();
+        let offered = approved(update(), |sha| { asked = sha.to_string(); Ok("behind\n".into()) }).unwrap();
+        assert_eq!(asked, "1234567890abcdef1234567890abcdef12345678");
+        assert!(offered.is_some());
+        assert!(approved(update(), |_| Ok("identical".into())).unwrap().is_some());
+        for status in ["ahead", "diverged", ""] {
+            assert!(approved(update(), |_| Ok(status.into())).is_err(), "{status}");
+        }
+        assert!(approved(update(), |_| Err("gh 실패".into())).is_err());
+        assert!(approved(None, |_| -> Result<String, String> { panic!("조회하지 않아야 합니다") }).unwrap().is_none());
     }
 
     /// The updater offers test_1-* pre-releases, so the workflow publishes them only from test_1,
