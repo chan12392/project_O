@@ -2,6 +2,7 @@ import { Info } from "lucide-react";
 import type { ReactNode } from "react";
 
 import type { Backend } from "../../../platform/backend/index.ts";
+import { UpdateSettings } from "../../updates/UpdateSettings.tsx";
 import { Path, Section, type AboutState, type SectionContext, type SettingsSectionDef } from "../Section.tsx";
 
 export const ABOUT_SECTION = {
@@ -17,6 +18,8 @@ function AboutSection({ api, about, source }: { api: Backend; about: AboutState;
   const kindWord = api.kind === "tauri" ? "데스크톱 앱" : api.kind === "dev" ? "개발 서버" : "미리보기";
   const info: [string, ReactNode][] = [
     ["버전", value(about.data?.version)],
+    ["커밋", about.data?.commit || "로컬 빌드"],
+    ["빌드 날짜", about.data?.builtAt ? new Date(about.data.builtAt).toLocaleString("ko-KR") : "로컬 빌드"],
     ["데이터 출처", sourceWord],
     ["연결", kindWord],
     ["O 상태 폴더", about.data?.home ? <Path path={about.data.home} /> : value(about.data?.home)],
@@ -33,6 +36,7 @@ function AboutSection({ api, about, source }: { api: Backend; about: AboutState;
         ))}
       </dl>
       {about.error && <p className="text-xs text-muted-foreground">버전과 폴더는 데스크톱 앱이나 개발 서버의 /api/about이 알려 줍니다.</p>}
+      <UpdateSettings api={api} />
     </Section>
   );
 }

@@ -2,8 +2,8 @@
 //! one file per domain and registered once in [`handler`]. Each runs its work on a
 //! blocking thread and calls o-core directly: no shell, and any CLI it asks runs
 //! without a window (sign-in alone opens a console the person drives). Every
-//! command has a dev-server twin under `/api` (app/dev/liveRuns.ts) and an `o`
-//! command that prints the same JSON.
+//! domain command has a dev-server twin under `/api` (app/dev/liveRuns.ts) and an `o`
+//! command that prints the same JSON. Desktop updates only expose an unavailable notice in dev.
 
 mod about;
 mod agents;
@@ -11,6 +11,7 @@ mod review;
 mod runs;
 mod tokens;
 mod usage;
+pub(crate) mod update;
 
 /// Every command the screens may call.
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
@@ -27,6 +28,10 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         about::about,
         review::review,
         tokens::tokens,
+        update::update_check,
+        update::update_install,
+        update::update_pending,
+        update::update_cancel,
     ]
 }
 

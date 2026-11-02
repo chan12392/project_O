@@ -1,4 +1,6 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
+import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
+
 export type AgentId = "claude" | "codex" | "agy";
 
 export interface AgentStatus {
@@ -117,7 +119,11 @@ export interface Backend {
   /** Opens a web page in the person's browser. */
   openExternal(url: string): Promise<void>;
   /** App version and where O keeps its state, for Settings → About. */
-  about(): Promise<{ version: string; home: string; agentsHome: string }>;
+  about(): Promise<About>;
+  checkUpdate(): Promise<UpdateCheck>;
+  pendingUpdate(): Promise<UpdateRelease | null>;
+  installUpdate(tag: string): Promise<void>;
+  cancelUpdate(): Promise<void>;
   /**
    * Asks an agent to review a PR of the project folder and comment the review on it
    * (`o review <pr> --post` there). It never approves or merges. Rejects with the
