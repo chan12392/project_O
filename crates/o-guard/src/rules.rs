@@ -57,9 +57,16 @@ pub fn code_rules() -> impl Iterator<Item = &'static Rule> {
     CREDENTIAL_RULES.iter().chain(BACKEND_RULES.iter()).chain(BYPASS_RULES.iter())
 }
 
-/// Checkouts on these branches are mirrors: they only move by pulling merged
-/// PRs. Agents may read and test there, never change anything.
-pub const READ_ONLY_BRANCHES: [&str; 2] = ["test", "main"];
+/// Protected branches: they only change by merging PRs (no direct commits or
+/// pushes), and checkouts on them are mirrors agents may read and test in,
+/// never change. Keep in sync with .github/workflows/branch-flow.yml and
+/// crates/o-core/src/mirror.rs.
+pub const READ_ONLY_BRANCHES: [&str; 3] = ["test_1", "test_2", "main"];
+
+/// The owner's GitHub login (member A): the only account that may merge into
+/// `test_1` and `main`; his agents run under the same `gh` login. Shared
+/// boundary — keep in sync with .github/workflows/merge-guard.yml.
+pub const OWNER: &str = "chan12392";
 
 /// Mirrors are project_O checkouts only; other repositories on main are ordinary work.
 pub static PROJECT_REMOTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[/:]project_O(\.git)?/?$").unwrap());

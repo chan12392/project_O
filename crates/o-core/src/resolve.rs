@@ -38,7 +38,8 @@ fn is_script_shim(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
 }
 
-fn which(bin: &str) -> Option<PathBuf> {
+/// The first `bin` (.exe, .cmd or .bat on Windows) in a PATH folder.
+pub fn which(bin: &str) -> Option<PathBuf> {
     let exts: &[&str] = if cfg!(windows) { &[".exe", ".cmd", ".bat"] } else { &[""] };
     let path = std::env::var_os("PATH")?;
     for dir in std::env::split_paths(&path) {

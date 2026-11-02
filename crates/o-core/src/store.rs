@@ -3,7 +3,7 @@
 //! here. Tests pass their own `home` to these functions instead.
 //!
 //! ```text
-//! runs/<runId>/plan.json · events.jsonl · cards/<id>.raw.jsonl · stop
+//! runs/<runId>/plan.json · events.jsonl · cards/<id>.raw.jsonl · stop · clean (o dispatch --clean)
 //! active/<runId>.<cardId>.json   running card markers ({ pid, provider })
 //! o.db                           the run index, card starts (daily cap), cooldowns and
 //!                                refused plans; dispatch and the runner write it, cards never (see `index`)
@@ -275,6 +275,15 @@ pub fn request_stop(home: &Path, run_id: &str) -> io::Result<()> {
 
 pub fn stop_requested(home: &Path, run_id: &str) -> bool {
     run_dir(home, run_id).join("stop").exists()
+}
+
+/// `o dispatch --clean`: the runner starts this run's cards with clean agent profiles (see `clean`).
+pub fn mark_clean(home: &Path, run_id: &str) -> io::Result<()> {
+    fs::write(run_dir(home, run_id).join("clean"), "")
+}
+
+pub fn is_clean(home: &Path, run_id: &str) -> bool {
+    run_dir(home, run_id).join("clean").exists()
 }
 
 /// `JSON.stringify(value, null, 2)`.

@@ -20,21 +20,23 @@ use crate::events::{CardInfo, CardStatus, OEvent, StreamSignal};
 use crate::js::{js_string, js_tail, now_iso, parse_time};
 use crate::plan::{Card, Plan, ProviderId};
 use crate::policy::{check_plan, LIMITS};
+use crate::clean;
 use crate::proc;
 use crate::providers::{launch_spec, LaunchSpec, StreamReader, TeamChannel};
 use crate::resolve::resolve_cli;
 use crate::store::{
-    active_markers, append_event, clear_active, cooldown_times, mark_active, policy_context, read_events, read_plan, record_start, run_dir,
+    active_markers, append_event, clear_active, cooldown_times, is_clean, mark_active, policy_context, read_events, read_plan, record_start, run_dir,
     set_cooldown, started_on, stop_requested, ActiveMarker,
 };
 
-/// Builds the command for a card's CLI. The runner adds pipes, the hidden
-/// window and the kill-on-close job; tests swap in a fake CLI here.
+/// Builds the command for a card's CLI. The runner adds the environment, pipes,
+/// the hidden window and the kill-on-close job; tests swap in a fake CLI here.
 pub type Spawner = dyn Fn(&LaunchSpec, &str) -> io::Result<Command> + Send + Sync;
 
 const WAIT_FOR_SLOT: Duration = Duration::from_millis(2_000);
 
-pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, spawner: Arc<Spawner>) -> io::Result<CardStatus> {
+/// `clean` is the profile root when the run uses clean agent profiles (`o dispatch --clean`).
+pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>) -> io::Result<CardStatus> {
     let emit = |event: OEvent| append_event(home, run_id, &event);
     emit(OEvent::RunStart {
         at: now_iso(),
@@ -100,10 +102,10 @@ pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, spawner: Arc<Spawner>) -
                 continue;
             }
             take(&mut pending);
-            let (home, run_id, plan, spawner, done) =
-                (home.to_path_buf(), run_id.to_string(), Arc::clone(&shared_plan), Arc::clone(&spawner), done_tx.clone());
+            let (home, run_id, plan, clean, spawner, done) =
+                (home.to_path_buf(), run_id.to_string(), Arc::clone(&shared_plan), clean.map(Path::to_path_buf), Arc::clone(&spawner), done_tx.clone());
             thread::spawn(move || {
-                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, spawner.as_ref())))
+                let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, clean.as_deref(), spawner.as_ref())))
                     .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))));
                 let _ = done.send(outcome);
             });
@@ -164,7 +166,7 @@ fn append_bytes(path: &Path, bytes: &[u8]) {
     }
 }
 
-fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, spawner: &Spawner) -> io::Result<CardStatus> {
+fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, clean: Option<&Path>, spawner: &Spawner) -> io::Result<CardStatus> {
     let emit = |event: OEvent| append_event(home, run_id, &event);
     let dir = run_dir(home, run_id);
     let cards_dir = dir.join("cards");
@@ -180,6 +182,11 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, spawner: &Spawn
 
     // A program that never started (not found, refused) holds no slot and counts nothing.
     let spawned = spawner(&spec, &plan.project).and_then(|mut command| {
+        // A clean card sees nothing of this process's environment but the kept system variables.
+        if let Some(root) = clean {
+            command.env_clear().envs(clean::environment(root, card.provider)?);
+        }
+        command.envs(&spec.env);
         proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn()
     });
     let mut child = match spawned {
@@ -295,7 +302,7 @@ pub fn official_command(spec: &LaunchSpec, cwd: &str) -> io::Result<Command> {
     let cli = resolve_cli(&spec.bin)
         .ok_or_else(|| io::Error::other(format!("{} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다", spec.bin)))?;
     let mut command = Command::new(&cli.command);
-    command.args(&cli.prefix).args(&spec.args).current_dir(cwd).envs(&spec.env);
+    command.args(&cli.prefix).args(&spec.args).current_dir(cwd);
     Ok(command)
 }
 
@@ -326,7 +333,8 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
             let reasons: Vec<&str> = checked.violations.iter().map(|v| v.message.as_str()).collect();
             return Err(format!("정책 위반: {}", reasons.join(" / ")));
         };
-        run_plan(home, run_id, &plan, Arc::new(official_command)).map_err(|e| e.to_string())?;
+        let clean = is_clean(home, run_id).then(clean::default_root);
+        run_plan(home, run_id, &plan, clean.as_deref(), Arc::new(official_command)).map_err(|e| e.to_string())?;
         Ok(())
     }))
     .unwrap_or_else(|panic| {

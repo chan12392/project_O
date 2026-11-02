@@ -49,13 +49,6 @@ The above copyright notice and this permission notice shall be included in all c
 THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
 ```
 
-## Interaction patterns
-
-The header dropdown (`WhoIsWorking`, project menu), skeleton bloom (`LeadGate`), indeterminate
-progress (`AgentBoard`) and activity rings (`UsagePanel`) follow patterns 074, 079, 083 and 099
-of the beakho-design reference library (lucian-code-141). Only the patterns were used; the code
-is written for this app.
-
 ## Generated art
 
 `app/public/office/*.png` (사무실 배경, 캐릭터 4종) were generated for this project on 2026-11-02
@@ -74,7 +67,7 @@ sheets for composed characters) were generated the same way (runs `20261101-1642
 ## Rust crates
 
 The `o` command (`crates/`) builds on crates from crates.io under permissive licenses:
-serde, serde_json, regex, chrono and windows-sys (MIT or Apache-2.0), rusqlite (MIT) with
+serde, serde_json, regex, chrono, windows-sys and Tauri 2 for the desktop shell `project_O.exe` (MIT or Apache-2.0), rusqlite (MIT) with
 SQLite compiled in (public domain). `cargo tree` lists the full set; their license texts
 ship in each crate's source.
 

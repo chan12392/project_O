@@ -1,9 +1,12 @@
 //! O core: plans, policy, provider launch and stream reading, the run store,
 //! the runner and the usage probes. Pure modules (`plan`, `events`, `policy`,
 //! `providers`, `usage`, `snapshot`) touch nothing; `store`, `runner`,
-//! `probe`, `team` and `mirror` work on O's state folder and processes. The
-//! `o` binary and a desktop shell both sit on top of this.
+//! `probe`, `team`, `mirror` and `clean` (clean agent profiles) work on O's
+//! state folder, the profiles and processes. The `o` binary and a desktop shell
+//! both sit on top of this.
 
+pub mod agents;
+pub mod clean;
 pub mod events;
 pub mod index;
 pub mod js;

@@ -1,11 +1,12 @@
 import { CircleCheckBig, Pause, Play } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 
 import type { CardView, RunView } from "../../../src/core/snapshot.ts";
 import { PROVIDER_SHORT, STATE_WORD } from "../format.ts";
 import { lookOf } from "../characters.ts";
+import { useReducedMotion } from "../settings.ts";
 import { AgentStateDot } from "./AgentStateDot.tsx";
-import { Person, REDUCED, type Mood, type Point } from "./Person.tsx";
+import { Person, type Mood, type Point } from "./Person.tsx";
 
 /**
  * Where people's feet go in public/office/office.png (1536 x 1024), as
@@ -54,7 +55,10 @@ function homeFor(card: CardView, index: number): { spot: Point; roam: Point[] } 
 /** The office: agents at their desks while they work, wandering otherwise, saying what they do. */
 export function Office({ run, selected, leadResting, onSelect }: { run: RunView; selected?: string; leadResting?: boolean; onSelect: (id: string) => void }) {
   const finished = run.cards.filter((c) => c.endedAt).length;
-  const [held, setHeld] = useState(REDUCED);
+  // Reduced motion (Settings → 모양, else the system) starts the office held; the button still overrides it.
+  const reduced = useReducedMotion();
+  const [held, setHeld] = useState(reduced);
+  useEffect(() => setHeld(reduced), [reduced]);
   return (
     <div>
       <div className="flex items-center justify-between gap-3 px-5 pt-4">
