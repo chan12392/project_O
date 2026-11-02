@@ -5,7 +5,7 @@
 //! `open_external`, and nothing else opens; the page is told why in a short notice.
 
 use tauri::webview::{NewWindowFeatures, NewWindowResponse};
-use tauri::{AppHandle, Manager, Runtime, Url, WebviewUrl, WebviewWindowBuilder, WindowEvent};
+use tauri::{AppHandle, LogicalSize, Manager, Runtime, Url, WebviewUrl, WebviewWindow, WebviewWindowBuilder, WindowEvent};
 
 pub const MAIN: &str = "main";
 /// The one pop-out panel window.
@@ -73,7 +73,9 @@ fn window_event(name: &str, detail: Option<serde_json::Value>) -> String {
 /// The main window as tauri.conf.json describes it (`create: false` there), with the link handler.
 pub fn open_main(app: &AppHandle) -> tauri::Result<()> {
     let config = app.config().app.windows.iter().find(|w| w.label == MAIN).cloned().expect("tauri.conf.json의 main 창");
-    let window = WebviewWindowBuilder::from_config(app, &config)?.on_new_window(on_new_window(app.clone(), MAIN)).build()?;
+    let window = WebviewWindowBuilder::from_config(app, &config)?.visible(false).on_new_window(on_new_window(app.clone(), MAIN)).build()?;
+    fit_to_work_area(&window, (config.width, config.height), config.min_width.zip(config.min_height));
+    window.show()?;
     // Closing the main window closes the pop-out too, so the app ends.
     let handle = app.clone();
     window.on_window_event(move |event| {
@@ -84,6 +86,32 @@ pub fn open_main(app: &AppHandle) -> tauri::Result<()> {
         }
     });
     Ok(())
+}
+
+type Size = (f64, f64);
+
+/// The window's size and minimum size, each no larger than the room the monitor's work area
+/// leaves for the page (logical px). 1360×880 with a 1100×700 minimum does not fit a
+/// 1920×1080 screen at 150% (about 1280×690 above the taskbar).
+fn fit(size: Size, min: Option<Size>, room: Size) -> (Size, Option<Size>) {
+    let clamp = |(w, h): Size| (w.min(room.0), h.min(room.1));
+    (clamp(size), min.map(clamp))
+}
+
+/// Shrinks a window that does not fit its monitor's work area and centres it again.
+fn fit_to_work_area<R: Runtime>(window: &WebviewWindow<R>, size: Size, min: Option<Size>) {
+    let (Ok(Some(monitor)), Ok(outer), Ok(inner)) = (window.current_monitor(), window.outer_size(), window.inner_size()) else { return };
+    let scale = monitor.scale_factor();
+    let area = monitor.work_area().size.to_logical::<f64>(scale);
+    // The title bar and borders take room too.
+    let frame = (outer.width.saturating_sub(inner.width) as f64 / scale, outer.height.saturating_sub(inner.height) as f64 / scale);
+    let (fitted, fitted_min) = fit(size, min, (area.width - frame.0, area.height - frame.1));
+    if fitted == size && fitted_min == min {
+        return;
+    }
+    let _ = window.set_min_size(fitted_min.map(|(w, h)| LogicalSize::new(w, h)));
+    let _ = window.set_size(LogicalSize::new(fitted.0, fitted.1));
+    let _ = window.center();
 }
 
 /// The pop-out's fixed app address: the panel only, always this PC's live runs (the desktop
@@ -120,9 +148,12 @@ pub async fn popout_open(app: AppHandle, view: String, project: Option<String>, 
     let window = WebviewWindowBuilder::new(&app, PANEL, WebviewUrl::App(path.into()))
         .title("Project O 패널")
         .inner_size(PANEL_SIZE.0, PANEL_SIZE.1)
+        .visible(false)
         .on_new_window(on_new_window(app.clone(), PANEL))
         .build()
         .map_err(|e| format!("패널 창을 열지 못했습니다: {e}"))?;
+    fit_to_work_area(&window, PANEL_SIZE, None);
+    window.show().map_err(|e| e.to_string())?;
     let handle = app.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::Destroyed = event {
@@ -172,6 +203,16 @@ mod tests {
         assert_eq!(window_event(POPOUT_CLOSED, None), r#"window.dispatchEvent(new Event("project-o:popout-closed"))"#);
         let script = window_event(LINK_BLOCKED, Some(serde_json::json!({ "url": "http://x/\"); alert(1); (\"", "message": "m" })));
         assert_eq!(script, r#"window.dispatchEvent(new CustomEvent("project-o:link-blocked", { detail: {"url":"http://x/\"); alert(1); (\"","message":"m"} }))"#);
+    }
+
+    #[test]
+    fn windows_never_start_larger_than_the_work_area() {
+        // 1920×1080 at 150% leaves about 1280×688 above the taskbar; the title bar takes ~31 more.
+        let room = (1280.0, 657.0);
+        assert_eq!(fit((1360.0, 880.0), Some((1100.0, 700.0)), room), ((1280.0, 657.0), Some((1100.0, 657.0))));
+        // A roomy screen keeps the configured sizes.
+        assert_eq!(fit((1360.0, 880.0), Some((1100.0, 700.0)), (2560.0, 1400.0)), ((1360.0, 880.0), Some((1100.0, 700.0))));
+        assert_eq!(fit((760.0, 880.0), None, room), ((760.0, 657.0), None));
     }
 
     #[test]
