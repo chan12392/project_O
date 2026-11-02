@@ -19,6 +19,7 @@ fn ctx() -> PolicyContext {
         is_mirror: Box::new(|_| false),
         o_home: "C:/Users/me/AppData/Local/project_O".into(),
         user_home: "C:/Users/me".into(),
+        resolve: Box::new(|p: &str| p.to_string()),
     }
 }
 
@@ -50,6 +51,35 @@ fn a_project_may_not_hold_o_state_or_the_home_folder() {
         assert!(has(&checked, "protected-project"), "{bad}");
     }
     assert!(check_plan(&with(plan(vec![code_card()]), "project", json!("C:/Users/me/projects/app")), &ctx()).plan.is_some());
+}
+
+/// `.`, `..` and links that land on the home folder or O's state are the same
+/// folder, so they must not slip past the check above.
+#[test]
+fn a_project_cannot_reach_home_or_o_state_through_dots_or_links() {
+    for bad in ["C:/Users/me/.", "C:\\Users\\me\\x\\..", "C:/work/../Users/me", "C:/Users/me/AppData/Local/project_O/runs/..", "C:/Users/./me/", "C:/.."] {
+        let checked = check_plan(&with(plan(vec![code_card()]), "project", json!(bad)), &ctx());
+        assert!(has(&checked, "protected-project"), "{bad}");
+    }
+    assert!(check_plan(&with(plan(vec![code_card()]), "project", json!("C:/Users/me/projects/app/.")), &ctx()).plan.is_some());
+    let mut linked = ctx();
+    linked.resolve = Box::new(|p: &str| if p == "C:/work/home-link" { "C:/Users/me".to_string() } else { p.to_string() });
+    assert!(has(&check_plan(&with(plan(vec![code_card()]), "project", json!("C:/work/home-link")), &linked), "protected-project"));
+}
+
+#[cfg(unix)]
+#[test]
+fn resolved_path_follows_a_link_to_the_real_folder() {
+    let root = std::env::temp_dir().join(format!("o-policy-link-{}", std::process::id()));
+    let home = root.join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    let link = root.join("link");
+    let _ = std::fs::remove_file(&link);
+    std::os::unix::fs::symlink(&home, &link).unwrap();
+    let real = std::fs::canonicalize(&home).unwrap();
+    assert_eq!(o_core::run::store::resolved_path(link.to_str().unwrap()), real.to_string_lossy());
+    assert_eq!(o_core::run::store::resolved_path("/no/such/folder"), "/no/such/folder");
+    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]

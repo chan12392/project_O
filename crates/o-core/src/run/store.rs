@@ -267,7 +267,20 @@ pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyConte
         is_mirror: Box::new(o_guard::is_mirror),
         o_home: home.to_string_lossy().into_owned(),
         user_home: user_home().to_string_lossy().into_owned(),
+        resolve: Box::new(resolved_path),
     })
+}
+
+/// The folder a path names on disk, with links, junctions and short names
+/// resolved, or the path itself when it cannot be resolved (it does not exist).
+pub fn resolved_path(path: &str) -> String {
+    let Ok(real) = fs::canonicalize(path) else { return path.to_string() };
+    let text = real.to_string_lossy().into_owned();
+    // Windows answers in the extended form (\\?\C:\…, \\?\UNC\server\…); compare the plain one.
+    if let Some(rest) = text.strip_prefix(r"\\?\UNC\") {
+        return format!(r"\\{rest}");
+    }
+    text.strip_prefix(r"\\?\").map(str::to_string).unwrap_or(text)
 }
 
 pub fn request_stop(home: &Path, run_id: &str) -> io::Result<()> {

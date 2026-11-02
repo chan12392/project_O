@@ -173,6 +173,7 @@ fn ctx() -> PolicyContext {
         is_mirror: Box::new(|_| false),
         o_home: "C:/Users/me/AppData/Local/project_O".into(),
         user_home: "C:/Users/me".into(),
+        resolve: Box::new(|p: &str| p.to_string()),
     }
 }
 
