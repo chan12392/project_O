@@ -2,6 +2,7 @@ import type { RunView } from "../../../../src/core/snapshot.ts";
 import { lookOf } from "../office/characters.ts";
 import { names, timeOf } from "../../lib/format.ts";
 import { Avatar, type Speaker } from "../office/Avatar.tsx";
+import { Markdown } from "./Markdown.tsx";
 
 /** The team channel as a messenger: each card speaks as its office character; the lead talks from the right. */
 export function TeamChat({ run }: { run: RunView }) {
@@ -24,7 +25,7 @@ export function TeamChat({ run }: { run: RunView }) {
             <span className={grouped ? "invisible" : ""}>
               <Avatar speaker={speaker(m.from)} look={isCard(m.from) ? lookOf(run, m.from) : undefined} />
             </span>
-            <div className={`flex max-w-[78%] flex-col ${mine ? "items-end" : "items-start"}`}>
+            <div className={`flex max-w-[78%] min-w-0 flex-col ${mine ? "items-end" : "items-start"}`}>
               {!grouped && (
                 <p className="mb-1 px-1 text-xs text-chat-foreground-faint">
                   <span className="text-chat-foreground">{name(m.from)}</span>
@@ -34,13 +35,13 @@ export function TeamChat({ run }: { run: RunView }) {
                   </time>
                 </p>
               )}
-              <p
-                className={`rounded-2xl px-3.5 py-2 whitespace-pre-wrap ${
+              <div
+                className={`max-w-full min-w-0 rounded-2xl px-3.5 py-2 ${
                   mine ? "rounded-br-md bg-primary text-primary-foreground" : "rounded-bl-md border border-chat-user-border bg-chat-user-surface"
                 }`}
               >
-                {m.text}
-              </p>
+                <Markdown text={m.text} inverse={mine} />
+              </div>
             </div>
           </li>
         );
