@@ -1,4 +1,4 @@
-//! The Tauri commands the screens call (app/src/backend.ts, app/src/useLiveRuns.ts),
+//! The Tauri commands the screens call (app/src/platform/backend, app/src/data/useLiveRuns.ts),
 //! one file per domain and registered once in [`handler`]. Each runs its work on a
 //! blocking thread and calls o-core directly: no shell, and any CLI it asks runs
 //! without a window (sign-in alone opens a console the person drives). Every
