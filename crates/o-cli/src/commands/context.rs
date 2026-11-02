@@ -93,6 +93,7 @@ fn context_main(home: &Path, args: &[String]) -> i32 {
 fn print_hits(project: Option<&str>, hits: &[Hit]) {
     if hits.is_empty() {
         println!("관련 컨텍스트가 없습니다{}.", project.map(|p| format!(" (프로젝트 {p})")).unwrap_or_default());
+        println!("이전 작업 결과, 팀 대화와 추가한 메모에서 찾습니다. 프로젝트 파일 전체를 검색하지는 않습니다.");
         return;
     }
     for (i, hit) in hits.iter().enumerate() {

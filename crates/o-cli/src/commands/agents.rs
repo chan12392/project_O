@@ -140,7 +140,7 @@ fn doctor(root: &Path, as_json: bool) -> i32 {
             }
         }
         if inside_home {
-            println!("\n주의: 지금 폴더가 홈 폴더({}) 안입니다. 테스트 프로젝트는 홈 폴더 밖에 두세요.", real_home.to_string_lossy());
+            println!("\n안내: 지금 폴더가 사용자 홈({}) 안입니다. 상위 폴더의 프로젝트 지시 파일은 깨끗한 프로필에서도 읽힐 수 있습니다.", real_home.to_string_lossy());
         }
     }
     if is_clean {
