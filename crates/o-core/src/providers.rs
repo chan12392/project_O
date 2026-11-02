@@ -6,6 +6,7 @@
 //! is narrow: each CLI may run `o msg`, the run's team channel, and nothing more.
 
 use std::collections::BTreeMap;
+use std::ffi::OsString;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -24,6 +25,35 @@ pub struct LaunchSpec {
     pub stdin: Option<String>,
     /// Run and card ids for `o msg`; never credentials.
     pub env: BTreeMap<String, String>,
+    /// Inherited variables taken out before launch (see `api_key_vars`).
+    pub env_remove: Vec<String>,
+}
+
+/// API key variables a CLI prefers over its own sign-in when it runs headless.
+/// Left on the PC (an old key in a shell profile or `.env`), they would quietly
+/// bill the API instead of the subscription the card is meant to use:
+/// `claude -p` always uses `ANTHROPIC_AUTH_TOKEN`/`ANTHROPIC_API_KEY` when present
+/// (code.claude.com/docs/en/authentication), and `codex exec` puts `CODEX_API_KEY`
+/// ahead of the saved ChatGPT login (codex-rs/login/src/auth/manager.rs).
+pub fn api_key_vars(provider: ProviderId) -> &'static [&'static str] {
+    match provider {
+        ProviderId::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+        ProviderId::Codex => &["CODEX_API_KEY"],
+        ProviderId::Agy => &[],
+    }
+}
+
+/// Names to take out of the inherited environment: the listed ones, plus any
+/// inherited spelling of them in another case (Windows reads names without case).
+pub fn names_to_remove(remove: &[String], inherited: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
+    let mut names: Vec<OsString> = remove.iter().map(OsString::from).collect();
+    for key in inherited {
+        let listed = key.to_str().is_some_and(|k| remove.iter().any(|r| r.eq_ignore_ascii_case(k)));
+        if listed && !names.contains(&key) {
+            names.push(key);
+        }
+    }
+    names
 }
 
 pub struct TeamChannel<'a> {
@@ -39,13 +69,14 @@ pub fn launch_spec(card: &Card, plan: &Plan, team: &TeamChannel) -> LaunchSpec {
     let prompt = card_prompt(card, plan, team);
     let env = BTreeMap::from([("O_RUN_ID".to_string(), team.run_id.to_string()), ("O_CARD_ID".to_string(), card.id.clone())]);
     let s = |v: &[&str]| v.iter().map(|a| a.to_string()).collect::<Vec<_>>();
+    let env_remove = s(api_key_vars(card.provider));
     match card.provider {
         ProviderId::Claude => {
             let mut args = s(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools"]);
             args.push(format!("Bash({TEAM_COMMAND} *)"));
             args.extend(opt("--model", card.model.as_deref()));
             args.extend(opt("--effort", card.effort.as_deref()));
-            LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env }
+            LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove }
         }
         ProviderId::Codex => {
             let mut args = s(&["exec", "--json", "-s", "workspace-write", "-C", &plan.project, "--add-dir", team.run_dir]);
@@ -53,7 +84,7 @@ pub fn launch_spec(card: &Card, plan: &Plan, team: &TeamChannel) -> LaunchSpec {
             let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
             args.extend(opt("-c", effort.as_deref()));
             args.push("-".into());
-            LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env }
+            LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove }
         }
         ProviderId::Agy => {
             // agy allow-rules match whole commands only, so it gets two fixed ones and
@@ -65,7 +96,7 @@ pub fn launch_spec(card: &Card, plan: &Plan, team: &TeamChannel) -> LaunchSpec {
             args.extend(opt("--effort", card.effort.as_deref()));
             args.push("-p".into());
             args.push(prompt);
-            LaunchSpec { bin: "agy".into(), args, stdin: None, env }
+            LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove }
         }
     }
 }
@@ -137,20 +168,29 @@ fn opt(flag: &str, value: Option<&str>) -> Vec<String> {
 pub struct StreamReader {
     provider: ProviderId,
     agy_text: String,
+    /// A limit was already reported for this card.
+    limited: bool,
 }
 
 impl StreamReader {
     pub fn new(provider: ProviderId) -> Self {
-        StreamReader { provider, agy_text: String::new() }
+        StreamReader { provider, agy_text: String::new(), limited: false }
     }
 
     pub fn read(&mut self, line: &str) -> Vec<StreamSignal> {
         let Ok(Value::Object(data)) = serde_json::from_str::<Value>(line) else { return Vec::new() };
-        match self.provider {
+        let mut out = match self.provider {
             ProviderId::Claude => read_claude(&data),
             ProviderId::Codex => read_codex(&data),
             ProviderId::Agy => self.read_agy(&data),
+        };
+        // One limit per card: a later guess from the error text (no reset time, so the
+        // default cooldown) must not stretch the reset time a limit event already gave.
+        if self.limited {
+            out.retain(|s| !matches!(s, StreamSignal::Limit { until } if until.is_empty()));
         }
+        self.limited |= out.iter().any(|s| matches!(s, StreamSignal::Limit { .. }));
+        out
     }
 
     fn read_agy(&mut self, data: &Map<String, Value>) -> Vec<StreamSignal> {
@@ -295,6 +335,8 @@ fn read_claude(data: &Map<String, Value>) -> Vec<StreamSignal> {
             });
         }
         let text = coalesce([data.get("result")]).map(js_string).unwrap_or_default().trim().to_string();
+        // Usually a rejected rate_limit_event comes first; the text still catches a limit without one.
+        out.extend(limit_from_text(&text, ok));
         out.push(StreamSignal::Final { ok, text });
         return out;
     }
@@ -389,11 +431,41 @@ pub fn unwrap_shell(command: &str) -> String {
     if quoted { inner[1..inner.len() - 1].to_string() } else { inner.to_string() }
 }
 
-static LIMIT_TEXT: LazyLock<Regex> =
-    LazyLock::new(|| Regex::new(r"(?i)usage limit|rate limit|quota|resource[_ ]exhausted|too many requests|429").unwrap());
+/// How the CLIs and APIs say a plan or rate limit stopped the turn. A bare "429"
+/// is not enough: file names, line numbers and sizes contain it too.
+static LIMIT_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)rate[ _-]?limit|usage[ _-]?limit|quota|resource[_ ]exhausted|too many requests|",
+        r"(?:http|status|error|code)[ :]*429\b|credit balance|out of credits|",
+        r"exceeded your (?:current )?(?:quota|usage|plan|limit)|hit your (?:usage )?limit|weekly limit|5-hour limit|session limit|",
+        r"사용량 한도|사용 한도|요청 한도|한도(?:를)? ?초과|한도에 (?:도달|걸)|用量上限|配额|使用上限|利用上限|レート制限",
+    ))
+    .unwrap()
+});
+
+/// Size limits say "limit" too (context window, output tokens, file size), but the
+/// same request would fail again later, so they must not rest the provider.
+static SIZE_LIMIT_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(concat!(
+        r"(?i)context (?:window|length)|max[_ ]?tokens|maximum context|output tokens?|too long|file size|upload|",
+        r"크기 한도|길이 한도|파일 크기|출력 토큰|(?:^|[^사])용량 한도|업로드|컨텍스트|上下文|コンテキスト",
+    ))
+    .unwrap()
+});
+
+/// A per-minute limit ("8,000 output tokens per minute") is a rate limit even
+/// though it names output tokens.
+static PER_MINUTE_TEXT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)per[- ](?:1 |one )?min(?:ute)?\b|(?:tokens?|requests?|reqs?)\s*/\s*min(?:ute)?\b|\b[io]?tpm\b|분당|每分钟|毎分|1分あたり").unwrap()
+});
+
+/// A plan or rate limit, not a size limit.
+pub fn is_limit_text(text: &str) -> bool {
+    LIMIT_TEXT.is_match(text) && (PER_MINUTE_TEXT.is_match(text) || !SIZE_LIMIT_TEXT.is_match(text))
+}
 
 fn limit_from_text(text: &str, ok: bool) -> Vec<StreamSignal> {
-    if ok || !LIMIT_TEXT.is_match(text) {
+    if ok || !is_limit_text(text) {
         return Vec::new();
     }
     vec![StreamSignal::Limit { until: String::new() }]
