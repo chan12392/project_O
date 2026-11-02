@@ -196,10 +196,14 @@ impl Provider for Devin {
 pub fn read_run(stdout: &str, stderr: &str, transcript: Option<&str>) -> Vec<StreamSignal> {
     let mut out = Vec::new();
     let mut refused: Vec<String> = Vec::new();
-    if let Some(Value::Object(atif)) = transcript.and_then(|t| serde_json::from_str::<Value>(t).ok()) {
-        out.extend(transcript_signals(&atif, &mut refused));
+    let atif = transcript.and_then(|t| serde_json::from_str::<Value>(t).ok());
+    if let Some(Value::Object(atif)) = &atif {
+        out.extend(transcript_signals(atif, &mut refused));
     }
-    let answer = stdout.trim();
+    let transcript_answer = || atif.as_ref()?.get("steps")?.as_array()?.iter().rev().find(|s| s.get("source").and_then(Value::as_str) == Some("agent"))
+        .filter(|s| s.get("tool_calls").and_then(Value::as_array).is_none_or(Vec::is_empty))?
+        .get("message")?.as_str().map(str::trim).filter(|s| !s.is_empty());
+    let answer = if stdout.trim().is_empty() && stderr.trim().is_empty() && refused.is_empty() { transcript_answer().unwrap_or("") } else { stdout.trim() };
     if !answer.is_empty() {
         out.push(StreamSignal::Final { ok: true, text: answer.to_string() });
         return out;

@@ -589,6 +589,7 @@ fn devin_answers_come_from_stdout_and_its_steps_from_the_transcript() {
     );
     // Without a transcript the answer still counts.
     assert_eq!(read_run("ok", "", None), [StreamSignal::Final { ok: true, text: "ok".into() }]);
+    assert!(matches!(read_run("", "", Some(DEVIN_ANSWERED)).last(), Some(StreamSignal::Final { ok: true, text }) if text == "It printed: no run found."));
     // A plain-text stdout is never read line by line.
     assert_eq!(StreamReader::new(ProviderId::Devin).read(r#"{"type":"result","result":"x"}"#), []);
 }
