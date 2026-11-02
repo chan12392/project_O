@@ -36,6 +36,19 @@ export function isSessionRun(run: Pick<RunView, "runId">): boolean {
   return run.runId.startsWith(SESSION_PREFIX);
 }
 
+/**
+ * The O command that acts on a ticket, for a person to paste into a terminal. A Claude Code
+ * session is no O run (no plan, events or process of O's), so its tickets get none: they
+ * are read-only records.
+ */
+export function ticketCommand(item: Pick<NextItem, "kind" | "runId" | "cardId">): { label: string; text: string } | undefined {
+  if (isSessionRun(item)) return undefined;
+  if (item.kind === "answer") return { label: "답장 명령", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId} "답장 내용"` };
+  if (item.kind === "silent") return { label: "중지 명령", text: `o stop ${item.runId}` };
+  if (item.kind === "failed" || item.kind === "limit" || item.kind === "stopped") return { label: "상태 명령", text: `o status ${item.runId}` };
+  return undefined;
+}
+
 /** A card still marked running with nothing new for this long has gone quiet. */
 export const SILENT_MS = 10 * 60_000;
 /** Finished runs stay on the list to be checked for this long. */
