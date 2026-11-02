@@ -2,7 +2,7 @@ import { ArrowLeft, Bell, Bot, Info, Keyboard, LogIn, Palette, RefreshCw, Slider
 import { useEffect, useRef, useState, type ReactNode } from "react";
 
 import type { Backend } from "../backend.ts";
-import { updateSettings, useReducedMotion, useSettings, type FontSize, type Motion, type StartScreen, type Theme } from "../settings.ts";
+import { sessionsShown, updateSettings, useReducedMotion, useSettings, type FontSize, type Motion, type StartScreen, type Theme } from "../settings.ts";
 import { AgentList, useAgents } from "./AgentSetup.tsx";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SoonBadge, SubHeading, Switch } from "./controls.tsx";
 
@@ -98,7 +98,7 @@ export function Settings({ api, section, source, onSection, onBack, onOnboarding
       <div className="scrollbar-sleek min-h-0 min-w-0 overflow-y-auto bg-background [scrollbar-gutter:stable]">
         <div key={section} className="mx-auto w-full max-w-3xl px-8 pt-10 pb-24">
           {section === "account" && <AccountSection />}
-          {section === "general" && <GeneralSection />}
+          {section === "general" && <GeneralSection demo={source === "demo"} />}
           {section === "appearance" && <AppearanceSection />}
           {section === "agents" && <AgentsSection api={api} agentsHome={about.data?.agentsHome} onOnboarding={onOnboarding} />}
           {section === "notifications" && <NotificationsSection />}
@@ -178,11 +178,22 @@ function AccountSection() {
   );
 }
 
-function GeneralSection() {
+function GeneralSection({ demo }: { demo: boolean }) {
   const settings = useSettings();
+  const sessions = sessionsShown(settings, demo);
   return (
     <Section title="일반" description="앱을 열 때의 화면과 실행 기록을 읽는 방식입니다.">
       <Rows>
+        <SettingsRow
+          id="sessions-label"
+          label="Claude Code 세션도 보기"
+          description={
+            demo
+              ? "미리보기에서는 예시 세션 하나(블로그 프로젝트)를 보여 줍니다. 메인 대화가 총괄 자리에, 서브에이전트가 사무실의 사람으로 나옵니다."
+              : "O로 보내지 않고 Claude Code에서 바로 한 작업도 최근 24시간 것을 읽기 전용으로 불러옵니다. 메인 대화는 총괄 자리에, 서브에이전트는 사무실의 사람으로 보이고 다음 할 일에도 잡힙니다. 대화 기록 폴더(projects)만 읽고 로그인 정보는 읽지 않습니다."
+          }
+          control={<Switch checked={sessions} onChange={(next) => updateSettings({ sessions: next })} labelledBy="sessions-label" />}
+        />
         <SettingsRow
           label="시작 화면"
           description={

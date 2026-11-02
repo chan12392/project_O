@@ -4,6 +4,7 @@ import type { OEvent } from "../../src/core/events.ts";
 import { snapshot, type RunView } from "../../src/core/snapshot.ts";
 import type { UsageWindow } from "../../src/core/usage.ts";
 import demo from "./data/demo-runs.json";
+import demoSession from "./data/demo-session.json";
 
 export interface Message {
   from: "me" | "lead";
@@ -19,8 +20,8 @@ interface DemoRun {
   transcript: Message[];
 }
 
-/** Real runs from this machine, newest first (app/src/data/demo-runs.json). */
-const RUNS = demo.runs as DemoRun[];
+/** Real runs from this machine, newest first (app/src/data/demo-runs.json), then a made-up Claude Code session (shown when Settings asks for sessions). */
+const RUNS = [...demo.runs, ...demoSession.runs] as DemoRun[];
 /** Subscription windows from `o usage` (Codex, Antigravity) at recording time; live mode reads usage.json. */
 export const USAGE_WINDOWS = (demo.usage?.windows ?? []) as UsageWindow[];
 /** A replayed run plays back in about thirty seconds, whatever it really took. */

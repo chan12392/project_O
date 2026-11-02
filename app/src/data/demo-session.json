@@ -1,0 +1,30 @@
+{
+  "note": "A made-up Claude Code session (no real transcript) in the shape `o runs --json --sessions` sends: the main thread speaks as the lead, each subagent is a card.",
+  "runs": [
+    {
+      "transcript": [],
+      "events": [
+        { "t": "run.start", "at": "2026-11-01T15:40:00.000Z", "runId": "session-demo-0001", "title": "블로그에 검색 붙이기", "project": "C:/projects/blog", "cards": [
+          { "id": "a1", "provider": "claude", "label": "검색 라이브러리 조사", "role": "Explore" },
+          { "id": "a2", "provider": "claude", "label": "검색 색인 만들기", "role": "general-purpose" },
+          { "id": "a3", "provider": "claude", "label": "E2E 테스트 돌리기", "role": "general-purpose" }
+        ] },
+        { "t": "msg", "at": "2026-11-01T15:40:20.000Z", "from": "lead", "to": "all", "text": "세 갈래로 나눠 진행합니다: 라이브러리 조사, 색인 만들기, E2E 테스트." },
+        { "t": "card.start", "at": "2026-11-01T15:40:30.000Z", "cardId": "a1" },
+        { "t": "card.tool", "at": "2026-11-01T15:41:00.000Z", "cardId": "a1", "name": "Grep", "summary": "search" },
+        { "t": "card.tool", "at": "2026-11-01T15:42:00.000Z", "cardId": "a1", "name": "WebSearch", "summary": "static site search library" },
+        { "t": "card.message", "at": "2026-11-01T15:46:00.000Z", "cardId": "a1", "text": "정적 사이트에는 Pagefind가 가장 가볍습니다." },
+        { "t": "card.end", "at": "2026-11-01T15:46:30.000Z", "cardId": "a1", "status": "done", "result": "Pagefind 추천: 빌드 후 색인을 만들고 런타임 서버가 필요 없습니다.", "exitCode": null },
+        { "t": "msg", "at": "2026-11-01T15:47:00.000Z", "from": "lead", "to": "all", "text": "Pagefind로 갑니다. 색인 작업을 시작합니다." },
+        { "t": "card.start", "at": "2026-11-01T15:47:30.000Z", "cardId": "a2" },
+        { "t": "card.start", "at": "2026-11-01T15:48:00.000Z", "cardId": "a3" },
+        { "t": "card.tool", "at": "2026-11-01T15:50:00.000Z", "cardId": "a2", "name": "Edit", "summary": "package.json" },
+        { "t": "card.tool", "at": "2026-11-01T15:55:00.000Z", "cardId": "a3", "name": "Bash", "summary": "npx playwright test" },
+        { "t": "card.end", "at": "2026-11-01T15:58:00.000Z", "cardId": "a3", "status": "failed", "result": "Playwright 브라우저가 설치되어 있지 않아 테스트를 돌리지 못했습니다.", "exitCode": null },
+        { "t": "card.tool", "at": "2026-11-01T16:10:00.000Z", "cardId": "a2", "name": "Bash", "summary": "npm run build" },
+        { "t": "card.tool", "at": "2026-11-01T16:25:40.000Z", "cardId": "a2", "name": "Edit", "summary": "src/layouts/Base.astro" },
+        { "t": "msg", "at": "2026-11-01T16:26:30.000Z", "from": "lead", "to": "all", "text": "E2E는 브라우저를 설치한 뒤 다시 돌리겠습니다. 색인부터 마무리합니다." }
+      ]
+    }
+  ]
+}

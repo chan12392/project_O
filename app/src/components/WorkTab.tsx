@@ -21,7 +21,7 @@ const SUB_KEY = "project-o-work-tab";
 const loadSub = () => readStored<Sub>(SUB_KEY, "dashboard", (saved) => (saved === "next" || saved === "board" ? saved : undefined));
 
 /** The clock tickets age by: the caller's (a replay's) or the wall clock, re-read every half minute. */
-function useNow(given: Date | undefined): Date {
+export function useNow(given: Date | undefined): Date {
   const [now, setNow] = useState(() => new Date());
   useEffect(() => {
     if (given) return;
