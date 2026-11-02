@@ -170,6 +170,8 @@ fn send_records_a_plan() {
     let thread = lead::current_thread(&home, &project).unwrap();
     assert_eq!(lead::read_thread(&home, &thread).len(), 6);
     assert_eq!(lead::tokens(&home, Some(&project), None).total, 135);
+    // Its CLI session is the lead's, not separate work for `o runs --sessions`.
+    assert_eq!(lead::session_ids(&home), ["sess-1"]);
 }
 
 fn project_forced() {

@@ -640,6 +640,23 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
     json!({ "thread": thread, "projects": projects })
 }
 
+fn thread_ids(home: &Path) -> Vec<String> {
+    let Ok(entries) = fs::read_dir(leads_dir(home)) else { return Vec::new() };
+    entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).filter(|id| is_run_id(id)).collect()
+}
+
+/// Every CLI session a lead turn used, so `o runs --sessions` does not list the lead as separate work.
+pub fn session_ids(home: &Path) -> Vec<String> {
+    thread_ids(home)
+        .iter()
+        .flat_map(|id| read_thread(home, id))
+        .filter_map(|e| match e {
+            LeadEvent::Session { session_id, .. } => Some(session_id),
+            _ => None,
+        })
+        .collect()
+}
+
 /// Tokens lead turns spent (`o tokens`), for one project or all, since an ISO time.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct LeadTokens {
@@ -652,12 +669,7 @@ pub struct LeadTokens {
 
 pub fn tokens(home: &Path, project: Option<&str>, since: Option<&str>) -> LeadTokens {
     let mut sum = LeadTokens::default();
-    let Ok(entries) = fs::read_dir(leads_dir(home)) else { return sum };
-    for entry in entries.flatten() {
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if !is_run_id(&id) {
-            continue;
-        }
+    for id in thread_ids(home) {
         let events = read_thread(home, &id);
         if let Some(project) = project {
             if thread_project(&events).is_none_or(|p| project_key(&p) != project_key(project)) {
