@@ -1,7 +1,7 @@
 import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play } from "lucide-react";
 import { useState, type FormEvent } from "react";
 
-import { EFFORT_WORD, fileSize, type LeadItem } from "../../../../src/core/lead.ts";
+import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, type LeadItem } from "../../../../src/core/lead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -10,7 +10,8 @@ import { BUTTON_PRIMARY } from "../../ui/controls.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
 
-const LEAD_NAME: Record<string, string> = { claude: "Claude Code", codex: "Codex" };
+/** Thread events may name an agent this build does not know; it shows as its id. */
+const LEAD_NAME: Record<string, string> = NAMES;
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 interface Props {
@@ -80,6 +81,7 @@ function Item({ item, lead, runOf, onOpenCard }: { item: LeadItem; lead: LeadSta
           )}
           <p className="mt-1.5 text-right text-2xs text-chat-foreground-faint">
             {LEAD_NAME[item.provider] ?? item.provider}
+            {item.model ? ` · ${item.model}` : ""}
             {item.effort ? ` · ${EFFORT_WORD[item.effort] ?? item.effort}` : ""} · <time dateTime={item.at}>{timeOf(item.at)}</time>
           </p>
         </div>

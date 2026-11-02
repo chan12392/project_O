@@ -8,7 +8,7 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, tool_summary};
-use super::{opt, strings, LaunchSpec, LeadTurn, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
+use super::{opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
 use crate::context::CONTEXT_COMMAND;
 use crate::run::events::StreamSignal;
@@ -20,6 +20,9 @@ pub struct Claude;
 
 /// The lead's whole tool set: reading files and searching them.
 const LEAD_TOOLS: &str = "Read,Grep,Glob";
+
+/// The model aliases `claude --model` documents.
+const LEAD_MODELS: [(&str, &str); 4] = [("fable", "Fable"), ("opus", "Opus"), ("sonnet", "Sonnet"), ("haiku", "Haiku")];
 
 impl Provider for Claude {
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
@@ -64,6 +67,12 @@ impl Provider for Claude {
         args.extend(opt("--effort", turn.effort));
         args.extend(opt("--add-dir", turn.files_dir));
         Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// Claude Code has no model list command; `--model` takes these aliases for the latest
+    /// model of each family (`claude --help`, code.claude.com/docs/en/model-config).
+    fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
+        Ok(LEAD_MODELS.iter().map(|(id, label)| ModelChoice { id: id.to_string(), label: label.to_string() }).collect())
     }
 
     // https://code.claude.com/docs/en/setup (native installer, WinGet, npm)

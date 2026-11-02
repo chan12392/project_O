@@ -350,8 +350,12 @@ fn refused_requests() {
     let (spawner, seen) = fake(claude_answer("s", "ok"));
     let home_text = home.to_string_lossy().into_owned();
     let cases = [
-        SendRequest { provider: ProviderId::Agy, effort: None, ..request(&project, "a") },
+        SendRequest { provider: ProviderId::Agy, effort: Some("minimal"), ..request(&project, "a") },
         SendRequest { effort: Some("minimal"), ..request(&project, "a") },
+        // The lead's model takes the shape a card's model does (policy's model rule).
+        SendRequest { model: Some("-opus"), ..request(&project, "a") },
+        SendRequest { model: Some("opus 5"), ..request(&project, "a") },
+        SendRequest { model: Some(".hidden"), ..request(&project, "a") },
         request(&project, "   "),
         request("relative/dir", "a"),
         request(&home_text, "a"),

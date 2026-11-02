@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { leadItems, type LeadProvider, type LeadShow } from "../../../src/core/lead.ts";
+import { leadItems, type LeadModel, type LeadProvider, type LeadShow } from "../../../src/core/lead.ts";
 import type { Backend, LeadDispatched } from "../platform/backend/index.ts";
 
 const POLL_MS = 2_000;
 
 export interface SendInput {
   provider: LeadProvider;
+  model?: string;
   effort?: string;
   text: string;
   attachments: string[];
@@ -122,6 +123,28 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     startNew,
     dispatch,
   };
+}
+
+/**
+ * The models a lead of this agent may name (`o lead models`, cached by the shell). `failed`
+ * says why there is no list (the CLI could not list them); the pickers then offer typing an id.
+ */
+export function useLeadModels(api: Backend, provider: LeadProvider | undefined) {
+  const [state, setState] = useState<{ provider?: LeadProvider; models: LeadModel[]; failed?: string }>({ models: [] });
+  useEffect(() => {
+    if (!provider) return;
+    let current = true;
+    api.leadModels(provider).then(
+      (r) => current && setState({ provider, models: r.models }),
+      (e) => current && setState({ provider, models: [], failed: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, provider]);
+  // Until this agent's answer arrives, the last agent's list does not show under it.
+  const ready = state.provider === provider;
+  return { loading: Boolean(provider) && !ready, models: ready ? state.models : [], failed: ready ? state.failed : undefined };
 }
 
 /** Folders compare as O compares them: any slash, no trailing one, any case on Windows. */

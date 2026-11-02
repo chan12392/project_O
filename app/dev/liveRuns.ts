@@ -4,6 +4,7 @@ import type { IncomingMessage, ServerResponse } from "node:http";
 import { fileURLToPath } from "node:url";
 
 import type { Plugin } from "vite";
+import { MODEL_ID } from "../../src/core/lead.ts";
 import { DESKTOP_UPDATES_ONLY } from "../src/platform/updates.ts";
 
 /**
@@ -108,9 +109,22 @@ const LEAD_TIMEOUT_MS = 15 * 60_000;
 /** One attachment (10MB), with room for nothing else. */
 const ATTACH_LIMIT = 10 * 1024 * 1024;
 /** Lead ids, efforts and plan ids as `o lead` takes them; it checks every one again. */
-const LEAD_PROVIDER = /^(claude|codex)$/;
+const LEAD_PROVIDER = /^(claude|codex|agy)$/;
 const LEAD_EFFORT = /^(minimal|low|medium|high|xhigh|max)$/;
 const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
+/** How long a lead model list is reused before the CLI is asked again (the Tauri `lead_models` keeps it as long). */
+const MODELS_TTL_MS = 10 * 60_000;
+const leadModels = new Map<string, { at: number; out: string }>();
+
+/** `o lead models`, kept a few minutes per agent; a failed listing is not kept. */
+function cachedModels(provider: string): Promise<string> {
+  const hit = leadModels.get(provider);
+  if (hit && Date.now() - hit.at < MODELS_TTL_MS) return Promise.resolve(hit.out);
+  return o(["lead", "models", "--provider", provider]).then((out) => {
+    leadModels.set(provider, { at: Date.now(), out });
+    return out;
+  });
+}
 
 /** The lead chat's twins of the Tauri lead_* commands (app/src-tauri/src/commands/lead.rs). */
 async function lead(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
@@ -125,6 +139,15 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   const projectOk = ABSOLUTE.test(project) && existsSync(project);
   if (req.method === "GET" && path === "/lead/show") {
     run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : [])]));
+    return true;
+  }
+  if (req.method === "GET" && path === "/lead/models") {
+    const provider = query.get("provider") ?? "";
+    if (!LEAD_PROVIDER.test(provider)) {
+      fail(400, "에이전트가 필요합니다");
+      return true;
+    }
+    run(cachedModels(provider));
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
@@ -164,7 +187,7 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (path === "/lead/send") {
-    let input: { provider?: unknown; effort?: unknown; text?: unknown; attachments?: unknown; clean?: unknown };
+    let input: { provider?: unknown; model?: unknown; effort?: unknown; text?: unknown; attachments?: unknown; clean?: unknown };
     try {
       input = JSON.parse((await body(req, 256 * 1024)).toString("utf8"));
     } catch {
@@ -180,7 +203,13 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     fail(400, "에이전트와 보낼 내용이 필요합니다");
     return true;
   }
-    const args = ["lead", "send", "--project", project, "--provider", provider, ...effort, ...files.flatMap((f) => ["--attach", f])];
+    // A model that does not look like one is refused, not dropped: the lead must not quietly run another model.
+    if (input.model !== undefined && input.model !== "" && (typeof input.model !== "string" || !MODEL_ID.test(input.model))) {
+      fail(400, "model 이름 형식이 올바르지 않습니다");
+      return true;
+    }
+    const model = typeof input.model === "string" && input.model ? ["--model", input.model] : [];
+    const args = ["lead", "send", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
     run(oWithInput([...args, ...(input.clean === true ? ["--clean"] : []), "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
     return true;
   }

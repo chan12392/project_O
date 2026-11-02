@@ -1,5 +1,5 @@
 import { ChevronDown } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type KeyboardEvent, type ReactNode, type RefObject } from "react";
 
 import { useDismiss } from "../lib/dismiss.ts";
 
@@ -19,10 +19,11 @@ export interface MenuGroup {
 }
 
 /**
- * A small upward menu of radio choices in groups (the composer's agent·effort and run
- * profile pickers). Arrow keys move between choices, Home/End jump, Escape or a press
+ * A small upward menu of radio choices in groups (the composer's agent·model·effort and
+ * run profile pickers). Arrow keys move between choices, Home/End jump, Escape or a press
  * outside closes it and focus returns to the trigger. Choosing keeps it open only
- * when `stayOpen` says so (picking an agent, then its effort).
+ * when `stayOpen` says so (picking an agent, then its model and effort). A long menu
+ * scrolls inside itself; focus keeps the chosen row in view.
  */
 export function ChoiceMenu({
   label,
@@ -32,18 +33,22 @@ export function ChoiceMenu({
   align = "left",
   stayOpen,
   disabled,
+  triggerRef,
 }: {
   label: string;
   trigger: ReactNode;
   groups: MenuGroup[];
   triggerClass: string;
   align?: "left" | "right";
-  stayOpen?: (group: string) => boolean;
+  stayOpen?: (group: string, value: string) => boolean;
   disabled?: boolean;
+  /** The trigger, for a caller that moves focus back to it later (after a follow-up field). */
+  triggerRef?: RefObject<HTMLButtonElement | null>;
 }) {
   const [open, setOpen] = useState(false);
   const panel = useRef<HTMLDivElement>(null);
-  const button = useRef<HTMLButtonElement>(null);
+  const own = useRef<HTMLButtonElement>(null);
+  const button = triggerRef ?? own;
   const id = useId();
   const close = useCallback(() => setOpen(false), []);
   useDismiss(panel, open, close, button);
@@ -96,7 +101,7 @@ export function ChoiceMenu({
           role="menu"
           aria-label={label}
           onKeyDown={onKey}
-          className={`bloom absolute bottom-full z-30 mb-2 w-64 rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg ${align === "right" ? "right-0" : "left-0"}`}
+          className={`bloom absolute bottom-full z-30 mb-2 max-h-[calc(100vh-8rem)] w-64 overflow-y-auto overscroll-contain rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg ${align === "right" ? "right-0" : "left-0"}`}
         >
           {groups.map((group, i) => (
             <div key={group.label} role="group" aria-label={group.label} className={i > 0 ? "mt-1 border-t pt-1" : undefined}>
@@ -114,7 +119,7 @@ export function ChoiceMenu({
                     disabled={choice.disabled}
                     onClick={() => {
                       group.onChoose(choice.value);
-                      if (!stayOpen?.(group.label)) {
+                      if (!stayOpen?.(group.label, choice.value)) {
                         close();
                         button.current?.focus();
                       }
