@@ -8,7 +8,7 @@ use std::io::{self, Read};
 use std::process::Stdio;
 
 use crate::hook::git_command;
-use crate::rules::{code_rules, find_hits, is_allowed_path, READ_ONLY_BRANCHES};
+use crate::rules::{find_hits, is_allowed_path, rules_for_paths, READ_ONLY_BRANCHES};
 
 /// Runs git and returns its stdout. stderr goes to ours; output size is unbounded.
 /// Paths are not quoted, so non-ASCII file names are scanned rather than missed.
@@ -53,7 +53,7 @@ fn scan_files(files: &[String], read: impl Fn(&str) -> io::Result<Vec<u8>>) -> i
             continue; // binary
         }
         let text = String::from_utf8_lossy(&bytes);
-        for hit in find_hits(&text, code_rules()) {
+        for hit in find_hits(&text, rules_for_paths(std::slice::from_ref(file))) {
             problems.push(format!("{file}:{} [{}] {}", hit.line, hit.rule, hit.reason));
         }
     }
@@ -164,5 +164,23 @@ mod tests {
 
         let denied = scan_files(&files[3..], |_| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
         assert!(denied.is_err());
+    }
+
+    /// ADR-0014: the provider files and their test may spell the bypass switches; nothing else
+    /// may, and the provider files still may not touch credentials.
+    #[test]
+    fn provider_files_may_spell_bypass_switches_and_nothing_else() {
+        const BYPASS: &str = concat!("--dangerously-", "skip-permissions");
+        const TOKEN: &str = concat!("CLAUDE_CODE_", "OAUTH_TOKEN");
+        let files: Vec<String> =
+            ["crates/o-core/src/providers/claude.rs", "crates/o-core/tests/providers.rs", "AGENTS.md", "crates/o-core/src/lead/mod.rs", "app/src/x.ts", "crates/o-core/src/providers/sub/x.rs"]
+                .map(String::from)
+                .to_vec();
+        let problems = scan_files(&files, |_| Ok(format!("args.push(\"{BYPASS}\");\n").into_bytes())).unwrap();
+        let flagged: Vec<&str> = problems.iter().map(|p| p.split(':').next().unwrap()).collect();
+        assert_eq!(flagged, ["crates/o-core/src/lead/mod.rs", "app/src/x.ts", "crates/o-core/src/providers/sub/x.rs"]);
+        let credential = scan_files(&files[..1], |_| Ok(format!("env::var(\"{TOKEN}\")\n").into_bytes())).unwrap();
+        assert_eq!(credential.len(), 1);
+        assert!(credential[0].contains("[claude-oauth-token]"), "{}", credential[0]);
     }
 }

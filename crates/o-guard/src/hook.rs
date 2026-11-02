@@ -19,7 +19,7 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::rules::{
-    code_rules, find_hits, is_allowed_path, CREDENTIAL_RULES, OWNER, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
+    code_rules, find_hits, is_allowed_path, rules_for_paths, CREDENTIAL_RULES, OWNER, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
 };
 
 /// Keep in sync with .github/workflows/branch-flow.yml.
@@ -153,7 +153,8 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
     }
     if !paths.is_empty() || tool == "apply_patch" {
         let place = if paths.is_empty() { tool.to_string() } else { paths.join(", ") };
-        for hit in find_hits(&args.to_string(), code_rules()) {
+        // A provider file may spell the bypass switches (ADR-0014); every other rule still applies.
+        for hit in find_hits(&args.to_string(), rules_for_paths(&paths)) {
             reasons.push(format!("{} ({place})", hit.reason));
         }
     }

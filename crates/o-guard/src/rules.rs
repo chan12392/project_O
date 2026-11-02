@@ -43,13 +43,28 @@ static BACKEND_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     ]
 });
 
+/// The id of the rule on switches that disable a CLI's own permission checks.
+pub const BYPASS_RULE: &str = "permission-bypass";
+
 /// Switches that disable a CLI's own permission checks.
 static BYPASS_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     vec![rule(
-        "permission-bypass",
+        BYPASS_RULE,
         r"dangerously-skip-permissions|dangerously-bypass-approvals-and-sandbox|bypassPermissions|--yolo\b",
         "CLI의 권한 확인을 끄는 옵션은 쓸 수 없습니다",
     )]
+});
+
+/// Files that may spell the bypass switches, and only those (every other rule still applies to
+/// them): the provider files that launch a CLI in YOLO mode, their test, and AGENTS.md, which
+/// describes them (docs/ is allowed whole above). Agent shell commands, plans, team messages
+/// and every other file are still checked. Changing this list is a shared-boundary change
+/// (ADR-0014).
+static BYPASS_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
+    [r"^crates/o-core/src/providers/[^/]+\.rs$", r"^crates/o-core/tests/providers\.rs$", r"^AGENTS\.md$"]
+        .iter()
+        .map(|p| Regex::new(p).unwrap())
+        .collect()
 });
 
 /// Every rule code and plans are checked against.
@@ -116,8 +131,25 @@ pub fn find_hits<'a>(text: &str, rules: impl IntoIterator<Item = &'a Rule>) -> V
         .collect()
 }
 
+fn normalized(repo_relative: &str) -> String {
+    let slashes = repo_relative.replace('\\', "/");
+    slashes.strip_prefix("./").unwrap_or(&slashes).to_string()
+}
+
 pub fn is_allowed_path(repo_relative: &str) -> bool {
-    let normalized = repo_relative.replace('\\', "/");
-    let normalized = normalized.strip_prefix("./").unwrap_or(&normalized);
-    ALLOWED_PATHS.iter().any(|p| p.is_match(normalized))
+    let normalized = normalized(repo_relative);
+    ALLOWED_PATHS.iter().any(|p| p.is_match(&normalized))
+}
+
+/// Whether `rule` does not apply to the file: an allowed path skips every rule, a bypass path
+/// only the bypass rule.
+fn exempt(rule: &Rule, repo_relative: &str) -> bool {
+    is_allowed_path(repo_relative) || (rule.id == BYPASS_RULE && BYPASS_PATHS.iter().any(|p| p.is_match(&normalized(repo_relative))))
+}
+
+/// The code rules a change to these files is checked against: every rule, less the ones
+/// all of the files are exempt from (no file: every rule). Shell commands, plans and messages
+/// use [`code_rules`].
+pub fn rules_for_paths(paths: &[String]) -> Vec<&'static Rule> {
+    code_rules().filter(|rule| paths.is_empty() || !paths.iter().all(|p| exempt(rule, p))).collect()
 }

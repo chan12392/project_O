@@ -258,6 +258,26 @@ fn hook_blocks_edits_that_introduce_forbidden_code_outside_allowed_files() {
     assert!(blocked(&json!({ "tool_name": "apply_patch", "tool_input": { "command": patch }, "cwd": "C:/repo" }), &OnBranch("a/x")));
 }
 
+/// ADR-0014: the YOLO launch flags live in the provider files (and their test); everywhere
+/// else — another file, a shell command, a patch that also touches another file — they stay blocked.
+#[test]
+fn only_provider_files_may_introduce_bypass_switches() {
+    let edit = |file_path: &str, content: &str| json!({ "tool_name": "Edit", "tool_input": { "file_path": file_path, "new_string": content }, "cwd": "C:/repo" });
+    let flag = format!("args.push(\"{BYPASS_SANDBOX}\".into());");
+    assert!(passes(&edit("C:/repo/crates/o-core/src/providers/codex.rs", &flag), &OnBranch("younchan")));
+    assert!(passes(&edit("C:/repo/crates/o-core/tests/providers.rs", &flag), &OnBranch("younchan")));
+    assert!(blocked(&edit("C:/repo/crates/o-core/src/lead/mod.rs", &flag), &OnBranch("younchan")));
+    assert!(blocked(&edit("C:/repo/app/src/features/chat/Composer.tsx", &flag), &OnBranch("younchan")));
+    // A provider file is exempt from the bypass rule only.
+    assert!(blocked(&edit("C:/repo/crates/o-core/src/providers/claude.rs", &format!("env::var(\"{OAUTH_TOKEN}\")")), &OnBranch("younchan")));
+    // A command that turns the checks off is blocked wherever it runs.
+    assert!(blocked(&bash(&format!("claude -p {SKIP_PERMISSIONS} hi")), &OnBranch("younchan")));
+    let both = format!("*** Begin Patch\n*** Update File: crates/o-core/src/providers/agy.rs\n+{flag}\n*** Update File: crates/o-core/src/policy.rs\n+x\n*** End Patch");
+    assert!(blocked(&json!({ "tool_name": "apply_patch", "tool_input": { "command": both }, "cwd": "C:/repo" }), &OnBranch("younchan")));
+    let one = format!("*** Begin Patch\n*** Update File: crates/o-core/src/providers/agy.rs\n+{flag}\n*** End Patch");
+    assert!(passes(&json!({ "tool_name": "apply_patch", "tool_input": { "command": one }, "cwd": "C:/repo" }), &OnBranch("younchan")));
+}
+
 #[test]
 fn reasons_carry_the_korean_wording() {
     let reasons = review(&bash("git push origin main"), &OnBranch("younchan"));
