@@ -909,6 +909,16 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
 
 /// Run a lead turn and, when allowed, hand its plan to the same checked dispatch path.
 pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+    send_with_auto(home, req, spawner, start, false)
+}
+
+/// A user-created schedule authorizes dispatch, but keeps the lead and cards in normal mode.
+pub fn send_with_scheduled_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+    if req.yolo { return Err("예약 요청은 일반 권한으로 실행해야 합니다".into()); }
+    send_with_auto(home, req, spawner, start, true)
+}
+
+fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
     let mut added = send(home, req, spawner)?;
     let Some((plan_id, plan, ok)) = added.iter().find_map(|e| match e {
@@ -934,7 +944,7 @@ pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, 
     let stopped = fs::read_to_string(thread_dir(home, thread).join("stop-all-at")).ok()
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
     let reason = if stopped { Some("모두 중지 요청으로 자동 실행을 취소했습니다".to_string()) }
-        else if !req.yolo { Some("YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) }
+        else if !req.yolo && !scheduled { Some("YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) }
         else if let (true, Some(valid_plan), Some(plan_hash)) = (ok, valid.as_ref(), hash.as_deref()) {
             let facts = AutoRunFacts { budget_on: budget::read_enabled_for_autorun(home), cards: valid_plan.cards.len(), running: &running, past: &past, hash: plan_hash, now };
             yolo::check_auto_run(&facts, yolo::read_limits(home)).err()
@@ -944,7 +954,7 @@ pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, 
     append(home, thread, &event).map_err(|e| e.to_string())?;
     added.push(event);
     if run {
-        let mode = RunMode { yolo: true, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
+        let mode = RunMode { yolo: req.yolo, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
         match dispatch_locked(home, &plan_id, mode, start, false) {
             Ok(_) => added.extend(read_thread(home, thread).into_iter().rev().find(|e| matches!(e, LeadEvent::Dispatch { plan_id: id, .. } if id == &plan_id))),
             Err(e) => {

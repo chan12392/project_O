@@ -206,6 +206,19 @@ pub fn check(home: &Path, user_home: &Path, path: &str) -> Result<(), String> {
     }
 }
 
+/// Open an explicitly selected, allowed project directory in the system file manager.
+pub fn open(home: &Path, user_home: &Path, path: &str) -> Result<(), String> {
+    check(home, user_home, path)?;
+    #[cfg(windows)]
+    let program = "explorer.exe";
+    #[cfg(not(windows))]
+    let program = "xdg-open";
+    let mut command = std::process::Command::new(program);
+    command.arg(path);
+    crate::sys::proc::hide_window(&mut command);
+    command.spawn().map(|_| ()).map_err(|e| e.to_string())
+}
+
 /// Registers a folder outside the root. A folder the root already lists is left as it is.
 pub fn add(home: &Path, user_home: &Path, path: &str) -> Result<Listing, String> {
     let path = normalize_project(path.trim());

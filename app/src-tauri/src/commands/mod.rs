@@ -9,9 +9,11 @@
 mod about;
 mod agents;
 mod lead;
+mod images;
 mod projects;
 mod review;
 mod runs;
+mod schedule;
 mod tokens;
 mod usage;
 pub(crate) mod update;
@@ -45,7 +47,14 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_stop,
         lead::lead_stop_all,
         lead::lead_models,
+        images::image_read,
+        images::image_open,
+        schedule::schedule_list,
+        schedule::schedule_create,
+        schedule::schedule_delete,
+        schedule::schedule_set_enabled,
         projects::projects_list,
+        projects::project_open,
         projects::projects_add,
         projects::projects_remove,
         projects::projects_new,

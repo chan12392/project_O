@@ -5,7 +5,7 @@ import { isNote, isSessionRun, needsAction, ticketCommand, type NextItem, type S
 import { PROVIDER_SHORT, clip } from "../../lib/format.ts";
 import { readStored, writeStored } from "../../lib/storage.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
-import { Rail, Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket, type StampTone } from "./Ticket.tsx";
+import { Stamp, TICKET_GHOST, TICKET_PRIMARY, Ticket, type StampTone } from "./Ticket.tsx";
 
 export const STAMP: Record<TodoKind | StoppedKind, { label: string; tone: StampTone }> = {
   answer: { label: "답하기", tone: "rush" },
@@ -173,35 +173,4 @@ function Fold({ title, count, open, grid, children }: { title: string; count: nu
 /** How many tickets wait on a person: what a badge or a rail's count shows. */
 export function actionCount(items: NextItem[]): number {
   return items.filter(needsAction).length;
-}
-
-/**
- * Next up, as in the Orchestrator app but cut to what an O project needs:
- * what to do next, and what stopped. Ticked tickets sink to the bottom for a
- * moment's undo and stay gone after that.
- */
-export function NextUp({ todo, stopped, now, handled, onToggle, onOpen }: { todo: NextItem[]; stopped: NextItem[]; now: Date; handled: Set<string>; onToggle: (key: string) => void; onOpen: (item: NextItem) => void }) {
-  // Ticked this visit: still shown (struck through) so a slip can be undone.
-  const [ticked, setTicked] = useState<NextItem[]>([]);
-  const tick = (item: NextItem) => {
-    setTicked((t) => (t.some((x) => x.key === item.key) ? t.filter((x) => x.key !== item.key) : [...t, item]));
-    onToggle(item.key);
-  };
-  const ticket = (item: NextItem, done?: boolean) => <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={() => tick(item)} done={done} />;
-  const struck = (kinds: string[]) => ticked.filter((t) => kinds.includes(t.kind) && handled.has(t.key));
-  const todoStruck = struck(["answer", "review", "check", "queued"]);
-  return (
-    <div className="@container">
-      <div className="grid gap-5 @2xl:grid-cols-2">
-        <Rail title="다음 할 일" count={actionCount(todo)} meta="답할 말 · 검토할 PR · 확인할 결과 · 곧 시작할 카드">
-          {actionCount(todo) === 0 && todoStruck.length === 0 && <p className="text-xs text-muted-foreground">지금 할 일이 없습니다. 에이전트가 총괄에게 묻거나 PR을 올리면 여기 걸립니다.</p>}
-          <TicketGroups items={todo} ticked={todoStruck} ticket={ticket} />
-        </Rail>
-        <Rail title="멈춘 작업" count={actionCount(stopped)} meta="실패 · 응답 없음 · 한도 · 중지">
-          {actionCount(stopped) === 0 && <p className="text-xs text-muted-foreground">멈춘 작업이 없습니다.</p>}
-          <TicketGroups items={stopped} ticked={struck(["failed", "silent", "limit", "stopped"])} ticket={ticket} />
-        </Rail>
-      </div>
-    </div>
-  );
 }

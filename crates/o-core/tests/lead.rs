@@ -262,6 +262,14 @@ fn autorun() {
     let normal = lead::send_with_autorun(&home, &request(&project, "계획"), spawner.as_ref(), &start).unwrap();
     assert!(normal.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(_), .. })));
     assert_eq!(starts.load(Ordering::SeqCst), 0);
+    let (scheduled_home, scheduled_project) = setup("autorun-scheduled");
+    init_git(&scheduled_project);
+    let scheduled = lead::send_with_scheduled_autorun(&scheduled_home, &request(&scheduled_project, "예약"), spawner.as_ref(), &start).unwrap();
+    assert!(scheduled.iter().any(|e| matches!(e, LeadEvent::Dispatch { yolo: false, .. })));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    let blocked_schedule = lead::send_with_scheduled_autorun(&scheduled_home, &request(&scheduled_project, "예약"), spawner.as_ref(), &start).unwrap();
+    assert!(blocked_schedule.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("진행 중"))));
+    starts.store(0, Ordering::SeqCst);
     let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
     let manual = lead::send(&home, &yolo, spawner.as_ref()).unwrap();
     assert!(manual.iter().any(|e| matches!(e, LeadEvent::Plan { .. })));

@@ -1,110 +1,53 @@
 import { CircleCheck, CircleX, GitPullRequest, MessageSquare, Play, Rocket } from "lucide-react";
-import { useState } from "react";
 
-import { activity, fleetStats, needsAction, type ActivityItem, type NextItem } from "../../../../src/core/attention.ts";
+import { activity, fleetStats, type ActivityItem } from "../../../../src/core/attention.ts";
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_SHORT, STATE_WORD, clip, compact, timeOf } from "../../lib/format.ts";
-import { NextTicket } from "./NextUp.tsx";
 import { TokenCard } from "../usage/TokenCard.tsx";
 import { timeScale } from "../../lib/timeScale.ts";
 import { age } from "./Ticket.tsx";
-
-/** Kinds that hold an agent or a person up; the pass shows these first. */
-const URGENT = new Set(["answer", "failed", "silent", "limit", "review"]);
-const PASS_VISIBLE = 4;
+import { ReviewRequestForm } from "./ReviewRequest.tsx";
 
 interface Props {
   runs: RunView[];
-  todo: NextItem[];
-  stopped: NextItem[];
   now: Date;
-  onOpen: (item: NextItem) => void;
-  onToggle: (key: string) => void;
-  onNextUp: () => void;
-  onBoard: () => void;
   onCard: (run: string, card: string) => void;
+  global?: boolean;
 }
 
 /**
- * The Orchestrator dashboard's order for one O project: who is waiting on you
- * first, then how the work is moving (strip, flow, activity).
+ * Work summary, flow and activity for one project or the whole workspace.
  */
-export function WorkDashboard({ runs, todo, stopped, now, onOpen, onToggle, onNextUp, onBoard, onCard }: Props) {
-  const [all, setAll] = useState(false);
-  // A note only needs reading and a Claude Code session's ticket is a record: neither waits on anyone.
-  const pass = [...todo, ...stopped].filter((i) => URGENT.has(i.kind) && needsAction(i)).sort((a, b) => a.since.localeCompare(b.since));
-  const shown = all ? pass : pass.slice(0, PASS_VISIBLE);
+export function WorkDashboard({ runs, now, onCard, global = false }: Props) {
   const stats = fleetStats(runs, now);
 
   return (
     <div className="flex flex-col gap-5">
-      <section aria-labelledby="pass-title">
-        <header className="mb-2.5 flex items-baseline gap-2 border-b-2 border-muted-foreground/40 pb-1.5">
-          <h3 id="pass-title" className="text-sm font-bold">
-            기다리는 일
-          </h3>
-          {pass.length > 0 && (
-            <span className="rounded-full bg-destructive px-1.5 text-2xs font-bold text-destructive-foreground tabular-nums">
-              {pass.length}
-              <span className="sr-only">건</span>
-            </span>
-          )}
-          <span className="truncate text-2xs text-muted-foreground">오래 기다린 것부터</span>
-          {pass.length > PASS_VISIBLE && (
-            <button type="button" onClick={() => setAll((a) => !a)} className="ml-auto shrink-0 rounded px-1.5 text-2xs text-muted-foreground hover:text-foreground focus-ring">
-              {all ? "줄여 보기" : `모두 ${pass.length}개 보기`}
-            </button>
-          )}
-        </header>
-        {pass.length === 0 ? (
-          <p className="rounded-lg border border-dashed px-4 py-5 text-center text-xs text-muted-foreground">
-            지금 기다리는 일이 없습니다. 에이전트의 질문, 실패·응답 없는 카드, 검토할 PR이 생기면 여기에 먼저 걸립니다.
-          </p>
-        ) : (
-          <div className="@container">
-            <div className="grid gap-2.5 @xl:grid-cols-2">
-              {shown.map((item) => (
-                <NextTicket key={item.key} item={item} now={now} onOpen={onOpen} onDone={onToggle} />
-              ))}
-            </div>
-          </div>
-        )}
-      </section>
-
+      {!global && runs[0] && <ReviewRequestForm project={runs[0].project} />}
       <div className="@container">
         <div className="grid grid-cols-2 gap-px overflow-hidden rounded-xl border bg-border text-card-foreground @xl:grid-cols-4" role="group" aria-label="작업 현황">
-          <Metric label="작업 중" value={stats.running} hint={`${runs.filter((r) => r.status === "running").length}개 실행`} tone="text-agent-working" onClick={onBoard} action="보드 열기" />
-          <Metric label="멈춤" value={stopped.length} hint={`실패·중지 ${stats.stopped}`} tone={stopped.length > 0 ? "text-destructive" : "text-muted-foreground"} onClick={onNextUp} action="다음 할 일 열기" />
-          <Metric label="PR" value={stats.prs} hint="에이전트가 보고한 PR" tone="text-callout-note" onClick={onNextUp} action="다음 할 일 열기" />
+          <Metric label="작업 중" value={stats.running} hint={`${runs.filter((r) => r.status === "running").length}개 실행`} tone="text-agent-working" />
+          <Metric label="멈춤" value={stats.stopped} hint="실패·중지" tone={stats.stopped > 0 ? "text-destructive" : "text-muted-foreground"} />
+          <Metric label="PR" value={stats.prs} hint="에이전트가 보고한 PR" tone="text-callout-note" />
           <Metric label="오늘 카드" value={stats.cardsToday} hint={stats.tokensToday > 0 ? `${compact.format(stats.tokensToday)} 토큰` : "토큰 보고 없음"} />
         </div>
       </div>
 
-      <TokenCard project={runs[0]?.project} />
+      <TokenCard project={global ? undefined : runs[0]?.project} />
       <WorkFlow runs={runs} now={now} onCard={onCard} />
       <Activity items={activity(runs, 10)} now={now} onCard={onCard} />
     </div>
   );
 }
 
-function Metric({ label, value, hint, tone = "", onClick, action }: { label: string; value: number; hint: string; tone?: string; onClick?: () => void; action?: string }) {
-  const body = (
-    <>
+function Metric({ label, value, hint, tone = "" }: { label: string; value: number; hint: string; tone?: string }) {
+  return <div className="flex items-center gap-2.5 bg-card px-3.5 py-3 text-left">
       <span className={`text-2xl leading-none font-bold tabular-nums ${tone}`}>{value}</span>
       <span className="min-w-0">
         <span className="block text-xs font-semibold">{label}</span>
         <span className="block truncate text-2xs text-muted-foreground">{hint}</span>
       </span>
-    </>
-  );
-  const cls = "flex items-center gap-2.5 bg-card px-3.5 py-3 text-left";
-  return onClick ? (
-    <button type="button" onClick={onClick} title={action} className={`${cls} hover:bg-accent/40 focus-ring focus-visible:ring-inset`}>
-      {body}
-    </button>
-  ) : (
-    <div className={cls}>{body}</div>
-  );
+  </div>;
 }
 
 const BAR: Record<CardView["state"], string> = {
@@ -185,10 +128,11 @@ function Activity({ items, now, onCard }: { items: ActivityItem[]; now: Date; on
       </h3>
       <ul className="divide-y">
         {items.map((item) => {
-          const Icon = item.kind === "end" && /실패|중지/.test(item.detail) ? CircleX : ICON[item.kind];
+          const failed = (item.kind === "end" || item.kind === "run") && /실패|중지/.test(item.detail);
+          const Icon = failed ? CircleX : ICON[item.kind];
           const body = (
             <>
-              <Icon className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+              <Icon className={`mt-0.5 size-3.5 shrink-0 ${failed ? "text-red-500" : item.kind === "end" ? "text-emerald-500" : item.kind === "start" ? "text-amber-500" : "text-sky-500"}`} aria-hidden="true" />
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs">{clip(item.text, 90)}</span>
                 <span className="block truncate text-2xs text-muted-foreground">

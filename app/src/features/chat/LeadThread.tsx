@@ -9,6 +9,7 @@ import { useSettings } from "../../data/settings.ts";
 import { useBudget } from "../../data/useBudget.ts";
 import { BUTTON_PRIMARY } from "../../ui/controls.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { ImageScope } from "./ImageGallery.tsx";
 import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
 
 /** Thread events may name an agent this build does not know; it shows as its id. */
@@ -39,7 +40,7 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
   const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "error");
   const progressSummary = leadProgressSummary(lead.thread?.progressCounts);
   return (
-    <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
+    <ImageScope.Provider value={project ? { project } : undefined}><div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6 text-sm text-chat-foreground">
         {lead.thread && <div className="flex justify-end"><button type="button" className="rounded border px-2 py-1 text-xs focus-ring" onClick={() => void lead.stopAll().then(() => setStopError(""), (e) => setStopError(errorText(e)))}>모두 중지</button></div>}
         {stopError && <p role="alert" className="text-xs text-destructive">모두 중지하지 못했습니다: {stopError}</p>}
@@ -85,7 +86,7 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
           </div>
         )}
       </div>
-    </div>
+    </div></ImageScope.Provider>
   );
 }
 

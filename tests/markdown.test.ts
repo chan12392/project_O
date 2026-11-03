@@ -5,6 +5,16 @@ import { pathToFileURL } from "node:url";
 
 import { leadItems, type LeadEvent } from "../src/core/lead.ts";
 import { CHAT_MARKDOWN, safeUrl } from "../app/src/features/chat/markdown.ts";
+import { imagePaths } from "../app/src/features/chat/imagePaths.ts";
+
+test("finds local image paths in messages and keeps each path once", () => {
+  const text = "이미지: `C:\\work\\my file.png`\n![미리보기](C:\\work\\my file.png)\n다른 파일 assets/output.webp";
+  const paths = imagePaths(text);
+  assert.equal(paths.filter((p) => p === "C:\\work\\my file.png").length, 1);
+  assert.ok(paths.includes("assets/output.webp"));
+  assert.ok(!imagePaths("문서: notes.txt").length);
+  assert.ok(!imagePaths("https://example.com/image.png").length);
+});
 
 // React and react-markdown live in the app's packages; load them from there.
 const fromApp = createRequire(new URL("../app/package.json", import.meta.url));

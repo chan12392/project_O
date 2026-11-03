@@ -58,9 +58,9 @@
 | 폴더 | 내용 |
 |---|---|
 | `shell/` | `App.tsx`(메인 창·팝아웃), `Sidebar`, `SidePanel`(오른쪽 패널과 보기 목록), `StatusBar`, `panelLayout.ts`, `announcer.ts`, 막힌 링크 안내 `LinkNotice`(`main.tsx`에 마운트) |
-| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 이미지는 불러오지 않음, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
+| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 프로젝트나 작업 폴더 안의 로컬 이미지만 별도 표시, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
-| `features/work/` | 에이전트 작업 탭 `WorkTab`(하위 보기 목록 `SUBS`), `WorkDashboard`, `NextUp`, `AllNextUp`, `AgentBoard`, `Kanban`, `Ticket`, `ReviewRequest` |
+| `features/work/` | 에이전트 작업 탭 `WorkTab`(설계·대시보드), 전체 `WorkDashboard`·`AllNextUp`, 예약 `Automation`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
 | `features/projects/` | 새 요청 화면 `NewRequest`(맡길 프로젝트 고르기·새 프로젝트·폴더 등록), 첫 실행 `ImportCard`(기록에서 찾은 프로젝트), 공용 양식 `ProjectForms` (ADR-0009) |
 | `features/updates/` | `UpdatePrompt`(shell에 한 번 마운트), 정보 항목의 `UpdateSettings`. 공용 업데이트 타입·문구·제거 명령은 `platform/updates.ts` |

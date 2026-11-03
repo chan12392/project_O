@@ -29,6 +29,9 @@ fn projects_command(home: &Path, args: &[String]) -> i32 {
         Some((verb, operands)) => (*verb, operands),
         None => ("list", &[][..]),
     };
+    if let ("open", [path]) = (verb, operands) {
+        return match projects::open(home, &user, path) { Ok(()) => { println!("{{}}"); 0 }, Err(e) => fail(&e) };
+    }
     let result = match (verb, operands) {
         ("list", []) => projects::list(home, &user).map(|l| (l, None)),
         ("add", [path]) => projects::add(home, &user, path).map(|l| (l, None)),

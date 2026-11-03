@@ -137,6 +137,12 @@ export interface Backend {
   login(id: AgentId, clean: boolean): Promise<ActionResult>;
   /** Opens a web page in the person's browser. */
   openExternal(url: string): Promise<void>;
+  imageRead(project: string, path: string, run?: string, card?: string): Promise<{ mime: string; bytes: number[] }>;
+  imageOpen(project: string, path: string, folder: boolean, run?: string, card?: string): Promise<void>;
+  schedules(): Promise<ScheduleJob[]>;
+  scheduleCreate(request: ScheduleRequest): Promise<ScheduleJob>;
+  scheduleDelete(id: string): Promise<void>;
+  scheduleSetEnabled(id: string, enabled: boolean): Promise<ScheduleJob>;
   /** App version and where O keeps its state, for Settings → About. */
   about(): Promise<About>;
   checkUpdate(): Promise<UpdateCheck>;
@@ -185,6 +191,7 @@ export interface Backend {
 
   /** The projects root, its projects and the registered folders (`o projects --json`). */
   projects(): Promise<ProjectList>;
+  projectOpen(path: string): Promise<void>;
   /** Registers a folder outside the root (the same rules as a card's project folder). */
   projectsAdd(path: string): Promise<ProjectList>;
   /** Takes a registered folder off the list; the folder stays. */
@@ -198,6 +205,18 @@ export interface Backend {
   /** The native folder picker (desktop only); null when cancelled or unavailable. */
   pickFolder?(): Promise<string | null>;
 }
+
+export interface ScheduleRequest {
+  name: string;
+  project: string;
+  provider: "claude" | "codex" | "agy";
+  text: string;
+  start: string;
+  repeat: "once" | "daily" | "weekly";
+  clean: boolean;
+  autoDispatch: boolean;
+}
+export type ScheduleJob = ScheduleRequest & { id: string; enabled: boolean; last?: { at: string; ok: boolean; error?: string } };
 
 export interface YoloReport {
   enabled: boolean;

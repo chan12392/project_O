@@ -159,6 +159,21 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     );
   const project = query.get("project") ?? "";
   const projectOk = ABSOLUTE.test(project) && existsSync(project);
+  if (path === "/lead/schedule" && req.method === "GET") { run(o(["schedule", "list"])); return true; }
+  if (path === "/lead/schedule" && req.method === "POST") {
+    try { run(oWithInput(["schedule", "create", "-"], await body(req, 64 * 1024), 60_000)); }
+    catch (e) { fail(413, (e as Error).message); }
+    return true;
+  }
+  if (path === "/lead/schedule/delete" && req.method === "POST") { run(o(["schedule", "delete", query.get("id") ?? ""])); return true; }
+  if ((path === "/lead/schedule/enable" || path === "/lead/schedule/disable") && req.method === "POST") { run(o(["schedule", path.endsWith("/enable") ? "enable" : "disable", query.get("id") ?? ""])); return true; }
+  if (path.startsWith("/lead/image/")) {
+    const action = path.slice("/lead/image/".length);
+    const allowed = (action === "read" && req.method === "GET") || ((action === "open" || action === "folder") && req.method === "POST");
+    if (!allowed || !projectOk) { fail(400, "이미지 요청이 올바르지 않습니다"); return true; }
+    run(o(["image", action, project, query.get("run") || "-", query.get("card") || "-", query.get("path") || ""]));
+    return true;
+  }
   if (req.method === "GET" && path === "/lead/show") {
     run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : [])]));
     return true;
@@ -278,6 +293,10 @@ async function projects(req: IncomingMessage, res: ServerResponse, path: string,
   const folder = query.get("path") ?? "";
   if (req.method === "GET" && path === "/projects") return run([]);
   if (req.method !== "POST") return false;
+  if (path === "/projects/open") {
+    if (!ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
+    return run(["open", folder]);
+  }
   if (path === "/projects/add" || path === "/projects/remove") {
     if (!ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
     return run([path.endsWith("add") ? "add" : "remove", folder]);
