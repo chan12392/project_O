@@ -3,6 +3,7 @@
 //! the tests need no node, shell or provider CLI.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +30,10 @@ const DUMP_ENV: &str = "--dump-env";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--fake-raw") {
+        std::io::stdout().write_all(b"\xff\r\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}\r\n").unwrap();
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("--fake-devin") {
         std::fs::write(&args[2], r#"{"session_id":"fake-session","steps":[{"source":"agent","tool_calls":[{"function_name":"read","arguments":{"path":"demo.txt"}}]}]}"#).unwrap();
         println!("작업 완료");
@@ -50,7 +55,11 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 27] = [
+    let tests: [(&str, fn()); 31] = [
+        ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
+        ("a failed log stops the worker and its dependent", failed_log),
+        ("raw output is preserved byte for byte", raw_output_preserved),
+        ("dependency results are complete or the dependent is refused", dependency_result_limit),
         ("queued follow-ups stop safely and never run in parallel for one session", followup_queue_and_stop),
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
@@ -157,6 +166,9 @@ fn followup_resumes_workspace() {
         fake_cli(|_| vec![r#"{"type":"system","subtype":"init","session_id":"s1"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])(spec, cwd)
     });
     assert_eq!(run_plan(&home, "original", &initial, None, original).unwrap(), CardStatus::Done);
+    mark_active(&home, &ActiveMarker { run_id: "original".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() }).unwrap();
+    assert!(o_core::run::followup::target(&home, "original", "a").is_err());
+    clear_active(&home, "original", "a");
     let id = o_core::run::followup::start(&home, "original", "a", "다시 확인해 주세요", &|_| Ok(())).unwrap();
     let follow: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
     let resume: Arc<Spawner> = Arc::new(|spec, cwd| {
@@ -239,8 +251,11 @@ fn isolated_worktrees() {
         assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     };
     git(&["init"]);
+    std::fs::write(project.join(".gitattributes"), "* -text\n").unwrap();
     std::fs::write(project.join("shared.txt"), "base\n").unwrap();
-    git(&["add", "shared.txt"]);
+    std::fs::write(project.join("remove.txt"), "remove me\n").unwrap();
+    std::fs::write(project.join("binary.dat"), [0, 1, 2]).unwrap();
+    git(&["add", "."]);
     git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
     let mut a = card("a", ProviderId::Claude, "first");
     let b = card("b", ProviderId::Claude, "second");
@@ -256,10 +271,26 @@ fn isolated_worktrees() {
         let id = spec.env["O_CARD_ID"].clone();
         if id == "a" {
             let previous = observed.lock().unwrap()["b"].clone();
-            assert!(spec.stdin.as_deref().unwrap().contains(&previous.replace('\\', "\\\\")));
             assert_eq!(std::fs::read_to_string(PathBuf::from(&previous).join("shared.txt")).unwrap(), "b\n");
+            assert_eq!(std::fs::read_to_string(PathBuf::from(cwd).join("shared.txt")).unwrap(), "b\n");
+            assert!(!PathBuf::from(cwd).join("remove.txt").exists());
+            assert_eq!(std::fs::read(PathBuf::from(cwd).join("binary.dat")).unwrap(), [0, 255, 3]);
+            assert_eq!(std::fs::read(PathBuf::from(cwd).join("new.bin")).unwrap(), [0, 254, 4]);
         }
         std::fs::write(PathBuf::from(cwd).join("shared.txt"), format!("{id}\n")).unwrap();
+        if id == "b" {
+            let run_git = |args: &[&str]| {
+                let mut command = Command::new("git");
+                command.current_dir(cwd).args(args);
+                let result = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+                assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+            };
+            run_git(&["add", "shared.txt"]);
+            run_git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "worker"]);
+            std::fs::remove_file(PathBuf::from(cwd).join("remove.txt")).unwrap();
+            std::fs::write(PathBuf::from(cwd).join("binary.dat"), [0, 255, 3]).unwrap();
+            std::fs::write(PathBuf::from(cwd).join("new.bin"), [0, 254, 4]).unwrap();
+        }
         observed.lock().unwrap().insert(id, cwd.into());
         inner(spec, cwd)
     });
@@ -280,6 +311,78 @@ fn isolated_worktrees() {
     assert!(!launched.load(Ordering::SeqCst));
     assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "user change\n");
     assert!(read_events(&home, "dirty").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("커밋하지 않은"))));
+}
+
+fn unsafe_handoffs() {
+    for scenario in ["conflict", "target-change", "base-change", "handoff-file", "ignored", "outside", "staged-overlap", "eol-only", "eol-changed", "non-git", "non-git-unchanged"] {
+        let fixture = temp_home();
+        let home = fixture.join("state");
+        let root = fixture.join("project");
+        let project = if scenario.starts_with("non-git") { root.clone() } else { root.join("sub") };
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("shared.txt"), "base\n").unwrap();
+        if !scenario.starts_with("non-git") {
+            std::fs::write(project.join(".gitignore"), "ignored.dat\n").unwrap();
+            let git = |args: &[&str]| {
+                let mut command = Command::new("git");
+                command.current_dir(&root).args(args);
+                let output = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+                assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+            };
+            git(&["init"]);
+            if scenario.starts_with("eol-") { git(&["config", "core.autocrlf", "true"]); }
+            git(&["add", "."]);
+            git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "base"]);
+        }
+        let first = card("a", ProviderId::Claude, "first");
+        let mut dependent = card("c", ProviderId::Claude, "dependent");
+        dependent.depends_on = if scenario == "conflict" { vec!["a".into(), "b".into()] } else { vec!["a".into()] };
+        let cards = if scenario == "conflict" { vec![first, card("b", ProviderId::Claude, "second"), dependent] } else { vec![first, dependent] };
+        let mut p = plan(cards);
+        p.project = project.to_string_lossy().into_owned();
+        create_run(&home, "unsafe", &p).unwrap();
+        std::fs::write(o_core::run::store::run_dir(&home, "unsafe").join("isolated-worktrees"), "").unwrap();
+        let launched = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&launched);
+        let original = project.clone();
+        let handoff = o_core::run::store::run_dir(&home, "unsafe").join("handoff");
+        let inner = quiet();
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            let id = &spec.env["O_CARD_ID"];
+            if id == "c" { observed.store(true, Ordering::SeqCst); }
+            let cwd = PathBuf::from(cwd);
+            if scenario == "conflict" { std::fs::write(cwd.join("shared.txt"), format!("{id}\n")).unwrap(); }
+            if scenario == "non-git" { std::fs::write(cwd.join("shared.txt"), "changed\n").unwrap(); }
+            if scenario == "eol-only" { std::fs::write(cwd.join("shared.txt"), "base\n").unwrap(); }
+            if scenario == "eol-changed" { std::fs::write(cwd.join("shared.txt"), "changed\n").unwrap(); }
+            if scenario == "staged-overlap" {
+                std::fs::write(cwd.join("shared.txt"), "staged\n").unwrap();
+                let mut command = Command::new("git");
+                command.current_dir(&cwd).args(["add", "shared.txt"]);
+                assert!(o_core::sys::proc::hide_window(&mut command).status().unwrap().success());
+                std::fs::write(cwd.join("shared.txt"), "working\n").unwrap();
+            }
+            if scenario == "ignored" { std::fs::write(cwd.join("ignored.dat"), "ignored").unwrap(); }
+            if scenario == "outside" { std::fs::write(cwd.parent().unwrap().join("outside.txt"), "outside").unwrap(); }
+            if scenario == "base-change" { std::fs::write(original.join("user.txt"), "human").unwrap(); }
+            if scenario == "handoff-file" { std::fs::write(&handoff, "human").unwrap(); }
+            if scenario == "target-change" {
+                let target = cwd.parent().unwrap().parent().unwrap().join("2").join("sub");
+                std::fs::write(target.join("shared.txt"), "human\n").unwrap();
+            }
+            inner(spec, &cwd.to_string_lossy())
+        });
+        let unchanged = scenario == "non-git-unchanged";
+        assert_eq!(run_plan(&home, "unsafe", &p, None, spawner).unwrap(), if unchanged { CardStatus::Done } else { CardStatus::Failed }, "{scenario}");
+        assert_eq!(launched.load(Ordering::SeqCst), unchanged, "{scenario}");
+        if !unchanged { assert!(read_events(&home, "unsafe").iter().any(|event| matches!(event, OEvent::CardEnd { card_id, status: CardStatus::Failed, result: Some(reason), .. } if card_id == "c" && reason.contains("인계 실패"))), "{scenario}"); }
+        if scenario == "base-change" { assert_eq!(std::fs::read_to_string(project.join("user.txt")).unwrap(), "human"); }
+        if scenario == "handoff-file" { assert_eq!(std::fs::read_to_string(o_core::run::store::run_dir(&home, "unsafe").join("handoff")).unwrap(), "human"); }
+        if scenario == "target-change" {
+            let target = home.with_file_name("state-worktrees").join("unsafe/2/sub/shared.txt");
+            assert_eq!(std::fs::read_to_string(target).unwrap(), "human\n");
+        }
+    }
 }
 
 fn isolated_worktrees_refuse_submodules() {
@@ -331,6 +434,70 @@ fn isolated_worktrees_refuse_submodules() {
     let spawner: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("fixture stops here")) });
     let _ = run_plan(&home, "beside-submodule", &app, None, spawner);
     assert!(started.load(Ordering::SeqCst));
+}
+
+fn failed_log() {
+    for blocked_log in ["first.raw.jsonl", "first.err.log"] {
+        let home = temp_home();
+        let first = card("first", ProviderId::Claude, "first");
+        let mut second = card("second", ProviderId::Claude, "second");
+        second.depends_on = vec!["first".into()];
+        let p = plan(vec![first, second]);
+        create_run(&home, "bad-log", &p).unwrap();
+        std::fs::create_dir(o_core::run::store::run_dir(&home, "bad-log").join("cards").join(blocked_log)).unwrap();
+        let launched = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&launched);
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            if spec.env["O_CARD_ID"] == "second" { observed.store(true, Ordering::SeqCst); }
+            let mut command = Command::new(std::env::current_exe()?);
+            command.current_dir(cwd).env(FAKE, "[]").env(FAKE_SLEEP, "30000");
+            Ok(command)
+        });
+        let start = std::time::Instant::now();
+        assert_eq!(run_plan(&home, "bad-log", &p, None, spawner).unwrap(), CardStatus::Failed);
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(!launched.load(Ordering::SeqCst));
+        assert!(active_markers(&home).is_empty());
+    }
+}
+
+fn raw_output_preserved() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Claude, "raw")]);
+    create_run(&home, "raw", &p).unwrap();
+    let spawner: Arc<Spawner> = Arc::new(|_, cwd| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).arg("--fake-raw");
+        Ok(command)
+    });
+    assert_eq!(run_plan(&home, "raw", &p, None, spawner).unwrap(), CardStatus::Done);
+    let raw = std::fs::read(o_core::run::store::run_dir(&home, "raw").join("cards/a.raw.jsonl")).unwrap();
+    assert_eq!(raw, b"\xff\r\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}\r\n");
+}
+
+fn dependency_result_limit() {
+    for (run, size, expected) in [("within", 2000, CardStatus::Done), ("too-large", 13000, CardStatus::Failed)] {
+        let home = temp_home();
+        let first = card("first", ProviderId::Claude, "first");
+        let mut second = card("second", ProviderId::Claude, "second");
+        second.depends_on = vec!["first".into()];
+        let p = plan(vec![first, second]);
+        create_run(&home, run, &p).unwrap();
+        let seen = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&seen);
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            if spec.env["O_CARD_ID"] == "second" {
+                assert!(spec.stdin.as_deref().unwrap().contains(&format!("{}END", "x".repeat(size))));
+                observed.store(true, Ordering::SeqCst);
+            }
+            let line = serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "result":format!("{}END", "x".repeat(size))}).to_string();
+            let mut command = Command::new(std::env::current_exe()?);
+            command.current_dir(cwd).env(FAKE, serde_json::to_string(&vec![line]).unwrap());
+            Ok(command)
+        });
+        assert_eq!(run_plan(&home, run, &p, None, spawner).unwrap(), expected);
+        assert_eq!(seen.load(Ordering::SeqCst), expected == CardStatus::Done);
+    }
 }
 
 fn dependency_order() {

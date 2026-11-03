@@ -1,10 +1,10 @@
 //! Separate checkouts for a lead's work graph. They are kept for review and recovery.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::time::SystemTime;
 
 use crate::run::plan::Plan;
@@ -53,6 +53,10 @@ type Entries = BTreeMap<PathBuf, (bool, u64, SystemTime)>;
 
 /// Do not follow links or copy nested repositories into an agent's independent folder.
 fn inventory(root: &Path) -> io::Result<Entries> {
+    inventory_copy(root, false)
+}
+
+fn inventory_copy(root: &Path, skip_git: bool) -> io::Result<Entries> {
     let mut entries = Entries::new();
     let mut dirs = vec![PathBuf::new()];
     while let Some(dir) = dirs.pop() {
@@ -61,6 +65,12 @@ fn inventory(root: &Path) -> io::Result<Entries> {
             let relative = dir.join(entry.file_name());
             let meta = fs::symlink_metadata(entry.path())?;
             let real = PathBuf::from(resolved_path(&entry.path().to_string_lossy()));
+            if skip_git && dir.as_os_str().is_empty() && entry.file_name().to_string_lossy().eq_ignore_ascii_case(".git") {
+                if !meta.is_dir() || meta.file_type().is_symlink() || !real.starts_with(root) {
+                    return Err(io::Error::other("복사본 Git 폴더가 변경되었습니다"));
+                }
+                continue;
+            }
             if entry.file_name().to_string_lossy().eq_ignore_ascii_case(".git") || meta.file_type().is_symlink() || !real.starts_with(root) {
                 return Err(io::Error::other(format!("링크 또는 중첩 Git 저장소는 복사할 수 없습니다: {}", relative.display())));
             }
@@ -91,7 +101,243 @@ pub(crate) fn preflight(project: &str) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> io::Result<HashMap<String, String>> {
+pub(super) struct Workspaces {
+    paths: HashMap<String, String>,
+    project: String,
+    git_base: Option<(PathBuf, PathBuf, String)>,
+}
+
+impl Workspaces {
+    pub(super) fn get(&self, id: &str) -> Option<&String> { self.paths.get(id) }
+
+    /// Applies each predecessor's complete project-scoped Git change to a fresh checkout.
+    pub(super) fn handoff(&self, home: &Path, run_id: &str, plan: &Plan, card: &crate::run::plan::Card) -> io::Result<()> {
+        let Some((root, relative, base_commit)) = self.git_base.as_ref() else {
+            let target = Path::new(self.paths.get(&card.id).ok_or_else(|| io::Error::other("후속 작업 폴더가 없습니다"))?);
+            let base = target.parent().ok_or_else(|| io::Error::other("복사본 기준 폴더가 없습니다"))?.join("base");
+            let original = inventory(&base)?;
+            let unchanged = |path: &Path, skip_git: bool| -> io::Result<bool> {
+                if PathBuf::from(resolved_path(&path.to_string_lossy())) != path { return Ok(false); }
+                if skip_git && !path.join(".git").is_dir() { return Ok(false); }
+                let entries = inventory_copy(path, skip_git)?;
+                if entries.len() != original.len() { return Ok(false); }
+                for (name, (is_dir, _, _)) in &original {
+                    if entries.get(name).is_none_or(|(other_dir, _, _)| is_dir != other_dir) { return Ok(false); }
+                    if !is_dir && fs::read(base.join(name))? != fs::read(path.join(name))? { return Ok(false); }
+                }
+                Ok(entries == inventory_copy(path, skip_git)?)
+            };
+            if !unchanged(Path::new(&self.project), false)? { return Err(io::Error::other("원본 프로젝트가 변경되었습니다")); }
+            if !unchanged(target, true)? { return Err(io::Error::other("후속 복사본에 변경이 있습니다")); }
+            for id in &card.depends_on {
+                let path = Path::new(self.paths.get(id).ok_or_else(|| io::Error::other("선행 작업 폴더가 없습니다"))?);
+                if !unchanged(path, true)? { return Err(io::Error::other("비 Git 프로젝트의 선행 변경은 아직 인계할 수 없습니다")); }
+            }
+            return Ok(());
+        };
+        if base(&self.project)?.as_ref() != self.git_base.as_ref() {
+            return Err(io::Error::other("인계 전에 원본 프로젝트의 기준이 변경되었습니다"));
+        }
+        let target = Path::new(self.paths.get(&card.id).ok_or_else(|| io::Error::other("후속 작업 폴더가 없습니다"))?);
+        let common = git(root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        let verify = |path: &Path| -> io::Result<PathBuf> {
+            if !path.is_dir() || PathBuf::from(resolved_path(&path.to_string_lossy())) != path {
+                return Err(io::Error::other("작업 폴더가 변경되었습니다"));
+            }
+            if git(path, &["rev-parse", "--path-format=absolute", "--git-common-dir"])? != common {
+                return Err(io::Error::other("작업 폴더의 Git 저장소가 변경되었습니다"));
+            }
+            let checkout = PathBuf::from(resolved_path(&git(path, &["rev-parse", "--show-toplevel"])?));
+            if path.strip_prefix(&checkout).ok() != Some(relative.as_path()) {
+                return Err(io::Error::other("작업 폴더의 프로젝트 범위가 변경되었습니다"));
+            }
+            Ok(checkout)
+        };
+        let target_root = verify(target)?;
+        if git(target, &["rev-parse", "--verify", "HEAD^{commit}"])? != *base_commit
+            || !git(&target_root, &["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"])?.is_empty() {
+            return Err(io::Error::other("후속 작업 폴더에 변경이 있어 인계하지 않았습니다"));
+        }
+        let card_index = plan.cards.iter().position(|item| item.id == card.id).ok_or_else(|| io::Error::other("후속 작업을 찾지 못했습니다"))?;
+        let run_dir = crate::run::store::run_dir(home, run_id);
+        let run_meta = fs::symlink_metadata(&run_dir)?;
+        if !run_meta.is_dir() || run_meta.file_type().is_symlink() { return Err(io::Error::other("실행 기록 폴더가 변경되었습니다")); }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if run_meta.file_attributes() & 0x400 != 0 { return Err(io::Error::other("실행 기록 폴더가 연결 지점입니다")); }
+        }
+        let run_root = PathBuf::from(resolved_path(&run_dir.to_string_lossy()));
+        let handoff_root = run_dir.join("handoff");
+        fs::create_dir_all(&handoff_root)?;
+        let meta = fs::symlink_metadata(&handoff_root)?;
+        if !meta.is_dir() || meta.file_type().is_symlink()
+            || resolved_path(&handoff_root.to_string_lossy()) != run_root.join("handoff").to_string_lossy() {
+            return Err(io::Error::other("인계 기록 폴더가 변경되었습니다"));
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if meta.file_attributes() & 0x400 != 0 { return Err(io::Error::other("인계 기록 폴더가 연결 지점입니다")); }
+        }
+        let handoff = handoff_root.join((card_index + 1).to_string());
+        fs::create_dir(&handoff)?;
+        let original_files = handoff.join("original");
+        fs::create_dir(&original_files)?;
+        let mut saved = HashSet::new();
+        let scope = relative.to_string_lossy().replace('\\', "/");
+        for (index, id) in card.depends_on.iter().enumerate() {
+            let source = Path::new(self.paths.get(id).ok_or_else(|| io::Error::other("선행 작업 폴더가 없습니다"))?);
+            let source_root = verify(source)?;
+            let head = git(source, &["rev-parse", "--verify", "HEAD^{commit}"])?;
+            git(source, &["merge-base", "--is-ancestor", base_commit, &head])
+                .map_err(|_| io::Error::other("선행 작업의 기준 커밋이 바뀌었습니다"))?;
+            if !git(&source_root, &["ls-files", "--others", "--ignored", "--exclude-standard", "--directory"])?.is_empty() {
+                return Err(io::Error::other("선행 작업에 무시된 파일이 있어 안전하게 인계할 수 없습니다"));
+            }
+            if !git_output(&source_root, &["ls-files", "--unmerged", "-z"])?.is_empty() {
+                return Err(io::Error::other("선행 작업에 해결되지 않은 Git 충돌이 있습니다"));
+            }
+            let staged = git_output(&source_root, &["diff", "--cached", "--name-only", "-z", "--no-renames"])?;
+            let staged_patch = git_output(&source_root, &["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-renames"])?;
+            let unstaged = git_output(&source_root, &["diff", "--name-only", "-z", "--no-renames"])?;
+            let untracked = git_output(&source_root, &["ls-files", "--others", "--exclude-standard", "-z"])?;
+            let edited: HashSet<&[u8]> = unstaged.split(|b| *b == 0).chain(untracked.split(|b| *b == 0)).filter(|name| !name.is_empty()).collect();
+            if staged.split(|b| *b == 0).any(|name| !name.is_empty() && edited.contains(name)) {
+                return Err(io::Error::other("같은 파일의 스테이징된 내용과 작업 파일이 달라 인계할 수 없습니다"));
+            }
+            let snapshot = |suffix: &str| -> io::Result<(Vec<u8>, Vec<String>, Vec<String>)> {
+                let index_path = handoff.join(format!("{}-{suffix}.index", index + 1));
+                git_index(&source_root, &index_path, &["read-tree", &head])?;
+                git_index(&source_root, &index_path, &["add", "--all", "--", "."])?;
+                let names = git_index(&source_root, &index_path, &["diff", "--cached", "--name-only", "-z", "--no-renames", base_commit, "--"])?;
+                let mut changed = Vec::new();
+                for name in names.split(|b| *b == 0).filter(|name| !name.is_empty()) {
+                    let name = std::str::from_utf8(name).map_err(io::Error::other)?;
+                    if !scope.is_empty() && !name.starts_with(&format!("{scope}/")) {
+                        return Err(io::Error::other("선행 변경이 프로젝트 범위 밖에 있습니다"));
+                    }
+                    changed.push(name.to_string());
+                }
+                let raw = git_index(&source_root, &index_path, &["diff", "--cached", "--raw", "-z", "--no-renames", base_commit, "--"])?;
+                for header in raw.split(|b| *b == 0).step_by(2).filter(|part| !part.is_empty()) {
+                    let header = std::str::from_utf8(header).map_err(io::Error::other)?;
+                    if header.split_whitespace().take(2).any(|mode| matches!(mode.trim_start_matches(':'), "120000" | "160000")) {
+                        return Err(io::Error::other("링크 또는 서브모듈 변경은 인계할 수 없습니다"));
+                    }
+                }
+                let tracked = git_index(&source_root, &index_path, &["ls-files", "-z"])?;
+                let tracked = tracked.split(|b| *b == 0).filter(|name| !name.is_empty())
+                    .map(|name| std::str::from_utf8(name).map(str::to_string).map_err(io::Error::other))
+                    .collect::<io::Result<Vec<_>>>()?;
+                let patch = git_index(&source_root, &index_path, &["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-renames", base_commit, "--"])?;
+                Ok((patch, changed, tracked))
+            };
+            let first = snapshot("first")?;
+            if first != snapshot("second")? || git(source, &["rev-parse", "--verify", "HEAD^{commit}"])? != head
+                || staged != git_output(&source_root, &["diff", "--cached", "--name-only", "-z", "--no-renames"])?
+                || staged_patch != git_output(&source_root, &["diff", "--cached", "--binary", "--full-index", "--no-ext-diff", "--no-renames"])?
+                || unstaged != git_output(&source_root, &["diff", "--name-only", "-z", "--no-renames"])?
+                || untracked != git_output(&source_root, &["ls-files", "--others", "--exclude-standard", "-z"])?
+                || base(&self.project)?.as_ref() != self.git_base.as_ref() {
+                return Err(io::Error::other("인계 준비 중 프로젝트가 변경되었습니다"));
+            }
+            let (patch, changed, tracked) = first;
+            for name in tracked.iter().filter(|name| (scope.is_empty() || name.starts_with(&format!("{scope}/"))) && !changed.contains(name)) {
+                let baseline = if saved.contains(name) { &original_files } else { &target_root };
+                if !same_file(&source_root, baseline, name)? {
+                    return Err(io::Error::other(format!("Git이 기록하지 않은 파일 변경이 있습니다: {name}")));
+                }
+            }
+            for name in &changed {
+                if saved.insert(name.clone()) {
+                    let target_file = target_root.join(name);
+                    match fs::symlink_metadata(&target_file) {
+                        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                        Err(error) => return Err(error),
+                        Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() && PathBuf::from(resolved_path(&target_file.to_string_lossy())).starts_with(&target_root) => {
+                            let backup = original_files.join(name);
+                            fs::create_dir_all(backup.parent().ok_or_else(|| io::Error::other("파일 상위 폴더가 없습니다"))?)?;
+                            fs::copy(target_file, backup)?;
+                        }
+                        Ok(_) => return Err(io::Error::other("기준 파일이 일반 파일이 아닙니다")),
+                    }
+                }
+            }
+            fs::write(handoff.join(format!("{}.patch", index + 1)), &patch)?;
+            if !patch.is_empty() {
+                apply(&target_root, &patch, true)?;
+                apply(&target_root, &patch, false)?;
+            }
+            for name in changed {
+                if !same_file(&source_root, &target_root, &name)? {
+                    return Err(io::Error::other(format!("인계 후 파일이 원본과 다릅니다: {name}")));
+                }
+            }
+        }
+        Ok(())
+    }
+}
+
+fn same_file(a: &Path, b: &Path, name: &str) -> io::Result<bool> {
+    let paths = [a.join(name), b.join(name)];
+    let metadata = |path: &Path| match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(Some(meta)),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error),
+    };
+    let (left, right) = (metadata(&paths[0])?, metadata(&paths[1])?);
+    let (Some(left), Some(right)) = (left.as_ref(), right.as_ref()) else { return Ok(left.is_none() && right.is_none()); };
+    for (root, path) in [(a, &paths[0]), (b, &paths[1])] {
+        let parent = path.parent().ok_or_else(|| io::Error::other("파일 상위 폴더가 없습니다"))?;
+        if !PathBuf::from(resolved_path(&parent.to_string_lossy())).starts_with(root) {
+            return Err(io::Error::other("파일 상위 폴더가 작업 폴더 밖을 가리킵니다"));
+        }
+    }
+    if left.file_type().is_symlink() || right.file_type().is_symlink() {
+        return Ok(left.file_type().is_symlink() && right.file_type().is_symlink() && fs::read_link(&paths[0])? == fs::read_link(&paths[1])?);
+    }
+    if !left.is_file() || !right.is_file() { return Err(io::Error::other("일반 파일이 아닙니다")); }
+    if left.len() != right.len() { return Ok(false); }
+    let (mut left, mut right) = (fs::File::open(&paths[0])?, fs::File::open(&paths[1])?);
+    let (mut a, mut b) = ([0u8; 8192], [0u8; 8192]);
+    loop {
+        let count = left.read(&mut a)?;
+        right.read_exact(&mut b[..count])?;
+        if a[..count] != b[..count] { return Ok(false); }
+        if count == 0 { return Ok(right.read(&mut b[..1])? == 0); }
+    }
+}
+
+fn git_index(dir: &Path, index: &Path, args: &[&str]) -> io::Result<Vec<u8>> {
+    let mut command = Command::new("git");
+    command.current_dir(dir).args(args).env("LC_ALL", "C").env("GIT_INDEX_FILE", index);
+    let out = proc::hide_window(&mut command).output()?;
+    if !out.status.success() { return Err(io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string())); }
+    Ok(out.stdout)
+}
+
+fn git_output(dir: &Path, args: &[&str]) -> io::Result<Vec<u8>> {
+    let mut command = Command::new("git");
+    command.current_dir(dir).args(args).env("LC_ALL", "C");
+    let out = proc::hide_window(&mut command).output()?;
+    if !out.status.success() { return Err(io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string())); }
+    Ok(out.stdout)
+}
+
+fn apply(dir: &Path, patch: &[u8], check: bool) -> io::Result<()> {
+    let mut command = Command::new("git");
+    command.current_dir(dir).arg("apply");
+    if check { command.arg("--check"); }
+    command.arg("-").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
+    let mut child = proc::hide_window(&mut command).spawn()?;
+    let write = child.stdin.take().ok_or_else(|| io::Error::other("Git 입력을 열지 못했습니다"))?.write_all(patch);
+    let out = child.wait_with_output()?;
+    if !out.status.success() { return Err(io::Error::other(format!("선행 변경 충돌: {}", String::from_utf8_lossy(&out.stderr).trim()))); }
+    write
+}
+
+pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> io::Result<Workspaces> {
     let git_base = base(project)?;
     let root = git_base.as_ref().map(|(root, _, _)| root.clone()).unwrap_or_else(|| PathBuf::from(resolved_path(project)));
     if run_id.is_empty() || !run_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
@@ -145,5 +391,5 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
     if current_base != git_base || snapshot.as_ref().is_some_and(|(_, entries)| inventory(&root).map_or(true, |current| current != *entries)) {
         return Err(io::Error::other(format!("워크트리 준비 중 프로젝트가 바뀌었습니다. 만든 폴더는 {}에 보존했습니다", run.display())));
     }
-    Ok(result)
+    Ok(Workspaces { paths: result, project: project.to_string(), git_base })
 }
