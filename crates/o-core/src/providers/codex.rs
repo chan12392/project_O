@@ -330,7 +330,9 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                                 let name = PATH_SPLIT.split(&path).last().unwrap_or_default().to_string();
                                 let mut change = Map::new();
                                 change.insert("path".into(), Value::String(name));
+                                // app-server (v2) sends `{"type":"add"}`; exec sends the bare string.
                                 if let Some(kind) = c.get("kind") {
+                                    let kind = kind.get("type").filter(|t| t.is_string()).unwrap_or(kind);
                                     change.insert("kind".into(), kind.clone());
                                 }
                                 Value::Object(change)

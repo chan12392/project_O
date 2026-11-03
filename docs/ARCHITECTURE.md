@@ -33,7 +33,7 @@
 |---|---|---|
 | `run/` | `plan` `events` `runner` `store` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기, 상태 폴더, SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
 | `policy.rs` | | 계획·팀 메시지 허용 여부와 `LIMITS`. 공용 경계라 맨 위에 둔다 |
-| `providers/` | `mod.rs` `claude.rs` `codex.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필, 사용량 조회 |
+| `providers/` | `mod.rs` `claude.rs` `codex.rs` `codex_app_server.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필, 사용량 조회. YOLO가 아닌 Codex 총괄은 `codex app-server`(읽기 전용 샌드박스, 승인 `never`, 훅 끔, ADR-0023), 카드와 YOLO 총괄은 `codex exec` |
 | `agents/` | `mod.rs` `clean.rs` | 앱이 보여 주는 CLI 설치·로그인 상태와 공식 설치·로그인, 깨끗한 테스트 프로필(환경변수 허용 목록·오염 검사) |
 | `usage/` | `mod.rs` `probe.rs` `budget.rs` | 구독 창 형식, `usage.json` 조회·저장, 하루 사용 예산(ADR-0004) |
 | `context/` | `mod.rs` `tokens.rs` | 세션 공유 컨텍스트 검색·주입과 토큰 보고(ADR-0005) |

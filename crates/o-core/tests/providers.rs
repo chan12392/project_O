@@ -130,6 +130,11 @@ fn codex_stream_config_warnings_are_not_failures() {
         r.read(r#"{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"C:\\Users\\someone\\projects\\todo-app\\index.html","kind":"update"},{"path":"C:/Users/someone/projects/todo-app/app.js","kind":"add"}]}}"#),
         [StreamSignal::Tool { name: "edit".into(), summary: r#"[{"path":"index.html","kind":"update"},{"path":"app.js","kind":"add"}]"#.into() }]
     );
+    // app-server (v2) names the kind in an object; the summary shows the same word.
+    assert_eq!(
+        r.read(r#"{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"C:/p/a.txt","kind":{"type":"add"}},{"path":"b.txt","kind":{"type":"update","move_path":null}}]}}"#),
+        [StreamSignal::Tool { name: "edit".into(), summary: r#"[{"path":"a.txt","kind":"add"},{"path":"b.txt","kind":"update"}]"#.into() }]
+    );
     assert_eq!(
         r.read(r#"{"type":"turn.completed","usage":{"input_tokens":127105,"cached_input_tokens":112384,"output_tokens":519}}"#),
         [StreamSignal::Usage { input: 14721.0, cached: 112384.0, output: 519.0 }, StreamSignal::Final { ok: true, text: String::new() }]

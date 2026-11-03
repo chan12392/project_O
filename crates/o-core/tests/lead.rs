@@ -18,6 +18,7 @@ use serde_json::{json, Value};
 
 const FAKE: &str = "O_FAKE_LEAD_LINES";
 const FAKE_APP_SERVER: &str = "O_FAKE_LEAD_APP_SERVER";
+const FAKE_LINGER: &str = "O_FAKE_LEAD_LINGER_MS";
 const FAKE_SLEEP: &str = "O_FAKE_LEAD_SLEEP_MS";
 const FAKE_PAUSE: &str = "O_FAKE_LEAD_PAUSE_EACH_MS";
 /// Set for a fake CLI: the file it makes when it runs at all.
@@ -82,10 +83,12 @@ fn main() {
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 3] = [
+    let extra: [(&str, fn()); 5] = [
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
         ("Codex declines read-only approval requests and continues", codex_approval),
         ("Codex shows partial prose while keeping the plan hidden", codex_partial),
+        ("Codex refuses other server requests and the turn continues", codex_other_requests),
+        ("a finished Codex turn survives a slow app-server shutdown", codex_slow_shutdown),
     ];
     let total = tests.len() + extra.len();
     let mut failed = 0;
@@ -201,6 +204,17 @@ fn fake_app_server(lines: Vec<String>) {
                 send(json!({"id":42,"method":"item/commandExecution/requestApproval","params":{"threadId":id,"turnId":"fake-turn"}}));
                 assert_eq!(read(&mut input), json!({"id":42,"result":{"decision":"decline"}}));
             }
+            "o.requests" => {
+                send(json!({"id":43,"method":"item/permissions/requestApproval","params":{"threadId":id,"turnId":"fake-turn","permissions":{"network":{"enabled":true}}}}));
+                assert_eq!(read(&mut input), json!({"id":43,"result":{"permissions":{},"scope":"turn"}}));
+                send(json!({"id":44,"method":"mcpServer/elicitation/request","params":{"threadId":id,"serverName":"s","mode":"url"}}));
+                assert_eq!(read(&mut input), json!({"id":44,"result":{"action":"decline"}}));
+                send(json!({"id":45,"method":"item/tool/requestUserInput","params":{"threadId":id,"turnId":"fake-turn","questions":[]}}));
+                assert_eq!(read(&mut input), json!({"id":45,"result":{"answers":{}}}));
+                send(json!({"id":46,"method":"item/tool/call","params":{"threadId":id,"turnId":"fake-turn"}}));
+                let reply = read(&mut input);
+                assert!(reply["error"].is_object() && reply.get("result").is_none(), "{reply}");
+            }
             "item.completed" => {
                 let mut item = event["item"].clone();
                 let kind = match item["type"].as_str().unwrap_or("") {
@@ -224,6 +238,11 @@ fn fake_app_server(lines: Vec<String>) {
         if let Some(ms) = std::env::var(FAKE_PAUSE).ok().and_then(|v| v.parse().ok()) {
             std::thread::sleep(std::time::Duration::from_millis(ms));
         }
+    }
+    // A slow shutdown after the turn: still running when O stops waiting, then a failing exit.
+    if let Some(ms) = std::env::var(FAKE_LINGER).ok().and_then(|v| v.parse().ok()) {
+        std::thread::sleep(std::time::Duration::from_millis(ms));
+        std::process::exit(3);
     }
 }
 
@@ -358,6 +377,35 @@ fn codex_approval() {
     let events = worker.join().unwrap();
     assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, reported_files, .. } if text.contains("하지 않았습니다") && reported_files.is_empty())));
     assert!(!events.iter().any(|event| matches!(event, LeadEvent::Error { .. })));
+}
+
+fn codex_other_requests() {
+    let (home, project) = setup("codex-requests");
+    let (spawner, _) = fake(vec![json!({"type":"o.requests"}).to_string(),
+        json!({"type":"item.completed","item":{"type":"agent_message","text":"요청 없이 답했습니다."}}).to_string(),
+        json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string()]);
+    let req = SendRequest { provider: ProviderId::Codex, ..request(&project, "확인") };
+    let events = lead::send(&home, &req, spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text.contains("요청 없이"))));
+    assert!(!events.iter().any(|event| matches!(event, LeadEvent::Error { .. })), "{events:?}");
+}
+
+fn codex_slow_shutdown() {
+    let (home, project) = setup("codex-slow-shutdown");
+    let lines = vec![json!({"type":"item.completed","item":{"type":"agent_message","text":"끝났습니다."}}).to_string(),
+        json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string()];
+    let spawner = move |_: &LaunchSpec, cwd: &str| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
+            .env(FAKE_APP_SERVER, "1").env(FAKE_LINGER, "20000");
+        Ok(command)
+    };
+    let started = std::time::Instant::now();
+    let req = SendRequest { provider: ProviderId::Codex, ..request(&project, "확인") };
+    let events = lead::send(&home, &req, &spawner).unwrap();
+    assert!(started.elapsed() < std::time::Duration::from_secs(15), "the process was not ended");
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text.contains("끝났습니다"))));
+    assert!(!events.iter().any(|event| matches!(event, LeadEvent::Error { .. })), "{events:?}");
 }
 
 fn codex_partial() {
@@ -619,6 +667,10 @@ fn resumes_session() {
     assert_eq!(spec.args[0], "app-server");
     let sent: Value = serde_json::from_slice(&std::fs::read(Path::new(&project).join("fake-codex-input.json")).unwrap()).unwrap();
     assert_eq!(sent["thread"]["method"], "thread/start");
+    for at in ["thread", "turn"] {
+        assert_eq!(sent[at]["params"]["approvalPolicy"], "never");
+        assert_eq!(sent[at]["params"]["approvalsReviewer"], "user");
+    }
     assert!(sent["turn"]["params"]["input"][0]["text"].as_str().unwrap().contains("어느 파일인가요?"));
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "네")));
 }

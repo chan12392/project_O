@@ -649,6 +649,9 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let mut partial = String::new();
     let mut partial_written = None::<Instant>;
     let mut reported_files = BTreeSet::new();
+    // An error that ends the turn after cleanup, and whether app-server finished the turn successfully.
+    let mut fatal = None::<String>;
+    let mut finished = false;
     if let Some(stdout) = child.stdout.take() {
         let mut raw = OpenOptions::new().create(true).append(true).open(dir.join("turn.raw.jsonl")).ok();
         let mut process_line = |line: &str| -> Result<(), String> {
@@ -726,17 +729,20 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         };
         let mut protocol_error = None;
         if app_server {
-            let stdin = child.stdin.take().ok_or("Codex app-server 입력을 열지 못했습니다")?;
-            let mut event_error = None;
-            let result = providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, |event| {
-                if event_error.is_none() {
-                    if let Some(line) = providers::codex_app_server::stream_line(event) {
-                        event_error = process_line(&line).err();
-                    }
+            match child.stdin.take() {
+                None => fatal = Some("Codex app-server 입력을 열지 못했습니다".into()),
+                Some(stdin) => {
+                    let result = providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, |event| {
+                        if fatal.is_none() {
+                            finished |= matches!(event, providers::codex_app_server::Event::Finished { ok: true, .. });
+                            if let Some(line) = providers::codex_app_server::stream_line(event) {
+                                fatal = process_line(&line).err();
+                            }
+                        }
+                    });
+                    protocol_error = result.err();
                 }
-            });
-            if let Some(error) = event_error { return Err(error); }
-            protocol_error = result.err();
+            }
         } else {
             let mut lines = BufReader::new(stdout);
             let mut buf = Vec::new();
@@ -747,21 +753,30 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
                     Ok(_) => {}
                 }
                 let text = String::from_utf8_lossy(&buf);
-                process_line(text.trim_end_matches(['\r', '\n']))?;
+                if let Err(error) = process_line(text.trim_end_matches(['\r', '\n'])) {
+                    fatal = Some(error);
+                    break;
+                }
             }
         }
-        drop(process_line);
         if let Some(error) = protocol_error { last = Some((false, error)); }
     }
     let _ = fs::write(&progress_path, "[]");
+    // The turn ends with an error below; the CLI must not outlive it.
+    if fatal.is_some() && matches!(child.try_wait(), Ok(None)) {
+        proc::kill_tree(child.id());
+    }
     // app-server is a long-lived process; do not let a stuck shutdown keep the turn open forever.
-    if app_server {
+    // A turn it already finished keeps its result: only the process is ended.
+    if app_server && fatal.is_none() {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             if !matches!(child.try_wait(), Ok(None)) { break; }
             if Instant::now() >= deadline {
                 proc::kill_tree(child.id());
-                last = Some((false, "Codex app-server가 종료되지 않았습니다. 대화 상태를 확인하세요.".into()));
+                if !finished {
+                    last = Some((false, "Codex app-server가 종료되지 않았습니다. 대화 상태를 확인하세요.".into()));
+                }
                 break;
             }
             thread::sleep(Duration::from_millis(25));
@@ -772,6 +787,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
+    if let Some(error) = fatal { return Err(error); }
     // The CLI got this turn's message: its session has seen the thread through it.
     let session_seen = used_session.is_some();
     if let Some(session_id) = used_session {
@@ -793,7 +809,8 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         emit(LeadEvent::Error { at: now_iso(), text: format!("총괄이 제한 시간({minutes}분) 안에 답하지 않아 멈췄습니다. 요청을 나눠 다시 보내세요") })?;
         return Ok(added);
     }
-    let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && exit == Some(0);
+    // A turn app-server finished needs no clean exit: a slow shutdown was ended above.
+    let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && (exit == Some(0) || finished);
     let answer = last.map(|(_, text)| text).filter(|t| !t.trim().is_empty()).unwrap_or(last_message);
     if !ok {
         let why = if limited {

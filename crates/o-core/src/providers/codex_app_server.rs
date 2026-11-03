@@ -50,13 +50,37 @@ fn send(output: &mut impl Write, message: &Value) -> Result<(), String> {
     output.write_all(b"\n").and_then(|_| output.flush()).map_err(|e| e.to_string())
 }
 
-/// Drive one turn over a connected stdio transport. Unexpected server requests fail closed;
-/// the caller must not mark a message delivered until `Session` is emitted.
-pub fn run(
+/// The version this protocol was checked against; an older CLI may lack `app-server` or its v2 API.
+const UNSUPPORTED: &str = "Codex app-server를 시작하지 못했습니다. Codex CLI를 0.166.0 이상으로 업데이트하세요";
+
+/// Approvals stay with the user (never an auto reviewer) and are never asked: the lead is read-only (ADR-0008).
+const APPROVALS: [(&str, &str); 2] = [("approvalPolicy", "never"), ("approvalsReviewer", "user")];
+
+/// A refusal for a server request O cannot answer, in that request's own response shape;
+/// `None` for request types without one (they get a JSON-RPC error). Nothing is ever granted.
+fn refusal(method: &str) -> Option<Value> {
+    Some(match method {
+        "item/permissions/requestApproval" => json!({"permissions":{},"scope":"turn"}),
+        "mcpServer/elicitation/request" => json!({"action":"decline"}),
+        "item/tool/requestUserInput" => json!({"answers":{}}),
+        _ => return None,
+    })
+}
+
+/// Drive one turn over a connected stdio transport. Command and file approvals are declined,
+/// other server requests refused; the caller must not mark a message delivered until `Session` is emitted.
+/// A transport that never finishes `initialize` reports the Codex version it needs.
+pub fn run(turn: &LeadTurn<'_>, input: impl BufRead, output: impl Write, emit: impl FnMut(Event)) -> Result<(), String> {
+    let mut phase = 1;
+    drive(turn, input, output, emit, &mut phase).map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
+}
+
+fn drive(
     turn: &LeadTurn<'_>,
     input: impl BufRead,
     mut output: impl Write,
     mut emit: impl FnMut(Event),
+    phase: &mut u8,
 ) -> Result<(), String> {
     send(&mut output, &json!({"id":1,"method":"initialize","params":{
         "clientInfo":{"name":"project_o","title":"Project O","version":env!("CARGO_PKG_VERSION")}
@@ -64,13 +88,12 @@ pub fn run(
 
     let mut thread_id = String::new();
     let mut turn_id = String::new();
-    let mut phase = 1;
     let mut usage_base: Option<Value> = None;
     let mut usage_total: Option<Value> = None;
     let mut pending = VecDeque::new();
     let mut lines = input.lines();
     loop {
-        let message: Value = if phase == 4 && !pending.is_empty() {
+        let message: Value = if *phase == 4 && !pending.is_empty() {
             pending.pop_front().unwrap()
         } else {
             let Some(line) = lines.next() else { break };
@@ -82,25 +105,31 @@ pub fn run(
                 if matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval") {
                     let same_thread = message.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id.as_str());
                     let request_turn = message.pointer("/params/turnId").and_then(Value::as_str).filter(|id| !id.is_empty());
-                    let same_turn = request_turn.is_some() && (phase == 3 || request_turn == Some(turn_id.as_str()));
-                    if !(phase == 3 || phase == 4) || !same_thread || !same_turn || !(id.is_string() || id.is_i64() || id.is_u64()) {
+                    let same_turn = request_turn.is_some() && (*phase == 3 || request_turn == Some(turn_id.as_str()));
+                    if !(*phase == 3 || *phase == 4) || !same_thread || !same_turn || !(id.is_string() || id.is_i64() || id.is_u64()) {
                         return Err("Codex 승인 요청의 세션 정보가 올바르지 않습니다".into());
                     }
                     send(&mut output, &json!({"id":id,"result":{"decision":"decline"}}))?;
                     emit(Event::ApprovalDenied);
                     continue;
                 }
-                return Err(format!("Codex 요청을 처리할 수 없습니다: {method}"));
+                if !(id.is_string() || id.is_i64() || id.is_u64()) { return Err(format!("Codex 요청 ID가 올바르지 않습니다: {method}")); }
+                match refusal(method) {
+                    Some(result) => send(&mut output, &json!({"id":id,"result":result}))?,
+                    None => send(&mut output, &json!({"id":id,"error":{"code":-32601,"message":"Project O 총괄은 이 요청을 지원하지 않습니다"}}))?,
+                }
+                emit(Event::ApprovalDenied);
+                continue;
             }
             if matches!(method, "item/agentMessage/delta" | "item/completed" | "thread/tokenUsage/updated" | "turn/completed") {
-                if phase == 3 {
+                if *phase == 3 {
                     if pending.len() >= 10_000 { return Err("Codex 응답 대기열이 너무 큽니다".into()); }
                     pending.push_back(message);
                     continue;
                 }
                 let same_thread = message.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id.as_str());
                 let event_turn = if method == "turn/completed" { message.pointer("/params/turn/id") } else { message.pointer("/params/turnId") };
-                if phase != 4 || !same_thread || event_turn.and_then(Value::as_str) != Some(turn_id.as_str()) { continue; }
+                if *phase != 4 || !same_thread || event_turn.and_then(Value::as_str) != Some(turn_id.as_str()) { continue; }
             }
             match method {
                 "item/agentMessage/delta" => {
@@ -157,9 +186,10 @@ pub fn run(
             return Err("Codex app-server 응답에 결과가 없습니다".into());
         }
         match message.get("id").and_then(Value::as_u64) {
-            Some(1) if phase == 1 => {
+            Some(1) if *phase == 1 => {
                 send(&mut output, &json!({"method":"initialized","params":{}}))?;
-                let mut params = json!({"cwd":turn.project,"sandbox":"read-only","approvalPolicy":"on-request"});
+                let mut params = json!({"cwd":turn.project,"sandbox":"read-only"});
+                for (key, value) in APPROVALS { params[key] = json!(value); }
                 let method = if let Some(session) = turn.session.filter(|s| !s.is_empty()) {
                     params["threadId"] = json!(session);
                     "thread/resume"
@@ -168,9 +198,9 @@ pub fn run(
                 };
                 if let Some(model) = turn.model { params["model"] = json!(model); }
                 send(&mut output, &json!({"id":2,"method":method,"params":params}))?;
-                phase = 2;
+                *phase = 2;
             }
-            Some(2) if phase == 2 => {
+            Some(2) if *phase == 2 => {
                 thread_id = message.pointer("/result/thread/id").and_then(Value::as_str)
                     .filter(|id| !id.is_empty()).ok_or("Codex 스레드 ID가 없습니다")?.to_string();
                 if turn.session.is_some_and(|session| !session.is_empty() && session != thread_id) {
@@ -178,19 +208,19 @@ pub fn run(
                 }
                 let mut content = vec![json!({"type":"text","text":turn.prompt})];
                 content.extend(turn.images.iter().map(|path| json!({"type":"localImage","path":path})));
-                let mut params = json!({"threadId":thread_id,"cwd":turn.project,"input":content,
-                    "approvalPolicy":"on-request","sandboxPolicy":{"type":"readOnly"}});
+                let mut params = json!({"threadId":thread_id,"cwd":turn.project,"input":content,"sandboxPolicy":{"type":"readOnly"}});
+                for (key, value) in APPROVALS { params[key] = json!(value); }
                 if let Some(model) = turn.model { params["model"] = json!(model); }
                 if let Some(effort) = turn.effort { params["effort"] = json!(effort); }
                 send(&mut output, &json!({"id":3,"method":"turn/start","params":params}))?;
-                phase = 3;
+                *phase = 3;
             }
-            Some(3) if phase == 3 => {
+            Some(3) if *phase == 3 => {
                 if thread_id.is_empty() { return Err("Codex 스레드가 시작되지 않았습니다".into()); }
                 turn_id = message.pointer("/result/turn/id").and_then(Value::as_str)
                     .filter(|id| !id.is_empty()).ok_or("Codex 턴 ID가 없습니다")?.to_string();
                 emit(Event::Session(thread_id.clone()));
-                phase = 4;
+                *phase = 4;
             }
             Some(_) => return Err("Codex app-server 응답 순서가 올바르지 않습니다".into()),
             None => {}
@@ -224,6 +254,10 @@ mod tests {
         assert_eq!(sent[2]["method"], "thread/resume");
         assert_eq!(sent[2]["params"]["sandbox"], "read-only");
         assert_eq!(sent[3]["params"]["sandboxPolicy"]["type"], "readOnly");
+        for at in [2, 3] {
+            assert_eq!(sent[at]["params"]["approvalPolicy"], "never");
+            assert_eq!(sent[at]["params"]["approvalsReviewer"], "user");
+        }
         assert_eq!(sent[3]["params"]["input"][0]["text"], "hello");
         assert_eq!(sent[3]["params"]["model"], "m-1");
         assert_eq!(sent[3]["params"]["effort"], "high");
@@ -286,6 +320,68 @@ mod tests {
         let mut output = Vec::new();
         assert!(run(&turn, Cursor::new(wrong), &mut output, |_| {}).is_err());
         assert!(!String::from_utf8(output).unwrap().contains("decision"));
+    }
+
+    #[test]
+    fn new_threads_never_ask_for_approval() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), ..Default::default() };
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            json!({"method":"turn/completed","params":{"threadId":"s","turn":{"id":"t","status":"completed"}}})]
+            .into_iter().map(|v| format!("{v}
+")).collect::<String>();
+        let mut output = Vec::new();
+        run(&turn, Cursor::new(input), &mut output, |_| {}).unwrap();
+        let sent: Vec<Value> = String::from_utf8(output).unwrap().lines().map(|s| serde_json::from_str(s).unwrap()).collect();
+        assert_eq!(sent[2]["method"], "thread/start");
+        for at in [2, 3] {
+            assert_eq!(sent[at]["params"]["approvalPolicy"], "never");
+            assert_eq!(sent[at]["params"]["approvalsReviewer"], "user");
+        }
+    }
+
+    #[test]
+    fn other_server_requests_are_refused_and_the_turn_continues() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), ..Default::default() };
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            json!({"id":10,"method":"item/permissions/requestApproval","params":{"threadId":"s","turnId":"t","permissions":{"network":{"enabled":true}}}}),
+            json!({"id":11,"method":"mcpServer/elicitation/request","params":{"threadId":"s","serverName":"x","mode":"url"}}),
+            json!({"id":12,"method":"item/tool/requestUserInput","params":{"threadId":"s","turnId":"t","questions":[{"id":"q"}]}}),
+            json!({"id":"13","method":"item/tool/call","params":{"threadId":"s","turnId":"t"}}),
+            json!({"id":14,"method":"account/chatgptAuthTokens/refresh","params":{}}),
+            json!({"method":"item/completed","params":{"threadId":"s","turnId":"t","item":{"type":"agentMessage","text":"done"}}}),
+            json!({"method":"turn/completed","params":{"threadId":"s","turn":{"id":"t","status":"completed"}}})]
+            .into_iter().map(|v| format!("{v}
+")).collect::<String>();
+        let mut output = Vec::new();
+        let mut events = Vec::new();
+        run(&turn, Cursor::new(input), &mut output, |e| events.push(e)).unwrap();
+        let sent: Vec<Value> = String::from_utf8(output).unwrap().lines().map(|s| serde_json::from_str(s).unwrap()).collect();
+        assert!(sent.contains(&json!({"id":10,"result":{"permissions":{},"scope":"turn"}})));
+        assert!(sent.contains(&json!({"id":11,"result":{"action":"decline"}})));
+        assert!(sent.contains(&json!({"id":12,"result":{"answers":{}}})));
+        for id in [json!("13"), json!(14)] {
+            let reply = sent.iter().find(|m| m["id"] == id).unwrap();
+            assert_eq!(reply["error"]["code"], -32601);
+            assert!(reply.get("result").is_none());
+        }
+        assert_eq!(events.iter().filter(|event| **event == Event::ApprovalDenied).count(), 5);
+        assert_eq!(events.last(), Some(&Event::Finished { ok: true, error: String::new() }));
+    }
+
+    #[test]
+    fn a_cli_without_app_server_names_the_version_it_needs() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), ..Default::default() };
+        for input in ["", "{\"id\":1,\"error\":{\"message\":\"unknown method\"}}
+"] {
+            let error = run(&turn, Cursor::new(input), Vec::new(), |_| {}).unwrap_err();
+            assert!(error.starts_with(UNSUPPORTED), "{error}");
+        }
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"error":{"message":"no thread"}})]
+            .into_iter().map(|v| format!("{v}
+")).collect::<String>();
+        assert_eq!(run(&turn, Cursor::new(input), Vec::new(), |_| {}).unwrap_err(), "no thread");
     }
 
     #[test]
