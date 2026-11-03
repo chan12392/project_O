@@ -1375,6 +1375,10 @@ pub fn session_ids(home: &Path) -> Vec<String> {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct LeadTokens {
     pub turns: u64,
+    /// User requests in the selected period, including requests still running or not started.
+    pub requested: u64,
+    /// Requests without a subsequent usage event before the next request in this thread.
+    pub unreported: u64,
     pub input: u64,
     pub cached: u64,
     pub output: u64,
@@ -1390,19 +1394,30 @@ pub fn tokens(home: &Path, project: Option<&str>, since: Option<&str>) -> LeadTo
                 continue;
             }
         }
+        let mut selected = false;
+        let mut reported = false;
         for event in events {
-            if let LeadEvent::Usage { at, input, cached, output, .. } = event {
-                if since.is_some_and(|s| at.as_str() < s) {
-                    continue;
+            match event {
+                LeadEvent::User { at, .. } => {
+                    if selected && !reported { sum.unreported += 1; }
+                    selected = since.is_none_or(|s| at.as_str() >= s);
+                    reported = false;
+                    if selected { sum.requested += 1; }
                 }
-                let (i, c, o) = (input.max(0.0) as u64, cached.max(0.0) as u64, output.max(0.0) as u64);
-                sum.turns += 1;
-                sum.input += i;
-                sum.cached += c;
-                sum.output += o;
-                sum.total += i + c + o;
+                LeadEvent::Usage { at, input, cached, output, .. } => {
+                    if selected { reported = true; }
+                    if since.is_some_and(|s| at.as_str() < s) { continue; }
+                    let (i, c, o) = (input.max(0.0) as u64, cached.max(0.0) as u64, output.max(0.0) as u64);
+                    sum.turns += 1;
+                    sum.input += i;
+                    sum.cached += c;
+                    sum.output += o;
+                    sum.total += i + c + o;
+                }
+                _ => {}
             }
         }
+        if selected && !reported { sum.unreported += 1; }
     }
     sum
 }

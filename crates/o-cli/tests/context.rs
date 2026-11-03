@@ -46,6 +46,30 @@ fn a_card_reads_only_its_verified_predecessor_in_complete_utf8_chunks() {
     assert!(!o_in(&base, &project, "next", &["context", "--result", "first", &hash, "0"]).status.success());
 }
 
+#[test]
+fn token_report_counts_lead_requests_without_usage() {
+    let (base, home, project) = setup("lead-coverage");
+    let dir = home.join("leads/thread-1");
+    fs::create_dir_all(&dir).unwrap();
+    let events = [
+        json!({"t":"lead.start","at":"2026-11-01T00:00:00Z","threadId":"thread-1","project":project.to_string_lossy()}),
+        json!({"t":"lead.user","at":"2026-11-01T00:00:01Z","provider":"codex","text":"첫 요청"}),
+        json!({"t":"lead.usage","at":"2026-11-01T00:00:02Z","provider":"codex","input":20,"cached":10,"output":3}),
+        json!({"t":"lead.user","at":"2026-11-02T00:00:01Z","provider":"codex","text":"둘째 요청"}),
+        json!({"t":"lead.error","at":"2026-11-02T00:00:02Z","text":"시작 실패"}),
+        json!({"t":"lead.user","at":"2026-11-03T00:00:01Z","provider":"claude","text":"진행 중"}),
+    ];
+    fs::write(dir.join("events.jsonl"), events.iter().map(|event| format!("{event}\n")).collect::<String>()).unwrap();
+    let report = ok_json(o_in(&base, &project, "", &["tokens", "--json"]));
+    assert_eq!(report["lead"]["requested"], 3);
+    assert_eq!(report["lead"]["turns"], 1);
+    assert_eq!(report["lead"]["unreported"], 2);
+    let since = ok_json(o_in(&base, &project, "", &["tokens", "--json", "--since", "2026-11-02"]));
+    assert_eq!(since["lead"]["requested"], 2);
+    assert_eq!(since["lead"]["unreported"], 2);
+    assert_eq!(since["lead"]["turns"], 0);
+}
+
 fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let base = std::env::temp_dir().join(format!("o-context-cli-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
@@ -161,7 +185,7 @@ fn tokens_report_and_compare() {
     let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
     let keys: Vec<&str> = report.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["groups", "compare", "runs", "lead", "summary"]);
-    assert_eq!(report["lead"], json!({ "turns": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
+    assert_eq!(report["lead"], json!({ "turns": 0, "requested": 0, "unreported": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
     assert_eq!(report["groups"].as_array().unwrap().iter().map(|g| g["key"].as_str().unwrap()).collect::<Vec<_>>(), ["normal", "clean+context"]);
     let group_keys: Vec<&str> = report["groups"][0].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(group_keys, ["key", "label", "clean", "context", "runs", "cards", "tokens", "perCard", "byProvider"]);

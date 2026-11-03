@@ -116,7 +116,8 @@ fn print_coverage(report: &Report) {
     let cache = s.cache_percent.map_or_else(|| "미측정".to_string(), |p| format!("{p:.1}%"));
     println!("총괄·카드가 보고한 합계 {}  입력 캐시 비율 {cache}", n(s.reported.total));
     println!("사용량 보고 카드 {} · 미보고 {} · 일부 누락 {}", s.reported_cards, s.unreported_cards, s.incomplete_cards);
-    println!("미보고에는 대기 중 카드가 포함됩니다. 총괄의 미보고 사용량은 확인되지 않습니다.\n");
+    println!("총괄 요청 {} · 사용량 이벤트 없음 {} (실행 전 실패·진행 중 포함)", report.lead.requested, report.lead.unreported);
+    println!("미보고 카드에는 대기 중 카드가 포함됩니다. 누락된 사용량은 합계에 포함되지 않습니다.\n");
 }
 
 fn change(a: u64, b: u64) -> String {

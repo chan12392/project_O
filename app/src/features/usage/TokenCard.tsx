@@ -98,7 +98,8 @@ function Coverage({ report }: { report: TokenReport }) {
     <div className="mt-2 text-xs text-muted-foreground">
       <p>보고된 총괄·카드 합계 {compact.format(s.reported.total)} · 입력 캐시 비율 {cache}</p>
       <p>카드 사용량: 보고 {s.reportedCards} · 미보고 {s.unreportedCards} · 일부 누락 {s.incompleteCards}</p>
-      <p>미보고에는 대기 중 카드가 포함됩니다. 총괄의 미보고 사용량은 확인되지 않습니다.</p>
+      {report.lead?.requested !== undefined && report.lead.unreported !== undefined ? <p>총괄 요청: {report.lead.requested} · 사용량 이벤트 없음 {report.lead.unreported} (실행 전 실패·진행 중 포함)</p> : <p>총괄의 미보고 사용량은 확인되지 않습니다.</p>}
+      <p>미보고에는 대기 중 카드가 포함됩니다. 누락된 사용량은 합계에 포함되지 않습니다.</p>
     </div>
   );
 }

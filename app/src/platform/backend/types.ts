@@ -132,6 +132,7 @@ export interface TokenGroup {
 export interface TokenReport {
   groups: TokenGroup[];
   compare: { baseline: TokenGroup | null; shared: TokenGroup | null };
+  lead?: { requested?: number; unreported?: number };
   /** Missing in older O versions; reported totals may omit provider usage. */
   summary?: {
     reported: TokenCounts;
