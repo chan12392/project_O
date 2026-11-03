@@ -37,7 +37,7 @@ use crate::run::store::RunRecord;
 
 /// 2: `runs.prefix_hash` and `runs.modified`, so a rewritten file is told from an appended one.
 /// 3: `slots`, the card slots runners hold from before a CLI starts until it ends.
-const SCHEMA_VERSION: i64 = 4;
+const SCHEMA_VERSION: i64 = 5;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
@@ -83,6 +83,18 @@ pub fn open(home: &Path) -> io::Result<Connection> {
                  ALTER TABLE runs ADD COLUMN modified INTEGER NOT NULL DEFAULT -1;",
             )
             .map_err(sql)?;
+        }
+        let has_owner: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'owner_pid')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_owner {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN owner_pid INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN owner_started INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN worker_pid INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN worker_started INTEGER;").map_err(sql)?;
+        }
+        let has_phase: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'spawn_intent')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_phase {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN spawn_intent INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN start_id INTEGER;").map_err(sql)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql)?;
         tx.commit().map_err(sql)?;

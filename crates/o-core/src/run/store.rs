@@ -357,17 +357,31 @@ pub fn reserve_slot(home: &Path, run_id: &str, card: &crate::run::plan::Card, pr
     )
     .map_err(sql)?;
     let slot_row = tx.last_insert_rowid();
-    tx.execute("INSERT INTO resource_leases (slot_id, run_id, card_id, resources) VALUES (?1, ?2, ?3, ?4)", params![slot_row, run_id, card_id, serde_json::to_string(&resources).map_err(io::Error::other)?]).map_err(sql)?;
+    let owner_started = proc::started_at(std::process::id()).and_then(|at| i64::try_from(at).ok());
+    tx.execute("INSERT INTO resource_leases (slot_id, run_id, card_id, resources, owner_pid, owner_started, spawn_intent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)", params![slot_row, run_id, card_id, serde_json::to_string(&resources).map_err(io::Error::other)?, std::process::id(), owner_started]).map_err(sql)?;
     tx.execute("INSERT INTO starts (run_id, card_id, provider, at) VALUES (?1, ?2, ?3, ?4)", params![run_id, card_id, provider.as_str(), iso(now)])
         .map_err(sql)?;
     let start_row = tx.last_insert_rowid();
+    tx.execute("UPDATE resource_leases SET start_id = ?1 WHERE slot_id = ?2", params![start_row, slot_row]).map_err(sql)?;
     tx.commit().map_err(sql)?;
     Ok(Reserved::Granted(Reservation { run_id: run_id.to_string(), card_id: card_id.to_string(), provider, slot_row, start_row }))
 }
 
 /// The card's CLI is running: from now on the slot lives as long as that process.
 pub fn link_slot(home: &Path, reservation: &Reservation, pid: u32) -> io::Result<()> {
-    index::open(home)?.execute("UPDATE slots SET pid = ?1 WHERE rowid = ?2", params![pid, reservation.slot_row]).map_err(sql)?;
+    let mut conn = index::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    let started = proc::started_at(pid).and_then(|at| i64::try_from(at).ok());
+    let lease = tx.execute("UPDATE resource_leases SET worker_pid = ?1, worker_started = ?2, spawn_intent = 1 WHERE slot_id = ?3", params![pid, started, reservation.slot_row]).map_err(sql)?;
+    let slot = tx.execute("UPDATE slots SET pid = ?1 WHERE rowid = ?2", params![pid, reservation.slot_row]).map_err(sql)?;
+    if lease != 1 || slot != 1 { return Err(io::Error::other("자원 예약을 찾지 못해 작업을 시작하지 않았습니다")); }
+    tx.commit().map_err(sql)
+}
+
+/// Durably mark the ambiguous spawn window before creating the process.
+pub fn mark_spawning(home: &Path, reservation: &Reservation) -> io::Result<()> {
+    let changed = index::open(home)?.execute("UPDATE resource_leases SET spawn_intent = 1 WHERE slot_id = ?1 AND spawn_intent = 0", [reservation.slot_row]).map_err(sql)?;
+    if changed != 1 { return Err(io::Error::other("자원 예약의 시작 상태를 확인하지 못했습니다")); }
     Ok(())
 }
 
@@ -386,6 +400,57 @@ pub fn release_slot(home: &Path, reservation: &Reservation, started: bool) -> io
 /// A surviving lease prevents resuming the same session, including after a runner crash.
 pub fn resource_held(home: &Path, run_id: &str, card_id: &str) -> io::Result<bool> {
     index::open(home)?.query_row("SELECT EXISTS(SELECT 1 FROM resource_leases WHERE run_id=?1 AND card_id=?2)", params![run_id, card_id], |row| row.get(0)).map_err(sql)
+}
+
+/// Durable observations only: missing identity or a missing PID never proves termination.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceLease {
+    pub id: String,
+    pub run_id: String,
+    pub card_id: String,
+    pub resources: Value,
+    pub owner_pid: Option<u32>,
+    pub owner_started: Option<String>,
+    pub worker_pid: Option<u32>,
+    pub worker_started: Option<String>,
+    pub spawn_intent: Option<bool>,
+}
+
+pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
+    let conn = index::open(home)?;
+    let mut stmt = conn.prepare("SELECT slot_id, run_id, card_id, resources, owner_pid, owner_started, worker_pid, worker_started, spawn_intent FROM resource_leases ORDER BY slot_id").map_err(sql)?;
+    let rows = stmt.query_map([], |row| {
+        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get(4)?, row.get::<_, Option<i64>>(5)?, row.get(6)?, row.get::<_, Option<i64>>(7)?, row.get(8)?))
+    }).map_err(sql)?;
+    rows.map(|row| {
+        let (id, run_id, card_id, raw, owner_pid, owner_started, worker_pid, worker_started, spawn_intent) = row.map_err(sql)?;
+        let resources = serde_json::from_str(&raw).map_err(io::Error::other)?;
+        Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent })
+    }).collect()
+}
+
+/// Recover only a reservation that was never handed to process creation and whose owner is certainly gone.
+pub fn recover_unstarted_resource(home: &Path, id: i64) -> io::Result<()> {
+    let mut conn = index::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    let row = tx.query_row(
+        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid FROM resource_leases WHERE slot_id = ?1",
+        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?)),
+    ).optional().map_err(sql)?;
+    let (owner, started, phase, start_id, run_id, card_id, worker_pid) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
+    if worker_pid.is_some() { return Err(io::Error::other("작업 프로세스 기록이 있어 시작 전 예약으로 복구할 수 없습니다")); }
+    let (Some(owner), Some(started), Some(false), Some(start_id)) = (owner, started, phase, start_id) else {
+        return Err(io::Error::other("프로세스 시작 여부가 불명확해 예약을 복구할 수 없습니다"));
+    };
+    let started = u64::try_from(started).map_err(|_| io::Error::other("소유자 생성 시각이 올바르지 않습니다"))?;
+    if !proc::definitely_exited(owner, started) {
+        return Err(io::Error::other("예약 소유자가 살아 있거나 종료 여부를 확인할 수 없습니다"));
+    }
+    tx.execute("DELETE FROM slots WHERE id = ?1", [id]).map_err(sql)?;
+    tx.execute("DELETE FROM starts WHERE rowid = ?1 AND run_id = ?2 AND card_id = ?3", params![start_id, run_id, card_id]).map_err(sql)?;
+    tx.execute("DELETE FROM resource_leases WHERE slot_id = ?1", [id]).map_err(sql)?;
+    tx.commit().map_err(sql)
 }
 
 /// Provider → ISO time it is blocked until.

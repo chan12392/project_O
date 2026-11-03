@@ -522,6 +522,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         }
         remove_inherited(&mut command, &spec.env_remove);
         command.envs(&spec.env);
+        crate::run::store::mark_spawning(home, &slot.reservation)?;
         command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
         proc::spawn_worker(&mut command)
     });
@@ -547,7 +548,15 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
     emit(OEvent::CardStart { at: now_iso(), card_id: card.id.clone(), pid: Some(pid) })?;
     #[cfg(windows)]
     if running_child._tree.is_none() { return Err(io::Error::other("프로세스 격리를 확인하지 못해 시작하지 않았습니다")); }
-    proc::resume_worker(pid)?;
+    if let Err(error) = proc::resume_worker(pid) {
+        if stop_requested(home, run_id) {
+            drop(running_child);
+            drop(slot);
+            emit(end(CardStatus::Stopped, None, None))?;
+            return Ok(CardStatus::Stopped);
+        }
+        return Err(error);
+    }
     // An `o stop` that ran while the CLI was starting found no marker to kill: stop it here.
     // (A stop from now on finds the marker written above.)
     if stop_requested(home, run_id) {

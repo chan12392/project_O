@@ -19,6 +19,8 @@ async function json<T>(res: Response): Promise<T> {
 /** The dev server: the /api routes of app/dev/liveRuns.ts, each answered by `o`. */
 export const devBackend: Backend = {
   kind: "dev",
+  resources: () => fetch("/api/resources").then((r) => json<{ leases: Awaited<ReturnType<Backend["resources"]>> }>(r)).then((r) => r.leases),
+  recoverResource: (id) => fetch(`/api/resources/recover?id=${encodeURIComponent(String(id))}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   followup: (run, card, text) => fetch(`/api/lead/followup?${new URLSearchParams({ run, card })}`, { method: "POST", body: text }).then((r) => json<{ runId: string }>(r)),
   imageRead: (project, path, run, card) => fetch(`/api/lead/image/read?${new URLSearchParams({ project, path, run: run ?? "-", card: card ?? "-" })}`).then((r) => json<Awaited<ReturnType<Backend["imageRead"]>>>(r)),
   imageOpen: (project, path, folder, run, card) => fetch(`/api/lead/image/${folder ? "folder" : "open"}?${new URLSearchParams({ project, path, run: run ?? "-", card: card ?? "-" })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),

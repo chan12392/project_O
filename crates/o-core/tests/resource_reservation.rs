@@ -49,6 +49,21 @@ fn paths_external_keys_and_unknown_declarations_conflict_safely() {
 }
 
 #[test]
+fn old_lease_migrates_without_inventing_process_identity() {
+    let (home, _) = fixture();
+    std::fs::create_dir_all(&home).unwrap();
+    let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    conn.execute_batch("CREATE TABLE resource_leases (slot_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, card_id TEXT NOT NULL, resources TEXT NOT NULL);\n\
+        INSERT INTO resource_leases VALUES (5, 'old', 'card', '[]'); PRAGMA user_version=4;").unwrap();
+    drop(conn);
+    let leases = o_core::run::store::resource_leases(&home).unwrap();
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].run_id, "old");
+    assert!(leases[0].owner_pid.is_none() && leases[0].worker_pid.is_none());
+    assert!(leases[0].owner_started.is_none() && leases[0].worker_started.is_none());
+}
+
+#[test]
 fn simultaneous_runs_cannot_both_reserve_a_write() {
     let (home, project) = fixture();
     let barrier = Arc::new(Barrier::new(3));
@@ -80,6 +95,9 @@ fn process_fixture() {
         }
         assert!(project.join("go").exists());
         let result = reserve(&home, &project, &id, &card(&id, vec![res(ResourceKind::External, "shared", ResourceMode::Write)]));
+        if std::env::var_os("O_RESOURCE_MARK_SPAWN").is_some() {
+            if let Reserved::Granted(lease) = &result { o_core::run::store::mark_spawning(&home, lease).unwrap(); }
+        }
         let text = if matches!(result, Reserved::Granted(_)) { "granted" } else { "busy" };
         std::fs::write(project.join(format!("{id}.result")), text).unwrap();
         std::thread::sleep(Duration::from_secs(1));
@@ -139,10 +157,61 @@ fn crashed_owner_leaves_its_reservation_intact() {
         std::thread::sleep(Duration::from_millis(10));
     }
     assert_eq!(std::fs::read_to_string(project.join("one.result")).unwrap(), "granted");
+    let id: i64 = o_core::run::store::resource_leases(&home).unwrap()[0].id.parse().unwrap();
+    assert!(o_core::run::store::recover_unstarted_resource(&home, id).is_err());
     child.kill().unwrap();
     child.wait().unwrap();
+    o_core::run::store::held_by_provider(&home).unwrap();
+    let leases = o_core::run::store::resource_leases(&home).unwrap();
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].worker_pid, None);
+    assert_eq!(leases[0].owner_pid, Some(child.id()));
+    assert!(leases[0].owner_started.is_some());
+    assert!(leases[0].worker_started.is_none());
     assert!(resource_held(&home, "one", "one").unwrap());
     assert!(matches!(reserve(&home, &project, "two", &card("two", vec![res(ResourceKind::External, "shared", ResourceMode::Write)])), Reserved::Busy(_)));
+    #[cfg(windows)]
+    {
+        let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+        conn.execute("UPDATE resource_leases SET worker_pid=123 WHERE slot_id=?1", [id]).unwrap();
+        assert!(o_core::run::store::recover_unstarted_resource(&home, id).is_err());
+        conn.execute("UPDATE resource_leases SET worker_pid=NULL WHERE slot_id=?1", [id]).unwrap();
+        drop(conn);
+        let threads: Vec<_> = (0..2).map(|_| {
+            let home = home.clone();
+            std::thread::spawn(move || o_core::run::store::recover_unstarted_resource(&home, id))
+        }).collect();
+        assert_eq!(threads.into_iter().map(|thread| thread.join().unwrap().is_ok()).filter(|ok| *ok).count(), 1);
+        assert!(!resource_held(&home, "one", "one").unwrap());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn ambiguous_spawn_is_never_recovered_from_owner_death_alone() {
+    let (home, project) = fixture();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args(["--exact", "process_fixture"]).env("O_RESOURCE_HOME", &home).env("O_RESOURCE_PROJECT", &project).env("O_RESOURCE_ID", "one").env("O_RESOURCE_MARK_SPAWN", "1").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let mut child = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
+    for _ in 0..500 { if project.join("one.ready").exists() { break; } std::thread::sleep(Duration::from_millis(10)); }
+    std::fs::write(project.join("go"), "").unwrap();
+    for _ in 0..500 { if project.join("one.result").exists() { break; } std::thread::sleep(Duration::from_millis(10)); }
+    assert_eq!(std::fs::read_to_string(project.join("one.result")).unwrap(), "granted");
+    let lease = o_core::run::store::resource_leases(&home).unwrap().pop().unwrap();
+    assert_eq!(lease.spawn_intent, Some(true));
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(o_core::run::store::recover_unstarted_resource(&home, lease.id.parse().unwrap()).is_err());
+    assert!(resource_held(&home, "one", "one").unwrap());
+}
+
+#[cfg(windows)]
+#[test]
+fn process_identity_checks_creation_time() {
+    let pid = std::process::id();
+    let started = o_core::sys::proc::started_at(pid).unwrap();
+    assert!(!o_core::sys::proc::definitely_exited(pid, started));
+    assert!(o_core::sys::proc::definitely_exited(pid, started + 1));
 }
 
 #[test]
@@ -156,6 +225,13 @@ fn dead_child_does_not_erase_lease_without_confirmed_release() {
     link_slot(&home, &lease, child.id()).unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
+    o_core::run::store::held_by_provider(&home).unwrap();
+    let leases = o_core::run::store::resource_leases(&home).unwrap();
+    assert_eq!(leases.len(), 1);
+    assert_eq!(leases[0].worker_pid, Some(child.id()));
+    assert_eq!(leases[0].owner_pid, Some(std::process::id()));
+    assert!(leases[0].owner_started.is_some());
+    assert!(leases[0].worker_started.is_some());
     assert!(resource_held(&home, "one", "one").unwrap());
     assert!(matches!(reserve(&home, &project, "two", &first), Reserved::Busy(_)));
     release_slot(&home, &lease, true).unwrap();

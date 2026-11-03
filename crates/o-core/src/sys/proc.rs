@@ -239,6 +239,30 @@ pub fn is_alive(pid: u32) -> bool {
     }
 }
 
+/// Only a missing process, an exited process, or a different creation time proves this owner is gone.
+#[cfg(windows)]
+pub fn definitely_exited(pid: u32, expected: u64) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_INVALID_PARAMETER, FILETIME, STILL_ACTIVE};
+    use windows_sys::Win32::System::Threading::{GetExitCodeProcess, GetProcessTimes, OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    if pid == 0 { return false; }
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() { return GetLastError() == ERROR_INVALID_PARAMETER; }
+        let zero = FILETIME { dwLowDateTime: 0, dwHighDateTime: 0 };
+        let (mut created, mut exited, mut kernel, mut user) = (zero, zero, zero, zero);
+        let times_ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user) != 0;
+        let mut code = 0u32;
+        let exit_ok = GetExitCodeProcess(handle, &mut code) != 0;
+        CloseHandle(handle);
+        if !times_ok || !exit_ok { return false; }
+        let actual = (u64::from(created.dwHighDateTime) << 32) | u64::from(created.dwLowDateTime);
+        actual != expected || code != STILL_ACTIVE as u32
+    }
+}
+
+#[cfg(not(windows))]
+pub fn definitely_exited(_pid: u32, _expected: u64) -> bool { false }
+
 #[cfg(not(windows))]
 pub fn is_alive(pid: u32) -> bool {
     Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
