@@ -60,7 +60,7 @@
 | `shell/` | `App.tsx`(메인 창·팝아웃), `Sidebar`, `SidePanel`(오른쪽 패널과 보기 목록), `StatusBar`, `panelLayout.ts`, `announcer.ts`, 막힌 링크 안내 `LinkNotice`(`main.tsx`에 마운트) |
 | `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 프로젝트나 작업 폴더 안의 로컬 이미지만 별도 표시, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
-| `features/work/` | 에이전트 작업 탭 `WorkTab`(설계·대시보드), 전체 `WorkDashboard`·`AllNextUp`, 예약 `Automation`, `Ticket`, `ReviewRequest` |
+| `features/work/` | 에이전트 작업 탭 `WorkTab`(설계·대시보드), 팀 에이전트 탭·분할 화면 `AgentPanes`(1·2·4칸, 칸 배정은 `src/core/panes.ts`), 전체 `WorkDashboard`·`AllNextUp`, 예약 `Automation`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
 | `features/projects/` | 새 요청 화면 `NewRequest`(맡길 프로젝트 고르기·새 프로젝트·폴더 등록), 첫 실행 `ImportCard`(기록에서 찾은 프로젝트), 공용 양식 `ProjectForms` (ADR-0009) |
 | `features/updates/` | `UpdatePrompt`(shell에 한 번 마운트), 정보 항목의 `UpdateSettings`. 공용 업데이트 타입·문구·제거 명령은 `platform/updates.ts` |
@@ -70,7 +70,7 @@
 | `lib/` | `format`, `storage`, `timeScale`, `dismiss` |
 | `ui/` | 여러 기능이 쓰는 컨트롤(`controls.tsx`), 위로 열리는 선택 메뉴 `Menu.tsx`, `AgentStateDot`, 바깥 링크 `ExternalAnchor`(데스크톱은 `open_external`, 브라우저는 noopener 새 탭 — 채팅 Markdown 밖의 모든 바깥 링크) |
 
-저장소 루트의 `src/core/*.ts`(기록 접기 `snapshot`, 다음 할 일 `attention`, 이벤트 타입, 한도 표시값, 총괄 스레드 접기·노력 수준·첨부 검사 `lead`, 프로젝트 소속·첫 실행 후보·카드 칩 요약 `projects`)는 화면과 `tests/`가 같이 쓰는 순수 로직이다. 화면은 판단하지 않고 이 함수의 결과를 그린다.
+저장소 루트의 `src/core/*.ts`(기록 접기 `snapshot`, 다음 할 일 `attention`, 이벤트 타입, 한도 표시값, 총괄 스레드 접기·노력 수준·첨부 검사 `lead`, 프로젝트 소속·첫 실행 후보·카드 칩 요약 `projects`, 에이전트 칸 배정 `panes`)는 화면과 `tests/`가 같이 쓰는 순수 로직이다. 화면은 판단하지 않고 이 함수의 결과를 그린다.
 
 ## 데이터 흐름
 
