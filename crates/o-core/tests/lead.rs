@@ -47,13 +47,16 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 30] = [
+    let tests: [(&str, fn()); 33] = [
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
         ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
         ("design snapshots persist and malformed ones do not dispatch", design_snapshots),
         ("design notes persist, reach the lead and preserve concurrent edits", design_notes),
         ("only the latest plan in the current thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
+        ("an automatic dispatch that fails to start uses up no auto-run limit", autorun_failures_not_counted),
+        ("an automatic dispatch is cancelled when a new thread replaces its own", autorun_new_thread_cancels),
+        ("an automatic dispatch never starts a plan a newer request replaced", autorun_newer_request_wins),
         ("lead child receives its agent marker", lead_child_marker),
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
@@ -306,6 +309,140 @@ fn autorun() {
     let blocked = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
     assert!(blocked.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("예산"))));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+fn auto_reason(events: &[LeadEvent], part: &str) -> bool {
+    events.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains(part)))
+}
+
+fn titled_plan(title: &str) -> Value {
+    json!({ "title": title, "cards": [{ "id": "docs", "provider": "claude", "effort": "low", "task": "README.md 끝에 한 줄 추가" }] })
+}
+
+fn autorun_failures_not_counted() {
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+    let (home, project) = setup("autorun-failures");
+    init_git(&project);
+    let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
+    let (attempts, fail) = (AtomicUsize::new(0), AtomicBool::new(true));
+    // `o` missing or the start callback failing both come back as the start's error.
+    let start = |_: &str| {
+        attempts.fetch_add(1, Ordering::SeqCst);
+        if fail.load(Ordering::SeqCst) { Err(std::io::Error::new(std::io::ErrorKind::NotFound, "o 실행 파일 없음")) } else { Ok(()) }
+    };
+    let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
+    // More failures of the same plan than the hourly limit: each one is tried again.
+    for round in 1..=3 {
+        let failed = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+        assert!(auto_reason(&failed, "시작하지 못했습니다"), "round {round}: {failed:?}");
+        assert!(!failed.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+        assert_eq!(attempts.load(Ordering::SeqCst), round);
+    }
+    // The last check before the start refusing (uncommitted work in the project) counts no more.
+    let untracked = Path::new(&project).join("uncommitted.txt");
+    std::fs::write(&untracked, "user edit").unwrap();
+    let refused = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    assert!(auto_reason(&refused, "시작하지 못했습니다"), "{refused:?}");
+    assert_eq!(attempts.load(Ordering::SeqCst), 3);
+    std::fs::remove_file(untracked).unwrap();
+    // Fixed, the same plan runs, and then a different one still fits in the hour.
+    fail.store(false, Ordering::SeqCst);
+    let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    let run_id = run.iter().find_map(|e| match e { LeadEvent::Dispatch { run_id, .. } => Some(run_id.clone()), _ => None }).expect("the fixed plan starts");
+    let end = |run_id: &str| o_core::run::store::append_event(&home, run_id, &o_core::run::events::OEvent::RunEnd {
+        at: Utc::now().to_rfc3339(), run_id: run_id.to_string(), status: o_core::run::events::CardStatus::Done,
+    }).unwrap();
+    end(&run_id);
+    let (other, _) = fake(claude_answer("session", &plan_answer(titled_plan("다른 계획"))));
+    let second = lead::send_with_autorun(&home, &yolo, other.as_ref(), &start).unwrap();
+    let second_id = second.iter().find_map(|e| match e { LeadEvent::Dispatch { run_id, .. } => Some(run_id.clone()), _ => None }).expect("a different plan starts");
+    end(&second_id);
+    assert_eq!(attempts.load(Ordering::SeqCst), 5);
+    // A plan that did start is still not run again within the duplicate window.
+    let duplicate = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    assert!(auto_reason(&duplicate, "같은 계획") || auto_reason(&duplicate, "이번 시간"), "{duplicate:?}");
+    assert_eq!(attempts.load(Ordering::SeqCst), 5);
+}
+
+/// A fake lead CLI whose start waits until `release` exists, after making `entered`.
+fn gated(lines: Vec<String>, entered: PathBuf, release: PathBuf) -> Arc<Spawner> {
+    Arc::new(move |_spec: &LaunchSpec, cwd: &str| {
+        std::fs::write(&entered, "").unwrap();
+        while !release.exists() {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap());
+        Ok(command)
+    })
+}
+
+fn autorun_new_thread_cancels() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (home, project) = setup("autorun-new-thread");
+    init_git(&project);
+    let (entered, release) = (home.join("entered"), home.join("release"));
+    let spawner = gated(claude_answer("session", &plan_answer(good_plan())), entered.clone(), release.clone());
+    let starts = AtomicUsize::new(0);
+    let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
+    let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
+    let events = std::thread::scope(|scope| {
+        let turn = scope.spawn(|| lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start));
+        wait_until("the lead to start answering", || entered.exists());
+        // Another client starts a new thread while the lead answers.
+        lead::start(&home, &project).unwrap();
+        std::fs::write(&release, "").unwrap();
+        turn.join().unwrap().unwrap()
+    });
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Plan { ok: true, .. })));
+    assert!(auto_reason(&events, "설계가 변경"), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    // On the current thread, the latest plan still runs exactly once.
+    let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
+    let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
+    assert_eq!(run.iter().filter(|e| matches!(e, LeadEvent::Dispatch { .. })).count(), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+/// Another request lands right as the lead's answer ends: the auto path either starts the plan
+/// while it is still the latest, or gives up; it never starts it after the newer request.
+fn autorun_newer_request_wins() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    for round in 0..3 {
+        let (home, project) = setup(&format!("autorun-newer{round}"));
+        init_git(&project);
+        let (entered, release) = (home.join("entered"), home.join("release"));
+        let spawner = gated(claude_answer("session", &plan_answer(good_plan())), entered.clone(), release.clone());
+        let (later, _) = fake_slow(claude_answer("session", "새 요청에 답합니다"), 500);
+        let starts = AtomicUsize::new(0);
+        let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
+        let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
+        let events = std::thread::scope(|scope| {
+            let turn = scope.spawn(|| lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start));
+            wait_until("the lead to start answering", || entered.exists());
+            let newer = scope.spawn(|| loop {
+                if lead::send(&home, &request(&project, "새 요청"), later.as_ref()).is_ok() { break; }
+            });
+            std::fs::write(&release, "").unwrap();
+            let events = turn.join().unwrap().unwrap();
+            newer.join().unwrap();
+            events
+        });
+        let thread = lead::read_thread(&home, &lead::current_thread(&home, &project).unwrap());
+        let users: Vec<usize> = thread.iter().enumerate().filter(|(_, e)| matches!(e, LeadEvent::User { .. })).map(|(i, _)| i).collect();
+        let dispatched = thread.iter().position(|e| matches!(e, LeadEvent::Dispatch { .. }));
+        match dispatched {
+            Some(at) => {
+                assert!(at < users[1], "round {round}: started after the newer request");
+                assert_eq!(starts.load(Ordering::SeqCst), 1);
+            }
+            None => {
+                assert!(auto_reason(&events, "취소"), "round {round}: {events:?}");
+                assert_eq!(starts.load(Ordering::SeqCst), 0);
+            }
+        }
+    }
 }
 
 fn request<'a>(project: &'a str, text: &'a str) -> SendRequest<'a> {
