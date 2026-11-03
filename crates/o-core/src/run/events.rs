@@ -89,6 +89,8 @@ pub enum OEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
     },
+    #[serde(rename = "msg.state")]
+    MsgState { at: String, id: String, recipient: String, state: String },
     /// Tokens a card spent since its last usage event (fresh input, cached input, output).
     #[serde(rename = "card.usage")]
     CardUsage {
@@ -176,6 +178,7 @@ impl OEvent {
             OEvent::CardLimit { .. } => "card.limit",
             OEvent::CardEnd { .. } => "card.end",
             OEvent::Msg { .. } => "msg",
+            OEvent::MsgState { .. } => "msg.state",
             OEvent::CardUsage { .. } => "card.usage",
             OEvent::Quota { .. } => "quota",
             OEvent::RunEnd { .. } => "run.end",

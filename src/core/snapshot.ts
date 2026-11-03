@@ -22,6 +22,7 @@ interface TeamMessage {
   at: string;
   id?: string;
   kind?: "message" | "question";
+  recipients?: Record<string, "stored" | "delivered" | "unknown" | "acknowledged" | "cancelled">;
   from: string;
   to: string;
   text: string;
@@ -167,7 +168,11 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       run.blocked = e.violations;
       continue;
     }
-    if (e.t === "msg.state") continue;
+    if (e.t === "msg.state") {
+      const message = run.messages.find((m) => m.id === e.id);
+      if (message) message.recipients = { ...message.recipients, [e.recipient]: e.state };
+      continue;
+    }
     if (e.t === "review.posted") continue;
     if (e.t === "run.context") continue;
     if (e.t === "run.mode") continue;

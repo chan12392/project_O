@@ -63,6 +63,15 @@ fn appended_lines_are_ingested_once_each() {
 }
 
 #[test]
+fn message_state_reaches_indexed_run_events() {
+    let home = temp_home();
+    append(&home, "r1", &start("r1", "2026-11-01T10:00:00.000Z", "C:/p"));
+    append(&home, "r1", "{\"t\":\"msg.state\",\"at\":\"2026-11-01T10:00:01.000Z\",\"id\":\"m1\",\"recipient\":\"lead\",\"state\":\"unknown\"}\n");
+    let runs = all(&home);
+    assert!(runs[0].events.iter().any(|event| event["t"] == "msg.state" && event["state"] == "unknown"));
+}
+
+#[test]
 fn a_half_written_line_is_ingested_only_once_it_is_complete() {
     let home = temp_home();
     let line = msg("half");

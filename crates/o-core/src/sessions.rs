@@ -815,6 +815,7 @@ fn at_of(event: &OEvent) -> &str {
         | OEvent::CardLimit { at, .. }
         | OEvent::CardEnd { at, .. }
         | OEvent::Msg { at, .. }
+        | OEvent::MsgState { at, .. }
         | OEvent::CardUsage { at, .. }
         | OEvent::Quota { at, .. }
         | OEvent::RunEnd { at, .. }

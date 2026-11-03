@@ -112,6 +112,7 @@ test("message identity and question survive state events in the snapshot", () =>
   ]);
   assert.equal(run?.messages[0].id, "m1");
   assert.equal(run?.messages[0].kind, "question");
+  assert.deepEqual(run?.messages[0].recipients, { lead: "unknown" });
   assert.equal(run?.messages.length, 1);
 });
 
