@@ -24,6 +24,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
     tauri::generate_handler![
         runs::runs,
         runs::run_followup,
+        runs::run_reply,
         usage::usage,
         usage::usage_refresh,
         usage::budget,
@@ -71,6 +72,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         window::popout_open,
         window::popout_close,
         window::hide_main,
+        window::attention,
         window::quit_activity,
         window::quit_app,
     ]

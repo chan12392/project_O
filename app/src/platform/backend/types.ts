@@ -129,6 +129,10 @@ export interface TokenReport {
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
+  /** The person's answer to a card's question, sent as the lead on the run's team channel (`o msg send --as lead`). */
+  reply(run: string, card: string, text: string): Promise<void>;
+  /** Flashes the taskbar button while the window is not in front (desktop only; elsewhere nothing). */
+  attention(): Promise<void>;
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;
   agentsCatalog(refresh?: boolean): Promise<AgentCatalogEntry[]>;

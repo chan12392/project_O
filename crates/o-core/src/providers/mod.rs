@@ -294,6 +294,8 @@ pub struct TeamChannel<'a> {
 
 /// The team channel command each CLI may run without a prompt.
 const TEAM_COMMAND: &str = "o msg";
+/// How a card's question to the lead lists its choices (`src/core/questions.ts` reads it).
+pub const CHOICES_OPEN: &str = "[보기:";
 
 /// The `o` commands no card or lead may run, in any mode (ADR-0014): only a person sends work.
 /// `o` itself refuses them inside a card or a lead turn (`run::inside`); CLIs with deny rules
@@ -380,6 +382,7 @@ fn prompt_text(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&st
     lines.extend(how);
     if talks {
         lines.push("시작할 때 한 번 받아 보고, 다른 카드가 알아야 할 결과나 막힌 점이 생기면 짧게 보내세요.".into());
+        lines.push(format!("사람의 결정이 필요하면 lead에게 질문을 보내세요. 보기가 있으면 \"질문? {CHOICES_OPEN} A | B | C]\"처럼 끝에 적으면 사람이 골라 답합니다. 답은 받기로 확인합니다."));
     }
     lines.push(String::new());
     lines.push("끝나면 결과를 다섯 줄 이내로 요약하세요: 한 일, 바꾼 파일, 확인한 것, 남은 일.".into());

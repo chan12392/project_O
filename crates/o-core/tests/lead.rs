@@ -109,7 +109,8 @@ Usage: codex [OPTIONS] [PROMPT]
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 6] = [
+    let extra: [(&str, fn()); 7] = [
+        ("questions stand in for the answer; the next turn carries the picks", ask_questions),
         ("a Codex CLI without app-server leads through read-only exec, probed once, resuming across transports", codex_exec_fallback),
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
         ("Codex declines read-only approval requests and continues", codex_approval),
@@ -180,6 +181,41 @@ fn design_snapshots() {
     let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })));
     assert!(!events.iter().any(|e| matches!(e, LeadEvent::Plan { .. } | LeadEvent::Design { .. })));
+}
+
+fn ask_questions() {
+    let (home, project) = setup("ask");
+    let ask = r#"{"questions":[{"header":"형태","question":"스킬의 형태는?","options":[{"label":"MCP 서버 (추천)","description":"여러 CLI에서 같이"},{"label":"SKILL.md"}]},{"question":"언어는?","options":[{"label":"Python"},{"label":"C#"}],"multi":true}]}"#;
+    // A plan beside the questions is not taken: the person has not chosen yet.
+    let answer = format!("먼저 확인할 것이 있습니다.\n```o-ask\n{ask}\n```\n{}", plan_answer(good_plan()));
+    let (spawner, _) = fake(claude_answer("s", &answer));
+    let events = lead::send(&home, &request(&project, "스킬 만들어 줘"), spawner.as_ref()).unwrap();
+    let asked = events.iter().find_map(|e| match e { LeadEvent::Ask { ask_id, intro, questions, .. } => Some((ask_id.clone(), intro.clone(), questions.clone())), _ => None }).expect("질문");
+    assert!(asked.0.ends_with("-q1"));
+    assert!(asked.1.starts_with("먼저 확인할 것이 있습니다.") && !asked.1.contains("o-plan"), "{}", asked.1);
+    assert_eq!(asked.2.len(), 2);
+    assert!(asked.2[1].multi);
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Reply { .. } | LeadEvent::Plan { .. })));
+    // The thread file keeps it, and the next turn's history (a fresh agent) names the questions.
+    let thread = lead::current_thread(&home, &project).unwrap();
+    assert!(lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::Ask { .. })));
+    let codex_lines = vec![json!({ "type": "thread.started", "thread_id": "th-ask" }).to_string(), json!({ "type": "turn.completed", "usage": {} }).to_string()];
+    let (codex, seen) = fake_without_app_server(codex_lines, "ask", home.join("ask-probe.log"));
+    lead::send(&home, &SendRequest { provider: ProviderId::Codex, ..request(&project, "[질문 답변]\n- 형태: MCP 서버") }, codex.as_ref()).unwrap();
+    // The app-server probe comes first and has no prompt; the turn's own launch does.
+    let stdin = seen.lock().unwrap().iter().rev().find_map(|spec| spec.stdin.clone()).unwrap_or_default();
+    assert!(stdin.contains("스킬의 형태는?") && stdin.contains("o-ask"), "{stdin}");
+    // Malformed questions are refused with the prose kept.
+    for broken in [r#"{"questions":[]}"#, r#"{"questions":[{"question":"하나뿐","options":[{"label":"A"}]}]}"#, "not json"] {
+        let (spawner, _) = fake(claude_answer("s", &format!("물어볼게요\n```o-ask\n{broken}\n```")));
+        let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
+        assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })), "{broken}");
+        assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "물어볼게요")), "{broken}");
+        assert!(!events.iter().any(|e| matches!(e, LeadEvent::Ask { .. })), "{broken}");
+    }
+    // An example inside another fence stays prose.
+    let example = "````markdown\n```o-ask\n[]\n```\n````";
+    assert!(o_core::lead::prompt::split_ask(example).1.unwrap().is_none());
 }
 
 fn design_notes() {

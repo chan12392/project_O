@@ -22,6 +22,7 @@ import { readParams, writeParam, type PanelView, type ScreenState } from "../dat
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadThread } from "../features/chat/LeadThread.tsx";
+import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
@@ -277,6 +278,7 @@ function MainWindow() {
       </a>
       <UpdatePrompt api={api} />
       <ClosePrompt onSettings={openSettings} />
+      <QuestionDialog api={api} lead={lead} runs={runViews} live={live} />
       {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
       {screen === "settings" && (
         <Settings api={api} section={section} source={source} onSection={setSection} onBack={closeSettings} onOnboarding={() => setScreen("onboarding")} />

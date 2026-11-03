@@ -93,6 +93,10 @@ pub enum LeadEvent {
     Reply { at: String, provider: ProviderId, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] reported_files: Vec<String> },
     #[serde(rename = "lead.design")]
     Design { at: String, design: Value },
+    /// Questions for the person (an `o-ask` block) in place of an answer: the app asks them
+    /// as choices, and the next `lead.user` carries the picks. `intro` is the answer's prose.
+    #[serde(rename = "lead.ask")]
+    Ask { at: String, ask_id: String, provider: ProviderId, #[serde(default, skip_serializing_if = "String::is_empty")] intro: String, questions: Vec<prompt::AskQuestion> },
     /// A proposed plan with the project forced to the thread's and the policy check's result.
     #[serde(rename = "lead.plan")]
     Plan { at: String, plan_id: String, plan: Value, ok: bool, violations: Vec<Violation> },
@@ -442,9 +446,16 @@ fn missed_turns(events: &[LeadEvent], provider: ProviderId, session_id: &str) ->
         .filter_map(|e| match e {
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
+            LeadEvent::Ask { intro, questions, provider, .. } => Some((format!("총괄({provider})"), ask_text(intro, questions))),
             _ => None,
         })
         .collect()
+}
+
+/// Questions the lead asked, as a line of history for a session that did not see them.
+fn ask_text(intro: &str, questions: &[prompt::AskQuestion]) -> String {
+    let asked: Vec<String> = questions.iter().map(|q| format!("{} ({})", q.question, q.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(" / "))).collect();
+    [intro.trim().to_string(), format!("[질문] {}", asked.join(" · "))].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 fn budget_lines(home: &Path) -> Vec<String> {
@@ -533,6 +544,7 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         .filter_map(|e| match e {
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Reply { text, .. } => Some(("총괄".to_string(), text.clone())),
+            LeadEvent::Ask { intro, questions, .. } => Some(("총괄".to_string(), ask_text(intro, questions))),
             _ => None,
         })
         .collect();
@@ -845,6 +857,24 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
     let (prose, plan) = prompt::split_plan(&answer);
     let (prose, design) = prompt::split_design(&prose);
     let (prose, followups) = prompt::split_followups(&prose);
+    let (prose, ask) = prompt::split_ask(&prose);
+    match ask {
+        Ok(None) => {}
+        // Questions stand in for the answer: a plan, design or follow-up written beside them
+        // is not taken, since the person has not chosen yet (the lead is told not to mix them).
+        Ok(Some(questions)) => {
+            let asks = before.iter().filter(|e| matches!(e, LeadEvent::Ask { .. })).count();
+            emit(LeadEvent::Ask { at: now_iso(), ask_id: format!("{thread_id}-q{}", asks + 1), provider: req.provider, intro: prose, questions })?;
+            return Ok(added);
+        }
+        Err(message) => {
+            if !prose.is_empty() {
+                emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
+            }
+            emit(LeadEvent::Error { at: now_iso(), text: message })?;
+            return Ok(added);
+        }
+    }
     if !prose.is_empty() {
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
     }

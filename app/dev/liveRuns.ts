@@ -196,6 +196,19 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     catch (e) { fail(413, (e as Error).message); }
     return true;
   }
+  // The Tauri run_reply twin: the person's answer to a card's question, sent as the lead.
+  if (path === "/lead/reply") {
+    const runId = query.get("run") ?? "";
+    const card = query.get("card") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(card)) { fail(400, "실행 또는 작업 ID가 올바르지 않습니다"); return true; }
+    let text: string;
+    try { text = (await body(req, 64 * 1024)).toString("utf8").trim(); }
+    catch (e) { fail(413, (e as Error).message); return true; }
+    if (!text) { fail(400, "보낼 답이 비어 있습니다"); return true; }
+    // `o msg` reads a word starting with "--" as a flag; a leading space keeps the answer a word.
+    run(o(["msg", "send", "--run", runId, "--as", "lead", "--to", card, text.startsWith("-") ? ` ${text}` : text]).then(() => "{}"));
+    return true;
+  }
   if (path === "/lead/note") {
     const thread = query.get("thread") ?? "";
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }

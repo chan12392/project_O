@@ -53,12 +53,22 @@ export interface PlanCard {
   depends_on?: string[];
 }
 
+/** One question the lead asks (crates/o-core/src/lead/prompt.rs `AskQuestion`). */
+export interface AskQuestion {
+  header?: string;
+  question: string;
+  options: { label: string; description?: string }[];
+  multi?: boolean;
+}
+
 export type LeadEvent =
   | { t: "lead.start"; at: string; threadId: string; project: string }
   | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
   | { t: "lead.reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
+  /** Questions in place of an answer (an `o-ask` block); the next lead.user carries the picks. */
+  | { t: "lead.ask"; at: string; askId: string; provider: ProviderId; intro?: string; questions: AskQuestion[] }
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
@@ -114,6 +124,8 @@ export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { kind: "followup"; at: string; cardId: string; runId: string }
+  /** `answered`: a message followed it (the picks, or something the person wrote instead). */
+  | { kind: "ask"; at: string; askId: string; provider: ProviderId; intro: string; questions: AskQuestion[]; answered: boolean }
   | {
       kind: "plan";
       at: string;
@@ -136,11 +148,20 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
     const e = raw as LeadEvent;
     switch (e.t) {
       case "lead.user":
+        for (const item of items) if (item.kind === "ask") item.answered = true;
         items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
         break;
       case "lead.reply":
         items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text, reportedFiles: e.reportedFiles });
         break;
+      case "lead.ask": {
+        // A stored ask is data: questions without text or with too few options are left out.
+        const questions = (Array.isArray(e.questions) ? e.questions : []).filter(
+          (q): q is AskQuestion => isObject(q) && typeof q.question === "string" && Array.isArray(q.options) && q.options.length >= 2 && q.options.every((o: unknown) => isObject(o) && typeof o.label === "string"),
+        );
+        if (questions.length > 0) items.push({ kind: "ask", at: e.at, askId: e.askId, provider: e.provider, intro: typeof e.intro === "string" ? e.intro : "", questions, answered: false });
+        break;
+      }
       case "lead.plan":
         items.push(planItem(raw as Record<string, unknown>, items.length));
         break;
