@@ -38,6 +38,46 @@ pub type Spawner = dyn Fn(&LaunchSpec, &str) -> io::Result<Command> + Send + Syn
 
 const WAIT_FOR_SLOT: Duration = Duration::from_millis(2_000);
 
+struct LeadMonitor {
+    stop: mpsc::Sender<()>,
+    handle: Option<thread::JoinHandle<()>>,
+}
+
+impl Drop for LeadMonitor {
+    fn drop(&mut self) {
+        let _ = self.stop.send(());
+        if let Some(handle) = self.handle.take() { let _ = handle.join(); }
+    }
+}
+
+fn monitor_lead(home: &Path, run_id: &str, plan: &Plan, spawner: Arc<Spawner>) -> LeadMonitor {
+    let (stop, signal) = mpsc::channel();
+    let (home, run_id, project) = (home.to_path_buf(), run_id.to_string(), plan.project.clone());
+    let cards: Vec<String> = plan.cards.iter().map(|card| card.id.clone()).collect();
+    let handle = thread::spawn(move || {
+        let mut stopping = false;
+        let mut retries = 0;
+        loop {
+            stopping |= signal.try_recv().is_ok();
+            if stop_requested(&home, &run_id) { break; }
+            match crate::lead::wake_card(&home, &project, &run_id, &cards, spawner.as_ref()) {
+                Ok(true) => continue,
+                _ if stopping => {
+                    // shortcut: wait two seconds for a late dispatch event; use durable recovery when the runner restarts.
+                    let speaker = super::team::Speaker { run_id: run_id.clone(), me: "lead".into(), cards: cards.clone() };
+                    if retries >= 4 || !super::team::read(&home, &speaker, false).is_ok_and(|v| !v.is_empty()) { break; }
+                    retries += 1;
+                    thread::sleep(Duration::from_millis(500));
+                    continue;
+                },
+                _ => {}
+            }
+            stopping |= signal.recv_timeout(Duration::from_millis(500)).is_ok();
+        }
+    });
+    LeadMonitor { stop, handle: Some(handle) }
+}
+
 /// Where a run's cards work. `checked` is the folder the policy check passed: the plan's
 /// project with links, junctions and short names resolved. Cards start there, and each
 /// card first resolves the plan's path again (`resolve`): a link pointed elsewhere since
@@ -144,6 +184,8 @@ pub fn run_plan_with(
             }
         }
     } else { None };
+
+    let _lead_monitor = monitor_lead(home, run_id, plan, Arc::clone(&spawner));
 
     // What earlier work of the project each card gets (ADR-0005); empty with `--no-context`.
     let contexts = Arc::new(crate::context::prepare(home, run_id, plan));

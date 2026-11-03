@@ -27,6 +27,8 @@ pub const LEAD: Command = Command {
   o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
   o lead note <threadId> -                  설계 주석 추가·삭제 (stdin JSON)
   o lead new --project <폴더>               새 대화 시작
+  o lead wake <runId>                      대기 중인 카드 메시지를 현재 총괄에 전달
+  o lead retry <runId> <messageId>          불명 메시지를 확인 후 복구
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
   o lead dispatch <planId> [--profile project-o|own] [--no-context] [--mode yolo|normal]
                              제안된 계획을 정책 검사 후 한 번 실행, runId 출력 (--profile은 o dispatch와 같음)
@@ -42,12 +44,30 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("show") => show(home, rest),
         Some("note") => note(home, rest),
         Some("new") => new(home, rest),
+        Some("wake") => wake(home, rest),
+        Some("retry") => retry(home, rest),
         Some("attach") => attach(home, rest),
         Some("dispatch") => dispatch(home, rest),
         Some("stop") => stop(home, rest),
         Some("stop-all") => stop_all(home, rest),
         Some("models") => models(rest),
         _ => fail(LEAD.usage),
+    }
+}
+
+fn wake(home: &Path, args: &[String]) -> i32 {
+    let [run_id] = args else { return fail("o lead wake <runId>가 필요합니다") };
+    match lead::wake_run(home, run_id, &official_command) {
+        Ok(processed) => { println!("{}", json!({"processed": processed})); 0 }
+        Err(error) => fail(&error),
+    }
+}
+
+fn retry(home: &Path, args: &[String]) -> i32 {
+    let [run_id, message_id] = args else { return fail("o lead retry <runId> <messageId>가 필요합니다") };
+    match lead::retry_card(home, run_id, message_id) {
+        Ok(state) => { println!("{}", json!({"state": state})); 0 }
+        Err(error) => fail(&error),
     }
 }
 

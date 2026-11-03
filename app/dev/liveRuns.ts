@@ -188,6 +188,19 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
+  if (path === "/lead/wake") {
+    const runId = query.get("run") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId)) { fail(400, "실행 ID가 올바르지 않습니다"); return true; }
+    run(oWithInput(["lead", "wake", runId], Buffer.alloc(0), LEAD_TIMEOUT_MS));
+    return true;
+  }
+  if (path === "/lead/retry") {
+    const runId = query.get("run") ?? "";
+    const messageId = query.get("message") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId) || !/^[A-Za-z0-9_-]{1,160}$/.test(messageId)) { fail(400, "실행 또는 메시지 ID가 올바르지 않습니다"); return true; }
+    run(o(["lead", "retry", runId, messageId]));
+    return true;
+  }
   if (path === "/lead/followup") {
     const runId = query.get("run") ?? "";
     const card = query.get("card") ?? "";

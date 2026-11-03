@@ -36,7 +36,7 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
     seen.current = { thread: threadId, replies };
   }, [threadId, lead.items]);
   const known = seen.current;
-  const lastUser = lead.items.findLastIndex((item) => item.kind === "user");
+  const lastUser = lead.items.findLastIndex((item) => item.kind === "user" || item.kind === "worker");
   const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "error");
   const progressSummary = leadProgressSummary(lead.thread?.progressCounts);
   return (
@@ -93,6 +93,8 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
 
 function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
   switch (item.kind) {
+    case "worker":
+      return <article aria-label="작업 카드 메시지" className="rounded-lg border px-3.5 py-2.5"><p className="mb-1 text-xs text-chat-foreground-faint">카드 {item.cardId} · {item.runId} · <time dateTime={item.at}>{timeOf(item.at)}</time></p><p className="whitespace-pre-wrap break-words">{item.text}</p></article>;
     case "user":
       return (
         <div className="ml-auto max-w-[85%] rounded-lg border border-chat-user-border bg-chat-user-surface px-3.5 py-2.5">
