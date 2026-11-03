@@ -117,6 +117,15 @@ pub(crate) fn event_text(file: &mut std::fs::File) -> io::Result<String> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+/// Read a stable event log without changing a partially written record.
+pub(crate) fn locked_event_text(home: &Path, run_id: &str) -> io::Result<String> {
+    let _guard = APPEND.lock().unwrap_or_else(|e| e.into_inner());
+    let dir = run_dir(home, run_id);
+    let lock = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("events.lock"))?;
+    lock.lock()?;
+    fs::read_to_string(dir.join("events.jsonl"))
+}
+
 pub(crate) fn append_value(file: &mut std::fs::File, event: &Value) -> io::Result<()> {
     file.write_all(format!("{}\n", serde_json::to_string(event).map_err(io::Error::other)?).as_bytes())?;
     file.sync_data()
