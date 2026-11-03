@@ -94,6 +94,8 @@
 - 에이전트 설치는 공식 npm 패키지만 앱에서 실행하고, 나머지는 공식 안내를 연다. 로그인은 새 콘솔 창의 공식 명령으로 한다.
 - 설치 파일(NSIS, 사용자별, `o.exe` 사이드카 포함): `pwsh scripts/build-installer.ps1`, `test_1` push마다 `release.yml`이 프리릴리스로 올린다. 설치 폴더·상태 폴더 구분과 안내는 [docs/INSTALL.md](docs/INSTALL.md).
 - Linux CI는 WebView 라이브러리가 없어 `cargo test/clippy`에서 `project-o`를 뺀다(`.github/workflows/guard.yml`). Windows 전용 코드의 import·`mut`는 `#[cfg(windows)]`로 묶어 Linux clippy가 통과하게 한다.
+- 테스트·검사는 개발 설정으로 돌린다: `cargo test`, `cargo clippy --all-targets -- -D warnings`, `cargo run -p o-cli -- scan --all`(`--release` 없이). `--release`(lto·codegen-units 1)는 설치 파일과 배포용 `o.exe`에만 쓴다. 테스트를 release로 빌드하면 파일 하나 고친 뒤 다시 빌드하는 데 약 20배 오래 걸린다(162초 대 7초).
+- CI(`guard.yml`)는 PR에서만 한 번 돈다(같은 PR의 새 push는 이전 실행을 취소). push로는 다시 돌지 않는다. 병합 결과가 head와 같은 test_2·test_1_hotfix·test_1 PR은 이미 검사한 내용이라 무거운 단계를 건너뛴다. PR 없이 push만 한 개인 브랜치는 CI가 돌지 않으니 로컬에서 검사한다.
 
 ## 프로바이더 정책 자동 차단
 
