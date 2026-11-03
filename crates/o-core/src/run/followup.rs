@@ -66,20 +66,28 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
                 if metadata.file_attributes() & 0x400 != 0 { return Err("기존 작업 폴더가 연결 지점으로 변경되었습니다".into()); }
             }
         }
-        let root = expected.canonicalize().map_err(|_| "기존 작업 폴더를 찾지 못했습니다")?;
+        let root = resolved(&expected, "기존 작업 폴더를 찾지 못했습니다")?;
         let path = events.iter().find_map(|event| match event {
             OEvent::CardTool { card_id, name, summary, .. } if card_id == &card.id && name == "O 작업 폴더" => Some(summary),
             _ => None,
         }).ok_or("기존 작업 폴더 기록이 없습니다")?;
-        let actual = Path::new(path).canonicalize().map_err(|_| "기존 작업 폴더를 찾지 못했습니다")?;
+        let actual = resolved(Path::new(path), "기존 작업 폴더를 찾지 못했습니다")?;
         if !actual.starts_with(&root) || !actual.is_dir() { return Err("기존 작업 폴더가 변경되었습니다".into()); }
         actual
     } else {
-        Path::new(&plan.project).canonicalize().map_err(|_| "기존 프로젝트를 찾지 못했습니다")?
+        resolved(Path::new(&plan.project), "기존 프로젝트를 찾지 못했습니다")?
     };
     let session = session.ok_or("이어갈 세션 ID가 없습니다")?;
     if !is_run_id(&session) { return Err("세션 ID가 올바르지 않습니다".into()); }
     Ok(Target { card, project: plan.project, workspace, session, clean: is_clean(home, run) })
+}
+
+/// The existing folder a path names, links resolved, in the plain form the rest of O uses
+/// (`store::resolved_path`: no extended-length prefix on Windows), so a resumed card's cwd,
+/// plan project and Codex `-C` match the folders the first run used.
+fn resolved(path: &Path, missing: &str) -> Result<PathBuf, String> {
+    path.canonicalize().map_err(|_| missing.to_string())?;
+    Ok(PathBuf::from(store::resolved_path(&path.to_string_lossy())))
 }
 
 /// Creates a policy-checked run that resumes the original card in its own workspace.

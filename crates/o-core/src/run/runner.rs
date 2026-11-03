@@ -418,7 +418,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
     } else { None };
     let resumed_workspace = followup.as_ref().map(|target| target.workspace.to_string_lossy().into_owned());
     let cwd = resumed_workspace.as_deref().or(workspace).unwrap_or(&workdir.checked);
-    if resumed_workspace.is_some() && (Path::new(cwd).canonicalize().ok().as_deref() != Some(Path::new(cwd)) || !Path::new(cwd).is_dir()) {
+    if resumed_workspace.is_some() && (!same_folder(&resolved_path(cwd), cwd) || !Path::new(cwd).is_dir()) {
         return Err(io::Error::other("기존 작업 폴더가 변경되어 시작하지 않았습니다"));
     }
     if card.provider == ProviderId::OpenCode && !yolo {
@@ -722,10 +722,21 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
     }
     emit(OEvent::CardQueued { at: now_iso(), card_id: card.clone(), reason: "이전 작업이 끝나기를 기다립니다".into() })?;
     lock.try_lock().map_err(|_| "이 에이전트의 후속 작업이 이미 대기 또는 실행 중입니다".to_string())?;
+    let source_end = || read_events(home, &source).iter().rev().find_map(|e| match e {
+        OEvent::CardEnd { card_id, status, .. } if card_id == &card => Some(*status),
+        _ => None,
+    });
+    // Queued behind a card that was still running: stopping that card (or its run) cancels
+    // the queued instruction too. One sent after the card already ended is a new request.
+    let queued_behind = source_end().is_none();
     loop {
         if stop_requested(home, run_id) { return Err("후속 작업이 시작 전에 중지되었습니다".into()); }
-        let finished = read_events(home, &source).iter().any(|e| matches!(e, OEvent::CardEnd { card_id, .. } if card_id == &card));
-        if finished || !super::store::run_is_live(home, &source) { break; }
+        let ended = source_end();
+        if queued_behind && (ended == Some(CardStatus::Stopped) || stop_requested(home, &source)) {
+            let _ = super::store::request_stop(home, run_id);
+            return Err("이전 작업이 중지되어 대기 중이던 후속 지시를 취소했습니다".into());
+        }
+        if ended.is_some() || !super::store::run_is_live(home, &source) { break; }
         thread::sleep(Duration::from_millis(500));
     }
     super::followup::target(home, &source, &card)?;

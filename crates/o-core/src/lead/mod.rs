@@ -764,6 +764,13 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         Ok(Some(items)) => {
             let Some(start) = start else { emit(LeadEvent::Error { at: now_iso(), text: "이 실행 환경에서는 후속 지시를 자동 전달할 수 없습니다".into() })?; return Ok(added); };
             if !matches!(plan, Ok(None)) { emit(LeadEvent::Error { at: now_iso(), text: "새 설계와 후속 지시가 함께 있어 실행하지 않았습니다".into() })?; return Ok(added); }
+            // "새 설계" changes the current thread under current.lock: hold it while the thread is
+            // checked and the follow-ups start, so they never go out for a thread just replaced.
+            // Same order as `dispatch` (current.lock, then dispatch.lock). This turn already holds
+            // turn.lock; that is safe because no current.lock holder waits on turn.lock (`dispatch`
+            // only tries it, `thread_for` never takes it).
+            let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+            current.lock().map_err(|e| e.to_string())?;
             let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, &thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
             lock.lock().map_err(|e| e.to_string())?;
             let stopped = fs::read_to_string(thread_dir(home, &thread_id).join("stop-all-at")).ok().and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);

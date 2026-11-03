@@ -39,7 +39,9 @@ pub struct OpenCode;
 pub fn check_workspace(cwd: &Path) -> Result<(), String> {
     for dir in cwd.ancestors() {
         for name in ["opencode.json", "opencode.jsonc", ".opencode"] {
-            match fs::symlink_metadata(dir.join(name)) {
+            let path = dir.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(_) if install_folder_only(&path) => {},
                 Ok(_) => return Err("OpenCode는 작업 폴더나 상위 폴더에 프로젝트 설정·플러그인이 있으면 일반 모드로 실행할 수 없습니다".into()),
                 Err(e) if e.kind() == io::ErrorKind::NotFound => {},
                 Err(_) => return Err("OpenCode 프로젝트 설정을 확인하지 못했습니다".into()),
@@ -47,6 +49,13 @@ pub fn check_workspace(cwd: &Path) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// OpenCode's install script puts its binary in `~/.opencode/bin`: a `.opencode` holding only
+/// that is not project config. Anything else in it, or a folder that can't be read, still counts.
+fn install_folder_only(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".opencode")
+        && fs::read_dir(path).is_ok_and(|entries| entries.into_iter().all(|entry| entry.is_ok_and(|e| e.file_name() == "bin")))
 }
 
 /// `run --session` can create a missing id, so require the official list to contain it first.
@@ -379,5 +388,17 @@ mod session_tests {
         fs::remove_file(root.join("opencode.json")).unwrap();
         fs::remove_dir(project).unwrap();
         fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn the_install_folder_is_not_project_config() {
+        let root = std::env::temp_dir().join(format!("o-opencode-install-{}", std::process::id()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(root.join(".opencode").join("bin")).unwrap();
+        assert!(check_workspace(&project).is_ok());
+        fs::create_dir_all(root.join(".opencode").join("plugin")).unwrap();
+        assert!(check_workspace(&project).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 }

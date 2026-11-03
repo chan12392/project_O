@@ -11,7 +11,7 @@ import { prOf } from "../../../../src/core/attention.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { ReviewButton, isReviewCard } from "../work/ReviewRequest.tsx";
 import { useFollowBottom } from "./Thread.tsx";
-import { useState, type ReactNode } from "react";
+import { useState, type KeyboardEvent, type ReactNode } from "react";
 import type { Backend } from "../../platform/backend/index.ts";
 
 const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTerminal, "파일 읽기": FileText, "파일 수정": FilePen, "웹 검색": Globe };
@@ -34,6 +34,19 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
       onFollowup(result.runId);
     } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
     finally { setSending(false); }
+  };
+  // As the lead composer: Ctrl+Enter inserts a line break, Shift+Enter keeps the default one, Enter sends.
+  const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      const input = event.currentTarget;
+      input.setRangeText("\n", input.selectionStart, input.selectionEnd, "end");
+      setDraft(input.value);
+    } else if (!event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      if (!event.repeat) void send();
+    }
   };
   // Who wrote a team message, drawn as in the team chat: a card's own person, or the lead.
   const avatarOf = (party: string) => {
@@ -68,7 +81,7 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
       </div>
       {api && onFollowup && <form className="shrink-0 border-t p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
         <label className="sr-only" htmlFor={`followup-${run.runId}-${card.id}`}>{card.label}에게 후속 지시</label>
-        <textarea id={`followup-${run.runId}-${card.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} disabled={sending || card.provider === "agy" || run.runId.startsWith("session-")} placeholder={card.provider === "agy" ? "Antigravity 실행은 보류 중입니다" : run.runId.startsWith("session-") ? "외부 세션은 기록만 볼 수 있습니다" : card.state === "running" || card.state === "queued" || card.state === "waiting" ? "후속 지시를 입력하면 현재 작업 후 전달합니다" : "후속 지시를 입력하세요"} className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-ring disabled:opacity-50" rows={2} />
+        <textarea id={`followup-${run.runId}-${card.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKey} disabled={sending || card.provider === "agy" || run.runId.startsWith("session-")} placeholder={card.provider === "agy" ? "Antigravity 실행은 보류 중입니다" : run.runId.startsWith("session-") ? "외부 세션은 기록만 볼 수 있습니다" : card.state === "running" || card.state === "queued" || card.state === "waiting" ? "현재 작업이 끝나면 전달합니다. 이미 보낸 지시가 대기·실행 중이면 그 지시가 끝난 뒤 보내세요" : "후속 지시를 입력하세요"} className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-ring disabled:opacity-50" rows={2} />
         {error && <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>}
         {notice && <p role="status" className="mt-1 text-xs text-muted-foreground">{notice}</p>}
         <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground"><span>Enter 전송 · Ctrl+Enter 줄바꿈</span><button type="submit" disabled={sending || !draft.trim() || card.provider === "agy" || run.runId.startsWith("session-")} className="rounded-md border px-2 py-1 hover:bg-accent focus-ring disabled:opacity-50">{sending ? "보내는 중…" : "보내기"}</button></div>
