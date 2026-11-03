@@ -44,9 +44,10 @@ export function TeamChat({ run }: { run: RunView }) {
               >
                 <Markdown text={m.text} inverse={mine} />
               </div>
-              {(m.kind === "question" || m.recipients) && <p className="mt-1 px-1 text-xs text-chat-foreground-faint">
-                {m.kind === "question" && "질문"}
-                {m.kind === "question" && m.recipients && " · "}
+              {(m.kind === "question" || m.replyTo || m.recipients) && <p className="mt-1 break-all px-1 text-xs text-chat-foreground-faint">
+                {m.kind === "question" && `질문${m.id ? ` (${m.id})` : ""}`}
+                {m.replyTo && `질문 ${m.replyTo}에 대한 답변`}
+                {(m.kind === "question" || m.replyTo) && m.recipients && " · "}
                 {m.recipients && Object.entries(m.recipients).map(([recipient, state]) => `${name(recipient)}: ${deliveryWords[state] ?? state}`).join(" · ")}
               </p>}
             </div>

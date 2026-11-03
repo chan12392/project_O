@@ -22,6 +22,7 @@ interface TeamMessage {
   at: string;
   id?: string;
   kind?: "message" | "question";
+  replyTo?: string;
   recipients?: Record<string, "stored" | "delivered" | "unknown" | "acknowledged" | "cancelled">;
   from: string;
   to: string;
@@ -140,7 +141,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (!run) continue;
     if (e.t === "msg") {
-      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text, ...(e.id ? { id: e.id } : {}), ...(e.kind ? { kind: e.kind } : {}) });
+      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text, ...(e.id ? { id: e.id } : {}), ...(e.kind ? { kind: e.kind } : {}), ...(e.replyTo ? { replyTo: e.replyTo } : {}) });
       // An external session's "lead to all" lines are its main thread talking, not words sent to
       // each subagent: they stay in the team chat instead of repeating in every card's transcript.
       const monologue = run.runId.startsWith("session-") && e.from === "lead" && e.to === "all";

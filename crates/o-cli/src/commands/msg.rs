@@ -12,6 +12,7 @@ pub const MSG: Command = Command {
     usage: "  o msg send [--to <카드|lead|all>] \"내용\"   팀 대화에 보내기 (카드 안에서는 실행·카드가 자동)
   o msg read [--all]         첫 메시지 인수 (--all: 상태 변경 없는 전체 대화)
   o msg send --question --id <재시도키> ...  질문 구분과 중복 방지 키
+  o msg send --to <질문자> --reply-to <질문ID> ...  질문에 답하기
   o msg ack|delivered|unknown|retry|cancel --id <메시지ID>  처리 상태 기록
   o msg post                 카드의 outbox 파일(첫 줄 \"to: <상대>\")을 팀 대화로 보내기
                              카드 밖에서는 --run <runId> 와 --as <카드|lead> 로 지정",
@@ -39,7 +40,7 @@ fn message(home: &Path, args: &[String]) -> i32 {
         Ok(speaker) => speaker,
         Err(message) => return fail(&message),
     };
-    let send = |to: &str, text: &str| match team::send_tracked(home, &speaker, to, text, flags.contains_key("question"), flags.get("id").map(String::as_str)) {
+    let send = |to: &str, text: &str| match team::send_reply(home, &speaker, to, text, flags.contains_key("question"), flags.get("id").map(String::as_str), flags.get("reply-to").map(String::as_str)) {
         Ok(id) => {
             println!("저장됨: {} → {to} (id: {id})", speaker.me);
             0

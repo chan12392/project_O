@@ -69,6 +69,11 @@ pub fn send(home: &Path, speaker: &Speaker, to: &str, text: &str) -> Result<(), 
 
 /// `key` makes retries by the same sender idempotent, including after a lost response.
 pub fn send_tracked(home: &Path, speaker: &Speaker, to: &str, text: &str, question: bool, key: Option<&str>) -> Result<String, Refused> {
+    send_reply(home, speaker, to, text, question, key, None)
+}
+
+/// An answer names a question in the same run and may only be sent back to its author.
+pub fn send_reply(home: &Path, speaker: &Speaker, to: &str, text: &str, question: bool, key: Option<&str>, reply_to: Option<&str>) -> Result<String, Refused> {
     let violations = check_message(text, &Parties { from: &speaker.me, to, known: &speaker.cards });
     if !violations.is_empty() {
         return Err(Refused::Policy(violations));
@@ -82,10 +87,21 @@ pub fn send_tracked(home: &Path, speaker: &Speaker, to: &str, text: &str, questi
         let kind = if question { "question" } else { "message" };
         let events = records(&content);
         if let Some(existing) = events.iter().find(|m| m.id == id) {
-            if existing.from == speaker.me && existing.to == to && existing.text == text && existing.kind == kind { return Ok(id); }
+            if existing.from == speaker.me && existing.to == to && existing.text == text && existing.kind == kind && existing.reply_to.as_deref() == reply_to { return Ok(id); }
             return Err(io::Error::other("이미 다른 내용으로 사용한 메시지 키입니다"));
         }
-        append_value(file, &json!({"t":"msg", "at":now_iso(), "id":id, "kind":kind, "from":speaker.me, "to":to, "text":text}))?;
+        if let Some(question_id) = reply_to {
+            let original = events.iter().find(|m| m.id == question_id).ok_or_else(|| io::Error::other("답할 질문을 찾지 못했습니다"))?;
+            if question || original.kind != "question" || original.from != to || original.from == speaker.me || (original.to != speaker.me && original.to != "all") {
+                return Err(io::Error::other("이 질문의 수신자만 작성자에게 답할 수 있습니다"));
+            }
+            if states_for(home, &speaker.run_id, &content, &speaker.me)?.get(question_id).is_some_and(|s| s == "cancelled") {
+                return Err(io::Error::other("취소된 질문에는 답할 수 없습니다"));
+            }
+        }
+        let mut event = json!({"t":"msg", "at":now_iso(), "id":id, "kind":kind, "from":speaker.me, "to":to, "text":text});
+        if let Some(question_id) = reply_to { event["replyTo"] = json!(question_id); }
+        append_value(file, &event)?;
         Ok(id)
     }).map_err(Refused::Io)
 }
@@ -139,13 +155,15 @@ pub struct Received {
     pub to: String,
     pub text: String,
     pub state: String,
+    pub reply_to: Option<String>,
     legacy: bool,
 }
 
 impl Received {
     /// One line per message: a newline in the text can't fake a second sender.
     pub fn line(&self) -> String {
-        format!("[{} → {}] {} (id: {}, {}, {})", self.from, self.to, self.text.replace("\r\n", " ⏎ ").replace('\n', " ⏎ "), self.id, self.kind, self.state)
+        let reply = self.reply_to.as_ref().map(|id| format!(", 답변 대상: {id}")).unwrap_or_default();
+        format!("[{} → {}] {} (id: {}, {}, {}{})", self.from, self.to, self.text.replace("\r\n", " ⏎ ").replace('\n', " ⏎ "), self.id, self.kind, self.state, reply)
     }
 }
 
@@ -188,7 +206,7 @@ fn records(content: &str) -> Vec<Received> {
         if !line.ends_with('\n') { return None; }
         let v: Value = serde_json::from_str(line).ok()?;
         if v["t"] != "msg" { return None; }
-        Some(Received { id: v["id"].as_str().map_or_else(|| format!("m{start}"), str::to_string), kind: v["kind"].as_str().unwrap_or("message").into(), from: v["from"].as_str()?.into(), to: v["to"].as_str()?.into(), text: v["text"].as_str()?.into(), state: "stored".into(), legacy: v["id"].as_str().is_none() })
+        Some(Received { id: v["id"].as_str().map_or_else(|| format!("m{start}"), str::to_string), kind: v["kind"].as_str().unwrap_or("message").into(), from: v["from"].as_str()?.into(), to: v["to"].as_str()?.into(), text: v["text"].as_str()?.into(), state: "stored".into(), reply_to: v["replyTo"].as_str().map(str::to_string), legacy: v["id"].as_str().is_none() })
     }).collect()
 }
 
