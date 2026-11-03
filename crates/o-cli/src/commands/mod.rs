@@ -16,6 +16,7 @@ mod events;
 mod followup;
 mod guard;
 mod images;
+mod issues;
 mod lead;
 mod mirror;
 mod msg;
@@ -48,6 +49,7 @@ pub const COMMANDS: &[Command] = &[
     msg::MSG,
     lead::LEAD,
     images::IMAGE,
+    issues::ISSUES,
     review::REVIEW,
     context::CONTEXT,
     tokens::TOKENS,
