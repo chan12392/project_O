@@ -281,11 +281,11 @@ fn only_provider_files_may_introduce_bypass_switches() {
 #[test]
 fn reasons_carry_the_korean_wording() {
     let reasons = review(&bash("git push origin main"), &OnBranch("younchan"));
-    assert_eq!(reasons, vec!["main에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 → test_1 → main)".to_string()]);
+    assert_eq!(reasons, vec!["main에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main)".to_string()]);
     let edit = json!({ "tool_name": "Edit", "tool_input": { "file_path": "C:/ws/test_2/a.rs", "new_string": "x" }, "cwd": "C:/ws/younchan" });
     let reasons = review(&edit, &ByFolder);
     assert_eq!(reasons.len(), 1);
-    assert!(reasons[0].starts_with("project_O의 test_1·test_2·main 작업 폴더는 읽기 전용입니다") && reasons[0].ends_with("(C:/ws/test_2/a.rs)"));
+    assert!(reasons[0].starts_with("project_O의 test_1·test_1_hotfix·test_2·main 작업 폴더는 읽기 전용입니다") && reasons[0].ends_with("(C:/ws/test_2/a.rs)"));
 }
 
 /// A personal checkout whose gh knows PRs 1 (→ test_1), 2 (→ test_2), 3 (→ main),
@@ -312,6 +312,7 @@ impl GitProbe for Gh {
             Some("2" | "younchan") => "test_2",
             Some("3" | "test_1") => "main",
             Some("4") => "younchan",
+            Some("5" | "younchan-hotfix") => "test_1_hotfix",
             _ => return None,
         };
         Some(base.to_string())
@@ -341,7 +342,7 @@ fn every_protected_branch_refuses_direct_pushes_and_commits() {
 
 #[test]
 fn only_the_owner_merges_prs_into_test_1_and_main() {
-    for into_protected in ["gh pr merge 1", "gh pr merge 3 --merge", "gh pr merge https://github.com/chan12392/project_O/pull/1", "gh pr merge test_2 --merge"] {
+    for into_protected in ["gh pr merge 1", "gh pr merge 3 --merge", "gh pr merge https://github.com/chan12392/project_O/pull/1", "gh pr merge test_2 --merge", "gh pr merge 5", "gh pr merge younchan-hotfix"] {
         assert!(passes(&bash(into_protected), &OWNER_GH), "{into_protected}");
         let reasons = review(&bash(into_protected), &MEMBER_GH);
         assert_eq!(reasons.len(), 1, "{into_protected}");
@@ -367,6 +368,15 @@ fn merge_lookups_that_fail_block() {
     // Unknown PR or another repository: the base cannot be confirmed.
     assert!(blocked(&bash("gh pr merge 99"), &MEMBER_GH));
     assert!(blocked(&bash("gh pr merge -R someone/other 2"), &MEMBER_GH));
+    // The owner too: an unconfirmed base is refused before the owner check (#47).
+    for unknown in ["gh pr merge 99", "gh pr merge -R someone/other 2", "gh api -X PUT repos/chan12392/project_O/pulls/99/merge"] {
+        let reasons = review(&bash(unknown), &OWNER_GH);
+        assert!(reasons.len() == 1 && reasons[0].starts_with("병합할 PR의 base 브랜치를 확인하지 못했습니다"), "{unknown} → {reasons:?}");
+    }
+    // Confirmed bases keep their rule for the owner.
+    for known in ["gh pr merge 1", "gh pr merge 3", "gh pr merge 5", "gh pr merge 2", "gh pr merge 4"] {
+        assert!(passes(&bash(known), &OWNER_GH), "{known}");
+    }
     // Base is test_1 but who is signed in cannot be told.
     let reasons = review(&bash("gh pr merge 1"), &NO_LOGIN_GH);
     assert!(reasons.len() == 1 && reasons[0].starts_with("gh 로그인 계정을 확인하지 못해 test_1 병합을 막습니다"), "{reasons:?}");

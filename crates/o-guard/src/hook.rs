@@ -3,8 +3,8 @@
 //!
 //! It refuses: shell commands that touch provider credentials or disable a
 //! CLI's permission checks, code edits that introduce those, commits or
-//! pushes to the protected branches (test_1, test_2, main), PR merges into
-//! test_1/main by anyone but the owner, branch names outside the
+//! pushes to the protected branches (test_1, test_1_hotfix, test_2, main), PR merges into
+//! test_1/test_1_hotfix/main by anyone but the owner, branch names outside the
 //! <personal>-<topic> rule, and any change inside a protected-branch checkout
 //! (those are pull-only mirrors).
 
@@ -97,7 +97,7 @@ pub trait GitProbe {
 }
 
 const READ_ONLY_REASON: &str =
-    "project_O의 test_1·test_2·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
+    "project_O의 test_1·test_1_hotfix·test_2·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
 
 /// Reviews one tool call (`{ tool_name, tool_input, cwd }`); every returned reason blocks it.
 pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
@@ -130,7 +130,7 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         } else if let Err(unknown) = &targets {
             if !read_only_shell_reasons(&command).is_empty() {
                 reasons.push(format!(
-                    "명령이 고칠 수 있는 폴더를 확인하지 못했습니다({unknown}). 거울(test_1·test_2·main 작업 폴더)일 수 있어 읽기 전용 명령만 허용합니다. 경로를 변수 없이 그대로 적으세요"
+                    "명령이 고칠 수 있는 폴더를 확인하지 못했습니다({unknown}). 거울(test_1·test_1_hotfix·test_2·main 작업 폴더)일 수 있어 읽기 전용 명령만 허용합니다. 경로를 변수 없이 그대로 적으세요"
                 ));
             }
         }
@@ -188,7 +188,7 @@ fn git_reasons(command: &str, current_branch: &dyn Fn() -> String) -> Vec<String
         if PUSH_WORD.is_match(segment) {
             if let Some(target) = PUSH_TO_PROTECTED.captures(segment) {
                 reasons.push(format!(
-                    "{}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 → test_1 → main)",
+                    "{}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main)",
                     &target[1]
                 ));
             } else if !PUSH_WITH_TARGET.is_match(segment) && is_protected(&current_branch()) {
@@ -225,9 +225,10 @@ enum MergeTarget {
     Base(Option<String>),
 }
 
-/// Merges into test_1/main are the owner's: `gh pr merge` and gh's direct merge APIs
+/// Merges into test_1/test_1_hotfix/main are the owner's: `gh pr merge` and gh's direct merge APIs
 /// pass only when the base is confirmed free (test_2, a personal or work branch)
-/// or the signed-in gh user is the owner. Any lookup that fails blocks.
+/// or the signed-in gh user is the owner. Any lookup that fails blocks, the owner's too:
+/// a PR whose base can't be read is refused before the owner check.
 fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
     let mut reasons = Vec::new();
     for (is_pr_merge, arguments) in gh_calls(command) {
@@ -236,6 +237,12 @@ fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
             MergeTarget::Pr { selector, repo } => git.pr_base(cwd, selector.as_deref(), repo.as_deref()),
             MergeTarget::Base(base) => base.clone(),
         };
+        if base.is_none() && matches!(target, MergeTarget::Pr { .. }) {
+            reasons.push(format!(
+                "병합할 PR의 base 브랜치를 확인하지 못했습니다(gh pr view 실패). 보호 브랜치 병합일 수 있어 막습니다. test_1·test_1_hotfix·main 병합은 대표({OWNER})만 합니다"
+            ));
+            continue;
+        }
         if base.as_deref().is_some_and(is_free_base) {
             continue;
         }
@@ -245,15 +252,12 @@ fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
             continue;
         }
         let into = base.clone().unwrap_or_else(|| "확인 못 한 브랜치".to_string());
-        reasons.push(match (&base, &login) {
-            (None, _) if matches!(target, MergeTarget::Pr { .. }) => format!(
-                "병합할 PR의 base 브랜치를 확인하지 못했습니다(gh pr view 실패). test_1·main 병합일 수 있어 막습니다. test_1·main 병합은 대표({OWNER})만 합니다"
+        reasons.push(match &login {
+            None => format!(
+                "gh 로그인 계정을 확인하지 못해 {into} 병합을 막습니다(gh api user 실패 또는 명령에 토큰 지정). test_1·test_1_hotfix·main 병합은 대표({OWNER})만 합니다"
             ),
-            (_, None) => format!(
-                "gh 로그인 계정을 확인하지 못해 {into} 병합을 막습니다(gh api user 실패 또는 명령에 토큰 지정). test_1·main 병합은 대표({OWNER})만 합니다"
-            ),
-            (_, Some(user)) => format!(
-                "{into}에는 대표({OWNER})만 병합할 수 있습니다(지금 gh 로그인: {user}). test_2 병합은 누구나 하고, test_2 → test_1 → main은 대표가 병합합니다"
+            Some(user) => format!(
+                "{into}에는 대표({OWNER})만 병합할 수 있습니다(지금 gh 로그인: {user}). test_2 병합은 누구나 하고, test_1_hotfix·test_1·main은 대표가 병합합니다"
             ),
         });
     }
