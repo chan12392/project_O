@@ -182,6 +182,16 @@ pub async fn lead_stop(project: Option<String>) -> Result<Value, String> {
 }
 
 #[tauri::command]
+pub async fn lead_wake(run_id: String) -> Result<Value, String> {
+    blocking(move || lead::wake_run(&store::default_home(), &run_id, &official_command).map(|processed| json!({ "processed": processed }))).await?
+}
+
+#[tauri::command]
+pub async fn lead_retry(run_id: String, message_id: String) -> Result<Value, String> {
+    blocking(move || lead::retry_card(&store::default_home(), &run_id, &message_id).map(|state| json!({ "state": state }))).await?
+}
+
+#[tauri::command]
 pub async fn lead_stop_all(project: String) -> Result<Value, String> {
     blocking(move || lead::stop_all(&store::default_home(), &project).map(|stopped| json!({ "stopped": stopped }))).await?
 }

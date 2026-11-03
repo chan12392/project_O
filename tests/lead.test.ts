@@ -103,6 +103,11 @@ test("a thread folds into messages, replies, plan cards with their run, and erro
   assert.ok(bare[0].kind === "plan" && bare[0].title === "제목 없는 계획" && bare[0].cards.length === 0);
 });
 
+test("a card message stays distinct from a user instruction", () => {
+  const items = leadItems([{ t: "lead.worker", at: "1", runId: "r1", cardId: "a", messageId: "m1", text: "확인이 필요합니다" } satisfies LeadEvent]);
+  assert.deepEqual(items, [{ kind: "worker", at: "1", runId: "r1", cardId: "a", text: "확인이 필요합니다" }]);
+});
+
 test("switching the lead keeps the effort, or the nearest one the new CLI takes", () => {
   assert.equal(effortFor("codex", "high"), "high");
   assert.equal(effortFor("codex", "max"), "xhigh");

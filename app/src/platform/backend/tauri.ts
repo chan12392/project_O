@@ -73,6 +73,8 @@ export function tauriBackend(invoke: Invoke): Backend {
       }>,
     leadDispatch: (planId, clean) => invoke("lead_dispatch", { planId, clean }) as Promise<LeadDispatched>,
     leadStop: (project) => invoke("lead_stop", { project: project ?? null }) as Promise<{ stopped: boolean }>,
+  leadWake: (runId) => invoke("lead_wake", { runId }) as Promise<{ processed: boolean }>,
+  leadRetry: (runId, messageId) => invoke("lead_retry", { runId, messageId }) as Promise<{ state: "queued" | "acknowledged" }>,
     leadStopAll: (project) => invoke("lead_stop_all", { project }) as Promise<{ stopped: number }>,
     leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
     projects: () => invoke("projects_list") as Promise<ProjectList>,

@@ -56,6 +56,7 @@ export interface PlanCard {
 export type LeadEvent =
   | { t: "lead.start"; at: string; threadId: string; project: string }
   | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  | { t: "lead.worker"; at: string; runId: string; cardId: string; messageId: string; text: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
   | { t: "lead.reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
@@ -112,6 +113,7 @@ export function leadView(state: LeadView, action: LeadViewAction): LeadView {
 /** One thing the chat draws, in order. */
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  | { kind: "worker"; at: string; runId: string; cardId: string; text: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { kind: "followup"; at: string; cardId: string; runId: string }
   | {
@@ -137,6 +139,9 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
     switch (e.t) {
       case "lead.user":
         items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
+        break;
+      case "lead.worker":
+        items.push({ kind: "worker", at: e.at, runId: e.runId, cardId: e.cardId, text: e.text });
         break;
       case "lead.reply":
         items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text, reportedFiles: e.reportedFiles });

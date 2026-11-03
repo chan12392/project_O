@@ -68,6 +68,8 @@ export const devBackend: Backend = {
     fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
   leadStop: (project) => fetch(`/api/lead/stop${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "POST" }).then((r) => json<{ stopped: boolean }>(r)),
   leadStopAll: (project) => fetch(`/api/lead/stop-all?project=${encodeURIComponent(project)}`, { method: "POST" }).then((r) => json<{ stopped: number }>(r)),
+  leadWake: (runId) => fetch(`/api/lead/wake?run=${encodeURIComponent(runId)}`, { method: "POST" }).then((r) => json<{ processed: boolean }>(r)),
+  leadRetry: (runId, messageId) => fetch(`/api/lead/retry?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST" }).then((r) => json<{ state: "queued" | "acknowledged" }>(r)),
   leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
   projects: () => fetch("/api/projects").then((r) => json<ProjectList>(r)),
   projectOpen: (path) => fetch(`/api/projects/open?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),

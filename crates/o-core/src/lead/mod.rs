@@ -43,6 +43,7 @@ use crate::run::events::StreamSignal;
 use crate::run::mode::{Profile, RunMode};
 use crate::run::plan::ProviderId;
 use crate::run::runner::Spawner;
+use crate::run::team;
 use crate::run::snapshot::{snapshot, RunStatus};
 use crate::run::yolo::{self, AutoRunFacts, PastAutoRun};
 use crate::run::store::{self, is_run_id, new_run_id, policy_context, read_events, record_blocked, run_dir};
@@ -77,6 +78,9 @@ pub enum LeadEvent {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         yolo: bool,
     },
+    /// Untrusted data sent by a card, never a user instruction or approval.
+    #[serde(rename = "lead.worker")]
+    Worker { at: String, run_id: String, card_id: String, message_id: String, text: String },
     /// The CLI's own session id, resumed on the thread's next turn with that CLI. `clean` is
     /// the profile it lives in: a turn on the other profile cannot resume it and starts a new one.
     /// Absent in threads from before the switch, where any turn resumes it.
@@ -436,11 +440,12 @@ fn missed_turns(events: &[LeadEvent], provider: ProviderId, session_id: &str) ->
     let seen = seen.or_else(|| events.iter().rposition(|e| matches!(e, LeadEvent::User { provider: p, .. } if *p == provider)));
     let Some(seen) = seen else { return Vec::new() };
     // Its own turn's answer follows its message; what it missed starts at the next message.
-    let Some(next) = events.iter().skip(seen + 1).position(|e| matches!(e, LeadEvent::User { .. })) else { return Vec::new() };
+    let Some(next) = events.iter().skip(seen + 1).position(|e| matches!(e, LeadEvent::User { .. } | LeadEvent::Worker { .. })) else { return Vec::new() };
     events[seen + 1 + next..]
         .iter()
         .filter_map(|e| match e {
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
+            LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
             _ => None,
         })
@@ -489,11 +494,86 @@ pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, st
 }
 
 fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>) -> Result<Vec<LeadEvent>, String> {
+    send_turn(home, req, spawner, limit, start, None)
+}
+
+struct WorkerTurn<'a> {
+    thread_id: &'a str,
+    speaker: &'a team::Speaker,
+    message: &'a team::Received,
+}
+
+/// Handle one queued card message for the current thread that dispatched this run.
+/// `false` means there is no eligible message; unknown deliveries require human recovery.
+pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spawner: &Spawner) -> Result<bool, String> {
+    let Some(thread_id) = current_thread(home, project) else { return Ok(false) };
+    let events = read_thread(home, &thread_id);
+    let Some(dispatch) = events.iter().rposition(|event| matches!(event,
+        LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. } if id == run_id)) else { return Ok(false) };
+    let Some((provider, model, effort, profile)) = events[..dispatch].iter().rev().find_map(|event| match event {
+        LeadEvent::User { provider, model, effort, profile, .. } => Some((*provider, model.as_deref(), effort.as_deref(), *profile)),
+        _ => None,
+    }) else { return Err("실행에 연결된 총괄 설정이 없습니다".into()) };
+    let Some(profile) = profile else { return Err("이전 총괄의 프로필이 기록되지 않아 자동 응답할 수 없습니다".into()) };
+    let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: cards.to_vec() };
+    let Some(message) = team::read(home, &speaker, false).map_err(|e| e.to_string())?.into_iter().next() else { return Ok(false) };
+    if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
+    let root = clean::default_root();
+    let req = SendRequest { project, provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
+    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }))?;
+    if !team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.id == message.id && m.state == "acknowledged") {
+        return Err("총괄 처리 결과가 불명입니다. 대화와 메시지 상태를 확인하세요".into());
+    }
+    Ok(true)
+}
+
+/// Explicit recovery for a queued message after its runner has stopped.
+pub fn wake_run(home: &Path, run_id: &str, spawner: &Spawner) -> Result<bool, String> {
+    if !is_run_id(run_id) { return Err("실행 ID가 올바르지 않습니다".into()); }
+    let value = store::read_plan(home, run_id).map_err(|e| e.to_string())?;
+    let plan: crate::run::plan::Plan = serde_json::from_value(value).map_err(|e| e.to_string())?;
+    let cards = plan.cards.iter().map(|card| card.id.clone()).collect::<Vec<_>>();
+    wake_card(home, &plan.project, run_id, &cards, spawner)
+}
+
+/// Reconcile an uncertain delivery, or put it back only after an explicit user request.
+pub fn retry_card(home: &Path, run_id: &str, message_id: &str) -> Result<&'static str, String> {
+    if !is_run_id(run_id) { return Err("실행 ID가 올바르지 않습니다".into()); }
+    let plan: crate::run::plan::Plan = serde_json::from_value(store::read_plan(home, run_id).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+    current.lock().map_err(|e| e.to_string())?;
+    let thread_id = current_thread(home, &plan.project).ok_or("현재 총괄 대화가 없습니다")?;
+    let turn = turn_lock(home, &thread_id).map_err(|e| e.to_string())?;
+    turn.try_lock().map_err(|_| "총괄이 응답 중입니다. 완료 후 상태를 확인하세요")?;
+    if !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. } if id == run_id)) {
+        return Err("현재 총괄 대화가 분배한 실행이 아닙니다".into());
+    }
+    let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: plan.cards.iter().map(|card| card.id.clone()).collect() };
+    let pending = team::read(home, &speaker, false).map_err(|e| e.to_string())?;
+    let message = pending.first().filter(|m| m.id == message_id && matches!(m.state.as_str(), "unknown" | "delivered")).ok_or("첫 번째 처리 불명 메시지를 확인하세요")?;
+    let sent = team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.from == "lead" && m.to == message.from && m.reply_to.as_deref() == Some(message_id));
+    let state = if sent { "acknowledged" } else { "stored" };
+    team::transition(home, &speaker, message_id, state).map_err(|e| e.to_string())?;
+    Ok(if sent { "acknowledged" } else { "queued" })
+}
+
+fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
     check_request(home, req)?;
-    let thread_id = thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?;
+    let thread_id = match &worker {
+        Some(w) => w.thread_id.to_string(),
+        None => thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?,
+    };
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
-    let pending: Vec<_> = notes::read(home, &thread_id).map_err(|e| format!("설계 주석을 읽지 못했습니다: {e}"))?.into_iter().filter(|note| !note.sent).collect();
+    if let Some(w) = &worker {
+        if req.yolo || store::stop_requested(home, &w.speaker.run_id) || current_thread(home, req.project).as_deref() != Some(&thread_id)
+            || !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if run_id == &w.speaker.run_id)) {
+            return Err("실행과 현재 총괄 대화가 일치하지 않습니다".into());
+        }
+        let claimed = team::claim(home, w.speaker).map_err(|e| e.to_string())?;
+        if claimed.as_ref().is_none_or(|m| m.id != w.message.id) { return Err("다른 메시지가 먼저 접수되어 상태 확인이 필요합니다".into()); }
+    }
+    let pending: Vec<_> = if worker.is_some() { Vec::new() } else { notes::read(home, &thread_id).map_err(|e| format!("설계 주석을 읽지 못했습니다: {e}"))?.into_iter().filter(|note| !note.sent).collect() };
     let mut user_text = req.text.trim().to_string();
     if !pending.is_empty() {
         user_text.push_str("\n\n[설계에 남긴 주석]\n");
@@ -511,7 +591,9 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         added.push(event);
         Ok(())
     };
-    emit(LeadEvent::User {
+    if let Some(w) = &worker {
+        emit(LeadEvent::Worker { at: now_iso(), run_id: w.speaker.run_id.clone(), card_id: w.message.from.clone(), message_id: w.message.id.clone(), text: user_text.clone() })?;
+    } else { emit(LeadEvent::User {
         at: now_iso(),
         text: user_text.clone(),
         attachments: attachments.clone(),
@@ -520,18 +602,19 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
         profile: Some(Profile::of_clean(req.clean.is_some())),
         yolo: req.yolo,
-    })?;
+    })?; }
 
-    let session = before.iter().rev().find_map(|e| match e {
+    let session = if worker.is_some() { None } else { before.iter().rev().find_map(|e| match e {
         LeadEvent::Session { provider, session_id, clean, .. } if *provider == req.provider && clean.is_none_or(|c| c == req.clean.is_some()) => {
             Some(session_id.clone())
         }
         _ => None,
-    });
+    }) };
     let history: Vec<(String, String)> = before
         .iter()
         .filter_map(|e| match e {
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
+            LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, .. } => Some(("총괄".to_string(), text.clone())),
             _ => None,
         })
@@ -540,7 +623,7 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
     let runs = dispatched_runs(home, &before);
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
-    let text = prompt::build(&prompt::PromptInput {
+    let input = prompt::PromptInput {
         project: req.project,
         text: &user_text,
         attachments: &attachments,
@@ -551,7 +634,8 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         missed: &missed,
         design: design.as_deref(),
         yolo: req.yolo,
-    });
+    };
+    let text = if worker.is_some() { prompt::build_worker(&input) } else { prompt::build(&input) };
     let files_dir = files::thread_files(home, &thread_id);
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
     let images: Vec<String> = attachments.iter().filter(|a| a.image).map(|a| a.path.clone()).collect();
@@ -706,10 +790,11 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
             for signal in reader.read(line) {
                 match signal {
                     StreamSignal::Session { session_id } => {
-                        if session.as_deref() != Some(session_id.as_str()) {
+                        if worker.is_none() && session.as_deref() != Some(session_id.as_str()) {
                             emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone(), clean: Some(req.clean.is_some()) })?;
                             index_session(home, &thread_id, &session_id);
                         }
+                        if worker.is_some() { index_session(home, &thread_id, &session_id); }
                         used_session = Some(session_id);
                     }
                     StreamSignal::Message { text } => last_message = text,
@@ -806,7 +891,7 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
     if let Some(error) = fatal { return Err(error); }
     // The CLI got this turn's message: its session has seen the thread through it.
     let session_seen = used_session.is_some();
-    if let Some(session_id) = used_session {
+    if let Some(session_id) = used_session.filter(|_| worker.is_none()) {
         emit(LeadEvent::Seen { at: now_iso(), provider: req.provider, session_id, through: before.len() })?;
         if !pending.is_empty() && notes::change(home, &thread_id, notes::Change::Sent { notes: pending.clone() }).is_err() {
             emit(LeadEvent::Error { at: now_iso(), text: "주석은 전달했지만 전달 상태를 저장하지 못했습니다. 다시 보내기 전에 주석을 확인하세요".into() })?;
@@ -835,6 +920,26 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
             [answer.trim(), stderr_tail.trim()].into_iter().find(|t| !t.is_empty()).map(str::to_string).unwrap_or_else(|| format!("종료 코드 {exit:?}"))
         };
         emit(LeadEvent::Error { at: now_iso(), text: format!("총괄이 답하지 못했습니다: {why}") })?;
+        return Ok(added);
+    }
+
+    if let Some(w) = &worker {
+        if answer.trim().is_empty() { emit(LeadEvent::Error { at: now_iso(), text: "카드 메시지에 대한 총괄 답변이 비어 있습니다".into() })?; return Ok(added); }
+        emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: answer.clone(), reported_files: Vec::new() })?;
+        let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+        current.lock().map_err(|e| e.to_string())?;
+        if store::stop_requested(home, &w.speaker.run_id) || current_thread(home, req.project).as_deref() != Some(&thread_id) {
+            emit(LeadEvent::Error { at: now_iso(), text: "새 대화로 전환되어 카드에 답을 보내지 않았습니다".into() })?;
+            return Ok(added);
+        }
+        if w.message.kind == "question" {
+            let key = crate::run::result::digest(&format!("{}\0{}", w.speaker.run_id, w.message.id));
+            if team::send_reply(home, w.speaker, &w.message.from, &answer, false, Some(&key), Some(&w.message.id)).is_err() {
+                emit(LeadEvent::Error { at: now_iso(), text: "카드에 답을 보내지 못했습니다. 답변과 메시지 상태를 확인하세요".into() })?;
+                return Ok(added);
+            }
+        }
+        team::transition(home, w.speaker, &w.message.id, "acknowledged").map_err(|e| e.to_string())?;
         return Ok(added);
     }
 
@@ -1398,7 +1503,7 @@ pub fn tokens(home: &Path, project: Option<&str>, since: Option<&str>) -> LeadTo
         let mut reported = false;
         for event in events {
             match event {
-                LeadEvent::User { at, .. } => {
+                LeadEvent::User { at, .. } | LeadEvent::Worker { at, .. } => {
                     if selected && !reported { sum.unreported += 1; }
                     selected = since.is_none_or(|s| at.as_str() >= s);
                     reported = false;

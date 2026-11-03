@@ -53,6 +53,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_send,
         lead::lead_dispatch,
         lead::lead_stop,
+        lead::lead_wake,
+        lead::lead_retry,
         lead::lead_stop_all,
         lead::lead_models,
         images::image_read,
