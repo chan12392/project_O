@@ -145,8 +145,24 @@ export interface TokenReport {
   };
 }
 
+export interface ResourceLease {
+  id: string;
+  runId: string;
+  cardId: string;
+  resources: unknown;
+  ownerPid: number | null;
+  ownerStarted: string | null;
+  workerPid: number | null;
+  workerStarted: string | null;
+  spawnIntent: boolean | null;
+  exitConfirmed: boolean | null;
+  state: "recoverable" | "unknown";
+}
+
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
+  resources(): Promise<ResourceLease[]>;
+  recoverResource(id: string): Promise<void>;
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;

@@ -104,6 +104,10 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
     if !dispatch {
         let cards: Vec<String> = plan.cards.iter().map(|c| format!("{}→{}", c.id, c.provider)).collect();
         println!("정책 통과: 카드 {}개 ({})", plan.cards.len(), cards.join(", "));
+        for card in &plan.cards {
+            let resources = if card.resources.is_empty() { "미선언 · 독점 실행".to_string() } else { serde_json::to_string(&card.resources).unwrap_or_default() };
+            println!("{} 자원: {}", card.id, resources);
+        }
         return 0;
     }
     let run_id = store::new_run_id(now);

@@ -61,6 +61,7 @@ fn role(project: &str, budget: &[String], yolo: bool) -> String {
         format!("- 카드마다 provider({providers})·model·effort({})를 일에 맞게 고릅니다. 모델이 확실하지 않으면 model을 비웁니다.", EFFORTS.join("|")),
         format!("- 동시 실행 상한: {}. 한도·예산에 걸린 서비스는 피합니다.", caps.join(", ")),
         format!("- 허용 필드: {}. id는 영문 소문자·숫자·하이픈. 실행 파일·인자·환경변수·계정은 넣지 않습니다.", CARD_FIELDS.join(", ")),
+        "- resources에 접근할 모든 자원을 선언합니다: {\"kind\":\"project-path\"|\"external\",\"key\":\"경로 또는 외부 키\",\"mode\":\"read\"|\"write\"}. 경로는 프로젝트 기준 상대 경로입니다. 모르면 생략하고 독점 실행합니다.".to_string(),
     ];
     if !budget.is_empty() {
         lines.push("오늘 사용 예산:".to_string());
@@ -70,7 +71,7 @@ fn role(project: &str, budget: &[String], yolo: bool) -> String {
         String::new(),
         "답은 마크다운으로 씁니다. 작업을 제안할 때만 답 끝에 아래 블록을 정확히 하나 넣습니다. project는 O가 채웁니다. 선행 작업이 있으면 depends_on에 작업 id 배열을 넣습니다.".to_string(),
         format!("```{PLAN_FENCE}"),
-        r#"{"title":"짧은 제목","cards":[{"id":"ui","provider":"codex","effort":"medium","role":"코딩","task":"무엇을, 어느 파일에서, 완료 기준"}]}"#.to_string(),
+        r#"{"title":"짧은 제목","cards":[{"id":"ui","provider":"codex","effort":"medium","role":"코딩","task":"무엇을, 어느 파일에서, 완료 기준","resources":[{"kind":"project-path","key":"src/ui","mode":"write"}]}]}"#.to_string(),
         "```".to_string(),
     ]);
     lines.join("\n")

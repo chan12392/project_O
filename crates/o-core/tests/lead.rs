@@ -82,7 +82,7 @@ Usage: codex [OPTIONS] [PROMPT]
         ("only the latest plan in the current thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
         ("an automatic dispatch that fails to start uses up no auto-run limit", autorun_failures_not_counted),
-        ("an automatic dispatch is cancelled when a new thread replaces its own", autorun_new_thread_cancels),
+        ("a new thread cannot replace a live lead", autorun_new_thread_cancels),
         ("an automatic dispatch never starts a plan a newer request replaced", autorun_newer_request_wins),
         ("lead child receives its agent marker", lead_child_marker),
         ("a plan block is read: none, one, malformed, two", plan_blocks),
@@ -97,13 +97,13 @@ Usage: codex [OPTIONS] [PROMPT]
         ("a thread persists per project; new starts another", threads),
         ("attachments: type, size, name and link refusals", attachments),
         ("sends started together run one turn; the others are refused", busy),
-        ("a dead turn's marker holds nothing, even with its pid reused", stale_marker),
+        ("a dead turn's marker remains unknown, even with its pid reused", stale_marker),
         ("bad requests start nothing", refused_requests),
         ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
         ("no project hook runs before a plan is approved, first turn or resumed", project_hooks_off),
         ("an attachment reached through a linked parent folder is refused", attachment_parent_links),
         ("a stop while the turn starts keeps the CLI from running and never ends the owner", stop_while_starting),
-        ("a stop ends a running CLI; an orphaned one only when its start time matches", stop_running_and_orphans),
+        ("a stop ends a running CLI but does not trust an orphan's pid", stop_running_and_orphans),
         ("a turn that outlasts its time limit is ended and says so", turn_time_limit),
         ("back from another agent, a resumed session hears the turns it missed", round_trip),
         ("the thread list is written whole and a broken one is never overwritten", current_list),
@@ -679,20 +679,19 @@ fn autorun_new_thread_cancels() {
     let events = std::thread::scope(|scope| {
         let turn = scope.spawn(|| lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start));
         wait_until("the lead to start answering", || entered.exists());
-        // Another client starts a new thread while the lead answers.
-        lead::start(&home, &project).unwrap();
+        // Another client cannot replace a lead that is still answering.
+        assert!(lead::start(&home, &project).is_err());
         std::fs::write(&release, "").unwrap();
         turn.join().unwrap().unwrap()
     });
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Plan { ok: true, .. })));
-    assert!(auto_reason(&events, "설계가 변경"), "{events:?}");
-    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
-    assert_eq!(starts.load(Ordering::SeqCst), 0);
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
     // On the current thread, the latest plan still runs exactly once.
     let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
     let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
     assert_eq!(run.iter().filter(|e| matches!(e, LeadEvent::Dispatch { .. })).count(), 1);
-    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
 }
 
 /// Another request lands right as the lead's answer ends: the auto path either starts the plan
@@ -1093,9 +1092,7 @@ fn busy() {
     }
 }
 
-/// A marker left by a turn whose process died (an app crash, `app.exit` during an update)
-/// does not hold the thread, even when its pid now belongs to an unrelated live process;
-/// and a stop then ends nothing.
+/// A dead owner's marker cannot prove that its process tree exited.
 fn stale_marker() {
     let (home, project) = setup("stale");
     let thread = lead::thread_for(&home, &project, false).unwrap();
@@ -1104,14 +1101,15 @@ fn stale_marker() {
     let pid = other.id();
     let stale = json!({ "pid": pid, "provider": "claude", "owner": pid, "token": "dead", "child": { "pid": pid, "started": 1 } });
     std::fs::write(&marker, stale.to_string()).unwrap();
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null(), "a dead turn shows as answering");
+    assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
     assert!(!lead::stop(&home, Some(&project)));
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(other.try_wait().unwrap().is_none(), "stop ended a process that only reused the dead turn's pid");
     let (spawner, seen) = fake(claude_answer("s", "ok"));
-    lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
-    assert_eq!(seen.lock().unwrap().len(), 1);
-    assert!(!marker.exists());
+    assert!(lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap_err().contains("종료를 확인"));
+    assert!(lead::new_thread(&home, &project).is_err());
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(marker.exists());
     let _ = other.kill();
     let _ = other.wait();
 }
@@ -1367,8 +1365,7 @@ fn stop_while_starting() {
     assert!(lines.contains(&"reply: 다음 턴".to_string()), "{lines:?}");
 }
 
-/// A stop while the CLI answers ends it at once. A CLI left behind by a dead owner is
-/// ended only when its pid and start time both match what the turn wrote.
+/// A stop ends the live owner's CLI; an orphan's PID alone never authorizes termination.
 fn stop_running_and_orphans() {
     let (home, project) = setup("stop-run");
     let (spawner, seen) = fake_slow(claude_answer("s", "늦은 답"), 20_000);
@@ -1395,9 +1392,11 @@ fn stop_running_and_orphans() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(orphan.try_wait().unwrap().is_none(), "a process whose start time differs was ended");
     std::fs::write(&marker, mark(started).to_string()).unwrap();
-    assert!(lead::stop(&home, Some(&project)));
-    wait_until("the orphaned CLI to end", || orphan.try_wait().unwrap().is_some());
-    assert!(!marker.exists(), "a dead turn's marker is cleared once its CLI is ended");
+    assert!(!lead::stop(&home, Some(&project)));
+    assert!(orphan.try_wait().unwrap().is_none());
+    assert!(marker.exists());
+    orphan.kill().unwrap();
+    orphan.wait().unwrap();
 }
 
 /// A CLI that hangs does not hold the thread forever: past the turn's limit it is ended and

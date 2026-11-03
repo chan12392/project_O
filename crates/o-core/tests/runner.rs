@@ -199,7 +199,7 @@ fn followup_resumes_workspace() {
     let record = runs.iter().find(|run| run.run_id == interrupted).unwrap();
     assert!(record.events.iter().any(|event| event["t"] == "card.end" && event["status"] == "failed"));
     assert!(record.events.iter().any(|event| event["t"] == "run.end" && event["status"] == "failed"));
-    assert_eq!(o_core::run::followup::target(&home, &interrupted, "a").unwrap().session, "s1");
+    assert!(o_core::run::followup::target(&home, &interrupted, "a").is_err());
 }
 
 fn isolated_copies() {
@@ -636,7 +636,7 @@ fn temp_home() -> PathBuf {
 }
 
 fn card(id: &str, provider: ProviderId, task: &str) -> Card {
-    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] }
+    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![], resources: vec![] }
 }
 
 fn plan(cards: Vec<Card>) -> Plan {
@@ -839,7 +839,11 @@ fn clean_run() {
 fn same_provider_slots_in_one_plan() {
     let home = temp_home();
     let max = LIMITS.max_active_per_provider(ProviderId::Claude);
-    let p = plan((0..=max).map(|i| card(&format!("c{i}"), ProviderId::Claude, "x")).collect());
+    let p = plan((0..=max).map(|i| {
+        let mut card = card(&format!("c{i}"), ProviderId::Claude, "x");
+        card.resources = vec![o_core::run::plan::Resource { kind: o_core::run::plan::ResourceKind::External, key: format!("test-{i}"), mode: o_core::run::plan::ResourceMode::Write }];
+        card
+    }).collect());
     create_run(&home, "r10", &p).unwrap();
     let inner = quiet();
     // A slow start (PATH lookup, process creation) leaves the window the runner must not miss.
@@ -914,6 +918,9 @@ fn runners_share_slots() {
         let codex = LIMITS.max_active_total - claude;
         let mut cards: Vec<Card> = (0..claude).map(|i| card(&format!("{prefix}c{i}"), ProviderId::Claude, "x")).collect();
         cards.extend((0..codex).map(|i| card(&format!("{prefix}x{i}"), ProviderId::Codex, "x")));
+        for card in &mut cards {
+            card.resources = vec![o_core::run::plan::Resource { kind: o_core::run::plan::ResourceKind::External, key: format!("test-{}", card.id), mode: o_core::run::plan::ResourceMode::Write }];
+        }
         plan(cards)
     };
     let seen = Arc::new(Mutex::new(InFlight::default()));

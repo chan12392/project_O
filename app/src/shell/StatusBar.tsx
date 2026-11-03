@@ -1,4 +1,5 @@
 import { RefreshCw, RotateCcw } from "lucide-react";
+import { useState } from "react";
 
 import { LIMITS } from "../../../src/core/limits.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
@@ -7,6 +8,7 @@ import type { LiveStatus } from "../data/useLiveRuns.ts";
 import type { ScreenState } from "../data/useRun.ts";
 import { useBudget } from "../data/useBudget.ts";
 import { serviceLimits } from "./serviceLimits.ts";
+import { backend, type ResourceLease } from "../platform/backend/index.ts";
 
 const BUTTON = "flex h-5 items-center gap-1 rounded px-1.5 whitespace-nowrap hover:bg-accent hover:text-foreground focus-ring";
 
@@ -20,6 +22,23 @@ function sameDay(at: string, now: Date): boolean {
  * and which source the screen shows: this machine's O runs (`live`) or the recorded demo.
  */
 export function StatusBar({ state, runs, live, replaying, onReplay }: { state: ScreenState; runs: RunView[]; live?: LiveStatus; replaying: boolean; onReplay: () => void }) {
+  const [leases, setLeases] = useState<ResourceLease[] | null>(null);
+  const [leaseError, setLeaseError] = useState("");
+  const [leaseOpen, setLeaseOpen] = useState(false);
+  const [recovering, setRecovering] = useState<string | null>(null);
+  const inspect = async () => {
+    setLeaseOpen(true);
+    setLeaseError("");
+    try { setLeases(await backend().resources()); }
+    catch (error) { setLeases(null); setLeaseError(String(error)); }
+  };
+  const recover = async (id: string) => {
+    setRecovering(id);
+    setLeaseError("");
+    try { await backend().recoverResource(id); await inspect(); }
+    catch (error) { setLeaseError(String(error)); }
+    finally { setRecovering(null); }
+  };
   const known = state === "full" || state === "empty";
   const cards = runs.flatMap((r) => r.cards);
   // Live runs span many days; only today's starts count against the daily cap.
@@ -43,6 +62,15 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
       <span className="max-sm:hidden" title={limits.title}>{!known ? "한도 확인 전" : limits.text}</span>
       {live ? (
         <>
+          <div className="relative">
+            <button type="button" className={BUTTON} onClick={() => leaseOpen ? setLeaseOpen(false) : void inspect()} aria-expanded={leaseOpen}>자원 예약 점검</button>
+            {leaseOpen && <section aria-label="자원 예약 점검" className="absolute bottom-full left-0 z-50 mb-2 max-h-64 w-80 max-w-[80vw] overflow-auto rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg">
+              <p className="mb-2">시작 전 또는 작업 종료가 기록된 예약은 소유자 종료 확인 후 복구할 수 있습니다.</p>
+              {leaseError && <p role="alert">{leaseError}</p>}
+              {leases === null ? !leaseError && <p>예약을 읽는 중</p> : leases.length === 0 ? <p>남아 있는 예약이 없습니다.</p> : <ul className="space-y-2">{leases.map((lease) => <li key={lease.id} className="break-all">{lease.runId} / {lease.cardId} · {lease.state === "recoverable" ? "복구 가능" : "종료 불명"} · 실행기 PID {lease.ownerPid ?? "불명"} · 작업 PID {lease.workerPid ?? "불명"}<br />{JSON.stringify(lease.resources)}{lease.state === "recoverable" && <button type="button" disabled={recovering !== null} onClick={() => void recover(lease.id)} className={BUTTON}>{recovering === lease.id ? "확인 중" : "복구 확인"}</button>}</li>)}</ul>}
+              <button type="button" onClick={() => void inspect()} className={BUTTON}>다시 확인</button>
+            </section>}
+          </div>
           <span className="ml-auto max-md:hidden">{live.failed ? "이 PC의 O 실행 기록 · 연결 끊김, 다시 시도하는 중" : "이 PC의 O 실행 기록 · 실시간"}</span>
           <button
             type="button"

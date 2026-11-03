@@ -28,7 +28,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::mpsc;
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -189,6 +189,14 @@ pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String>
     lock.lock()?;
     let mut current = read_current(home)?;
     let key = project_key(project);
+    for id in thread_ids(home) {
+        if current.get(&key) == Some(&id) || thread_project(&read_thread(home, &id)).is_some_and(|p| project_key(&p) == key) {
+            if let Some(busy) = running(home, &id) {
+                if busy.unknown { return Err(io::Error::other(UNKNOWN)); }
+                if fresh || current.get(&key) != Some(&id) { return Err(io::Error::other(BUSY)); }
+            }
+        }
+    }
     if let Some(id) = current.get(&key).filter(|id| !fresh && is_run_id(id)) {
         return Ok(id.clone());
     }
@@ -249,6 +257,7 @@ struct ChildMark {
 /// A turn holding a thread: its marker, or `None` while the owner has not written it yet.
 struct Busy {
     marker: Option<Running>,
+    unknown: bool,
 }
 
 /// `busy` of a turn whose owner has not written its marker yet.
@@ -258,6 +267,7 @@ const STARTING: &str = "starting";
 const STOP_POLL: Duration = Duration::from_millis(100);
 
 const BUSY: &str = "총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요";
+const UNKNOWN: &str = "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다";
 
 fn running_path(home: &Path, thread_id: &str) -> PathBuf {
     thread_dir(home, thread_id).join("running.json")
@@ -277,18 +287,19 @@ fn turn_lock(home: &Path, thread_id: &str) -> io::Result<fs::File> {
     OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("turn.lock"))
 }
 
-/// The live turn of a thread, if any. Whether a turn runs is the lock, never the marker:
-/// a marker that is missing, empty or half-written under a held lock is a turn starting,
-/// and a marker without a held lock is a turn whose process is gone.
+/// A held lock is a live turn; a marker without that lock has an unknown process-tree state.
 fn running(home: &Path, thread_id: &str) -> Option<Busy> {
-    let lock = turn_lock(home, thread_id).ok()?;
+    let lock = match turn_lock(home, thread_id) {
+        Ok(lock) => lock,
+        Err(_) => return Some(Busy { marker: None, unknown: true }),
+    };
     match lock.try_lock() {
         // Free: no turn. Dropping the file lets go of the lock again.
-        Ok(()) => return None,
+        Ok(()) => return running_path(home, thread_id).exists().then(|| Busy { marker: read_marker(home, thread_id), unknown: true }),
         Err(fs::TryLockError::WouldBlock) => {}
-        Err(fs::TryLockError::Error(_)) => return None,
+        Err(fs::TryLockError::Error(_)) => return Some(Busy { marker: None, unknown: true }),
     }
-    Some(Busy { marker: read_marker(home, thread_id) })
+    Some(Busy { marker: read_marker(home, thread_id), unknown: false })
 }
 
 /// Holds a thread's one turn: an OS lock on `turn.lock` that only one holder gets, and the
@@ -298,6 +309,7 @@ struct TurnSlot {
     path: PathBuf,
     stop: PathBuf,
     marker: Running,
+    preserve: bool,
 }
 
 impl TurnSlot {
@@ -313,10 +325,11 @@ impl TurnSlot {
                 Err(fs::TryLockError::Error(e)) => return Err(format!("총괄 대화를 시작하지 못했습니다: {e}")),
             }
         }
+        if running_path(home, thread_id).exists() { return Err(UNKNOWN.into()); }
         // A stop file here is an older turn's: this one has no marker yet, so none was meant for it.
         let _ = fs::remove_file(stop_path(home, thread_id));
         let marker = Running { provider, owner: std::process::id(), token: new_run_id(Utc::now()), child: None };
-        let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), stop: stop_path(home, thread_id), marker };
+        let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), stop: stop_path(home, thread_id), marker, preserve: false };
         slot.write().map_err(|e| format!("총괄 대화를 시작하지 못했습니다: {e}"))?;
         Ok(slot)
     }
@@ -343,6 +356,7 @@ impl TurnSlot {
 
 impl Drop for TurnSlot {
     fn drop(&mut self) {
+        if self.preserve { return; }
         // The marker and its stop before the lock: the next turn never finds them under its own lock.
         let _ = fs::remove_file(&self.path);
         let _ = fs::remove_file(&self.stop);
@@ -573,7 +587,16 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         Some(w) => w.thread_id.to_string(),
         None => thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?,
     };
+    let current_lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+    current_lock.lock().map_err(|e| e.to_string())?;
+    if current_thread(home, req.project).as_deref() != Some(&thread_id) { return Err("설계가 변경되었습니다. 최신 설계를 확인하세요".into()); }
+    for id in thread_ids(home) {
+        if id != thread_id && thread_project(&read_thread(home, &id)).is_some_and(|p| project_key(&p) == project_key(req.project)) {
+            if let Some(busy) = running(home, &id) { return Err(if busy.unknown { UNKNOWN } else { BUSY }.into()); }
+        }
+    }
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
+    drop(current_lock);
     if let Some(w) = &worker {
         if req.yolo || store::stop_requested(home, &w.speaker.run_id) || current_thread(home, req.project).as_deref() != Some(&thread_id)
             || !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if run_id == &w.speaker.run_id)) {
@@ -690,7 +713,10 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         emit(stopped())?;
         return Ok(added);
     }
-    let spawned = command.and_then(|mut command| proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn());
+    let spawned = command.and_then(|mut command| {
+        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+        proc::spawn_worker(&mut command)
+    });
     let mut child = match spawned {
         Ok(child) => child,
         Err(error) => {
@@ -698,22 +724,32 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             return Ok(added);
         }
     };
-    let _tree = proc::contain(&child);
+    slot.preserve = true;
+    let tree = proc::contain(&child).map(|tree| Arc::new(Mutex::new(tree)));
     slot.set_child(child.id());
-    // The owner ends its own CLI when a stop comes, from this process or another: it holds the
-    // child's handle, so the pid cannot have gone to another process. Checked at once, then often.
-    // Past the time limit it ends it the same way, and says so (`true`).
+    #[cfg(windows)]
+    if tree.is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(UNKNOWN.into());
+    }
+    if proc::resume_worker(child.id()).is_err() {
+        #[cfg(windows)]
+        { let _ = child.kill(); let _ = child.wait(); }
+        return Err(UNKNOWN.into());
+    }
+    // The owner handles stop and timeout through its job handle, never a recorded PID.
     let (done, finished) = mpsc::channel::<()>();
     let watcher = {
-        let (stop, token, pid) = (slot.stop.clone(), slot.marker.token.clone(), child.id());
+        let (stop, token, tree) = (slot.stop.clone(), slot.marker.token.clone(), tree.clone());
         let deadline = Instant::now() + limit;
         thread::spawn(move || loop {
             if fs::read_to_string(&stop).is_ok_and(|t| t.is_empty() || t == token) {
-                proc::kill_tree(pid);
+                if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
                 return false;
             }
             if Instant::now() >= deadline {
-                proc::kill_tree(pid);
+                if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
                 return true;
             }
             match finished.recv_timeout(STOP_POLL) {
@@ -884,7 +920,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let _ = fs::write(&progress_path, "[]");
     // The turn ends with an error below; the CLI must not outlive it.
     if fatal.is_some() && matches!(child.try_wait(), Ok(None)) {
-        proc::kill_tree(child.id());
+        if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
     }
     // app-server is a long-lived process; do not let a stuck shutdown keep the turn open forever.
     // A turn it already finished keeps its result: only the process is ended.
@@ -893,7 +929,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         loop {
             if !matches!(child.try_wait(), Ok(None)) { break; }
             if Instant::now() >= deadline {
-                proc::kill_tree(child.id());
+                if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
                 if !finished {
                     last = Some((false, "Codex app-server가 종료되지 않았습니다. 대화 상태를 확인하세요.".into()));
                 }
@@ -902,11 +938,14 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             thread::sleep(Duration::from_millis(25));
         }
     }
-    // The watcher is done before the child is reaped, so it never ends a pid reused since.
+    // Stop the watcher before releasing the job handle.
     drop(done);
     let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    let exit = child.wait().ok().and_then(proc::exit_code);
+    let status = child.wait();
+    let tree_exited = tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|tree| tree.stop_and_confirm()));
+    if status.is_ok() && tree_exited { slot.preserve = false; }
+    let exit = status.ok().and_then(proc::exit_code);
     if let Some(error) = fatal { return Err(error); }
     if let Some(error) = raw_issue {
         emit(LeadEvent::Error { at: now_iso(), text: format!("총괄 원시 출력 기록이 불완전합니다: {error}") })?;
@@ -1119,6 +1158,7 @@ fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, String> {
             Err(_) => return Err("총괄이 답하는 중입니다. 새 설계를 확인한 뒤 분배하세요".to_string()),
         }
     }
+    if running_path(home, thread_id).exists() { return Err(UNKNOWN.into()); }
     let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
     lock.lock().map_err(|e| e.to_string())?;
     let events = read_thread(home, thread_id);
@@ -1314,6 +1354,7 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
     let mut stopped = false;
     for thread_id in threads {
         if let Some(busy) = running(home, &thread_id) {
+            if busy.unknown { continue; }
             // A request the turn's owner acts on: before its CLI starts it does not start it, after
             // it ends it. Nothing is killed from here, so the owner (the app, or `o lead send`)
             // is never ended and no pid is trusted. The marker may be a moment from being written.
@@ -1327,8 +1368,6 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
             }
             let _ = fs::write(stop_path(home, &thread_id), marker.map(|m| m.token).unwrap_or_default());
             stopped = true;
-        } else if let Some(stopped_orphan) = clear_dead_turn(home, &thread_id) {
-            stopped |= stopped_orphan;
         }
     }
     stopped
@@ -1360,30 +1399,6 @@ pub fn stop_all(home: &Path, project: &str) -> Result<usize, String> {
         if store::run_is_live(home, &run_id) && crate::run::runner::stop_run(home, &run_id).map_err(|e| e.to_string())? { count += 1; }
     }
     Ok(count)
-}
-
-/// A marker whose owner is gone, cleared under the turn lock (so never a new turn's). Its
-/// CLI, if the owner left it running (no kill-on-close job held it), is ended only when its
-/// pid still names the process the turn started (same start time). `Some(ended)` when a
-/// marker was there.
-fn clear_dead_turn(home: &Path, thread_id: &str) -> Option<bool> {
-    let lock = turn_lock(home, thread_id).ok()?;
-    lock.try_lock().ok()?;
-    let marker = read_marker(home, thread_id);
-    let path = running_path(home, thread_id);
-    if marker.is_none() && !path.exists() {
-        return None;
-    }
-    let mut ended = false;
-    if let Some(orphan) = marker.and_then(|m| m.child) {
-        let started = proc::started_at(orphan.pid);
-        if started.is_some() && started == orphan.started {
-            proc::kill_tree(orphan.pid);
-            ended = true;
-        }
-    }
-    let _ = fs::remove_file(path);
-    Some(ended)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1427,7 +1442,7 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
     };
     let thread = thread_id.map(|id| {
         let (notes, notes_error) = match notes::read(home, &id) { Ok(notes) => (notes, None), Err(error) => (Vec::new(), Some(error.to_string())) };
-        let busy = running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()));
+        let busy = running(home, &id).map(|b| if b.unknown { "unknown".to_string() } else { b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()) });
         let state: Value = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
             .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
         let progress = state.get("steps").or_else(|| state.is_array().then_some(&state)).and_then(Value::as_array).cloned().unwrap_or_default();
@@ -1466,7 +1481,7 @@ pub fn active_count(home: &Path) -> io::Result<usize> {
         if !is_run_id(&id) { continue; }
         let lock = turn_lock(home, &id)?;
         match lock.try_lock() {
-            Ok(()) => {},
+            Ok(()) => { if running_path(home, &id).exists() { count += 1; } },
             Err(fs::TryLockError::WouldBlock) => count += 1,
             Err(fs::TryLockError::Error(error)) => return Err(error),
         }

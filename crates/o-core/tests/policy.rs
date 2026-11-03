@@ -91,6 +91,15 @@ fn a_well_formed_plan_passes_and_keeps_card_order() {
 }
 
 #[test]
+fn resource_declarations_are_checked_before_dispatch() {
+    let good = json!([{ "kind": "project-path", "key": "src/a", "mode": "write" }]);
+    assert!(check_plan(&plan(vec![with(code_card(), "resources", good)]), &ctx()).plan.is_some());
+    for bad in [json!(null), json!([{"kind":"external","key":"db","mode":"maybe"}]), json!([{"kind":"project-path","key":"../outside","mode":"read"}]), json!([{"kind":"external","key":"db","mode":"read","extra":1}])] {
+        assert!(has(&check_plan(&plan(vec![with(code_card(), "resources", bad)]), &ctx()), "plan-resource"));
+    }
+}
+
+#[test]
 fn dependencies_must_exist_be_unique_and_acyclic() {
     let first = code_card();
     let second = with(design_card(), "depends_on", json!(["code"]));
