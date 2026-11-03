@@ -360,6 +360,12 @@ export function liveRuns(): Plugin {
     name: "project-o-live-runs",
     apply: "serve",
     configureServer(server) {
+      const monitor = spawn(oBinary(), ["_lead-watch"], { windowsHide: true, stdio: ["pipe", "ignore", "ignore"] });
+      let closing = false;
+      monitor.stdin.on("error", () => {});
+      monitor.on("error", (error) => server.config.logger.warn(`총괄 대기 메시지 감시를 시작하지 못했습니다: ${error.message}`));
+      monitor.on("exit", (code) => { if (!closing) server.config.logger.warn(`총괄 대기 메시지 감시가 종료됐습니다 (${code ?? "signal"})`); });
+      server.httpServer?.once("close", () => { closing = true; monitor.kill(); });
       server.middlewares.use("/api", (req, res, next) => {
         const path = req.url?.split("?")[0];
         if (!localHost(req)) return send(res, 403, JSON.stringify({ error: "이 PC의 주소로만 열 수 있습니다" }));

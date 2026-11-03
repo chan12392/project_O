@@ -66,6 +66,7 @@ pub const COMMANDS: &[Command] = &[
     agents::AGENTS,
     about::ABOUT,
     dispatch::RUN,
+    lead::WATCH,
     followup::RUN_FOLLOWUP,
     review::REVIEW_BACKGROUND,
 ];
