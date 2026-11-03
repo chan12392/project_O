@@ -261,6 +261,7 @@ fn transcript_signals(atif: &Map<String, Value>, refused: &mut Vec<String>) -> V
             input: (num(m.get("total_prompt_tokens")) - cached).max(0.0),
             cached,
             output: num(m.get("total_completion_tokens")),
+            complete: super::stream::reported(&[m.get("total_prompt_tokens"), m.get("total_cached_tokens"), m.get("total_completion_tokens")]) && cached <= num(m.get("total_prompt_tokens")),
         });
     }
     out

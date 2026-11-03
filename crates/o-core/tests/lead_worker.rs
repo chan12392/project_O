@@ -40,6 +40,7 @@ fn missing_raw_log_is_reported_without_losing_the_answer() {
     assert!(lead::wake_card(&home, &project, "run-1", &card.cards, spawner.as_ref()).unwrap());
     assert!(lead::read_thread(&home, &thread).iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains("원시 출력 기록이 불완전"))));
     assert!(team::read(&home, &card, false).unwrap().iter().any(|message| message.reply_to.as_deref() == Some(&id)));
+    assert_eq!(lead::tokens(&home, Some(&project), None).incomplete, 1, "누락된 캐시 수치는 0으로 확정하지 않습니다");
     cleanup(&home);
 }
 
@@ -177,6 +178,10 @@ fn runner_wakes_lead_while_card_waits() {
     });
     let status = runner::run_plan(&home, "run-1", &plan, None, spawner).unwrap();
     assert_eq!(status, CardStatus::Done);
+    let report = o_core::context::tokens::report(&home, &Default::default()).unwrap();
+    assert_eq!(report.runs[0].incomplete_cards, ["a"]);
+    assert!(report.summary.cache_percent.is_none());
+    assert_eq!(report.lead.incomplete, 1);
     let thread = lead::current_thread(&home, &project).unwrap();
     assert!(lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::Worker { .. })));
     cleanup(&home);

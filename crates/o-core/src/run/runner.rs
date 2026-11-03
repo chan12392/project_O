@@ -631,7 +631,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
                 let until = set_cooldown(home, card.provider, &until, Utc::now())?;
                 emit(OEvent::CardLimit { at: now_iso(), card_id, until })?;
             }
-            StreamSignal::Usage { input, cached, output } => emit(OEvent::CardUsage { at, card_id, input, cached, output })?,
+            StreamSignal::Usage { input, cached, output, complete } => emit(OEvent::CardUsage { at, card_id, input, cached, output, complete: Some(complete) })?,
             StreamSignal::Quota { window, used, resets_at } => {
                 // A snapshot for the daily budget; the event stays the record either way.
                 let reading = UsageWindow { provider: card.provider, window: window.clone(), group: None, used, resets_at: resets_at.clone() };

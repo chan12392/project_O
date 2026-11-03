@@ -105,6 +105,8 @@ fn token_report_counts_lead_requests_without_usage() {
     assert_eq!(report["lead"]["requested"], 3);
     assert_eq!(report["lead"]["turns"], 1);
     assert_eq!(report["lead"]["unreported"], 2);
+    assert_eq!(report["lead"]["incomplete"], 1);
+    assert!(report["summary"]["cachePercent"].is_null());
     let since = ok_json(o_in(&base, &project, "", &["tokens", "--json", "--since", "2026-11-02"]));
     assert_eq!(since["lead"]["requested"], 2);
     assert_eq!(since["lead"]["unreported"], 2);
@@ -112,8 +114,7 @@ fn token_report_counts_lead_requests_without_usage() {
 }
 
 fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("o-context-cli-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&base);
+    let base = std::env::temp_dir().join(format!("o-context-cli-{name}-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
     let home = base.join("project_O");
     let project = base.join("game");
     fs::create_dir_all(project.join("src")).unwrap();
@@ -129,7 +130,7 @@ fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
             fs::write(dir.join("clean"), "").unwrap();
             events.push(json!({ "t": "run.context", "at": at, "runId": run_id, "cards": 1, "chars": 120, "cardIds": [card] }));
         }
-        events.push(json!({ "t": "card.usage", "at": at, "cardId": card, "input": tokens[0], "cached": tokens[1], "output": tokens[2] }));
+        events.push(json!({ "t": "card.usage", "at": at, "cardId": card, "input": tokens[0], "cached": tokens[1], "output": tokens[2], "complete": true }));
         events.push(json!({ "t": "card.end", "at": at, "cardId": card, "status": "done", "result": result, "exitCode": 0 }));
         let text: String = events.iter().map(|e| format!("{e}\n")).collect();
         fs::write(dir.join("events.jsonl"), text).unwrap();
@@ -226,7 +227,8 @@ fn tokens_report_and_compare() {
     let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
     let keys: Vec<&str> = report.as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(keys, ["groups", "compare", "runs", "lead", "summary"]);
-    assert_eq!(report["lead"], json!({ "turns": 0, "requested": 0, "unreported": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
+    assert_eq!(report["lead"], json!({ "turns": 0, "requested": 0, "unreported": 0, "incomplete": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
+    assert_eq!(report["summary"]["cachePercent"], 30.0);
     assert_eq!(report["groups"].as_array().unwrap().iter().map(|g| g["key"].as_str().unwrap()).collect::<Vec<_>>(), ["normal", "clean+context"]);
     let group_keys: Vec<&str> = report["groups"][0].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(group_keys, ["key", "label", "clean", "context", "runs", "cards", "tokens", "perCard", "byProvider"]);
@@ -261,25 +263,28 @@ fn tokens_distinguish_unreported_incomplete_and_zero_usage() {
         json!({ "t": "run.start", "at": "2026-11-03T10:00:00.000Z", "runId": "r3", "title": "coverage", "project": project, "cards": [
             { "id": "waiting", "provider": "codex" },
             { "id": "partial", "provider": "codex" },
+            { "id": "legacy", "provider": "codex" },
             { "id": "zero", "provider": "claude" }
         ] }),
-        json!({ "t": "card.usage", "at": "2026-11-03T10:00:01.000Z", "cardId": "partial", "input": 12, "output": 5 }),
-        json!({ "t": "card.usage", "at": "2026-11-03T10:00:02.000Z", "cardId": "zero", "input": 0, "cached": 0, "output": 0 }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:01.000Z", "cardId": "partial", "input": 12, "cached": 0, "output": 5, "complete": false }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:01.000Z", "cardId": "legacy", "input": 10, "cached": 2, "output": 1 }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:02.000Z", "cardId": "zero", "input": 0, "cached": 0, "output": 0, "complete": true }),
     ];
     fs::write(dir.join("events.jsonl"), events.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
 
     let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
     let run = report["runs"].as_array().unwrap().iter().find(|r| r["runId"] == "r3").unwrap();
     assert_eq!(run["unreportedCards"], json!(["waiting"]));
-    assert_eq!(run["incompleteCards"], json!(["partial"]));
-    assert_eq!(run["cards"].as_array().unwrap().len(), 2, "explicit zeros are reported usage");
-    assert_eq!(report["summary"]["reportedCards"], 4);
+    assert_eq!(run["incompleteCards"], json!(["partial", "legacy"]));
+    assert_eq!(run["cards"].as_array().unwrap().len(), 3, "explicit zeros are reported usage");
+    assert_eq!(report["summary"]["reportedCards"], 5);
     assert_eq!(report["summary"]["unreportedCards"], 1);
-    assert_eq!(report["summary"]["incompleteCards"], 1);
-    assert_eq!(report["summary"]["reported"]["total"], 232);
-    assert!((report["summary"]["cachePercent"].as_f64().unwrap() - 60.0 / 212.0 * 100.0).abs() < 1e-8);
+    assert_eq!(report["summary"]["incompleteCards"], 2);
+    assert_eq!(report["summary"]["reported"]["total"], 215);
+    assert!(report["summary"]["cachePercent"].is_null());
+    assert_eq!(report["compare"]["baseline"]["cards"], 2, "partial and legacy usage are excluded from averages");
     let text = o_in(&base, &base, "", &["tokens"]);
     assert!(text.status.success());
     let text = String::from_utf8_lossy(&text.stdout);
-    assert!(text.contains("사용량 미보고: waiting") && text.contains("사용량 일부 누락: partial"), "{text}");
+    assert!(text.contains("사용량 미보고: waiting") && text.contains("사용량 일부 누락: partial, legacy"), "{text}");
 }

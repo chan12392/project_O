@@ -137,7 +137,7 @@ fn codex_stream_config_warnings_are_not_failures() {
     );
     assert_eq!(
         r.read(r#"{"type":"turn.completed","usage":{"input_tokens":127105,"cached_input_tokens":112384,"output_tokens":519}}"#),
-        [StreamSignal::Usage { input: 14721.0, cached: 112384.0, output: 519.0 }, StreamSignal::Final { ok: true, text: String::new() }]
+        [StreamSignal::Usage { input: 14721.0, cached: 112384.0, output: 519.0, complete: true }, StreamSignal::Final { ok: true, text: String::new() }]
     );
     let failed = r.read(r#"{"type":"turn.failed","error":{"message":"You have hit your usage limit."}}"#);
     assert!(matches!(failed.as_slice(), [StreamSignal::Limit { .. }, StreamSignal::Final { ok: false, .. }]));
@@ -184,9 +184,23 @@ fn usage_and_subscription_windows_come_from_what_each_cli_reports() {
         [quota("five_hour", 0.02, 1793562000.0), quota("seven_day", 0.46, 1793750400.0)]
     );
     let usage = claude.read(r#"{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":12,"cache_creation_input_tokens":19104,"cache_read_input_tokens":189889,"output_tokens":659}}"#);
-    assert_eq!(usage[0], StreamSignal::Usage { input: 19116.0, cached: 189889.0, output: 659.0 });
+    assert_eq!(usage[0], StreamSignal::Usage { input: 19116.0, cached: 189889.0, output: 659.0, complete: true });
     let agy = StreamReader::new(ProviderId::Agy).read(r#"{"event":"result","result":{"status":"SUCCESS","response":"ok","usage":{"input_tokens":6981,"output_tokens":13,"thinking_tokens":8,"cache_read_tokens":0}}}"#);
-    assert_eq!(agy[0], StreamSignal::Usage { input: 6981.0, cached: 0.0, output: 21.0 });
+    assert_eq!(agy[0], StreamSignal::Usage { input: 6981.0, cached: 0.0, output: 21.0, complete: true });
+}
+
+#[test]
+fn missing_or_inconsistent_token_fields_are_not_complete_usage() {
+    let codex = StreamReader::new(ProviderId::Codex).read(r#"{"type":"turn.completed","usage":{"input_tokens":100,"output_tokens":5}}"#);
+    assert!(matches!(codex[0], StreamSignal::Usage { complete: false, .. }));
+    let impossible = StreamReader::new(ProviderId::Codex).read(r#"{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":11,"output_tokens":5}}"#);
+    assert!(matches!(impossible[0], StreamSignal::Usage { complete: false, .. }));
+    let claude = StreamReader::new(ProviderId::Claude).read(r#"{"type":"result","subtype":"success","usage":{"input_tokens":1,"output_tokens":2}}"#);
+    assert!(matches!(claude[0], StreamSignal::Usage { complete: false, .. }));
+    let open = StreamReader::new(ProviderId::OpenCode).read(r#"{"type":"step_finish","part":{"tokens":{"input":1,"output":2}}}"#);
+    assert!(matches!(open[0], StreamSignal::Usage { complete: false, .. }));
+    let devin = read_run("ok", "", Some(r#"{"final_metrics":{"total_prompt_tokens":2,"total_completion_tokens":1}}"#));
+    assert!(devin.iter().any(|s| matches!(s, StreamSignal::Usage { complete: false, .. })));
 }
 
 #[test]
@@ -617,7 +631,7 @@ fn devin_answers_come_from_stdout_and_its_steps_from_the_transcript() {
             StreamSignal::Session { session_id: "merry-otter".into() },
             StreamSignal::Tool { name: "exec".into(), summary: "o msg read".into() },
             StreamSignal::Message { text: "It printed: no run found.".into() },
-            StreamSignal::Usage { input: 10328.0, cached: 24704.0, output: 304.0 },
+            StreamSignal::Usage { input: 10328.0, cached: 24704.0, output: 304.0, complete: true },
             StreamSignal::Final { ok: true, text: "It printed: no run found.".into() },
         ]
     );
@@ -713,7 +727,7 @@ fn opencode_stream_session_tool_tokens_and_answer() {
     assert_eq!(signals, [
         StreamSignal::Session { session_id: "ses_e6324313cffeEhZ5ayKEDFOU1B".into() },
         StreamSignal::Tool { name: "read".into(), summary: "a.txt".into() },
-        StreamSignal::Usage { input: 12311.0, cached: 1536.0, output: 38.0 },
+        StreamSignal::Usage { input: 12311.0, cached: 1536.0, output: 38.0, complete: true },
         StreamSignal::Message { text: "banana42".into() },
         StreamSignal::Final { ok: true, text: "banana42".into() },
     ]);

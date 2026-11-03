@@ -54,7 +54,7 @@ fn tool(card: &str, name: &str, summary: &str) -> Value {
 }
 
 fn usage(card: &str, input: f64, cached: f64, output: f64) -> Value {
-    json!({ "t": "card.usage", "at": "2026-11-01T10:04:00.000Z", "cardId": card, "input": input, "cached": cached, "output": output })
+    json!({ "t": "card.usage", "at": "2026-11-01T10:04:00.000Z", "cardId": card, "input": input, "cached": cached, "output": output, "complete": true })
 }
 
 fn count(home: &Path) -> i64 {
