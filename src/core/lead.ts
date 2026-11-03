@@ -15,6 +15,34 @@ export interface LeadAttachment {
 
 export type LeadViolation = Violation;
 
+export interface LeadProgressCounts { reads: number; searches: number; edits: number; commands: number }
+export interface DesignNote { id: string; quote: string; anchor?: string; occurrence?: number; tag: string; text: string; sent: boolean }
+export type DesignNoteChange = { op: "add" | "update"; note: DesignNote } | { op: "delete"; id: string };
+
+/** Counts are tool calls, not a claim that the work is still running or succeeded. */
+export function leadProgressSummary(counts: LeadProgressCounts | null | undefined): string {
+  if (!counts) return "";
+  return [["명령", counts.commands], ["파일 변경", counts.edits], ["읽기", counts.reads], ["검색", counts.searches]]
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([label, count]) => `${label} ${count}회`).join(" · ");
+}
+
+/** A short, factual tool line; a search pattern is not a file that was read. */
+export function leadToolLabel(name: string, summary: string): string {
+  const kind = name.toLowerCase();
+  if (kind === "glob") return "Glob 파일 찾기";
+  const action = ({ read: "Read", read_file: "Read", edit: "Edit", edit_file: "Edit", write: "Write", write_file: "Write" } as Record<string, string>)[kind];
+  let detail = summary.trim();
+  if (action && detail.startsWith("[")) {
+    try {
+      const changes: unknown = JSON.parse(detail);
+      if (Array.isArray(changes)) detail = changes.flatMap((item: unknown) => typeof item === "object" && item !== null && "path" in item && typeof item.path === "string" ? [item.path.split(/[\\/]/).pop()] : []).filter(Boolean).join(", ");
+    } catch { /* A truncated tool summary is still displayable. */ }
+  } else if (action) detail = detail.split(/[\\/]/).pop() ?? detail;
+  if (detail.length > 56) detail = `${detail.slice(0, 53)}...`;
+  return [action ?? name, detail].filter(Boolean).join(" ");
+}
+
 export interface PlanCard {
   id: string;
   provider: string;
@@ -22,13 +50,15 @@ export interface PlanCard {
   model?: string;
   effort?: string;
   task: string;
+  depends_on?: string[];
 }
 
 export type LeadEvent =
   | { t: "lead.start"; at: string; threadId: string; project: string }
   | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
-  | { t: "lead.reply"; at: string; provider: ProviderId; text: string }
+  | { t: "lead.reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
+  | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
@@ -39,7 +69,7 @@ export type LeadEvent =
 
 /** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
 }
 
@@ -81,7 +111,7 @@ export function leadView(state: LeadView, action: LeadViewAction): LeadView {
 /** One thing the chat draws, in order. */
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
-  | { kind: "reply"; at: string; provider: ProviderId; text: string }
+  | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | {
       kind: "plan";
       at: string;
@@ -107,7 +137,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
         break;
       case "lead.reply":
-        items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text });
+        items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text, reportedFiles: e.reportedFiles });
         break;
       case "lead.plan":
         items.push(planItem(raw as Record<string, unknown>, items.length));
@@ -158,6 +188,10 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     for (const key of ["role", "model", "effort"] as const) {
       const value = text(card[key]);
       if (value) kept[key] = value;
+    }
+    if (card.depends_on !== undefined) {
+      if (!Array.isArray(card.depends_on) || card.depends_on.some((id: unknown) => typeof id !== "string")) problems.push(`작업 ${id}의 선행 작업이 올바르지 않습니다`);
+      else kept.depends_on = card.depends_on;
     }
     cards.push(kept);
   });

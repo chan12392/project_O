@@ -122,11 +122,11 @@ function YoloRows({ api }: { api: Backend }) {
   };
   return <>
     <SettingsRow id="yolo-label" label="YOLO 모드" description={<>
-      총괄과 카드가 승인 없이 파일을 고치고 명령을 실행합니다. 하루 예산도 켜져 있으면 조건에 맞는 계획은 자동 실행합니다.
+      총괄과 작업자가 승인 없이 파일을 고치고 명령을 실행합니다. 앱에서 제안된 계획은 작업 분배를 눌러야 시작합니다.
       같은 Windows 사용자 권한에서는 에이전트가 실행 표식을 지우거나 별도 프로세스를 이용해 직접 전달 제한을 우회할 수 있습니다.
       {error && <span role="alert" className="block text-destructive">{error}</span>}
     </>} control={<Switch checked={report?.enabled ?? false} disabled={!report || busy} labelledBy="yolo-label" onChange={(enabled) => {
-      if (!enabled || window.confirm("YOLO를 켜면 승인 없이 파일 수정과 명령 실행이 가능합니다. 하루 예산이 켜져 있으면 계획이 자동 실행될 수 있습니다. 켜시겠습니까?")) void save({ enabled });
+      if (!enabled || window.confirm("YOLO를 켜면 승인 없이 파일 수정과 명령 실행이 가능합니다. CLI에서는 조건에 따라 계획이 자동 실행될 수 있습니다. 켜시겠습니까?")) void save({ enabled });
     }} />} />
     {report && ([
       ["maxCards", "자동 실행 카드 수", 1, 6],

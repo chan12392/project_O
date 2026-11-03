@@ -141,6 +141,7 @@ pub fn trust_preflight(root: &Path, provider: ProviderId, project: &Path) -> io:
 
 /// The official CLI with the clean environment, run in the current folder.
 pub fn command(root: &Path, provider: ProviderId, args: &[&str]) -> io::Result<Command> {
+    if provider == ProviderId::Agy { return Err(io::Error::other(crate::policy::AGY_UNAVAILABLE)); }
     if let Some(why) = providers::get(provider).profile_unsupported() {
         return Err(io::Error::other(why));
     }

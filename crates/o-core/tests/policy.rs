@@ -91,6 +91,18 @@ fn a_well_formed_plan_passes_and_keeps_card_order() {
 }
 
 #[test]
+fn dependencies_must_exist_be_unique_and_acyclic() {
+    let first = code_card();
+    let second = with(design_card(), "depends_on", json!(["code"]));
+    assert!(check_plan(&plan(vec![first.clone(), second.clone()]), &ctx()).plan.is_some());
+    for invalid in [json!(["missing"]), json!(["design"]), json!(["code", "code"]), json!("code")] {
+        assert!(has(&check_plan(&plan(vec![first.clone(), with(second.clone(), "depends_on", invalid)]), &ctx()), "plan-dependency"));
+    }
+    let cycle = plan(vec![with(first, "depends_on", json!(["design"])), second]);
+    assert!(has(&check_plan(&cycle, &ctx()), "plan-dependency"));
+}
+
+#[test]
 fn cards_cannot_name_a_binary_args_env_or_account() {
     for field in ["command", "args", "env", "bin", "account", "token"] {
         let checked = check_plan(&plan(vec![with(code_card(), field, json!("x"))]), &ctx());
@@ -132,6 +144,17 @@ fn the_runner_refuses_a_saved_plan_with_a_reserved_card_id() {
 fn unknown_providers_are_refused() {
     let checked = check_plan(&plan(vec![with(code_card(), "provider", json!("openclaw"))]), &ctx());
     assert!(has(&checked, "unknown-provider"));
+}
+
+#[test]
+fn antigravity_cannot_be_dispatched_with_either_profile() {
+    use o_core::policy::check_plan_for;
+    use o_core::run::mode::Profile;
+    for profile in [Profile::Own, Profile::ProjectO] {
+        let checked = check_plan_for(&plan(vec![code_card(), design_card()]), &ctx(), profile);
+        assert!(checked.plan.is_none());
+        assert!(checked.violations.iter().any(|v| v.rule == "provider-terms" && v.card_id.as_deref() == Some("design")));
+    }
 }
 
 #[test]
@@ -262,7 +285,7 @@ fn devin_cards_are_refused_on_the_project_o_profile_and_run_on_the_persons_own()
     let both = check_plan_for(&plan(vec![with(devin_card(), "effort", json!("ultra"))]), &ctx(), Profile::ProjectO);
     assert!(has(&both, "plan-shape") && has(&both, "profile-unsupported"));
     assert!(check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::Own).plan.is_some());
-    assert!(check_plan_for(&plan(vec![code_card(), design_card()]), &ctx(), Profile::ProjectO).plan.is_some());
+    assert!(check_plan_for(&plan(vec![code_card(), with(design_card(), "provider", json!("claude"))]), &ctx(), Profile::ProjectO).plan.is_some());
     assert!(check_plan(&plan(vec![devin_card()]), &ctx()).plan.is_some());
 }
 

@@ -14,6 +14,12 @@ export function linkRefusal(error: unknown): string {
 export function tauriBackend(invoke: Invoke): Backend {
   return {
     kind: "tauri",
+    imageRead: (project, path, run, card) => invoke("image_read", { project, path, run: run ?? null, card: card ?? null }) as ReturnType<Backend["imageRead"]>,
+    imageOpen: (project, path, folder, run, card) => invoke("image_open", { project, path, folder, run: run ?? null, card: card ?? null }) as Promise<void>,
+    schedules: () => invoke("schedule_list") as ReturnType<Backend["schedules"]>,
+    scheduleCreate: (request) => invoke("schedule_create", { request }) as ReturnType<Backend["scheduleCreate"]>,
+    scheduleDelete: (id) => invoke("schedule_delete", { id }) as Promise<void>,
+    scheduleSetEnabled: (id, enabled) => invoke("schedule_set_enabled", { id, enabled }) as ReturnType<Backend["scheduleSetEnabled"]>,
     agents: (clean) => invoke("agents_status", { clean }) as Promise<AgentStatus[]>,
   agentsCatalog: (refresh = false) => invoke("agents_catalog", { refresh }) as ReturnType<Backend["agentsCatalog"]>,
     install: (id) => invoke("agent_install", { id }) as Promise<ActionResult>,
@@ -38,6 +44,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     setYolo: (change) => invoke("yolo_set", { enabled: null, maxCards: null, perHour: null, dedupeMinutes: null, ...change }) as ReturnType<Backend["setYolo"]>,
     tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
     leadShow: (project) => invoke("lead_show", { project: project ?? null }) as Promise<LeadShow>,
+    leadNote: (threadId, change) => invoke("lead_note", { threadId, change }) as Promise<void>,
     leadNew: (project) => invoke("lead_new", { project }) as Promise<{ threadId: string }>,
     // The bytes go as the raw body; the project and name ride percent-encoded in headers.
     leadAttach: async (project, file) =>
@@ -62,6 +69,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     leadStopAll: (project) => invoke("lead_stop_all", { project }) as Promise<{ stopped: number }>,
     leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
     projects: () => invoke("projects_list") as Promise<ProjectList>,
+    projectOpen: (path) => invoke("project_open", { path }) as Promise<void>,
     projectsAdd: (path) => invoke("projects_add", { path }) as Promise<ProjectList>,
     projectsRemove: (path) => invoke("projects_remove", { path }) as Promise<ProjectList>,
     projectsNew: (name) => invoke("projects_new", { name }) as Promise<ProjectList & { created: string }>,

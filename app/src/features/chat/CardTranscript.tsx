@@ -6,6 +6,10 @@ import { PROVIDER_NAME, STATE_WORD, modelLine, timeOf } from "../../lib/format.t
 import { AgentStateDot } from "../../ui/AgentStateDot.tsx";
 import { Avatar } from "../office/Avatar.tsx";
 import { Markdown } from "./Markdown.tsx";
+import { ImageScope } from "./ImageGallery.tsx";
+import { prOf } from "../../../../src/core/attention.ts";
+import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
+import { ReviewButton, isReviewCard } from "../work/ReviewRequest.tsx";
 import { useFollowBottom } from "./Thread.tsx";
 import type { ReactNode } from "react";
 
@@ -19,8 +23,9 @@ export function CardTranscript({ card, run, names }: { card: CardView; run: RunV
     return sender ? <Avatar speaker={sender.provider} look={lookOf(run, sender.id)} size="sm" /> : <Avatar speaker="lead" size="sm" />;
   };
   const scroller = useFollowBottom([card.log.length]);
+  const pr = prOf(card);
   return (
-    <div className="flex min-h-0 flex-1 flex-col bg-chat-canvas">
+    <ImageScope.Provider value={{ project: run.project, run: run.runId, card: card.id }}><div className="flex min-h-0 flex-1 flex-col bg-chat-canvas">
       <header className="flex shrink-0 items-center gap-3 border-b px-6 py-2.5">
         <AgentStateDot state={card.state} size="md" />
         <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
@@ -34,6 +39,7 @@ export function CardTranscript({ card, run, names }: { card: CardView; run: RunV
           {card.endedAt && `–${timeOf(card.endedAt)}`}
         </span>
       </header>
+      {pr && <div className="flex flex-wrap items-center gap-3 border-b px-6 py-2 text-xs"><ExternalAnchor href={pr} className="text-callout-note underline focus-ring">{pr}</ExternalAnchor>{!isReviewCard(card) && <ReviewButton project={run.project} pr={pr} />}</div>}
       <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto">
         <ol className="mx-auto flex max-w-3xl flex-col gap-1 px-6 py-5 text-sm text-chat-foreground">
           {card.log.length === 0 && <li className="text-chat-foreground-faint">아직 남긴 기록이 없습니다.</li>}
@@ -42,7 +48,7 @@ export function CardTranscript({ card, run, names }: { card: CardView; run: RunV
           ))}
         </ol>
       </div>
-    </div>
+    </div></ImageScope.Provider>
   );
 }
 
@@ -80,6 +86,9 @@ function Entry({
     );
   }
   if (entry.kind === "tool" && entry.tool) {
+    if (entry.tool.word === "O 작업 폴더") {
+      return <li className="min-w-0 px-2 py-1"><span className="text-xs text-chat-foreground-faint">작업 폴더</span><p className="mt-1 select-text break-all font-mono text-chat-code">{entry.tool.detail}</p></li>;
+    }
     const Icon = TOOL_ICON[entry.tool.word] ?? Wrench;
     return (
       <li className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 hover:bg-accent/20">

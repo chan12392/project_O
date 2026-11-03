@@ -1,4 +1,4 @@
-import { useId, type ReactNode } from "react";
+import { type ReactNode } from "react";
 
 /*
  * Thermal-paper tickets, after the Orchestrator app's ticket rail (its DESIGN.md:
@@ -41,23 +41,6 @@ export function Ticket({ since, now, code, stamp, children, done }: { since: str
       </header>
       {children}
     </article>
-  );
-}
-
-/** A labelled rail of tickets with its count, as the Orchestrator's Next up columns. */
-export function Rail({ title, count, meta, children }: { title: string; count: number; meta: string; children: ReactNode }) {
-  const id = useId();
-  return (
-    <section aria-labelledby={id} className="flex min-w-0 flex-col">
-      <header className="mb-2.5 flex items-baseline gap-2 border-b-2 border-muted-foreground/40 pb-1.5">
-        <h3 id={id} className="text-xs font-bold tracking-wide">
-          {title}
-        </h3>
-        <span className="text-xs font-semibold text-muted-foreground tabular-nums">{count}</span>
-        <span className="truncate text-2xs text-muted-foreground">{meta}</span>
-      </header>
-      <div className="flex flex-col gap-2.5">{children}</div>
-    </section>
   );
 }
 

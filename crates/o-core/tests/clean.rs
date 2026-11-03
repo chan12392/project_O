@@ -7,6 +7,15 @@ use o_core::agents::clean::{ancestor_instructions, clean_env_from, ensure_profil
 use o_core::run::plan::ProviderId;
 use serde_json::{json, Value};
 
+#[test]
+fn antigravity_shell_login_models_and_usage_do_not_start_the_cli() {
+    let root = Path::new("unused");
+    assert!(o_core::agents::clean::command(root, ProviderId::Agy, &["-p", "test"]).unwrap_err().to_string().contains("Antigravity"));
+    assert!(o_core::agents::clean::login_state(root, ProviderId::Agy).detail.contains("Antigravity"));
+    assert!(o_core::providers::lead_models(ProviderId::Agy).unwrap_err().contains("Antigravity"));
+    assert!(o_core::providers::get(ProviderId::Agy).usage_windows().unwrap().unwrap_err().contains("Antigravity"));
+}
+
 fn temp(name: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!("o-clean-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&dir);

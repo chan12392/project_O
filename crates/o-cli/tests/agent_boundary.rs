@@ -5,7 +5,8 @@ fn marked_agents_cannot_start_work_through_cli() {
     for role in ["lead", "card"] {
         for args in [
             vec!["dispatch"], vec!["_run", "run"], vec!["review", "1"], vec!["_review", "1"],
-            vec!["lead", "send"], vec!["lead", "dispatch", "plan"],
+            vec!["lead", "send"], vec!["lead", "dispatch", "plan"], vec!["lead", "note", "thread", "-"],
+            vec!["schedule", "run", "test"], vec!["image", "read"], vec!["projects", "open", "x"],
         ] {
             let (key, value) = if role == "card" { ("O_CARD_ID", "card-1") } else { ("O_AGENT_ROLE", "lead") };
             let output = Command::new(env!("CARGO_BIN_EXE_o")).args(&args).env(key, value).output().unwrap();

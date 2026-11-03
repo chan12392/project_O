@@ -104,6 +104,13 @@ const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 export const demoBackend: Backend = {
   kind: "demo",
+  imageRead: async () => { throw new Error("미리보기에서는 로컬 이미지를 열 수 없습니다"); },
+  imageOpen: async () => { throw new Error("미리보기에서는 로컬 이미지를 열 수 없습니다"); },
+  schedules: async () => [],
+  scheduleCreate: async () => { throw new Error("미리보기에서는 예약을 만들 수 없습니다"); },
+  scheduleDelete: async () => { throw new Error("미리보기에서는 예약을 삭제할 수 없습니다"); },
+  scheduleSetEnabled: async () => { throw new Error("미리보기에서는 예약을 바꿀 수 없습니다"); },
+  projectOpen: async () => { throw new Error("미리보기에서는 로컬 폴더를 열 수 없습니다"); },
   agentsCatalog: async () => [],
   agents: async () => [
     { id: "claude", name: "Claude Code", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "" },
@@ -128,6 +135,7 @@ export const demoBackend: Backend = {
   tokens: async () => ({ groups: [DEMO_BASELINE, DEMO_SHARED], compare: { baseline: DEMO_BASELINE, shared: DEMO_SHARED } }),
   // The recorded preview shows the demo's own transcripts; nothing reaches a lead.
   leadShow: async () => ({ thread: null, projects: [] }),
+  leadNote: async () => { throw new Error(LEAD_REFUSED); },
   leadNew: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadAttach: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadSend: () => Promise.reject(new Error(LEAD_REFUSED)),

@@ -67,12 +67,15 @@ sheets for composed characters) were generated the same way (runs `20261101-1642
 
 ## Rust crates
 
-The `o` command (`crates/`) builds on crates from crates.io under permissive licenses:
-serde, serde_json, regex, chrono, windows-sys and Tauri 2 for the desktop shell `project_O.exe` (MIT or Apache-2.0), rusqlite (MIT) with
-SQLite compiled in (public domain). `cargo tree` lists the full set; their license texts
-ship in each crate's source.
+The Windows build uses crates from crates.io, including MIT, Apache-2.0 and MPL-2.0
+components. The exact versions and their license texts are in
+[`THIRD_PARTY_LICENSES.txt`](THIRD_PARTY_LICENSES.txt); source archives for the MPL
+components are available from crates.io at the versioned URLs described there.
+`cargo tree --target x86_64-pc-windows-msvc` lists the dependency graph.
 
 ## Fonts
 
 - Geist (`@fontsource-variable/geist`), SIL Open Font License 1.1
 - Pretendard (`pretendard`), SIL Open Font License 1.1
+
+The fonts' copyright notices and full licenses are included in `THIRD_PARTY_LICENSES.txt`.

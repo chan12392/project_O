@@ -13,3 +13,4 @@ pub mod snapshot;
 pub mod store;
 pub mod team;
 pub mod yolo;
+pub(crate) mod workspaces;

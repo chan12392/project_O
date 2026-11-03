@@ -16,7 +16,7 @@ pub const AGENTS: Command = Command {
     name: "agents",
     usage: "  o agents path              깨끗한 에이전트 프로필(개인 훅·스킬·MCP·전역 지시 없음) 위치
   o agents login <claude|codex|agy|opencode>   그 프로필로 공식 로그인 (CLI마다 한 번)
-  o agents shell <claude|codex|agy|opencode> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행
+  o agents shell <claude|codex|opencode> [인자…]   지금 폴더에서 깨끗한 CLI를 대화형으로 실행
   o agents doctor [--json]   로그인 상태와 프로필 오염 검사 (깨끗하면 종료 코드 0)
   o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
   o agents install <claude|codex|agy|opencode|devin> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)

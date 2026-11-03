@@ -1,4 +1,4 @@
-import { ChevronRight, Coffee, Folder, FolderPlus, FolderX, ListTodo, MoreHorizontal, Pencil, Plus, SquarePen, X } from "lucide-react";
+import { CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, X } from "lucide-react";
 import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 
 import { isSessionRun } from "../../../src/core/attention.ts";
@@ -11,6 +11,7 @@ import type { ScreenState } from "../data/useRun.ts";
 import { CardSummary, summaryWords } from "../features/office/CardSummary.tsx";
 import { AddFolderForm, canPickFolder, NewProjectForm, pickAndRegister } from "../features/projects/ProjectForms.tsx";
 import { AgentStateDot } from "../ui/AgentStateDot.tsx";
+import { backend } from "../platform/backend/index.ts";
 
 type Groups = ReturnType<typeof useProjectGroups>;
 
@@ -38,6 +39,10 @@ interface Props {
   onCard: (runId: string, cardId: string) => void;
   /** "새 요청": choose (or make) the project whose lead gets it. */
   onNewRequest: () => void;
+  onSearch: () => void;
+  onDashboard: () => void;
+  onAutomation: () => void;
+  currentScreen?: string;
   /** A folder just put on the list (registered or made): open it. */
   onListed: (path: string) => void;
   onUnregister: (path: string) => void;
@@ -55,7 +60,7 @@ const HEAD_BUTTON = "flex size-6 items-center justify-center rounded-md text-mut
 
 /** Orca's repo sidebar: the listed projects (root, registered, test group), each with its lead and recent runs (ADR-0009). */
 export function Sidebar(props: Props) {
-  const { state, projects, groups, leadState, project, run, card, now, listError, root, onProject, onWake, onRun, onCard, onNewRequest, onListed, onUnregister, nextCount = 0, nextOpen, newOpen, onNextUp, footer } = props;
+  const { state, projects, groups, leadState, project, run, card, now, listError, root, onProject, onWake, onRun, onCard, onNewRequest, onSearch, onDashboard, onAutomation, currentScreen, onListed, onUnregister, nextCount = 0, nextOpen, onNextUp, footer } = props;
   const shown = state === "full" ? projects : [];
   const [naming, setNaming] = useState<{ project?: string } | undefined>();
   const [adding, setAdding] = useState<"new" | "folder" | undefined>();
@@ -123,20 +128,8 @@ export function Sidebar(props: Props) {
 
   return (
     <aside className="flex min-h-0 flex-col border-r bg-sidebar text-sidebar-foreground" aria-label="프로젝트 목록">
-      <div className="flex h-10 shrink-0 items-center gap-2 px-4">
-        <span className="text-sm font-semibold">Project O</span>
-      </div>
-
-      <nav className="flex flex-col gap-0.5 px-2 pb-2">
-        <button
-          type="button"
-          onClick={onNewRequest}
-          aria-current={newOpen ? "page" : undefined}
-          title="어느 프로젝트의 총괄에게 맡길지 고르거나 새 프로젝트를 만듭니다"
-          className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium"
-        >
-          <SquarePen className="size-4 text-muted-foreground" aria-hidden="true" />새 요청
-        </button>
+      <nav className="flex flex-col gap-0.5 px-2 pt-3 pb-2">
+        {([ ["search", "검색", Search, onSearch], ["dashboard", "대시보드", LayoutDashboard, onDashboard] ] as const).map(([id, label, Icon, action]) => <button key={id} type="button" onClick={action} aria-current={currentScreen === id ? "page" : undefined} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium"><Icon className="size-4 text-muted-foreground" aria-hidden="true" />{label}</button>)}
         {onNextUp && (
           <button
             type="button"
@@ -154,10 +147,12 @@ export function Sidebar(props: Props) {
             )}
           </button>
         )}
+        <button type="button" onClick={onAutomation} aria-current={currentScreen === "automation" ? "page" : undefined} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium"><CalendarClock className="size-4 text-muted-foreground" aria-hidden="true" />자동화</button>
       </nav>
 
       <div className="flex items-center gap-0.5 px-4 pt-2 pb-1">
         <span className="text-2xs font-semibold tracking-wider text-muted-foreground uppercase">프로젝트</span>
+        <button type="button" onClick={onNewRequest} aria-label="새 요청" title="새 요청" className={`ml-auto ${HEAD_BUTTON}`}><SquarePen className="size-3.5" aria-hidden="true" /></button>
         <button
           type="button"
           onClick={() => {
@@ -165,7 +160,7 @@ export function Sidebar(props: Props) {
             setAdding((a) => (a === "new" ? undefined : "new"));
           }}
           aria-expanded={adding === "new"}
-          className={`ml-auto ${HEAD_BUTTON}`}
+          className={HEAD_BUTTON}
           aria-label="새 프로젝트 (루트에 빈 폴더 만들기)"
           title="새 프로젝트 (루트에 빈 폴더 만들기)"
         >
@@ -357,6 +352,7 @@ interface RowProps {
 }
 
 function ProjectRow({ project, groups, lead, current, open, run, card, now, onSelect, onToggle, onWake, onRun, onCard, onNewGroup, onUnregister }: RowProps) {
+  const [menuOpen, setMenuOpen] = useState(false);
   // Only O's own runs make a project busy: a Claude Code session open here is not one (B7).
   const live = project.runs.filter(isDirecting).length;
   const recent = project.runs.slice(0, SHOWN_RUNS);
@@ -370,7 +366,7 @@ function ProjectRow({ project, groups, lead, current, open, run, card, now, onSe
 
   return (
     <div className="mt-0.5">
-      <div data-current={current || undefined} className="group/row flex items-center rounded-md hover:bg-sidebar-accent data-current:bg-sidebar-accent">
+      <div data-current={current || undefined} onContextMenu={(e) => { e.preventDefault(); setMenuOpen(true); }} className="group/row flex items-center rounded-md hover:bg-sidebar-accent data-current:bg-sidebar-accent">
         <button type="button" onClick={onToggle} aria-expanded={open} aria-label={`${project.name} 작업 목록 ${open ? "접기" : "펼치기"}`} className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground focus-ring">
           <ChevronRight className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />
         </button>
@@ -380,7 +376,7 @@ function ProjectRow({ project, groups, lead, current, open, run, card, now, onSe
           {project.missing && <span className="sr-only">(폴더 없음)</span>}
           {live > 0 && <span className="shrink-0 rounded-full bg-agent-working/15 px-1.5 text-3xs text-agent-working">{live} 진행</span>}
         </button>
-        <ProjectMenu project={project} groups={groups} onNewGroup={onNewGroup} onUnregister={onUnregister} />
+        <ProjectMenu project={project} groups={groups} onNewGroup={onNewGroup} onUnregister={onUnregister} open={menuOpen} setOpen={setMenuOpen} />
       </div>
       {open && (
         <div className="ml-3.5 border-l pb-1 pl-1.5">
@@ -419,8 +415,8 @@ function ProjectRow({ project, groups, lead, current, open, run, card, now, onSe
 }
 
 /** A small menu panel under its button. */
-function ProjectMenu({ project, groups, onNewGroup, onUnregister }: { project: Project; groups: Groups; onNewGroup: () => void; onUnregister: () => void }) {
-  const [open, setOpen] = useState(false);
+function ProjectMenu({ project, groups, onNewGroup, onUnregister, open, setOpen }: { project: Project; groups: Groups; onNewGroup: () => void; onUnregister: () => void; open: boolean; setOpen: (open: boolean | ((open: boolean) => boolean)) => void }) {
+  const [error, setError] = useState("");
   const panel = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpen(false), []);
@@ -442,6 +438,9 @@ function ProjectMenu({ project, groups, onNewGroup, onUnregister }: { project: P
       </button>
       {open && (
         <div ref={panel} role="group" aria-label={`${project.name} 메뉴`} className="bloom absolute top-full right-0 z-20 mt-1 w-52 rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg">
+          <button type="button" className={item} disabled={project.missing} onClick={() => { void backend(new URLSearchParams(window.location.search).get("source") === "demo").projectOpen(project.path).then(close, (e: unknown) => setError(String(e))); }}>폴더 열기</button>
+          <button type="button" className={item} onClick={() => { void navigator.clipboard.writeText(project.path).then(close, (e: unknown) => setError(String(e))); }}>경로 복사</button>
+          {error && <p role="alert" className="px-2 py-1 text-2xs text-destructive">{error}</p>}
           {movable && (
             <>
               <p className="px-2 pt-1 pb-1.5 text-3xs font-semibold text-muted-foreground">그룹으로 옮기기</p>

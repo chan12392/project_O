@@ -45,7 +45,7 @@ impl fmt::Display for ProviderId {
     }
 }
 
-pub const CARD_FIELDS: [&str; 6] = ["id", "provider", "role", "task", "model", "effort"];
+pub const CARD_FIELDS: [&str; 7] = ["id", "provider", "role", "task", "model", "effort", "depends_on"];
 pub const PLAN_FIELDS: [&str; 3] = ["title", "project", "cards"];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -60,6 +60,9 @@ pub struct Card {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Work that must finish successfully before this task starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
 }
 
 impl Card {

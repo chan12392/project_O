@@ -31,6 +31,8 @@ import { Onboarding } from "../features/settings/Onboarding.tsx";
 import type { SettingsSection } from "../features/settings/sections/index.ts";
 import { Settings } from "../features/settings/Settings.tsx";
 import { AllNextUp } from "../features/work/AllNextUp.tsx";
+import { WorkDashboard } from "../features/work/WorkDashboard.tsx";
+import { Automation } from "../features/work/Automation.tsx";
 import { UpdatePrompt } from "../features/updates/UpdatePrompt.tsx";
 import { actionCount, useHandled } from "../features/work/NextUp.tsx";
 import { useNow } from "../features/work/WorkTab.tsx";
@@ -48,7 +50,7 @@ const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
 const api = backend(!window.__TAURI_INTERNALS__ && new URLSearchParams(window.location.search).get("source") === "demo");
 
-type Screen = "app" | "onboarding" | "settings" | "nextup" | "new";
+type Screen = "app" | "onboarding" | "settings" | "nextup" | "new" | "search" | "dashboard" | "automation";
 
 export function App() {
   return initial.popout ? <PopoutPanel /> : <MainWindow />;
@@ -157,6 +159,7 @@ function MainWindow() {
 
   // First launch (or the "에이전트 연결 화면" start screen) shows agent onboarding instead of the chat.
   const [screen, setScreen] = useState<Screen>(() => (!onboardingDone() || settingsNow().start === "onboarding" ? "onboarding" : "app"));
+  const [query, setQuery] = useState("");
   const [section, setSection] = useState<SettingsSection>("general");
   const settingsFrom = useRef<Screen>("app");
   const openSettings = (target: SettingsSection = "general") => {
@@ -298,6 +301,10 @@ function MainWindow() {
             openCard(run, card);
           }}
           onNewRequest={() => setScreen("new")}
+          onSearch={() => setScreen("search")}
+          onDashboard={() => setScreen("dashboard")}
+          onAutomation={() => setScreen("automation")}
+          currentScreen={screen}
           onListed={openProject}
           onUnregister={(path) => void unregister(path)}
           nextCount={nextCount}
@@ -315,6 +322,9 @@ function MainWindow() {
         />
       </div>
       {screen === "onboarding" && <Onboarding api={api} onDone={finishOnboarding} onSettings={() => openSettings("agents")} />}
+      {screen === "automation" && <Automation api={api} projects={projects} current={project?.path} />}
+      {screen === "dashboard" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">대시보드</header><div className="mx-auto max-w-5xl p-5"><WorkDashboard runs={views} now={now} global onCard={(run, card) => { setScreen("app"); openCard(run, card); }} /></div></section>}
+      {screen === "search" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">검색</header><div className="mx-auto max-w-3xl space-y-4 p-5"><input autoFocus aria-label="프로젝트와 작업 검색" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="프로젝트 또는 작업 검색" className="w-full rounded-md border bg-background px-3 py-2 text-sm focus-ring" />{query.trim() && <><h2 className="text-xs font-semibold text-muted-foreground">프로젝트</h2>{projects.filter((p) => `${p.name} ${p.path}`.toLowerCase().includes(query.toLowerCase())).map((p) => <button key={p.path} type="button" onClick={() => openProject(p.path)} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{p.name}<span className="ml-2 text-xs text-muted-foreground">{p.path}</span></button>)}<h2 className="text-xs font-semibold text-muted-foreground">작업</h2>{views.flatMap((run) => run.cards.filter((card) => `${run.title} ${card.label} ${card.activity}`.toLowerCase().includes(query.toLowerCase())).map((card) => <button key={`${run.runId}/${card.id}`} type="button" onClick={() => { setScreen("app"); openCard(run.runId, card.id); }} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{card.label}<span className="ml-2 text-xs text-muted-foreground">{run.title}</span></button>))}</>}</div></section>}
       {screen === "nextup" && (
         <AllNextUp
           runs={views}
@@ -390,8 +400,6 @@ function MainWindow() {
               <LeadThread
                 project={project?.path}
                 lead={lead}
-                runOf={(runId) => runs.find((r) => r.view.runId === runId)?.view}
-                onOpenCard={openCard}
                 onCompose={compose}
                 onStartProject={async (path) => {
                   // A folder started here goes on the list too, or it would vanish from the sidebar (ADR-0009).
@@ -433,6 +441,7 @@ function MainWindow() {
             {/* The stored width can outgrow a window made narrower since; the chat keeps 360px (MIN_CHAT). */}
             <div className="min-h-0 shrink-0 max-lg:h-[50vh] max-lg:w-full! max-lg:border-t lg:max-w-[calc(100%-360px)]" style={{ width: layout.width }}>
               <SidePanel
+                lead={live ? lead : undefined}
                 run={current?.view}
                 projectRuns={project?.runs ?? []}
                 usageRuns={runs.map((r) => r.view)}
@@ -467,6 +476,7 @@ function PopoutPanel() {
   const { selection, select, receive } = useSelection(send);
   const { projects } = useProjects(runs, [], []);
   const { project, current } = resolve(runs, projects, selection);
+  const lead = useLead(api, project?.path ?? selection.project, !data.pending && Boolean(data.live));
   // The main window's run until this window has read it: never quietly another run (B15).
   const waiting = Boolean(selection.run) && !runs.some((r) => r.view.runId === selection.run);
   useEffect(() => {
@@ -482,6 +492,7 @@ function PopoutPanel() {
   return (
     <div className="h-full">
       <SidePanel
+        lead={data.live ? lead : undefined}
         run={current?.view}
         projectRuns={project?.runs ?? []}
         usageRuns={runs.map((r) => r.view)}

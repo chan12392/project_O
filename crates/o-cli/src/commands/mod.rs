@@ -14,12 +14,14 @@ mod context;
 mod dispatch;
 mod events;
 mod guard;
+mod images;
 mod lead;
 mod mirror;
 mod msg;
 mod projects;
 mod review;
 mod runs;
+mod schedule;
 mod sessions;
 mod status;
 mod stop;
@@ -43,6 +45,7 @@ pub const COMMANDS: &[Command] = &[
     stop::STOP,
     msg::MSG,
     lead::LEAD,
+    images::IMAGE,
     review::REVIEW,
     context::CONTEXT,
     tokens::TOKENS,
@@ -51,6 +54,7 @@ pub const COMMANDS: &[Command] = &[
     yolo::YOLO,
     runs::RUNS,
     sessions::SESSIONS,
+    schedule::SCHEDULE,
     projects::PROJECTS,
     guard::HOOK,
     guard::SCAN,

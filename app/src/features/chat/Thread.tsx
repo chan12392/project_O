@@ -170,7 +170,10 @@ export function useFollowBottom(deps: unknown[]) {
       follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    const content = el.firstElementChild;
+    const resize = new ResizeObserver(() => { if (follow.current) el.scrollTop = el.scrollHeight; });
+    if (content) resize.observe(content);
+    return () => { el.removeEventListener("scroll", onScroll); resize.disconnect(); };
   }, []);
   useLayoutEffect(() => {
     const el = ref.current;

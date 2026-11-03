@@ -26,6 +26,8 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
   const [view, dispatchView] = useReducer(leadView, LEAD_VIEW);
   const [sending, setSending] = useState(false);
   const seq = useRef(0);
+  const busyPoll = useRef(false);
+  const noteWrite = useRef<Promise<void> | null>(null);
 
   const refresh = useCallback(async () => {
     if (!enabled) return;
@@ -46,7 +48,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
       run: refresh,
       delay: POLL_MS,
       hidden: () => document.hidden,
-      setTimer: (fn, ms) => window.setTimeout(fn, ms),
+      setTimer: (fn, ms) => window.setTimeout(fn, busyPoll.current ? 600 : ms),
       clearTimer: (id) => window.clearTimeout(id),
     });
     const onVisibility = () => poll.wake();
@@ -61,6 +63,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
   const show = view.project === project ? view.show : undefined;
   const failed = view.project === project ? view.failed : undefined;
   const thread = show?.thread && (!project || show.thread.project === project || sameFolder(show.thread.project, project)) ? show.thread : null;
+  busyPoll.current = sending || Boolean(thread?.busy);
   const items = useMemo(() => leadItems(thread?.events ?? []), [thread]);
 
   const send = useCallback(
@@ -70,6 +73,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
       // The message is on record before the lead starts: show it (and the busy lead) right away.
       const early = window.setTimeout(() => void refresh(), 400);
       try {
+        if (noteWrite.current) await noteWrite.current;
         await api.leadSend({ project, ...input });
       } finally {
         window.clearTimeout(early);
@@ -124,6 +128,12 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     stopAll,
     startNew,
     dispatch,
+    changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {
+      const write = api.leadNote(threadId, change);
+      noteWrite.current = write;
+      try { await write; } finally { if (noteWrite.current === write) noteWrite.current = null; }
+      await refresh();
+    },
   };
 }
 

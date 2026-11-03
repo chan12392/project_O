@@ -152,3 +152,11 @@
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--foreground) 18%, transparent) transparent;
 }
+.design-rewrite { animation: design-rewrite 400ms ease-out; }
+@keyframes design-rewrite { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+.design-removed { animation: design-removed 1.8s ease-in forwards; }
+@keyframes design-removed { 0%, 45% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) :is(.design-rewrite, .design-removed) { animation: none; }
+}
+:root[data-motion="reduce"] :is(.design-rewrite, .design-removed) { animation: none; }

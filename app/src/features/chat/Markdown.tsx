@@ -4,6 +4,7 @@ import ReactMarkdown, { type Components } from "react-markdown";
 
 import { backend } from "../../platform/backend/index.ts";
 import { CHAT_MARKDOWN } from "./markdown.ts";
+import { ImageGallery } from "./ImageGallery.tsx";
 
 /** In the desktop app a link opens in the person's browser (open_external); a browser tab opens it itself. */
 function openOutside(e: MouseEvent<HTMLAnchorElement>) {
@@ -53,6 +54,7 @@ export const Markdown = memo(function Markdown({ text, inverse = false }: { text
       <ReactMarkdown {...CHAT_MARKDOWN} components={COMPONENTS}>
         {text}
       </ReactMarkdown>
+      <ImageGallery text={text} />
     </div>
   );
 });

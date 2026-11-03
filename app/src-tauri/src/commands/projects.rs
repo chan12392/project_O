@@ -21,6 +21,11 @@ pub async fn projects_add(path: String) -> Result<Listing, String> {
 }
 
 #[tauri::command]
+pub async fn project_open(path: String) -> Result<(), String> {
+    blocking(move || projects::open(&default_home(), &user_home(), &path)).await?
+}
+
+#[tauri::command]
 pub async fn projects_remove(path: String) -> Result<Listing, String> {
     blocking(move || projects::remove(&default_home(), &user_home(), &path)).await?
 }

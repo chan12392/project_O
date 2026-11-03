@@ -159,6 +159,21 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     );
   const project = query.get("project") ?? "";
   const projectOk = ABSOLUTE.test(project) && existsSync(project);
+  if (path === "/lead/schedule" && req.method === "GET") { run(o(["schedule", "list"])); return true; }
+  if (path === "/lead/schedule" && req.method === "POST") {
+    try { run(oWithInput(["schedule", "create", "-"], await body(req, 64 * 1024), 60_000)); }
+    catch (e) { fail(413, (e as Error).message); }
+    return true;
+  }
+  if (path === "/lead/schedule/delete" && req.method === "POST") { run(o(["schedule", "delete", query.get("id") ?? ""])); return true; }
+  if ((path === "/lead/schedule/enable" || path === "/lead/schedule/disable") && req.method === "POST") { run(o(["schedule", path.endsWith("/enable") ? "enable" : "disable", query.get("id") ?? ""])); return true; }
+  if (path.startsWith("/lead/image/")) {
+    const action = path.slice("/lead/image/".length);
+    const allowed = (action === "read" && req.method === "GET") || ((action === "open" || action === "folder") && req.method === "POST");
+    if (!allowed || !projectOk) { fail(400, "이미지 요청이 올바르지 않습니다"); return true; }
+    run(o(["image", action, project, query.get("run") || "-", query.get("card") || "-", query.get("path") || ""]));
+    return true;
+  }
   if (req.method === "GET" && path === "/lead/show") {
     run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : [])]));
     return true;
@@ -173,6 +188,13 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
+  if (path === "/lead/note") {
+    const thread = query.get("thread") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
+    try { run(oWithInput(["lead", "note", thread, "-"], await body(req, 64 * 1024), 60_000)); }
+    catch (e) { fail(413, (e as Error).message); }
+    return true;
+  }
   if (path === "/lead/stop") {
     const args = leadStopArgs(project);
     if (!args) {
@@ -193,7 +215,13 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     fail(400, "계획 id 형식이 아닙니다");
     return true;
   }
-    run(oWithInput(["lead", "dispatch", plan, "--profile", query.get("clean") === "1" ? "project-o" : "own"], Buffer.alloc(0), 60_000));
+    run(o(["about", "--json"]).then((text) => {
+      const caps: unknown = JSON.parse(text).capabilities;
+      if (!Array.isArray(caps) || !caps.includes("work-graph-v1") || !caps.includes("lead-worktrees-v1") || !caps.includes("lead-copy-workspaces-v1")) {
+        throw new Error("O CLI가 작업 그래프와 워크트리 격리를 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하세요");
+      }
+      return oWithInput(["lead", "dispatch", plan, "--profile", query.get("clean") === "1" ? "project-o" : "own"], Buffer.alloc(0), 60_000);
+    }));
     return true;
   }
   if (!projectOk) {
@@ -241,7 +269,7 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
       return true;
     }
     const model = typeof input.model === "string" && input.model ? ["--model", input.model] : [];
-    const args = ["lead", "send", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
+    const args = ["lead", "send", "--manual-dispatch", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
     run(oWithInput([...args, "--profile", input.clean === true ? "project-o" : "own", "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
     return true;
   }
@@ -265,6 +293,10 @@ async function projects(req: IncomingMessage, res: ServerResponse, path: string,
   const folder = query.get("path") ?? "";
   if (req.method === "GET" && path === "/projects") return run([]);
   if (req.method !== "POST") return false;
+  if (path === "/projects/open") {
+    if (!ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
+    return run(["open", folder]);
+  }
   if (path === "/projects/add" || path === "/projects/remove") {
     if (!ABSOLUTE.test(folder)) return fail("절대 경로의 폴더가 필요합니다");
     return run([path.endsWith("add") ? "add" : "remove", folder]);

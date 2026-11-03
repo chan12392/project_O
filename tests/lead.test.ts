@@ -16,7 +16,9 @@ import {
   effortFor,
   fileSize,
   leadItems,
+  leadProgressSummary,
   leadReadProblem,
+  leadToolLabel,
   leadView,
   modelLabel,
   restoreDraft,
@@ -28,6 +30,16 @@ import {
   type LeadShow,
 } from "../src/core/lead.ts";
 import { createPoll } from "../src/core/poll.ts";
+
+test("tool activity shows concise real file names and does not pretend glob patterns are files", () => {
+  assert.equal(leadToolLabel("Read", "docs/워크트리.md"), "Read 워크트리.md");
+  assert.equal(leadToolLabel("Write", "C:\\project\\game.py"), "Write game.py");
+  assert.equal(leadToolLabel("edit", '[{"path":"src/app.ts","kind":"update"}]'), "Edit app.ts");
+  assert.equal(leadToolLabel("Glob", "**/*"), "Glob 파일 찾기");
+  assert.equal(leadToolLabel("Read", ""), "Read");
+  assert.equal(leadProgressSummary({ commands: 7, edits: 3, reads: 0, searches: 1 }), "명령 7회 · 파일 변경 3회 · 검색 1회");
+  assert.equal(leadProgressSummary(undefined), "");
+});
 
 const rust = (path: string) => readFileSync(new URL(`../crates/o-core/src/${path}`, import.meta.url), "utf8");
 /** The string list a Rust fn or const returns, e.g. `fn lead_efforts ... &["low", "medium"]`. */

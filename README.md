@@ -61,13 +61,15 @@ npm run tauri dev                    # 개발: http://localhost:1430 + 창
 
 Windows 설치 파일(NSIS, `o.exe` 포함): [docs/INSTALL.md](docs/INSTALL.md) — `pwsh scripts/build-installer.ps1` 또는 `test_1` 프리릴리스.
 
-- 설치는 공식 npm 패키지(`npm install -g @anthropic-ai/claude-code`, `npm install -g @openai/%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home`)가 있고 npm이 PATH에 있을 때만 앱에서 실행한다. Antigravity와 npm이 없을 때는 각 회사의 공식 설치 안내를 보여 준다(인터넷 스크립트를 앱이 받아 실행하지 않음).
-- 로그인은 새 콘솔 창에서 공식 명령(`claude auth login`, `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home login`)을 띄운다. Antigravity는 시스템 로그인을 그대로 쓴다.
+- 설치는 공식 npm 패키지(`npm install -g @anthropic-ai/claude-code`, `npm install -g @openai/codex`)가 있고 npm이 PATH에 있을 때만 앱에서 실행한다. npm이 없으면 각 회사의 공식 설치 안내를 보여 준다.
+- 로그인은 새 콘솔 창에서 공식 명령(`claude auth login`, `codex login`)을 띄운다. Antigravity는 공급자 정책에 따라 Project O에서 실행하지 않는다.
 - 같은 동작을 CLI로: `o agents status [--clean] --json`, `o agents install <id>`, `o agents open-login <id> [--clean]`, `o about --json`.
 
 `?source=demo`로 기록 재생, `?source=live`로 실시간을 고른다. 개발 서버의 `/api`는 `o runs --json`·`o usage`를 불러 쓰며 이 PC 주소·같은 출처 요청만 받는다.
 
 Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-theme.css`(원본 복사, 고치지 말고 다시 추출), Geist 글꼴, Tailwind 4, lucide 아이콘. 출처와 라이선스는 [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+
+프로젝트 라이선스는 [Apache-2.0](LICENSE)이다. 제3자 구성 요소는 각자의 라이선스를 따른다.
 
 ## O CLI
 
@@ -76,8 +78,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 ```
 사용자 ─▶ 총괄 Claude ─(O 스킬)─▶ o dispatch plan.json
                                    │ 정책 검사 (위반 시 전체 차단, 종료 코드 2)
-                                   ├─▶ %LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home exec --json
-                                   ├─▶ agy -p --output-format stream-json
+                                   ├─▶ codex exec --json
                                    └─▶ claude -p --output-format stream-json
                                          ▼
                       %LOCALAPPDATA%/project_O/runs/<runId>/events.jsonl ─▶ 채팅·사무실·대시보드
@@ -94,7 +95,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | `o stop <runId>` | 중지 |
 | `o msg send / read / post` | 팀 대화: 카드끼리, 카드와 총괄(`lead`)이 메시지를 주고받음 |
 | `o review <PR 번호\|주소> [--provider P] [--model M] [--effort E] [--profile project-o\|own] [--post] [--dry-run]` | 지금 폴더 저장소의 PR을 `gh`로 읽어 카드 하나로 검토(파일 변경 없음). `--post`는 검토문을 PR 댓글로 게시 — 승인·병합은 하지 않음 ([ADR-0006](docs/decisions/0006-pr-cross-review.md)) |
-| `o usage [--json] [--cached]` | Codex·Antigravity 구독 한도를 각 CLI로 조회 |
+| `o usage [--json] [--cached]` | 지원되는 CLI의 구독 한도를 조회 (Antigravity 조회 보류) |
 | `o budget [--json] [--cached] [--percent 12\|13\|14] [--on\|--off]` | 에이전트별 오늘 사용 예산(주간 한도의 12~14%)·속도·effort 조절, 예산 켜기·끄기 (아래) |
 | `o runs --json` | 모든 실행 기록(화면용) |
 | `o hook` / `o scan --all\|--staged\|--pre-push` | 에이전트 훅 / 정책 검사 |
@@ -110,7 +111,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 - 카드를 시작하기 직전에 속도를 본다. 남은 예산 비율이 남은 시간 비율(자정, 또는 그 전에 오는 주간 초기화까지)보다 작으면 effort를 한 단계, 절반보다 작으면 두 단계 낮춘다(`low` 아래로는 낮추지 않고, 올리지 않는다). effort가 없는 카드는 `medium`으로 보고 낮춘다. 바꾼 내용은 `card.budget` 이벤트로 남고, plan.json은 그대로다.
 - 예산을 다 쓴 에이전트로는 새 카드를 보내지 않는다(정책 `daily-budget`). 주간 기록이 없는 에이전트는 조절하지 않는다.
 - 끌 수 있다(설정 → 에이전트 → 하루 사용 예산, `o budget --off`; `settings.json`의 `dailyBudgetEnabled`). 끄면 예산으로 막거나 effort를 낮추지 않고, 숫자와 "오늘" 고리는 "예산 꺼짐"으로 남는다. 구독 한도·쿨다운·`LIMITS`는 그대로다.
-- `o _run`은 저장된 Codex·Antigravity 기록이 10분보다 오래됐으면 먼저 다시 조회한다. `o dispatch`는 조회하지 않고 저장된 기록으로 검사한다.
+- `o _run`은 저장된 지원 공급자의 기록이 10분보다 오래됐으면 먼저 다시 조회한다. `o dispatch`는 조회하지 않고 저장된 기록으로 검사한다.
 
 ### 깨끗한 에이전트 (테스트용)
 
@@ -119,8 +120,8 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | 명령 | 하는 일 |
 |---|---|
 | `o agents path` | 프로필 위치: `%LOCALAPPDATA%/project_O-agents/<claude\|codex\|agy>/home` |
-| `o agents login <claude\|%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home\|agy>` | 그 프로필로 공식 로그인 (`claude auth login`, `codex login`). CLI마다 한 번. agy는 시스템 로그인을 그대로 써서 확인만 한다 |
-| `o agents shell <claude\|%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home\|agy> [인자…]` | 지금 폴더에서 깨끗한 CLI를 대화형으로 실행 |
+| `o agents login <claude\|codex\|opencode>` | 그 프로필로 공식 로그인. CLI마다 한 번 |
+| `o agents shell <claude\|codex\|opencode> [인자…]` | 지금 폴더에서 깨끗한 CLI를 대화형으로 실행 |
 | `o agents doctor [--json]` | 로그인 상태와 프로필 오염(훅·스킬·MCP·전역 지시) 검사. 깨끗하면 종료 코드 0 |
 | `o dispatch plan.json` (`--profile project-o`, `--clean`과 같음) | 이 실행의 카드를 깨끗한 프로필로 실행 (계획 형식은 그대로). 앱의 "project_O 프로필 사용"과 같다 |
 

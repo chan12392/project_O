@@ -137,6 +137,12 @@ export interface Backend {
   login(id: AgentId, clean: boolean): Promise<ActionResult>;
   /** Opens a web page in the person's browser. */
   openExternal(url: string): Promise<void>;
+  imageRead(project: string, path: string, run?: string, card?: string): Promise<{ mime: string; bytes: number[] }>;
+  imageOpen(project: string, path: string, folder: boolean, run?: string, card?: string): Promise<void>;
+  schedules(): Promise<ScheduleJob[]>;
+  scheduleCreate(request: ScheduleRequest): Promise<ScheduleJob>;
+  scheduleDelete(id: string): Promise<void>;
+  scheduleSetEnabled(id: string, enabled: boolean): Promise<ScheduleJob>;
   /** App version and where O keeps its state, for Settings → About. */
   about(): Promise<About>;
   checkUpdate(): Promise<UpdateCheck>;
@@ -162,10 +168,11 @@ export interface Backend {
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
   tokens(project?: string): Promise<TokenReport>;
 
-  // The lead chat (ADR-0008). The lead only reads and proposes; `leadDispatch` runs a plan once.
+  // The lead chat (ADR-0008). `leadDispatch` starts a plan or explicitly retries a failed run.
 
   /** The project's current lead thread and every project that has one (`o lead show --json`). */
   leadShow(project?: string): Promise<LeadShow>;
+  leadNote(threadId: string, change: import("../../../../src/core/lead.ts").DesignNoteChange): Promise<void>;
   /** Starts a new thread for the project ("새 대화"). */
   leadNew(project: string): Promise<{ threadId: string }>;
   /** Saves one image or document for the project's current thread; rejects with the reason. */
@@ -184,6 +191,7 @@ export interface Backend {
 
   /** The projects root, its projects and the registered folders (`o projects --json`). */
   projects(): Promise<ProjectList>;
+  projectOpen(path: string): Promise<void>;
   /** Registers a folder outside the root (the same rules as a card's project folder). */
   projectsAdd(path: string): Promise<ProjectList>;
   /** Takes a registered folder off the list; the folder stays. */
@@ -197,6 +205,18 @@ export interface Backend {
   /** The native folder picker (desktop only); null when cancelled or unavailable. */
   pickFolder?(): Promise<string | null>;
 }
+
+export interface ScheduleRequest {
+  name: string;
+  project: string;
+  provider: "claude" | "codex" | "agy";
+  text: string;
+  start: string;
+  repeat: "once" | "daily" | "weekly";
+  clean: boolean;
+  autoDispatch: boolean;
+}
+export type ScheduleJob = ScheduleRequest & { id: string; enabled: boolean; last?: { at: string; ok: boolean; error?: string } };
 
 export interface YoloReport {
   enabled: boolean;

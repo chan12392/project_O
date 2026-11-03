@@ -30,8 +30,6 @@ import { useAgentCheck } from "../../data/agents.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
-const MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
-const SEND_KEY = MAC ? "⌘Enter" : "Ctrl+Enter";
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
 /** The run profile chip (project_O 프로필 사용, ADR-0013): short words, the tooltip says what each means. */
 const PROFILE_CHIP = { clean: "project_O 프로필", own: "내 설정" } as const;
@@ -210,9 +208,15 @@ export function Composer({
   };
 
   const onKey = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "Enter" && (MAC ? event.metaKey : event.ctrlKey)) {
+    if (event.key !== "Enter" || event.nativeEvent.isComposing || event.nativeEvent.keyCode === 229) return;
+    if (event.ctrlKey && !event.altKey && !event.metaKey) {
       event.preventDefault();
-      void submit();
+      const input = event.currentTarget;
+      input.setRangeText("\n", input.selectionStart, input.selectionEnd, "end");
+      setText(input.value);
+    } else if (!event.shiftKey && !event.ctrlKey && !event.altKey && !event.metaKey) {
+      event.preventDefault();
+      if (!event.repeat) void submit();
     }
   };
   const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
@@ -426,7 +430,7 @@ export function Composer({
               <button
                 type="submit"
                 aria-label="보내기"
-                title={`보내기 (${SEND_KEY})`}
+                title="보내기 (Enter)"
                 aria-disabled={!canSend}
                 className="flex size-7 shrink-0 items-center justify-center rounded-full bg-primary text-primary-foreground hover:bg-primary/90 focus-ring aria-disabled:cursor-not-allowed aria-disabled:opacity-40 aria-disabled:hover:bg-primary"
               >
@@ -436,13 +440,12 @@ export function Composer({
           </div>
         </div>
       </div>
-      {/* Always on screen: Enter makes a new line here, so the send key has to be visible. */}
       <p
         id="ask-help"
         aria-live="polite"
         className={`mx-auto mt-1.5 max-w-3xl px-1 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : `${SEND_KEY} 보내기 · Enter 줄바꿈 · ${yolo ? "조건에 맞는 계획은 자동 실행됩니다" : "계획 카드에서 실행합니다"}`)}
+        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : "Enter 보내기 · Ctrl+Enter 줄바꿈 · 설계를 확인한 뒤 작업을 분배합니다")}
       </p>
     </form>
   );
