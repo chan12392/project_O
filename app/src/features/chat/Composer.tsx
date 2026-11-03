@@ -144,7 +144,9 @@ export function Composer({
 
   const uploading = files.some((f) => !f.saved && !f.error);
   const busy = lead.busy;
-  const blocker = !project
+  const blocker = lead.thread?.busy === "unknown"
+    ? "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다"
+    : !project
     ? "프로젝트 폴더를 먼저 정하세요"
     : !checking && !agent
       ? "총괄을 맡을 에이전트가 연결되어 있지 않습니다"
@@ -447,7 +449,7 @@ export function Composer({
         aria-live="polite"
         className={`mx-auto mt-1.5 max-w-3xl px-1 empty:mt-0 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
+        {notice ?? (lead.thread?.busy === "unknown" ? blocker : busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
       </p>
     </form>
   );
