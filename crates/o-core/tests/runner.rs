@@ -215,6 +215,21 @@ fn isolated_worktrees_refuse_submodules() {
     assert!(!launched.load(Ordering::SeqCst));
     assert!(read_events(&home, "submodule").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("서브모듈") && reason.contains("vendor/lib"))));
     assert!(!home.with_file_name("state-worktrees").join("submodule").join("1").exists());
+
+    // A project in another folder of the same repository never reads the submodule: it starts.
+    std::fs::create_dir_all(project.join("app")).unwrap();
+    std::fs::write(project.join("app").join("main.txt"), "app\n").unwrap();
+    git(&["add", "app/main.txt"]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "app"]);
+    let mut app = plan(vec![card("a", ProviderId::Claude, "first")]);
+    app.project = project.join("app").to_string_lossy().into_owned();
+    create_run(&home, "beside-submodule", &app).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "beside-submodule").join("isolated-worktrees"), "").unwrap();
+    let started = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&started);
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("fixture stops here")) });
+    let _ = run_plan(&home, "beside-submodule", &app, None, spawner);
+    assert!(started.load(Ordering::SeqCst));
 }
 
 fn dependency_order() {

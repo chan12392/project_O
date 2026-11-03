@@ -373,6 +373,12 @@ fn merge_lookups_that_fail_block() {
         let reasons = review(&bash(unknown), &OWNER_GH);
         assert!(reasons.len() == 1 && reasons[0].starts_with("병합할 PR의 base 브랜치를 확인하지 못했습니다"), "{unknown} → {reasons:?}");
     }
+    // Words in a commit message or PR body are not a merge: the owner still passes.
+    for mention in ["git commit -m \"fix: gh pr merge now blocks\"", "gh pr create --body \"run gh pr merge later\"", "echo gh pr merge x"] {
+        assert!(passes(&bash(mention), &OWNER_GH), "{mention}");
+    }
+    assert!(blocked(&bash("git status && gh pr merge 99"), &OWNER_GH));
+    assert!(blocked(&bash("echo ok\ngh pr merge 99"), &OWNER_GH));
     // Confirmed bases keep their rule for the owner.
     for known in ["gh pr merge 1", "gh pr merge 3", "gh pr merge 5", "gh pr merge 2", "gh pr merge 4"] {
         assert!(passes(&bash(known), &OWNER_GH), "{known}");

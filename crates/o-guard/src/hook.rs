@@ -231,13 +231,15 @@ enum MergeTarget {
 /// a PR whose base can't be read is refused before the owner check.
 fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
     let mut reasons = Vec::new();
-    for (is_pr_merge, arguments) in gh_calls(command) {
+    for (is_pr_merge, arguments, starts_command) in gh_calls(command) {
         let Some(target) = merge_target(is_pr_merge, arguments) else { continue };
         let base = match &target {
             MergeTarget::Pr { selector, repo } => git.pr_base(cwd, selector.as_deref(), repo.as_deref()),
             MergeTarget::Base(base) => base.clone(),
         };
-        if base.is_none() && matches!(target, MergeTarget::Pr { .. }) {
+        // Only a call that starts a command: the words quoted in a commit message or PR body
+        // name no PR, and for those the owner check below still decides.
+        if starts_command && base.is_none() && matches!(target, MergeTarget::Pr { .. }) {
             reasons.push(format!(
                 "병합할 PR의 base 브랜치를 확인하지 못했습니다(gh pr view 실패). 보호 브랜치 병합일 수 있어 막습니다. test_1·test_1_hotfix·main 병합은 대표({OWNER})만 합니다"
             ));
@@ -271,13 +273,17 @@ fn is_free_base(base: &str) -> bool {
 
 /// Each `gh pr merge` (`true`) or `gh api` (`false`) call with its arguments: the text from the call
 /// to the first `;`, `&`, `|` or line break (LF, CR) outside quotes. Calls are found anywhere, so a
-/// line break or quoting cannot hide one; one inside an `echo` only costs a lookup.
-fn gh_calls(command: &str) -> Vec<(bool, &str)> {
+/// line break or quoting cannot hide one; one inside an `echo` only costs a lookup. The third value
+/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, `$(` or a line break before it).
+fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
     GH_MERGE_CALL
         .captures_iter(command)
         .map(|c| {
-            let rest = &command[c.get(0).unwrap().end()..];
-            (c.get(1).is_some(), &rest[..unquoted_end(rest)])
+            let whole = c.get(0).unwrap();
+            let rest = &command[whole.end()..];
+            let before = command[..whole.start()].trim_end_matches([' ', '\t']);
+            let starts_command = before.is_empty() || before.ends_with([';', '&', '|', '(', '\n', '\r']);
+            (c.get(1).is_some(), &rest[..unquoted_end(rest)], starts_command)
         })
         .collect()
 }
