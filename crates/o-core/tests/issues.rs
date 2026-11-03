@@ -53,7 +53,9 @@ fn resolution_requires_successful_recorded_card_and_can_be_reopened() {
     assert!(issues::resolve(&dir, id, Some(verification.clone())).unwrap_err().contains("손상"));
     fs::write(&events, format!("{done}{{\"t\":\"card.end\",\"status\":\"failed\"}}\n")).unwrap();
     assert!(issues::resolve(&dir, id, Some(verification.clone())).unwrap_err().contains("손상"));
-    fs::write(&events, format!("{done}{{\"t\":\"card.start\",\"cardId\":\"card-1\"}}\n")).unwrap();
+    fs::write(&events, "{\"t\":\"card.end\",\"cardId\":\"card-1\",\"status\":\"done\"}\n").unwrap();
+    assert!(issues::resolve(&dir, id, Some(verification.clone())).unwrap_err().contains("손상"));
+    fs::write(&events, format!("{done}{{\"t\":\"card.start\",\"at\":\"2026-01-01T00:00:01Z\",\"cardId\":\"card-1\"}}\n")).unwrap();
     assert!(issues::resolve(&dir, id, Some(verification.clone())).is_err());
     assert!(issues::list(&dir, "example/project").unwrap()[0]["finding"].get("resolution").is_none());
     fs::write(dir.join("runs/run-1/events.jsonl"), "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:01Z\",\"cardId\":\"card-1\",\"status\":\"failed\"}\n").unwrap();
@@ -90,11 +92,11 @@ fn resolution_waits_for_a_concurrent_event_write() {
     let gh = Fake { answer: Err("offline".into()), calls: RefCell::default() };
     let id = issues::record(&dir, &gh, Path::new("."), &finding()).unwrap();
     let run = dir.join("runs/run-1");
-    fs::write(run.join("events.jsonl"), "{\"t\":\"card.end\",\"cardId\":\"card-1\",\"status\":\"done\"}\n").unwrap();
+    fs::write(run.join("events.jsonl"), "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n").unwrap();
     let lock = fs::OpenOptions::new().write(true).create_new(true).open(run.join("events.lock")).unwrap();
     lock.lock().unwrap();
     let mut events = fs::OpenOptions::new().append(true).open(run.join("events.jsonl")).unwrap();
-    write!(events, "{{\"t\":\"card.end\",\"cardId\":\"card-1\"").unwrap();
+    write!(events, "{{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:01Z\",\"cardId\":\"card-1\"").unwrap();
     events.flush().unwrap();
     let state = dir.clone();
     let pending = std::thread::spawn(move || issues::resolve(&state, id, Some(Resolution { run_id: "run-1".into(), card_id: "card-1".into(), evidence: "checked".into() })));
