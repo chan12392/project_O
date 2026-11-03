@@ -61,6 +61,9 @@ fn old_lease_migrates_without_inventing_process_identity() {
     assert_eq!(leases[0].run_id, "old");
     assert!(leases[0].owner_pid.is_none() && leases[0].worker_pid.is_none());
     assert!(leases[0].owner_started.is_none() && leases[0].worker_started.is_none());
+    assert!(leases[0].exit_confirmed.is_none());
+    assert_eq!(leases[0].state, "unknown");
+    assert!(o_core::run::store::recover_resource(&home, 5).is_err());
 }
 
 #[test]
@@ -97,6 +100,20 @@ fn process_fixture() {
         let result = reserve(&home, &project, &id, &card(&id, vec![res(ResourceKind::External, "shared", ResourceMode::Write)]));
         if std::env::var_os("O_RESOURCE_MARK_SPAWN").is_some() {
             if let Reserved::Granted(lease) = &result { o_core::run::store::mark_spawning(&home, lease).unwrap(); }
+        }
+        #[cfg(windows)]
+        if std::env::var_os("O_RESOURCE_MARK_EXIT").is_some() {
+            let Reserved::Granted(lease) = &result else { panic!("lease missing") };
+            o_core::run::store::mark_spawning(&home, lease).unwrap();
+            let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+            command.args(["--exact", "process_fixture"]).env_remove("O_RESOURCE_HOME").env_remove("O_RESOURCE_MARK_EXIT").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+            let mut worker = o_core::sys::proc::spawn_worker(&mut command).unwrap();
+            let tree = o_core::sys::proc::contain(&worker).unwrap();
+            link_slot(&home, lease, worker.id()).unwrap();
+            o_core::sys::proc::resume_worker(worker.id()).unwrap();
+            worker.wait().unwrap();
+            assert!(tree.stop_and_confirm());
+            o_core::run::store::mark_resource_exited(&home, lease).unwrap();
         }
         let text = if matches!(result, Reserved::Granted(_)) { "granted" } else { "busy" };
         std::fs::write(project.join(format!("{id}.result")), text).unwrap();
@@ -158,7 +175,7 @@ fn crashed_owner_leaves_its_reservation_intact() {
     }
     assert_eq!(std::fs::read_to_string(project.join("one.result")).unwrap(), "granted");
     let id: i64 = o_core::run::store::resource_leases(&home).unwrap()[0].id.parse().unwrap();
-    assert!(o_core::run::store::recover_unstarted_resource(&home, id).is_err());
+    assert!(o_core::run::store::recover_resource(&home, id).is_err());
     child.kill().unwrap();
     child.wait().unwrap();
     o_core::run::store::held_by_provider(&home).unwrap();
@@ -172,14 +189,15 @@ fn crashed_owner_leaves_its_reservation_intact() {
     assert!(matches!(reserve(&home, &project, "two", &card("two", vec![res(ResourceKind::External, "shared", ResourceMode::Write)])), Reserved::Busy(_)));
     #[cfg(windows)]
     {
+        assert_eq!(leases[0].state, "recoverable");
         let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
         conn.execute("UPDATE resource_leases SET worker_pid=123 WHERE slot_id=?1", [id]).unwrap();
-        assert!(o_core::run::store::recover_unstarted_resource(&home, id).is_err());
+        assert!(o_core::run::store::recover_resource(&home, id).is_err());
         conn.execute("UPDATE resource_leases SET worker_pid=NULL WHERE slot_id=?1", [id]).unwrap();
         drop(conn);
         let threads: Vec<_> = (0..2).map(|_| {
             let home = home.clone();
-            std::thread::spawn(move || o_core::run::store::recover_unstarted_resource(&home, id))
+            std::thread::spawn(move || o_core::run::store::recover_resource(&home, id))
         }).collect();
         assert_eq!(threads.into_iter().map(|thread| thread.join().unwrap().is_ok()).filter(|ok| *ok).count(), 1);
         assert!(!resource_held(&home, "one", "one").unwrap());
@@ -201,8 +219,32 @@ fn ambiguous_spawn_is_never_recovered_from_owner_death_alone() {
     assert_eq!(lease.spawn_intent, Some(true));
     child.kill().unwrap();
     child.wait().unwrap();
-    assert!(o_core::run::store::recover_unstarted_resource(&home, lease.id.parse().unwrap()).is_err());
+    assert_eq!(o_core::run::store::resource_leases(&home).unwrap()[0].state, "unknown");
+    assert!(o_core::run::store::recover_resource(&home, lease.id.parse().unwrap()).is_err());
     assert!(resource_held(&home, "one", "one").unwrap());
+}
+
+#[cfg(windows)]
+#[test]
+fn confirmed_exit_is_recovered_after_owner_crash_without_refunding_start() {
+    let (home, project) = fixture();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args(["--exact", "process_fixture"]).env("O_RESOURCE_HOME", &home).env("O_RESOURCE_PROJECT", &project).env("O_RESOURCE_ID", "one").env("O_RESOURCE_MARK_EXIT", "1").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let mut owner = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
+    for _ in 0..500 { if project.join("one.ready").exists() { break; } std::thread::sleep(Duration::from_millis(10)); }
+    std::fs::write(project.join("go"), "").unwrap();
+    for _ in 0..500 { if project.join("one.result").exists() { break; } std::thread::sleep(Duration::from_millis(10)); }
+    assert_eq!(std::fs::read_to_string(project.join("one.result")).unwrap(), "granted");
+    let lease = o_core::run::store::resource_leases(&home).unwrap().pop().unwrap();
+    assert_eq!(lease.exit_confirmed, Some(true));
+    assert_eq!(lease.state, "unknown");
+    assert!(o_core::run::store::recover_resource(&home, lease.id.parse().unwrap()).is_err());
+    owner.kill().unwrap();
+    owner.wait().unwrap();
+    assert_eq!(o_core::run::store::resource_leases(&home).unwrap()[0].state, "recoverable");
+    o_core::run::store::recover_resource(&home, lease.id.parse().unwrap()).unwrap();
+    assert!(!resource_held(&home, "one", "one").unwrap());
+    assert_eq!(o_core::run::store::started_on(&home, Utc::now()).unwrap(), 1);
 }
 
 #[cfg(windows)]

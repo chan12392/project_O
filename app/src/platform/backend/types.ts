@@ -153,6 +153,8 @@ export interface ResourceLease {
   workerPid: number | null;
   workerStarted: string | null;
   spawnIntent: boolean | null;
+  exitConfirmed: boolean | null;
+  state: "recoverable" | "unknown";
 }
 
 export interface Backend {

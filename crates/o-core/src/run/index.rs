@@ -37,7 +37,7 @@ use crate::run::store::RunRecord;
 
 /// 2: `runs.prefix_hash` and `runs.modified`, so a rewritten file is told from an appended one.
 /// 3: `slots`, the card slots runners hold from before a CLI starts until it ends.
-const SCHEMA_VERSION: i64 = 5;
+const SCHEMA_VERSION: i64 = 6;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
@@ -95,6 +95,10 @@ pub fn open(home: &Path) -> io::Result<Connection> {
         if !has_phase {
             tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN spawn_intent INTEGER;\n\
                 ALTER TABLE resource_leases ADD COLUMN start_id INTEGER;").map_err(sql)?;
+        }
+        let has_exit: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'exit_confirmed')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_exit {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN exit_confirmed INTEGER;").map_err(sql)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql)?;
         tx.commit().map_err(sql)?;

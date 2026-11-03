@@ -8,11 +8,12 @@ test("resource inspection and recovery use the development server API", async ()
   globalThis.fetch = async (input, init) => {
     const url = String(input);
     calls.push({ url, method: init?.method ?? "GET" });
-    return new Response(JSON.stringify(url === "/api/resources" ? { leases: [{ id: "7", runId: "r", cardId: "c", spawnIntent: false }] } : { ok: true }), { status: 200 });
+    return new Response(JSON.stringify(url === "/api/resources" ? { leases: [{ id: "7", runId: "r", cardId: "c", spawnIntent: true, exitConfirmed: true, state: "recoverable" }] } : { ok: true }), { status: 200 });
   };
   try {
     const leases = await devBackend.resources();
     assert.equal(leases[0].id, "7");
+    assert.equal(leases[0].state, "recoverable");
     await devBackend.recoverResource(leases[0].id);
     assert.deepEqual(calls, [{ url: "/api/resources", method: "GET" }, { url: "/api/resources/recover?id=7", method: "POST" }]);
   } finally { globalThis.fetch = original; }

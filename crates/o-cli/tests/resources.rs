@@ -40,6 +40,7 @@ fn resources_shows_durable_identity_without_releasing_the_lease() {
     assert_eq!(data["leases"][0]["runId"], "r1");
     assert_eq!(data["leases"][0]["ownerPid"], std::process::id());
     assert!(data["leases"][0]["ownerStarted"].is_string());
+    assert_eq!(data["leases"][0]["state"], "unknown");
     assert!(resource_held(&home, "r1", "a").unwrap());
 }
 

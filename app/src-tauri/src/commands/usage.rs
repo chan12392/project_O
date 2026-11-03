@@ -17,7 +17,7 @@ pub async fn resource_leases() -> Result<Vec<store::ResourceLease>, String> {
 #[tauri::command]
 pub async fn resource_recover(id: String) -> Result<(), String> {
     let id = id.parse::<i64>().ok().filter(|id| *id > 0).ok_or("예약 ID가 올바르지 않습니다")?;
-    blocking(move || store::recover_unstarted_resource(&store::default_home(), id).map_err(|error| error.to_string())).await?
+    blocking(move || store::recover_resource(&store::default_home(), id).map_err(|error| error.to_string())).await?
 }
 
 /// The text `o usage --cached --json` prints: the saved reading, or an empty one.

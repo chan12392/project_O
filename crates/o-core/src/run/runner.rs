@@ -387,6 +387,9 @@ impl Drop for Slot<'_> {
         if self.started && !self.exited.load(Ordering::Acquire) {
             return;
         }
+        if self.started && crate::run::store::mark_resource_exited(self.home, r).is_err() {
+            return;
+        }
         if self.marked {
             clear_active(self.home, &r.run_id, &r.card_id);
         }

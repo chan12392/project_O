@@ -385,6 +385,13 @@ pub fn mark_spawning(home: &Path, reservation: &Reservation) -> io::Result<()> {
     Ok(())
 }
 
+/// The owning runner records the already-confirmed process-tree exit before giving up the reservation.
+pub fn mark_resource_exited(home: &Path, reservation: &Reservation) -> io::Result<()> {
+    let changed = index::open(home)?.execute("UPDATE resource_leases SET exit_confirmed = 1 WHERE slot_id = ?1 AND owner_pid = ?2 AND spawn_intent = 1", params![reservation.slot_row, std::process::id()]).map_err(sql)?;
+    if changed != 1 { return Err(io::Error::other("자원 예약의 종료 확인을 기록하지 못했습니다")); }
+    Ok(())
+}
+
 /// Frees the slot. `started: false` (the CLI never ran) also gives back the day's start.
 pub fn release_slot(home: &Path, reservation: &Reservation, started: bool) -> io::Result<()> {
     let mut conn = index::open(home)?;
@@ -415,40 +422,47 @@ pub struct ResourceLease {
     pub worker_pid: Option<u32>,
     pub worker_started: Option<String>,
     pub spawn_intent: Option<bool>,
+    pub exit_confirmed: Option<bool>,
+    pub state: &'static str,
 }
 
 pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
     let conn = index::open(home)?;
-    let mut stmt = conn.prepare("SELECT slot_id, run_id, card_id, resources, owner_pid, owner_started, worker_pid, worker_started, spawn_intent FROM resource_leases ORDER BY slot_id").map_err(sql)?;
+    let mut stmt = conn.prepare("SELECT slot_id, run_id, card_id, resources, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id FROM resource_leases ORDER BY slot_id").map_err(sql)?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get(4)?, row.get::<_, Option<i64>>(5)?, row.get(6)?, row.get::<_, Option<i64>>(7)?, row.get(8)?))
+        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, Option<i64>>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Option<bool>>(8)?, row.get::<_, Option<bool>>(9)?, row.get::<_, Option<i64>>(10)?))
     }).map_err(sql)?;
     rows.map(|row| {
-        let (id, run_id, card_id, raw, owner_pid, owner_started, worker_pid, worker_started, spawn_intent) = row.map_err(sql)?;
+        let (id, run_id, card_id, raw, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id) = row.map_err(sql)?;
         let resources = serde_json::from_str(&raw).map_err(io::Error::other)?;
-        Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent })
+        let evidence = (spawn_intent == Some(false) && worker_pid.is_none() && start_id.is_some()) || (spawn_intent == Some(true) && exit_confirmed == Some(true));
+        let owner_gone = owner_pid.zip(owner_started.and_then(|v| u64::try_from(v).ok())).is_some_and(|(pid, started)| proc::definitely_exited(pid, started));
+        let state = if evidence && owner_gone { "recoverable" } else { "unknown" };
+        Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent, exit_confirmed, state })
     }).collect()
 }
 
-/// Recover only a reservation that was never handed to process creation and whose owner is certainly gone.
-pub fn recover_unstarted_resource(home: &Path, id: i64) -> io::Result<()> {
+/// Recover only with durable evidence of no spawn or a confirmed process-tree exit, and a gone owner.
+pub fn recover_resource(home: &Path, id: i64) -> io::Result<()> {
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
     let row = tx.query_row(
-        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid FROM resource_leases WHERE slot_id = ?1",
-        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?)),
+        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid, exit_confirmed FROM resource_leases WHERE slot_id = ?1",
+        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<bool>>(7)?)),
     ).optional().map_err(sql)?;
-    let (owner, started, phase, start_id, run_id, card_id, worker_pid) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
-    if worker_pid.is_some() { return Err(io::Error::other("작업 프로세스 기록이 있어 시작 전 예약으로 복구할 수 없습니다")); }
-    let (Some(owner), Some(started), Some(false), Some(start_id)) = (owner, started, phase, start_id) else {
-        return Err(io::Error::other("프로세스 시작 여부가 불명확해 예약을 복구할 수 없습니다"));
+    let (owner, started, phase, start_id, run_id, card_id, worker_pid, exited) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
+    let unstarted = phase == Some(false) && worker_pid.is_none() && start_id.is_some();
+    let finished = phase == Some(true) && exited == Some(true);
+    if !unstarted && !finished { return Err(io::Error::other("프로세스 종료 여부가 불명확해 예약을 복구할 수 없습니다")); }
+    let (Some(owner), Some(started)) = (owner, started) else {
+        return Err(io::Error::other("예약 소유자를 확인할 수 없습니다"));
     };
     let started = u64::try_from(started).map_err(|_| io::Error::other("소유자 생성 시각이 올바르지 않습니다"))?;
     if !proc::definitely_exited(owner, started) {
         return Err(io::Error::other("예약 소유자가 살아 있거나 종료 여부를 확인할 수 없습니다"));
     }
     tx.execute("DELETE FROM slots WHERE id = ?1", [id]).map_err(sql)?;
-    tx.execute("DELETE FROM starts WHERE rowid = ?1 AND run_id = ?2 AND card_id = ?3", params![start_id, run_id, card_id]).map_err(sql)?;
+    if unstarted { tx.execute("DELETE FROM starts WHERE rowid = ?1 AND run_id = ?2 AND card_id = ?3", params![start_id, run_id, card_id]).map_err(sql)?; }
     tx.execute("DELETE FROM resource_leases WHERE slot_id = ?1", [id]).map_err(sql)?;
     tx.commit().map_err(sql)
 }

@@ -65,9 +65,9 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
           <div className="relative">
             <button type="button" className={BUTTON} onClick={() => leaseOpen ? setLeaseOpen(false) : void inspect()} aria-expanded={leaseOpen}>자원 예약 점검</button>
             {leaseOpen && <section aria-label="자원 예약 점검" className="absolute bottom-full left-0 z-50 mb-2 max-h-64 w-80 max-w-[80vw] overflow-auto rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg">
-              <p className="mb-2">시작 전 중단과 소유자 종료가 확인된 예약만 복구할 수 있습니다.</p>
+              <p className="mb-2">시작 전 또는 작업 종료가 기록된 예약은 소유자 종료 확인 후 복구할 수 있습니다.</p>
               {leaseError && <p role="alert">{leaseError}</p>}
-              {leases === null ? !leaseError && <p>예약을 읽는 중</p> : leases.length === 0 ? <p>남아 있는 예약이 없습니다.</p> : <ul className="space-y-2">{leases.map((lease) => <li key={lease.id} className="break-all">{lease.runId} / {lease.cardId} · 실행기 PID {lease.ownerPid ?? "불명"} · 작업 PID {lease.workerPid ?? "불명"}<br />{JSON.stringify(lease.resources)}{lease.spawnIntent === false && <button type="button" disabled={recovering !== null} onClick={() => void recover(lease.id)} className={BUTTON}>{recovering === lease.id ? "확인 중" : "복구 확인"}</button>}</li>)}</ul>}
+              {leases === null ? !leaseError && <p>예약을 읽는 중</p> : leases.length === 0 ? <p>남아 있는 예약이 없습니다.</p> : <ul className="space-y-2">{leases.map((lease) => <li key={lease.id} className="break-all">{lease.runId} / {lease.cardId} · {lease.state === "recoverable" ? "복구 가능" : "종료 불명"} · 실행기 PID {lease.ownerPid ?? "불명"} · 작업 PID {lease.workerPid ?? "불명"}<br />{JSON.stringify(lease.resources)}{lease.state === "recoverable" && <button type="button" disabled={recovering !== null} onClick={() => void recover(lease.id)} className={BUTTON}>{recovering === lease.id ? "확인 중" : "복구 확인"}</button>}</li>)}</ul>}
               <button type="button" onClick={() => void inspect()} className={BUTTON}>다시 확인</button>
             </section>}
           </div>
