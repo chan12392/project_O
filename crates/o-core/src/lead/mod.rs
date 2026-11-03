@@ -21,6 +21,7 @@
 pub mod files;
 pub mod notes;
 pub mod prompt;
+pub mod recovery;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};

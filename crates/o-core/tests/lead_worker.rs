@@ -140,6 +140,54 @@ fn runner_wakes_lead_while_card_waits() {
 }
 
 #[test]
+fn restarted_monitor_delivers_only_stored_messages_and_respects_stop() {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    let (home, _, card) = fixture();
+    let id = team::send_tracked(&home, &card, "lead", "다시 연결할 질문", true, Some("restart")).ok().unwrap();
+    let calls = Arc::new(AtomicUsize::new(0));
+    let count = calls.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
+        count.fetch_add(1, Ordering::SeqCst);
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
+        Ok(command)
+    });
+    let (stop, signal) = std::sync::mpsc::channel();
+    let state = home.clone();
+    let worker = spawner.clone();
+    let watch = std::thread::spawn(move || lead::recovery::watch_until(state, worker, signal, std::time::Duration::from_millis(50)));
+    let (other_stop, other_signal) = std::sync::mpsc::channel();
+    let state = home.clone();
+    let worker = spawner.clone();
+    let other = std::thread::spawn(move || lead::recovery::watch_until(state, worker, other_signal, std::time::Duration::from_millis(50)));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while team::read(&home, &card, false).unwrap().iter().all(|m| m.reply_to.as_deref() != Some(&id)) {
+        assert!(std::time::Instant::now() < deadline, "재시작 감시가 답변을 전달하지 못했습니다");
+        std::thread::sleep(std::time::Duration::from_millis(50));
+    }
+    stop.send(()).unwrap();
+    other_stop.send(()).unwrap();
+    watch.join().unwrap();
+    other.join().unwrap();
+    let recipient = Speaker { run_id: "run-1".into(), me: "lead".into(), cards: card.cards.clone() };
+    let uncertain = team::send_tracked(&home, &card, "lead", "전달이 불명인 질문", true, Some("uncertain")).ok().unwrap();
+    team::claim(&home, &recipient).unwrap().unwrap();
+    team::transition(&home, &recipient, &uncertain, "unknown").unwrap();
+    let (stop, signal) = std::sync::mpsc::channel();
+    let state = home.clone();
+    let watch = std::thread::spawn(move || lead::recovery::watch_until(state, spawner, signal, std::time::Duration::from_millis(50)));
+    std::thread::sleep(std::time::Duration::from_millis(200));
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    o_core::run::store::request_stop(&home, "run-1").unwrap();
+    team::send_tracked(&home, &card, "lead", "중지 후 질문", true, Some("stopped")).ok().unwrap();
+    assert!(lead::recovery::pending(&home).is_empty());
+    stop.send(()).unwrap();
+    watch.join().unwrap();
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    cleanup(&home);
+}
+
+#[test]
 fn explicit_approval_request_does_not_wake_the_lead() {
     let (home, project, card) = fixture();
     let id = team::send_approval(&home, &card, "대표님 승인이 필요합니다", Some("approval")).ok().unwrap();

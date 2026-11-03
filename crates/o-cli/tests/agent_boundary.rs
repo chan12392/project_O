@@ -1,10 +1,21 @@
 use std::process::Command;
 
 #[test]
+fn lead_monitor_stops_when_its_parent_closes_stdin() {
+    let isolated = std::env::temp_dir().join(format!("o-monitor-test-{}", std::process::id()));
+    let output = Command::new(env!("CARGO_BIN_EXE_o"))
+        .arg("_lead-watch")
+        .env("LOCALAPPDATA", isolated)
+        .env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID")
+        .stdin(std::process::Stdio::null()).output().unwrap();
+    assert!(output.status.success());
+}
+
+#[test]
 fn marked_agents_cannot_start_work_through_cli() {
     for role in ["lead", "card"] {
         for args in [
-            vec!["dispatch"], vec!["followup", "run", "card"], vec!["_run", "run"], vec!["_followup", "run"], vec!["review", "1"], vec!["_review", "1"],
+            vec!["dispatch"], vec!["followup", "run", "card"], vec!["_run", "run"], vec!["_lead-watch"], vec!["_followup", "run"], vec!["review", "1"], vec!["_review", "1"],
             vec!["lead", "send"], vec!["lead", "dispatch", "plan"], vec!["lead", "note", "thread", "-"], vec!["lead", "wake", "run"], vec!["lead", "retry", "run", "message"],
             vec!["schedule", "run", "test"], vec!["image", "read"], vec!["projects", "open", "x"],
             vec!["issues", "record", "finding.json"], vec!["issues", "classify", "1", "external"], vec!["issues", "resolve", "1", "run", "card", "evidence"], vec!["issues", "reopen", "1"],

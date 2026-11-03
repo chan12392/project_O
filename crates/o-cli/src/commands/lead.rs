@@ -11,6 +11,20 @@ use o_core::lead::{self, DispatchError, SendRequest};
 use o_core::run::mode::{take_flags, RunMode};
 use o_core::run::plan::ProviderId;
 use o_core::run::runner::{official_command, Spawner};
+
+pub const WATCH: super::Command = super::Command {
+    name: "_lead-watch",
+    usage: "",
+    run: |home, _| {
+        let (keep, stop) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            drop(keep);
+        });
+        o_core::lead::recovery::watch_until(home.to_path_buf(), Arc::new(official_command), stop, std::time::Duration::from_secs(2));
+        0
+    },
+};
 use o_core::run::yolo;
 use o_core::sys::proc;
 use serde_json::json;
