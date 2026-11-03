@@ -184,6 +184,22 @@ fn answers_reference_only_a_question_addressed_to_the_sender_and_retries_are_ide
 }
 
 #[test]
+fn a_question_receives_one_complete_answer_even_when_retried_with_a_new_key() {
+    let (base, home) = setup("reply-dedup");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--to", "lead", "--question", "--id", "q", "question?"], &env).status.success());
+    let answer = "가".repeat(1500);
+    let send = |key: &str, text: &str| o(&base, &["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-q", "--id", key, text], &[]);
+    assert!(send("first", &answer).status.success());
+    assert!(send("second", &answer).status.success());
+    assert!(!send("third", "different").status.success());
+    let received = o(&base, &["msg", "wait"], &env);
+    assert!(received.status.success());
+    assert!(String::from_utf8_lossy(&received.stdout).contains(&answer));
+    assert_eq!(read_events(&home, "r1").into_iter().filter(|event| matches!(event, OEvent::Msg { reply_to: Some(id), .. } if id == "k1-a-q")).count(), 1);
+}
+
+#[test]
 fn a_waiting_card_receives_an_answer_without_starting_a_followup_run() {
     let (base, _) = setup("wait-answer");
     let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
