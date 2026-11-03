@@ -15,6 +15,32 @@ export interface LeadAttachment {
 
 export type LeadViolation = Violation;
 
+export interface LeadProgressCounts { reads: number; searches: number; edits: number; commands: number }
+
+/** Counts are tool calls, not a claim that the work is still running or succeeded. */
+export function leadProgressSummary(counts: LeadProgressCounts | null | undefined): string {
+  if (!counts) return "";
+  return [["명령", counts.commands], ["파일 변경", counts.edits], ["읽기", counts.reads], ["검색", counts.searches]]
+    .filter(([, count]) => typeof count === "number" && count > 0)
+    .map(([label, count]) => `${label} ${count}회`).join(" · ");
+}
+
+/** A short, factual tool line; a search pattern is not a file that was read. */
+export function leadToolLabel(name: string, summary: string): string {
+  const kind = name.toLowerCase();
+  if (kind === "glob") return "Glob 파일 찾기";
+  const action = ({ read: "Read", read_file: "Read", edit: "Edit", edit_file: "Edit", write: "Write", write_file: "Write" } as Record<string, string>)[kind];
+  let detail = summary.trim();
+  if (action && detail.startsWith("[")) {
+    try {
+      const changes: unknown = JSON.parse(detail);
+      if (Array.isArray(changes)) detail = changes.flatMap((item: unknown) => typeof item === "object" && item !== null && "path" in item && typeof item.path === "string" ? [item.path.split(/[\\/]/).pop()] : []).filter(Boolean).join(", ");
+    } catch { /* A truncated tool summary is still displayable. */ }
+  } else if (action) detail = detail.split(/[\\/]/).pop() ?? detail;
+  if (detail.length > 56) detail = `${detail.slice(0, 53)}...`;
+  return [action ?? name, detail].filter(Boolean).join(" ");
+}
+
 export interface PlanCard {
   id: string;
   provider: string;
@@ -41,7 +67,7 @@ export type LeadEvent =
 
 /** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
 }
 

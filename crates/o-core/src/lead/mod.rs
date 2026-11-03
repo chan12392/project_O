@@ -615,6 +615,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let mut last: Option<(bool, String)> = None;
     let mut limited = false;
     let mut progress = Vec::<Value>::new();
+    let mut counts = [0u64; 4];
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout);
         let mut buf = Vec::new();
@@ -653,9 +654,17 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
                     }
                     StreamSignal::Final { ok, text } => last = Some((ok, text)),
                     StreamSignal::Tool { name, summary } => {
+                        match name.to_ascii_lowercase().as_str() {
+                            "read" | "read_file" => counts[0] += 1,
+                            "glob" | "grep" | "search" | "web_search" => counts[1] += 1,
+                            "edit" | "write" | "multiedit" | "edit_file" | "write_file" | "apply_patch" => counts[2] += 1,
+                            "bash" | "shell" | "command" | "execute_command" => counts[3] += 1,
+                            _ => {}
+                        }
                         progress.push(json!({ "name": name, "summary": summary }));
                         if progress.len() > 3 { progress.remove(0); }
-                        if let Ok(text) = serde_json::to_string(&progress) { let _ = fs::write(&progress_path, text); }
+                        let state = json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] } });
+                        if let Ok(text) = serde_json::to_string(&state) { let _ = fs::write(&progress_path, text); }
                     }
                 }
             }
@@ -985,6 +994,7 @@ pub struct ThreadView {
     pub busy: Option<String>,
     /// Recent tools from this turn; never part of conversation history.
     pub progress: Vec<Value>,
+    pub progress_counts: Value,
     /// Every event as written (screens ignore kinds they do not know).
     pub events: Vec<Value>,
 }
@@ -1012,12 +1022,15 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
     };
     let thread = thread_id.map(|id| {
         let busy = running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()));
-        let progress = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
+        let state: Value = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
             .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
+        let progress = state.get("steps").or_else(|| state.is_array().then_some(&state)).and_then(Value::as_array).cloned().unwrap_or_default();
+        let progress_counts = state.get("counts").cloned().unwrap_or(Value::Null);
         ThreadView {
             project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
             busy,
             progress,
+            progress_counts,
             events: event_values(home, &id),
             thread_id: id,
         }

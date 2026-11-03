@@ -1,7 +1,7 @@
-import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play } from "lucide-react";
+import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
-import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadReadProblem, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
+import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -14,7 +14,6 @@ import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
 /** Thread events may name an agent this build does not know; it shows as its id. */
 const LEAD_NAME: Record<string, string> = NAMES;
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-const TOOL_NAME: Record<string, string> = { Read: "파일 읽기", Grep: "내용 검색", Glob: "파일 찾기", shell: "명령 실행", edit: "파일 변경", web_search: "웹 검색" };
 
 interface Props {
   project: string | undefined;
@@ -38,6 +37,7 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
   const known = seen.current;
   const lastUser = lead.items.findLastIndex((item) => item.kind === "user");
   const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "error");
+  const progressSummary = leadProgressSummary(lead.thread?.progressCounts);
   return (
     <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6 text-sm text-chat-foreground">
@@ -77,8 +77,9 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
         )}
         {answering && (
           <div role="status" className="space-y-1 text-xs text-chat-foreground-faint">
+            {progressSummary && <p className="flex items-center gap-1.5"><Wrench className="size-3 shrink-0" aria-hidden="true" /><span>{progressSummary}</span></p>}
             {(lead.thread?.progress ?? []).map((step, i) => (
-              <p key={`${step.name}-${step.summary}-${i}`} className="break-all">{TOOL_NAME[step.name] ?? step.name}{step.summary ? ` · ${step.summary}` : ""}</p>
+              <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
             ))}
             <p>총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…</p>
           </div>

@@ -196,7 +196,11 @@ fn lead_child_marker() {
 
 fn live_tool_progress() {
     let (home, project) = setup("tool-progress");
-    let mut lines = vec![json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "name": "Read", "input": { "file_path": "src/demo.py" } }] } }).to_string()];
+    let mut lines = vec![
+        json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "name": "Read", "input": { "file_path": "src/demo.py" } }] } }).to_string(),
+        json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "name": "Edit", "input": { "file_path": "src/demo.py" } }] } }).to_string(),
+        json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "name": "Bash", "input": { "command": "git status" } }] } }).to_string(),
+    ];
     lines.extend(claude_answer("session", "완료"));
     let worker_home = home.clone();
     let worker_project = project.clone();
@@ -208,16 +212,20 @@ fn live_tool_progress() {
         };
         lead::send(&worker_home, &request(&worker_project, "읽어줘"), &spawner).unwrap();
     });
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
         let view = lead::show(&home, Some(&project));
-        if view["thread"]["progress"].as_array().is_some_and(|items| items.iter().any(|item| item["name"] == "Read" && item["summary"] == "src/demo.py")) { break; }
+        if view["thread"]["progressCounts"] == json!({ "reads": 1, "searches": 0, "edits": 1, "commands": 1 }) {
+            assert!(view["thread"]["progress"].as_array().unwrap().iter().any(|item| item["name"] == "Read" && item["summary"] == "src/demo.py"));
+            break;
+        }
         assert!(std::time::Instant::now() < deadline, "tool progress never became visible: {view}");
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     worker.join().unwrap();
     let view = lead::show(&home, Some(&project));
     assert_eq!(view["thread"]["progress"], json!([]));
+    assert!(view["thread"]["progressCounts"].is_null());
     assert!(view["thread"]["events"].as_array().unwrap().iter().all(|event| event["t"] != "lead.tool"));
 }
 
