@@ -547,7 +547,6 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
                 return Err(io::Error::other(why));
             }
             let env = clean::environment(root, req.provider)?;
-            let _ = clean::trust_preflight(root, req.provider, Path::new(req.project));
             command.env_clear().envs(env);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.

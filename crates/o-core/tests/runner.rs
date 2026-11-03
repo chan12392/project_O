@@ -74,6 +74,7 @@ fn main() {
         ("a clean run starts its cards with only the clean environment", clean_run),
         ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
         ("a card's CLI never inherits the API key variables it prefers over its sign-in", api_keys_dropped),
+        ("an OpenCode card without YOLO does not start under OpenCode project config", opencode_project_config_refused),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -346,6 +347,41 @@ fn parallel_and_limit() {
     // The run start carries labels, and every card start a pid.
     assert!(events.iter().any(|e| matches!(e, OEvent::RunStart { cards, .. } if cards[0].label.as_deref() == Some("설계"))));
     assert!(events.iter().filter(|e| matches!(e, OEvent::CardStart { pid: Some(_), .. })).count() == 2);
+}
+
+/// #37: OpenCode loads `opencode.json(c)` and `.opencode/` (plugins too) from the folder up to the
+/// root, so a card without YOLO is refused when the project or a parent has one.
+fn opencode_project_config_refused() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let plugins = fixture.join(".opencode").join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(plugins.join("marker.js"), "// harmless fixture, never loaded\n").unwrap();
+    let mut p = plan(vec![card("a", ProviderId::OpenCode, "x")]);
+    p.project = project.to_string_lossy().into_owned();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, _: &str| {
+        seen.store(true, Ordering::SeqCst);
+        Err(std::io::Error::other("fake start"))
+    });
+    create_run(&home, "oc-parent", &p).unwrap();
+    assert_eq!(run_plan(&home, "oc-parent", &p, None, Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert!(read_events(&home, "oc-parent").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains(".opencode") && reason.contains("OpenCode 카드를 시작하지 않았습니다"))));
+
+    std::fs::remove_dir_all(fixture.join(".opencode")).unwrap();
+    std::fs::write(project.join("opencode.jsonc"), "{}\n").unwrap();
+    create_run(&home, "oc-project", &p).unwrap();
+    assert_eq!(run_plan(&home, "oc-project", &p, None, Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+
+    std::fs::remove_file(project.join("opencode.jsonc")).unwrap();
+    create_run(&home, "oc-clean", &p).unwrap();
+    run_plan(&home, "oc-clean", &p, None, spawner).unwrap();
+    assert!(launched.load(Ordering::SeqCst));
 }
 
 fn cooling_down() {

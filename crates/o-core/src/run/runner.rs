@@ -393,6 +393,15 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         }
         emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "O 작업 폴더".into(), summary: path.to_string() })?;
     }
+    // #37: without YOLO an OpenCode card must not run project-provided config or plugins, and
+    // OpenCode has no switch to skip them, so a folder that has some (or a parent of it) is refused.
+    if card.provider == ProviderId::OpenCode && !yolo {
+        if let Some(found) = crate::providers::opencode::project_config(Path::new(cwd)) {
+            drop(slot);
+            emit(end(CardStatus::Failed, Some(crate::providers::opencode::project_config_refusal(&found)), None))?;
+            return Ok(CardStatus::Failed);
+        }
+    }
     let checked_plan = Plan { project: cwd.to_string(), ..plan.clone() };
     let spec = launch_spec_for(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context, yolo);
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
@@ -400,7 +409,6 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         // A clean card sees nothing of this process's environment but the kept system variables.
         if let Some(root) = clean {
             let env = clean::environment(root, card.provider)?;
-            let _ = clean::trust_preflight(root, card.provider, Path::new(cwd));
             command.env_clear().envs(env);
         } else if card.provider == ProviderId::OpenCode {
             command.env_clear().envs(clean::own_profile_environment());

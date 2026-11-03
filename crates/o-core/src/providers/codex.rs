@@ -29,10 +29,12 @@ pub struct Codex;
 
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
+    /// O never marks a project trusted (#35): Codex then skips the project's `.codex/` layers
+    /// (config, MCP servers, hooks), and `--skip-git-repo-check` lets it run outside a Git repository.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
-        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir]));
+        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir, "--skip-git-repo-check"]));
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
@@ -82,6 +84,7 @@ impl Provider for Codex {
     /// Without a sandbox there is nothing to open for `o msg`, so the run folder is not added.
     fn yolo_launch(&self, card: &Card, plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
         let mut args = strings(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", &plan.project]);
+        args.push("--skip-git-repo-check".into());
         args.extend(opt("-m", card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
