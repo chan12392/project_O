@@ -11,7 +11,8 @@ pub const CONTEXT: Command = Command {
     name: "context",
     usage: "  o context <질문> [--project <폴더>] [--limit N] [--json]
                              이전 작업 결과·팀 대화·메모에서 관련 내용 찾기 (카드도 읽기 전용으로 사용)
-  o context add [--project <폴더>] \"내용\"   프로젝트 컨텍스트에 메모 추가",
+  o context add [--project <폴더>] \"내용\"   프로젝트 컨텍스트에 메모 추가
+  o context --result <선행 카드 ID> <SHA-256> <바이트 위치>   같은 실행의 선행 결과를 검증해 나누어 읽기",
     run: context_main,
 };
 
@@ -46,6 +47,14 @@ fn parse(args: &[String]) -> Result<Args, String> {
 
 /// `o context <질문> | add "내용"`.
 fn context_main(home: &Path, args: &[String]) -> i32 {
+    if args.first().is_some_and(|arg| arg == "--result") {
+        let [_, source, hash, offset] = args else { return fail("사용법: o context --result <선행 카드 ID> <SHA-256> <바이트 위치>") };
+        let (Ok(run), Ok(card), Ok(offset)) = (std::env::var("O_RUN_ID"), std::env::var("O_CARD_ID"), offset.parse::<usize>()) else { return fail("실행 중인 카드와 올바른 위치가 필요합니다") };
+        return match o_core::run::result::read(home, &run, &card, source, hash, offset) {
+            Ok(chunk) => { println!("{}", json!(chunk)); 0 }
+            Err(error) => fail(&error),
+        };
+    }
     let mut parsed = match parse(args) {
         Ok(parsed) => parsed,
         Err(message) => return fail(&message),

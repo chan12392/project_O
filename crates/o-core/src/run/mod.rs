@@ -9,6 +9,7 @@ pub mod followup;
 pub mod index;
 pub mod mode;
 pub mod plan;
+pub mod result;
 pub mod runner;
 pub mod snapshot;
 pub mod store;

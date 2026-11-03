@@ -59,7 +59,7 @@ fn main() {
         ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
         ("a failed log stops the worker and its dependent", failed_log),
         ("raw output is preserved byte for byte", raw_output_preserved),
-        ("dependency results are complete or the dependent is refused", dependency_result_limit),
+        ("dependency results remain readable when they are large", dependency_result_limit),
         ("queued follow-ups stop safely and never run in parallel for one session", followup_queue_and_stop),
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
@@ -476,7 +476,7 @@ fn raw_output_preserved() {
 }
 
 fn dependency_result_limit() {
-    for (run, size, expected) in [("within", 2000, CardStatus::Done), ("too-large", 13000, CardStatus::Failed)] {
+    for (run, size, expected) in [("within", 2000, CardStatus::Done), ("large", 13000, CardStatus::Done)] {
         let home = temp_home();
         let first = card("first", ProviderId::Claude, "first");
         let mut second = card("second", ProviderId::Claude, "second");
@@ -487,7 +487,9 @@ fn dependency_result_limit() {
         let observed = Arc::clone(&seen);
         let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
             if spec.env["O_CARD_ID"] == "second" {
-                assert!(spec.stdin.as_deref().unwrap().contains(&format!("{}END", "x".repeat(size))));
+                let prompt = spec.stdin.as_deref().unwrap();
+                if size <= 2000 { assert!(prompt.contains(&format!("{}END", "x".repeat(size)))); }
+                else { assert!(prompt.contains("o context --result first") && prompt.contains(&o_core::run::result::digest(&format!("{}END", "x".repeat(size))))); }
                 observed.store(true, Ordering::SeqCst);
             }
             let line = serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "result":format!("{}END", "x".repeat(size))}).to_string();

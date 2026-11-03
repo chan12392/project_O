@@ -23,6 +23,29 @@ fn ok_json(out: Output) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+#[test]
+fn a_card_reads_only_its_verified_predecessor_in_complete_utf8_chunks() {
+    let (base, home, project) = setup("result-read");
+    let dir = home.join("runs/r1");
+    fs::write(dir.join("plan.json"), json!({"cards":[{"id":"first"},{"id":"next","depends_on":["first"]},{"id":"other"}]}).to_string()).unwrap();
+    let original = format!("{}끝", "한글a".repeat(3500));
+    let event = |text: &str| format!("{}\n", json!({"t":"card.end","at":"now","cardId":"first","status":"done","result":text,"exitCode":0}));
+    fs::write(dir.join("events.jsonl"), event(&original)).unwrap();
+    let hash = o_core::run::result::digest(&original);
+    let mut offset = 0;
+    let mut combined = String::new();
+    loop {
+        let page = ok_json(o_in(&base, &project, "next", &["context", "--result", "first", &hash, &offset.to_string()]));
+        combined.push_str(page["text"].as_str().unwrap());
+        match page["nextOffset"].as_u64() { Some(next) => offset = next as usize, None => break }
+    }
+    assert_eq!(combined, original);
+    assert!(!o_in(&base, &project, "other", &["context", "--result", "first", &hash, "0"]).status.success());
+    assert!(!o_in(&base, &project, "next", &["context", "--result", "first", &hash, "1"]).status.success());
+    fs::write(dir.join("events.jsonl"), event("바뀐 결과")).unwrap();
+    assert!(!o_in(&base, &project, "next", &["context", "--result", "first", &hash, "0"]).status.success());
+}
+
 fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
     let base = std::env::temp_dir().join(format!("o-context-cli-{name}-{}", std::process::id()));
     let _ = fs::remove_dir_all(&base);
