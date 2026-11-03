@@ -1,4 +1,4 @@
-use std::{fs, process::Command};
+use std::{fs, io::Write, process::{Command, Stdio}};
 
 #[test]
 fn records_and_lists_findings_through_cli() {
@@ -16,5 +16,13 @@ fn records_and_lists_findings_through_cli() {
     let values: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(values[0]["finding"]["runId"], "run-1");
     assert_eq!(values[0]["finding"]["evidence"][0], "log:1");
+    let input = fs::read_to_string(&file).unwrap().replace("finding", "stdin finding");
+    let mut child = command().args(["issues", "record", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
+    let saved = child.wait_with_output().unwrap();
+    assert!(saved.status.success(), "{}", String::from_utf8_lossy(&saved.stderr));
+    let listed = command().args(["issues", "list", "fixture/project"]).output().unwrap();
+    let values: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    assert_eq!(values.as_array().unwrap().len(), 2);
     fs::remove_dir_all(dir).unwrap();
 }

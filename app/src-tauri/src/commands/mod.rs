@@ -10,6 +10,7 @@ mod about;
 mod agents;
 mod lead;
 mod images;
+mod issues;
 mod projects;
 mod review;
 mod runs;
@@ -39,6 +40,10 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         agents::open_external,
         about::about,
         review::review,
+        issues::issues_search,
+        issues::issues_list,
+        issues::issues_record,
+        issues::issues_classify,
         tokens::tokens,
         lead::lead_show,
         lead::lead_note,

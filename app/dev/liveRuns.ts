@@ -398,6 +398,23 @@ export function liveRuns(): Plugin {
         if (req.method === "POST" && path === "/agents/terminal") return void o(["agents", "terminal", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, JSON.stringify({ ...JSON.parse(out), commit: "", builtAt: "" })), error(res));
         if (req.method === "GET" && path === "/updates") return send(res, 200, JSON.stringify({ release: null, message: DESKTOP_UPDATES_ONLY }));
+        if (req.method === "GET" && path === "/issues/search") return void o(["issues", "search", query.get("repo") ?? "", query.get("query") ?? ""]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "GET" && path === "/issues/list") return void o(["issues", "list", query.get("repo") ?? ""]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/issues/record") return void body(req, 1_048_576).then((input) => oWithInput(["issues", "record", "-"], input, 60_000)).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/issues/classify") {
+          return void body(req, 65_536).then((input) => {
+            const data: unknown = JSON.parse(input.toString("utf8"));
+            if (!data || typeof data !== "object") throw new Error("분류가 올바르지 않습니다");
+            const { id, classification, issue } = data as { id?: unknown; classification?: unknown; issue?: unknown };
+            if (!Number.isSafeInteger(id) || typeof classification !== "string") throw new Error("발견 ID와 분류가 필요합니다");
+            const args = ["issues", "classify", String(id), classification];
+            if (issue !== null && issue !== undefined) {
+              if (typeof issue !== "object" || !("number" in issue) || !("updatedAt" in issue) || !Number.isSafeInteger(issue.number) || typeof issue.updatedAt !== "string") throw new Error("이슈 참조가 올바르지 않습니다");
+              args.push(String(issue.number), issue.updatedAt);
+            }
+            return o(args);
+          }).then((out) => send(res, 200, out), error(res));
+        }
         if (req.method === "POST" && path === "/review") {
           // `o review <pr> --post --detach` in the project folder: reads the PR with gh, starts the review card, returns.
           const project = query.get("project") ?? "";
