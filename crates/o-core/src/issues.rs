@@ -1,6 +1,7 @@
 //! Local findings and read-only GitHub issue discovery (ADR-0027).
 use std::fs;
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
 use regex::Regex;
@@ -118,6 +119,23 @@ pub fn record(home: &Path, gh: &dyn Gh, cwd: &Path, finding: &Finding) -> Result
     Ok(db.last_insert_rowid())
 }
 
+fn same_project(a: &str, b: &str) -> bool {
+    let (Ok(a), Ok(b)) = (fs::canonicalize(a), fs::canonicalize(b)) else { return false };
+    let same = |left: &Path, right: &Path| {
+        if cfg!(windows) { left.to_string_lossy().eq_ignore_ascii_case(&right.to_string_lossy()) } else { left == right }
+    };
+    if same(&a, &b) { return true; }
+    let common = |folder: &Path| {
+        let mut git = Command::new("git");
+        git.arg("-C").arg(folder).args(["rev-parse", "--path-format=absolute", "--git-common-dir"]);
+        for key in ["GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE"] { git.env_remove(key); }
+        let (status, stdout, _) = crate::sys::proc::capture(&mut git, Duration::from_secs(5)).ok()?;
+        if !status.success() { return None; }
+        fs::canonicalize(stdout.trim_end_matches(['\r', '\n'])).ok()
+    };
+    match (common(&a), common(&b)) { (Some(a), Some(b)) => same(&a, &b), _ => false }
+}
+
 /// Record a person's verification; successful card completion is not proof of a fix.
 pub fn resolve(home: &Path, id: i64, resolution: Option<Resolution>) -> Result<(), String> {
     let db = open(home)?;
@@ -127,13 +145,21 @@ pub fn resolve(home: &Path, id: i64, resolution: Option<Resolution>) -> Result<(
         if !is_run_id(&r.run_id) || r.evidence.trim().is_empty() || r.evidence.len() > 4000 {
             return Err("검증 실행, 카드와 증거가 필요합니다".into());
         }
-        let cards = plan_card_ids(&read_plan(home, &r.run_id).map_err(|e| format!("검증 실행을 읽지 못했습니다: {e}"))?).map_err(|e| e.to_string())?;
+        let plan = read_plan(home, &r.run_id).map_err(|e| format!("검증 실행을 읽지 못했습니다: {e}"))?;
+        let cards = plan_card_ids(&plan).map_err(|e| e.to_string())?;
         let status = read_events(home, &r.run_id).iter().rev().find_map(|e| match e {
             OEvent::CardEnd { card_id, status, .. } if card_id == &r.card_id => Some(*status),
             _ => None,
         });
         if !cards.contains(&r.card_id) || status != Some(CardStatus::Done) {
             return Err("성공한 검증 카드의 종료 기록이 필요합니다".into());
+        }
+        if finding.run_id != r.run_id {
+            let original = read_plan(home, &finding.run_id).map_err(|e| format!("발견 실행을 읽지 못했습니다: {e}"))?;
+            let projects = original["project"].as_str().zip(plan["project"].as_str());
+            if !projects.is_some_and(|(a, b)| same_project(a, b)) {
+                return Err("발견과 검증 실행이 같은 프로젝트인지 확인할 수 없습니다".into());
+            }
         }
     }
     finding.resolution = resolution;
@@ -169,4 +195,13 @@ pub fn list(home: &Path, repo: &str) -> Result<Vec<serde_json::Value>, String> {
         let finding: serde_json::Value = serde_json::from_str(&data).map_err(|e| e.to_string())?;
         Ok(serde_json::json!({"id": id, "finding": finding}))
     }).collect()
+}
+
+#[cfg(test)]
+mod project_tests {
+    #[test]
+    fn directories_in_the_same_existing_git_worktree_share_an_identity() {
+        let package = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+        assert!(super::same_project(&package.to_string_lossy(), &package.parent().unwrap().to_string_lossy()));
+    }
 }
