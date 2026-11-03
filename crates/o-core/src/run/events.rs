@@ -82,7 +82,15 @@ pub enum OEvent {
     },
     /// A team message between agents of one run (`o msg send`), "lead" for the supervisor, "all" for everyone.
     #[serde(rename = "msg")]
-    Msg { at: String, from: String, to: String, text: String },
+    Msg {
+        at: String, from: String, to: String, text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+    },
+    #[serde(rename = "msg.state")]
+    MsgState { at: String, id: String, recipient: String, state: String },
     /// Tokens a card spent since its last usage event (fresh input, cached input, output).
     #[serde(rename = "card.usage")]
     CardUsage {
@@ -170,6 +178,7 @@ impl OEvent {
             OEvent::CardLimit { .. } => "card.limit",
             OEvent::CardEnd { .. } => "card.end",
             OEvent::Msg { .. } => "msg",
+            OEvent::MsgState { .. } => "msg.state",
             OEvent::CardUsage { .. } => "card.usage",
             OEvent::Quota { .. } => "quota",
             OEvent::RunEnd { .. } => "run.end",

@@ -4,6 +4,8 @@ import { names, timeOf } from "../../lib/format.ts";
 import { Avatar, type Speaker } from "../office/Avatar.tsx";
 import { Markdown } from "./Markdown.tsx";
 
+const deliveryWords: Record<string, string> = { stored: "저장됨", delivered: "전달됨", unknown: "처리 여부 불명", acknowledged: "처리 확인", cancelled: "취소됨" };
+
 /** The team channel as a messenger: each card speaks as its office character; the lead talks from the right. */
 export function TeamChat({ run }: { run: RunView }) {
   const name = names(run);
@@ -42,6 +44,11 @@ export function TeamChat({ run }: { run: RunView }) {
               >
                 <Markdown text={m.text} inverse={mine} />
               </div>
+              {(m.kind === "question" || m.recipients) && <p className="mt-1 px-1 text-xs text-chat-foreground-faint">
+                {m.kind === "question" && "질문"}
+                {m.kind === "question" && m.recipients && " · "}
+                {m.recipients && Object.entries(m.recipients).map(([recipient, state]) => `${name(recipient)}: ${deliveryWords[state] ?? state}`).join(" · ")}
+              </p>}
             </div>
           </li>
         );

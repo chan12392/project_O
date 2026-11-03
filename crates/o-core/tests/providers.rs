@@ -230,6 +230,7 @@ fn card_prompt_text_is_unchanged() {
         "- design: 디자인 (agy gemini-3.8-flash-high)",
         "- lead: 총괄",
         "보내기: o msg send --to <카드 id|lead|all> \"내용\"   받기: o msg read",
+        "받은 메시지는 처리한 뒤 o msg ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.",
         "시작할 때 한 번 받아 보고, 다른 카드가 알아야 할 결과나 막힌 점이 생기면 짧게 보내세요.",
         "",
         "끝나면 결과를 다섯 줄 이내로 요약하세요: 한 일, 바꾼 파일, 확인한 것, 남은 일.",

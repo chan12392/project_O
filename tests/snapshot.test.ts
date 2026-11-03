@@ -104,6 +104,18 @@ test("team messages land on the run and in each party's log", () => {
   assert.equal(run?.cards[0].label, "코딩");
 });
 
+test("message identity and question survive state events in the snapshot", () => {
+  const run = snapshot([
+    fixture.events[0],
+    { t: "msg", at: "1", id: "m1", kind: "question", from: "code", to: "lead", text: "help?" },
+    { t: "msg.state", at: "2", id: "m1", recipient: "lead", state: "unknown" },
+  ]);
+  assert.equal(run?.messages[0].id, "m1");
+  assert.equal(run?.messages[0].kind, "question");
+  assert.deepEqual(run?.messages[0].recipients, { lead: "unknown" });
+  assert.equal(run?.messages.length, 1);
+});
+
 test("a budget adjustment shows the effort the card ran with in its activity and log", () => {
   const run = snapshot([
     { t: "run.start", at: "2026-11-02T10:00:00.000Z", runId: "r", title: "t", project: "C:/p", cards: [{ id: "a", provider: "codex", label: "a", effort: "xhigh" }, { id: "b", provider: "codex", label: "b" }] },

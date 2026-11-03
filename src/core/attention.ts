@@ -26,6 +26,7 @@ export interface NextItem {
   /** When it started waiting; the ticket ages from here. */
   since: string;
   pr?: string;
+  question?: boolean;
 }
 
 /** Claude Code sessions read as runs (`o runs --sessions`) carry ids that start with this. */
@@ -40,15 +41,15 @@ export function isSessionRun(run: Pick<RunView, "runId">): boolean {
 const ASKS = /[?？]|까요|할지|주세요|부탁|알려/;
 
 /** A message to the lead that asks nothing: it only needs reading, not an answer. */
-export function isNote(item: Pick<NextItem, "kind" | "detail">): boolean {
-  return item.kind === "answer" && !ASKS.test(item.detail ?? "");
+export function isNote(item: Pick<NextItem, "kind" | "detail" | "question">): boolean {
+  return item.kind === "answer" && !(item.question ?? ASKS.test(item.detail ?? ""));
 }
 
 /**
  * Whether a ticket waits on a person: not a note that only needs reading, and not from a
  * Claude Code session (a read-only record O cannot act on). Badges count only these.
  */
-export function needsAction(item: Pick<NextItem, "kind" | "detail" | "runId">): boolean {
+export function needsAction(item: Pick<NextItem, "kind" | "detail" | "runId" | "question">): boolean {
   return !isNote(item) && !isSessionRun(item);
 }
 
@@ -118,7 +119,7 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
     for (const m of run.messages) {
       if (m.to !== "lead" || m.at <= answeredAt(m.from)) continue;
       const card = cardOf.get(m.from);
-      keep(todo, { ...base, key: `answer:${run.runId}:${m.from}:${m.at}`, kind: "answer", cardId: m.from, provider: card?.provider, title: card?.label ?? m.from, detail: m.text, since: m.at });
+      keep(todo, { ...base, key: `answer:${run.runId}:${m.from}:${m.at}`, kind: "answer", cardId: m.from, provider: card?.provider, title: card?.label ?? m.from, detail: m.text, since: m.at, question: m.kind === undefined ? undefined : m.kind === "question" });
     }
 
     for (const card of run.cards) {

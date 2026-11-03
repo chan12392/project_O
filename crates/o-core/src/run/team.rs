@@ -2,18 +2,18 @@
 //! the lead or a person passes --run and --as. Messages are events in the
 //! run's events.jsonl, checked by the same policy rules as tasks (ADR-0002).
 
-use std::fs;
 use std::io;
+use std::fs::{self, OpenOptions};
 use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use regex::Regex;
 
-use crate::run::events::OEvent;
 use crate::sys::js::now_iso;
 use crate::policy::{check_message, Parties, Violation};
 use crate::providers::outbox_path;
-use crate::run::store::{append_event, is_run_id, plan_card_ids, read_events, read_plan, run_dir};
+use crate::run::store::{append_value, event_text, is_run_id, plan_card_ids, read_plan, run_dir, with_events};
+use serde_json::{json, Value};
 
 /// Who is speaking, in which run.
 pub struct Speaker {
@@ -64,12 +64,30 @@ pub enum Refused {
 
 /// Checks and appends one message.
 pub fn send(home: &Path, speaker: &Speaker, to: &str, text: &str) -> Result<(), Refused> {
+    send_tracked(home, speaker, to, text, false, None).map(|_| ())
+}
+
+/// `key` makes retries by the same sender idempotent, including after a lost response.
+pub fn send_tracked(home: &Path, speaker: &Speaker, to: &str, text: &str, question: bool, key: Option<&str>) -> Result<String, Refused> {
     let violations = check_message(text, &Parties { from: &speaker.me, to, known: &speaker.cards });
     if !violations.is_empty() {
         return Err(Refused::Policy(violations));
     }
-    let event = OEvent::Msg { at: now_iso(), from: speaker.me.clone(), to: to.to_string(), text: text.to_string() };
-    append_event(home, &speaker.run_id, &event).map_err(Refused::Io)
+    if key.is_some_and(|key| key.is_empty() || key.len() > 64 || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')) {
+        return Err(Refused::Io(io::Error::other("메시지 키는 영문·숫자·-·_ 1~64자여야 합니다")));
+    }
+    with_events(home, &speaker.run_id, |file| {
+        let content = event_text(file)?;
+        let id = key.map_or_else(|| format!("m{}", content.len()), |key| format!("k{}-{}-{key}", speaker.me.len(), speaker.me));
+        let kind = if question { "question" } else { "message" };
+        let events = records(&content);
+        if let Some(existing) = events.iter().find(|m| m.id == id) {
+            if existing.from == speaker.me && existing.to == to && existing.text == text && existing.kind == kind { return Ok(id); }
+            return Err(io::Error::other("이미 다른 내용으로 사용한 메시지 키입니다"));
+        }
+        append_value(file, &json!({"t":"msg", "at":now_iso(), "id":id, "kind":kind, "from":speaker.me, "to":to, "text":text}))?;
+        Ok(id)
+    }).map_err(Refused::Io)
 }
 
 static TO_LINE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^to:\s*(\S+)").unwrap());
@@ -89,39 +107,141 @@ pub fn parse_outbox(content: &str) -> (String, String) {
     }
 }
 
+/// Claim the outbox before posting; a crash leaves the claim for an idempotent retry.
+pub fn post(home: &Path, speaker: &Speaker) -> Result<(String, String), Refused> {
+    let path = outbox(home, speaker);
+    let dir = path.parent().ok_or_else(|| Refused::Io(io::Error::other("outbox 경로가 없습니다")))?;
+    let lock = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join(format!("{}.post.lock", speaker.me))).map_err(Refused::Io)?;
+    lock.lock().map_err(Refused::Io)?;
+    let prefix = format!("{}.pending-", speaker.me);
+    let mut pending: Vec<_> = fs::read_dir(dir).map_err(Refused::Io)?.filter_map(Result::ok).map(|e| e.path()).filter(|p| p.file_name().is_some_and(|n| n.to_string_lossy().starts_with(&prefix))).collect();
+    pending.sort();
+    let claimed = if let Some(path) = pending.into_iter().next() { path } else {
+        let nonce = format!("{}-{}", std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos(), std::process::id());
+        let claimed = dir.join(format!("{prefix}{nonce}"));
+        fs::rename(&path, &claimed).map_err(Refused::Io)?;
+        claimed
+    };
+    let name = claimed.file_name().and_then(|n| n.to_str()).ok_or_else(|| Refused::Io(io::Error::other("outbox 이름 오류")))?;
+    let key = name.strip_prefix(&prefix).ok_or_else(|| Refused::Io(io::Error::other("outbox 이름 오류")))?;
+    let content = fs::read(&claimed).map_err(Refused::Io)?;
+    let (to, text) = parse_outbox(&String::from_utf8_lossy(&content));
+    let id = send_tracked(home, speaker, &to, &text, false, Some(key))?;
+    fs::remove_file(claimed).map_err(Refused::Io)?;
+    Ok((to, id))
+}
+
 /// A team message as `o msg read` prints it: from, to and the text.
 pub struct Received {
+    pub id: String,
+    pub kind: String,
     pub from: String,
     pub to: String,
     pub text: String,
+    pub state: String,
+    legacy: bool,
 }
 
 impl Received {
     /// One line per message: a newline in the text can't fake a second sender.
     pub fn line(&self) -> String {
-        format!("[{} → {}] {}", self.from, self.to, self.text.replace("\r\n", " ⏎ ").replace('\n', " ⏎ "))
+        format!("[{} → {}] {} (id: {}, {}, {})", self.from, self.to, self.text.replace("\r\n", " ⏎ ").replace('\n', " ⏎ "), self.id, self.kind, self.state)
     }
 }
 
-/// New messages for the speaker (or, with `all`, the whole channel). Without
-/// `all` it moves the speaker's read cursor past what it returns.
+/// Reading is non-destructive: output does not prove that an agent processed it.
 pub fn read(home: &Path, speaker: &Speaker, all: bool) -> io::Result<Vec<Received>> {
-    let messages: Vec<Received> = read_events(home, &speaker.run_id)
-        .into_iter()
-        .filter_map(|e| match e {
-            OEvent::Msg { from, to, text, .. } => Some(Received { from, to, text }),
-            _ => None,
-        })
-        .collect();
-    let mine: Vec<Received> = if all {
-        messages
-    } else {
-        messages.into_iter().filter(|m| m.from != speaker.me && (m.to == speaker.me || m.to == "all")).collect()
-    };
-    let cursor = run_dir(home, &speaker.run_id).join(format!("read.{}", speaker.me));
-    let seen = if all { 0 } else { fs::read_to_string(&cursor).ok().and_then(|t| t.trim().parse::<usize>().ok()).unwrap_or(0) };
-    if !all {
-        fs::write(&cursor, mine.len().to_string())?;
+    with_events(home, &speaker.run_id, |file| {
+        let content = event_text(file)?;
+        let states = states_for(home, &speaker.run_id, &content, &speaker.me)?;
+        let messages = records(&content).into_iter().filter_map(|mut m| {
+            m.state = states.get(&m.id).cloned().unwrap_or_else(|| "stored".into());
+            (all || (m.from != speaker.me && (m.to == speaker.me || m.to == "all") && m.state != "acknowledged" && m.state != "cancelled")).then_some(m)
+        });
+        Ok(if all { messages.collect() } else { messages.take(1).collect() })
+    })
+}
+
+/// Claim one message atomically. A crash after this point leaves an unknown outcome.
+pub fn claim(home: &Path, speaker: &Speaker) -> io::Result<Option<Received>> {
+    with_events(home, &speaker.run_id, |file| {
+        let content = event_text(file)?;
+        let current = states_for(home, &speaker.run_id, &content, &speaker.me)?;
+        let msg = records(&content).into_iter().find(|m| {
+            m.from != speaker.me && (m.to == speaker.me || m.to == "all") && !matches!(current.get(&m.id).map(String::as_str), Some("acknowledged" | "cancelled"))
+        });
+        let Some(mut msg) = msg else { return Ok(None) };
+        if matches!(current.get(&msg.id).map(String::as_str), Some("unknown" | "delivered")) {
+            return Err(io::Error::other(format!("{} 접수 결과가 불명 또는 처리 대기입니다. 확인 후 ack 또는 retry 하세요", msg.id)));
+        }
+        append_value(file, &json!({"t":"msg.state", "at":now_iso(), "id":msg.id, "recipient":speaker.me, "state":"unknown"}))?;
+        msg.state = "unknown".into();
+        Ok(Some(msg))
+    })
+}
+
+fn records(content: &str) -> Vec<Received> {
+    let mut offset = 0;
+    content.split_inclusive('\n').filter_map(|line| {
+        let start = offset;
+        offset += line.len();
+        if !line.ends_with('\n') { return None; }
+        let v: Value = serde_json::from_str(line).ok()?;
+        if v["t"] != "msg" { return None; }
+        Some(Received { id: v["id"].as_str().map_or_else(|| format!("m{start}"), str::to_string), kind: v["kind"].as_str().unwrap_or("message").into(), from: v["from"].as_str()?.into(), to: v["to"].as_str()?.into(), text: v["text"].as_str()?.into(), state: "stored".into(), legacy: v["id"].as_str().is_none() })
+    }).collect()
+}
+
+fn states(content: &str, recipient: &str) -> std::collections::HashMap<String, String> {
+    let mut result = std::collections::HashMap::new();
+    for line in content.split_inclusive('\n').filter(|line| line.ends_with('\n')) {
+        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
+        if v["t"] != "msg.state" { continue; }
+        if let (Some(id), Some(state), Some(who)) = (v["id"].as_str(), v["state"].as_str(), v["recipient"].as_str()) {
+            if who == recipient || who == "all" { result.insert(id.into(), state.into()); }
+        }
     }
-    Ok(mine.into_iter().skip(seen).collect())
+    result
+}
+
+fn states_for(home: &Path, run_id: &str, content: &str, recipient: &str) -> io::Result<std::collections::HashMap<String, String>> {
+    let mut result = states(content, recipient);
+    let cursor = run_dir(home, run_id).join(format!("read.{recipient}"));
+    let seen = match fs::read_to_string(cursor) {
+        Ok(value) => value.trim().parse::<usize>().map_err(|_| io::Error::other("이전 메시지 읽기 기록이 손상되었습니다"))?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error),
+    };
+    // The old cursor proves a read was attempted, not that the receiver processed it.
+    for msg in records(content).into_iter().filter(|m| m.legacy && m.from != recipient && (m.to == recipient || m.to == "all")).take(seen) {
+        result.entry(msg.id).or_insert_with(|| "unknown".into());
+    }
+    Ok(result)
+}
+
+/// A recipient explicitly confirms processing; a sender may cancel an unprocessed message.
+pub fn transition(home: &Path, speaker: &Speaker, id: &str, state: &str) -> io::Result<()> {
+    with_events(home, &speaker.run_id, |file| {
+        let content = event_text(file)?;
+        let messages = records(&content);
+        let msg = messages.iter().find(|m| m.id == id).ok_or_else(|| io::Error::other("메시지를 찾지 못했습니다"))?;
+        let recipient = match state {
+            "stored" | "delivered" | "unknown" | "acknowledged" if msg.from != speaker.me && (msg.to == speaker.me || msg.to == "all") => &speaker.me,
+            "cancelled" if msg.from == speaker.me => &msg.to,
+            _ => return Err(io::Error::other("메시지 상태를 바꿀 권한이 없습니다")),
+        };
+        let current = states_for(home, &speaker.run_id, &content, recipient)?;
+        if current.get(id).is_some_and(|s| s == state) { return Ok(()); }
+        if state == "cancelled" && msg.to == "all" && content.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()).any(|v| v["t"] == "msg.state" && v["id"] == id && v["state"] != "cancelled") {
+            return Err(io::Error::other("이미 전달을 시작한 메시지는 취소할 수 없습니다"));
+        }
+        let old = current.get(id).map(String::as_str).unwrap_or("stored");
+        if !matches!((old, state), ("stored", "delivered" | "unknown" | "acknowledged" | "cancelled") | ("delivered", "unknown" | "acknowledged") | ("unknown", "stored" | "delivered" | "acknowledged")) {
+            return Err(io::Error::other("허용되지 않는 메시지 상태 변경입니다"));
+        }
+        if state != "cancelled" && messages.iter().take_while(|m| m.id != id).any(|m| m.from != speaker.me && (m.to == speaker.me || m.to == "all") && !matches!(current.get(&m.id).map(String::as_str), Some("acknowledged" | "cancelled"))) {
+            return Err(io::Error::other("앞선 메시지부터 확인해 주세요"));
+        }
+        append_value(file, &json!({"t":"msg.state", "at":now_iso(), "id":id, "recipient":recipient, "state":state}))
+    })
 }
