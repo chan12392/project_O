@@ -3,12 +3,12 @@ use std::{fs, io::Write, process::{Command, Stdio}};
 #[test]
 fn records_and_lists_findings_through_cli() {
     let dir = std::env::temp_dir().join(format!("o-issues-cli-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
-    let home = if cfg!(windows) { dir.join("project_O") } else { dir.join(".local/state/project_O") };
+    let home = dir.join("project_O");
     fs::create_dir_all(home.join("runs/run-1")).unwrap();
     fs::write(home.join("runs/run-1/plan.json"), r#"{"cards":[{"id":"card-1"}]}"#).unwrap();
     let file = dir.join("finding.json");
     fs::write(&file, serde_json::json!({"repo":"fixture/project", "runId":"run-1", "cardId":"card-1", "sha":"a".repeat(40), "summary":"finding", "reproduction":"steps", "evidence":["log:1"], "classification":"unclassified", "issue":null}).to_string()).unwrap();
-    let command = || { let mut c = Command::new(env!("CARGO_BIN_EXE_o")); c.env(if cfg!(windows) { "LOCALAPPDATA" } else { "HOME" }, &dir).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID"); c };
+    let command = || { let mut c = Command::new(env!("CARGO_BIN_EXE_o")); c.env("LOCALAPPDATA", &dir).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID"); c };
     let saved = command().args(["issues", "record"]).arg(&file).output().unwrap();
     assert!(saved.status.success(), "{}", String::from_utf8_lossy(&saved.stderr));
     let listed = command().args(["issues", "list", "fixture/project"]).output().unwrap();
@@ -24,6 +24,19 @@ fn records_and_lists_findings_through_cli() {
     let resolved: serde_json::Value = serde_json::from_slice(&resolved.stdout).unwrap();
     assert_eq!(resolved[0]["finding"]["resolution"]["evidence"], "checked");
     assert!(command().args(["issues", "reopen", &id]).output().unwrap().status.success());
+    let project = dir.join("project");
+    let unrelated = dir.join("other");
+    fs::create_dir_all(&project).unwrap();
+    fs::create_dir_all(&unrelated).unwrap();
+    let plan = |path: &std::path::Path| serde_json::json!({"project":path,"cards":[{"id":"card-1"}]}).to_string();
+    fs::write(home.join("runs/run-1/plan.json"), plan(&project)).unwrap();
+    let verification = home.join("runs/check");
+    fs::create_dir_all(&verification).unwrap();
+    fs::write(verification.join("plan.json"), plan(&unrelated)).unwrap();
+    fs::write(verification.join("events.jsonl"), "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n").unwrap();
+    assert!(!command().args(["issues", "resolve", &id, "check", "card-1", "checked"]).output().unwrap().status.success());
+    fs::write(verification.join("plan.json"), plan(&project)).unwrap();
+    assert!(command().args(["issues", "resolve", &id, "check", "card-1", "checked"]).output().unwrap().status.success());
     let input = fs::read_to_string(&file).unwrap().replace("finding", "stdin finding");
     let mut child = command().args(["issues", "record", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();
@@ -32,5 +45,8 @@ fn records_and_lists_findings_through_cli() {
     let listed = command().args(["issues", "list", "fixture/project"]).output().unwrap();
     let values: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(values.as_array().unwrap().len(), 2);
-    fs::remove_dir_all(dir).unwrap();
+    let target = dir.canonicalize().unwrap();
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    assert!(target.starts_with(&temp) && target != temp && target.file_name().unwrap().to_string_lossy().starts_with("o-issues-cli-"));
+    fs::remove_dir_all(target).unwrap();
 }
