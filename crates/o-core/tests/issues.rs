@@ -45,6 +45,17 @@ fn resolution_requires_successful_recorded_card_and_can_be_reopened() {
     assert_eq!(issues::list(&dir, "example/project").unwrap()[0]["finding"]["resolution"]["cardId"], "card-1");
     issues::resolve(&dir, id, None).unwrap();
     assert!(issues::list(&dir, "example/project").unwrap()[0]["finding"].get("resolution").is_none());
+    let events = dir.join("runs/run-1/events.jsonl");
+    let done = "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n";
+    fs::write(&events, format!("{done}{{\"t\":\"card.end\"")).unwrap();
+    assert!(issues::resolve(&dir, id, Some(verification.clone())).unwrap_err().contains("불완전"));
+    fs::write(&events, format!("{done}{{broken}}\n")).unwrap();
+    assert!(issues::resolve(&dir, id, Some(verification.clone())).unwrap_err().contains("손상"));
+    fs::write(&events, format!("{done}{{\"t\":\"card.end\",\"status\":\"failed\"}}\n")).unwrap();
+    assert!(issues::resolve(&dir, id, Some(verification.clone())).unwrap_err().contains("손상"));
+    fs::write(&events, format!("{done}{{\"t\":\"card.start\",\"cardId\":\"card-1\"}}\n")).unwrap();
+    assert!(issues::resolve(&dir, id, Some(verification.clone())).is_err());
+    assert!(issues::list(&dir, "example/project").unwrap()[0]["finding"].get("resolution").is_none());
     fs::write(dir.join("runs/run-1/events.jsonl"), "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:01Z\",\"cardId\":\"card-1\",\"status\":\"failed\"}\n").unwrap();
     assert!(issues::resolve(&dir, id, Some(verification)).is_err());
     cleanup(&dir);
@@ -69,6 +80,31 @@ fn verification_must_belong_to_the_findings_project() {
     assert!(issues::resolve(&dir, id, Some(checked.clone())).unwrap_err().contains("같은 프로젝트"));
     fs::write(run.join("plan.json"), plan(&project)).unwrap();
     issues::resolve(&dir, id, Some(checked)).unwrap();
+    cleanup(&dir);
+}
+
+#[test]
+fn resolution_waits_for_a_concurrent_event_write() {
+    use std::io::Write;
+    let dir = home();
+    let gh = Fake { answer: Err("offline".into()), calls: RefCell::default() };
+    let id = issues::record(&dir, &gh, Path::new("."), &finding()).unwrap();
+    let run = dir.join("runs/run-1");
+    fs::write(run.join("events.jsonl"), "{\"t\":\"card.end\",\"cardId\":\"card-1\",\"status\":\"done\"}\n").unwrap();
+    let lock = fs::OpenOptions::new().write(true).create_new(true).open(run.join("events.lock")).unwrap();
+    lock.lock().unwrap();
+    let mut events = fs::OpenOptions::new().append(true).open(run.join("events.jsonl")).unwrap();
+    write!(events, "{{\"t\":\"card.end\",\"cardId\":\"card-1\"").unwrap();
+    events.flush().unwrap();
+    let state = dir.clone();
+    let pending = std::thread::spawn(move || issues::resolve(&state, id, Some(Resolution { run_id: "run-1".into(), card_id: "card-1".into(), evidence: "checked".into() })));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!pending.is_finished());
+    writeln!(events, ",\"status\":\"failed\"}}").unwrap();
+    events.flush().unwrap();
+    drop(lock);
+    assert!(pending.join().unwrap().is_err());
+    drop(events);
     cleanup(&dir);
 }
 

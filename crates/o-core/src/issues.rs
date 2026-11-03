@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::review::Gh;
-use crate::run::{events::{CardStatus, OEvent}, store::{is_run_id, plan_card_ids, read_events, read_plan}};
+use crate::run::store::{is_run_id, locked_event_text, plan_card_ids, read_plan};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -147,11 +147,19 @@ pub fn resolve(home: &Path, id: i64, resolution: Option<Resolution>) -> Result<(
         }
         let plan = read_plan(home, &r.run_id).map_err(|e| format!("검증 실행을 읽지 못했습니다: {e}"))?;
         let cards = plan_card_ids(&plan).map_err(|e| e.to_string())?;
-        let status = read_events(home, &r.run_id).iter().rev().find_map(|e| match e {
-            OEvent::CardEnd { card_id, status, .. } if card_id == &r.card_id => Some(*status),
-            _ => None,
-        });
-        if !cards.contains(&r.card_id) || status != Some(CardStatus::Done) {
+        let text = locked_event_text(home, &r.run_id).map_err(|e| format!("검증 기록을 읽지 못했습니다: {e}"))?;
+        if !text.is_empty() && !text.ends_with('\n') { return Err("검증 기록이 불완전합니다".into()); }
+        let mut success = false;
+        for line in text.lines().filter(|line| !line.trim().is_empty()) {
+            let event: serde_json::Value = serde_json::from_str(line).map_err(|_| "검증 기록이 손상되었습니다")?;
+            let kind = event.get("t").and_then(serde_json::Value::as_str).ok_or("검증 기록이 손상되었습니다")?;
+            if matches!(kind, "card.start" | "card.queued" | "card.end") {
+                let card = event.get("cardId").and_then(serde_json::Value::as_str).ok_or("검증 기록이 손상되었습니다")?;
+                if kind == "card.end" && event.get("status").and_then(serde_json::Value::as_str).is_none() { return Err("검증 기록이 손상되었습니다".into()); }
+                if card == r.card_id { success = kind == "card.end" && event["status"] == "done"; }
+            }
+        }
+        if !cards.contains(&r.card_id) || !success {
             return Err("성공한 검증 카드의 종료 기록이 필요합니다".into());
         }
         if finding.run_id != r.run_id {
