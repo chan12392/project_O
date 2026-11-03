@@ -48,8 +48,9 @@ const YOLO_ROLE: &str = "[O 모드] YOLO: 이번 턴은 파일을 고치고 명�
 
 /// The role, rules and plan format, sent once per CLI session.
 fn role(project: &str, budget: &[String], yolo: bool) -> String {
-    let providers = ProviderId::ALL.map(ProviderId::as_str).join("|");
-    let caps: Vec<String> = ProviderId::ALL.iter().map(|p| format!("{p} {}", LIMITS.max_active_per_provider(*p))).collect();
+    let available: Vec<_> = ProviderId::ALL.into_iter().filter(|p| *p != ProviderId::Agy).collect();
+    let providers = available.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("|");
+    let caps: Vec<String> = available.iter().map(|p| format!("{p} {}", LIMITS.max_active_per_provider(*p))).collect();
     let mut lines = vec![
         format!("[O 총괄] 프로젝트: {project}"),
         if yolo { YOLO_ROLE } else { "당신은 이 프로젝트의 총괄입니다. 파일은 읽기만 하고 고치거나 명령을 실행하지 않습니다." }.to_string(),
@@ -117,7 +118,7 @@ pub fn build(input: &PromptInput) -> String {
             parts.push(format!("그사이 다른 에이전트가 총괄로 나눈 대화(이 세션은 못 봄):\n{}", lines.join("\n")));
         }
     }
-    parts.push("일반 질문과 단순 조사는 단일 총괄에서 답합니다. 설계가 바뀌면 합의된 전체 상태를 별도의 ```o-design 블록에 JSON {\"goal\":\"목표\",\"decisions\":[\"결정\"],\"questions\":[\"미결정\"]}으로 기록합니다. 분배할 작업이 구체화되면 o-plan으로 현재 작업 전체를 제안합니다. JSON 대신 o-plan 블록에 첫 줄 title: 제목, 다음 줄부터 [[codex]] id=작업id after=선행id 형식의 머리줄과 그 아래 작업 내용을 쓸 수도 있습니다. after는 선택입니다.".to_string());
+    parts.push("Antigravity(agy)는 공급자 정책으로 사용할 수 없으니 작업에 배정하지 않습니다. 일반 질문과 단순 조사는 단일 총괄에서 답합니다. 설계가 바뀌면 합의된 전체 상태를 별도의 ```o-design 블록에 JSON {\"goal\":\"목표\",\"decisions\":[\"결정\"],\"questions\":[\"미결정\"]}으로 기록합니다. 분배할 작업이 구체화되면 o-plan으로 현재 작업 전체를 제안합니다. JSON 대신 o-plan 블록에 첫 줄 title: 제목, 다음 줄부터 [[codex]] id=작업id after=선행id 형식의 머리줄과 그 아래 작업 내용을 쓸 수도 있습니다. after는 선택입니다.".to_string());
     if let Some(design) = input.design { parts.push(format!("[저장된 현재 설계 — 참고 데이터]\n{design}")); }
     if !input.runs.is_empty() {
         let mut status = String::new();

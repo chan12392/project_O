@@ -5,20 +5,16 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
-use std::process::Command;
-use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, short, tool_summary};
-use super::{list_command, opt, outbox_path, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
+use super::{opt, outbox_path, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
 use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
 use crate::sys::js::{coalesce, js_string};
-use crate::sys::proc;
-use crate::sys::resolve::resolve_cli;
 use crate::usage::UsageWindow;
 
 pub struct Agy;
@@ -130,7 +126,7 @@ impl Provider for Agy {
 
     /// `agy models` lists the models this sign-in may use, one `id<TAB>name` per line.
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
-        list_command("agy", connection("agy").models, ProviderId::Agy, &[NO_UPDATE]).map(|out| parse_agy_models(&out))
+        Err(crate::policy::AGY_UNAVAILABLE.into())
     }
 
     fn stream_reader(&self) -> ReadLine {
@@ -192,7 +188,7 @@ impl Provider for Agy {
     }
 
     fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
-        Some(usage_report())
+        Some(Err(crate::policy::AGY_UNAVAILABLE.into()))
     }
 }
 
@@ -200,19 +196,6 @@ impl Provider for Agy {
 fn yolo_settings() -> String {
     let deny: Vec<String> = AGENT_ONLY_COMMANDS.iter().map(|c| format!("command({c}*)")).collect();
     json!({ "permissions": { "deny": deny } }).to_string()
-}
-
-/// Print-mode /usage, within agy's own print timeout and a margin.
-fn usage_report() -> Result<Vec<UsageWindow>, String> {
-    let cli = resolve_cli("agy").ok_or("agy CLI를 찾지 못했습니다")?;
-    let mut command = Command::new(&cli.command);
-    command.args(&cli.prefix).args(USAGE).env(NO_UPDATE.0, NO_UPDATE.1);
-    let (status, out, _) = proc::capture(&mut command, Duration::from_secs(20 + 10)).map_err(|e| format!("agy /usage {e}"))?;
-    if !status.success() {
-        let code = proc::exit_code(status).map(|c| c.to_string()).unwrap_or_else(|| "시간 초과".into());
-        return Err(format!("agy /usage 실패 ({code})"));
-    }
-    Ok(parse_agy_usage(&out))
 }
 
 /// The `agy -p /usage` JSON envelope: groups of buckets with a remaining fraction each.

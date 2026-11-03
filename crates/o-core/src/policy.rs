@@ -52,6 +52,7 @@ pub const LIMITS: Limits = Limits {
 
 /// The effort ladder, lowest first (the daily budget lowers along it, see `budget`).
 pub const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+pub const AGY_UNAVAILABLE: &str = "Antigravity는 제3자 앱을 통한 사용에 관한 Google 정책 때문에 Project O에서 실행할 수 없습니다. Claude 또는 Codex를 선택하세요";
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
 /// Team-channel names a card must not take: its messages would read as the lead's or as a broadcast.
@@ -265,6 +266,12 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
 pub fn check_plan_for(input: &Value, ctx: &PolicyContext, profile: Profile) -> Checked {
     let mut checked = check_plan(input, ctx);
     let cards = input.get("cards").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    for card in cards {
+        if card.get("provider").and_then(Value::as_str) == Some("agy") {
+            checked.plan = None;
+            checked.violations.push(Violation { rule: "provider-terms".into(), message: AGY_UNAVAILABLE.into(), card_id: card.get("id").and_then(Value::as_str).map(str::to_string) });
+        }
+    }
     let named = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?)));
     let refused = profile_violations(named, profile);
     if !refused.is_empty() {

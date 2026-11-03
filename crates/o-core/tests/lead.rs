@@ -280,6 +280,7 @@ fn autorun() {
     assert!(!agy.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
     let agy_lead = SendRequest { provider: ProviderId::Agy, ..request(&agy_project, "예약") };
     assert!(lead::send_with_scheduled_autorun(&agy_home, &agy_lead, agy_spawner.as_ref(), &start).is_err());
+    assert!(lead::send(&agy_home, &agy_lead, agy_spawner.as_ref()).unwrap_err().contains("Antigravity"));
     starts.store(0, Ordering::SeqCst);
     let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
     let manual = lead::send(&home, &yolo, spawner.as_ref()).unwrap();
@@ -841,7 +842,7 @@ fn project_hooks_off() {
     std::fs::write(hooks.join("hooks.json"), "{}").unwrap();
     let (agy, seen) = fake(vec![]);
     let refused = lead::send(&home, &SendRequest { provider: ProviderId::Agy, ..request(&project, "agy") }, agy.as_ref()).unwrap_err();
-    assert!(refused.contains("hooks.json"), "{refused}");
+    assert!(refused.contains("Antigravity"), "{refused}");
     assert!(seen.lock().unwrap().is_empty());
 }
 

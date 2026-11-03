@@ -360,6 +360,7 @@ pub struct SendRequest<'a> {
 
 /// Checks a request before anything is saved or started.
 pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
+    if req.provider == ProviderId::Agy { return Err(crate::policy::AGY_UNAVAILABLE.into()); }
     let provider = providers::get(req.provider);
     if provider.lead_efforts().is_empty() {
         return Err(format!("{}는 총괄로 쓸 수 없습니다 (읽기 전용 실행과 이어 말하기를 보장하지 못함)", req.provider));
@@ -932,7 +933,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
     let events = read_thread(home, thread);
     let now = Utc::now();
     let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_for(&plan, &ctx, Profile::of_clean(req.clean.is_some())));
-    let valid = checked.ok().and_then(|result| result.plan);
+    let valid = checked.as_ref().ok().and_then(|result| result.plan.clone());
     let running: Vec<String> = events.iter().filter_map(|e| match e {
         LeadEvent::Dispatch { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),
         _ => None,
@@ -946,7 +947,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
     let reason = if stopped { Some("모두 중지 요청으로 자동 실행을 취소했습니다".to_string()) }
         else if !req.yolo && !scheduled { Some("YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) }
-        else if scheduled && valid.as_ref().is_some_and(|p| p.cards.iter().any(|c| c.provider == ProviderId::Agy)) { Some("예약 설계에 Antigravity 작업이 있어 자동 분배할 수 없습니다".to_string()) }
+        else if checked.as_ref().ok().is_some_and(|result| result.violations.iter().any(|v| v.rule == "provider-terms")) { Some(crate::policy::AGY_UNAVAILABLE.to_string()) }
         else if let (true, Some(valid_plan), Some(plan_hash)) = (ok, valid.as_ref(), hash.as_deref()) {
             let facts = AutoRunFacts { budget_on: budget::read_enabled_for_autorun(home), cards: valid_plan.cards.len(), running: &running, past: &past, hash: plan_hash, now };
             yolo::check_auto_run(&facts, yolo::read_limits(home)).err()

@@ -96,6 +96,7 @@ fn version(provider: ProviderId, cli: &CliCommand) -> Option<String> {
 /// Signed in, per the CLI's own status command: with the clean profile (as
 /// `o agents doctor` asks) or with the person's normal setup.
 fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> LoginState {
+    if provider == ProviderId::Agy { return LoginState { logged_in: None, detail: crate::policy::AGY_UNAVAILABLE.into() }; }
     if clean {
         return clean::login_state(root, provider);
     }
