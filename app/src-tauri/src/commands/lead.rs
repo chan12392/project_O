@@ -120,7 +120,7 @@ pub async fn lead_send(
             clean: root.as_deref(),
             yolo: o_core::run::yolo::read_enabled(&home),
         };
-        let events = lead::send(&home, &req, &official_command)?;
+        let events = lead::send_with_followups(&home, &req, &official_command, &super::runs::start_followup)?;
         Ok(json!({ "threadId": lead::current_thread(&home, &project), "events": events }))
     })
     .await?

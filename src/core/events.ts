@@ -21,10 +21,12 @@ export interface CardInfo {
 
 export type OEvent =
   | { t: "run.start"; at: string; runId: string; title: string; project: string; cards: CardInfo[] }
+  | { t: "run.followup"; at: string; sourceRunId: string; cardId: string }
   | { t: "card.queued"; at: string; cardId: string; reason: string }
   | { t: "card.start"; at: string; cardId: string; pid: number | undefined }
   | { t: "card.session"; at: string; cardId: string; sessionId: string }
   | { t: "card.message"; at: string; cardId: string; text: string }
+  | { t: "card.input"; at: string; cardId: string; text: string }
   | { t: "card.tool"; at: string; cardId: string; name: string; summary: string }
   | { t: "card.limit"; at: string; cardId: string; until: string }
   | { t: "card.end"; at: string; cardId: string; status: CardStatus; result?: string; exitCode: number | null }

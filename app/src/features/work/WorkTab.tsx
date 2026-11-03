@@ -62,10 +62,16 @@ const SUB_KEY = "project-o-work-tab";
 const loadSub = () => readStored<Sub>(SUB_KEY, "design", (saved) => SUBS.find((s) => s.id === saved)?.id);
 
 function DesignPanel({ lead, runs, onCard }: { lead?: LeadState; runs: RunView[]; onCard: Props["onCard"] }) {
+  const [error, setError] = useState<string>();
+  const [starting, setStarting] = useState(false);
   if (!lead) return <p className="text-sm text-muted-foreground">실제 프로젝트의 총괄 대화에서 설계를 확인할 수 있습니다.</p>;
   if (lead.failed) return <p role="alert" className="text-sm text-destructive">설계를 읽지 못했습니다. <button type="button" className="underline focus-ring" onClick={() => void lead.refresh()}>다시 시도</button></p>;
   if (!lead.loaded) return <p role="status" className="text-sm text-muted-foreground">설계를 불러오는 중…</p>;
-  return <DesignContent key={lead.thread?.threadId} lead={lead} runs={runs} onCard={onCard} />;
+  return <div className="space-y-3">
+    <div className="flex justify-end"><button type="button" disabled={lead.busy || starting} onClick={() => { setError(undefined); setStarting(true); void lead.startNew().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))).finally(() => setStarting(false)); }} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent focus-ring disabled:opacity-50">{starting ? "시작 중…" : "새 설계"}</button></div>
+    {error && <p role="alert" className="text-xs text-destructive">새 설계를 시작하지 못했습니다: {error}</p>}
+    <DesignContent key={lead.thread?.threadId} lead={lead} runs={runs} onCard={onCard} />
+  </div>;
 }
 
 function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[]; onCard: Props["onCard"] }) {

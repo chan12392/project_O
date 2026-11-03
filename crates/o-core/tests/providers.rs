@@ -425,8 +425,8 @@ fn a_claude_limit_shows_in_its_error_text_too_but_one_limit_per_card_keeps_the_e
 // the CLIs' "never ask" flags (o_guard::rules BYPASS_PATHS).
 
 const GUARD_HOOK: &str = r#"{"hooks":{"PreToolUse":[{"matcher":"Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob","hooks":[{"type":"command","command":"o hook","timeout":10,"onFailure":"block"}]}]}}"#;
-const CLAUDE_DENY: [&str; 5] = ["Bash(o dispatch*)", "Bash(o lead*)", "Bash(o review*)", "Bash(o _run*)", "Bash(o _review*)"];
-const AGY_DENY: &str = r#"{"permissions":{"deny":["command(o dispatch*)","command(o lead*)","command(o review*)","command(o _run*)","command(o _review*)"]}}"#;
+const CLAUDE_DENY: [&str; 7] = ["Bash(o dispatch*)", "Bash(o followup*)", "Bash(o lead*)", "Bash(o review*)", "Bash(o _run*)", "Bash(o _followup*)", "Bash(o _review*)"];
+const AGY_DENY: &str = r#"{"permissions":{"deny":["command(o dispatch*)","command(o followup*)","command(o lead*)","command(o review*)","command(o _run*)","command(o _followup*)","command(o _review*)"]}}"#;
 
 fn yolo_specs(plan: &Plan, yolo: bool) -> Vec<LaunchSpec> {
     plan.cards.iter().map(|c| launch_spec_for(c, plan, &TEAM, None, yolo)).collect()

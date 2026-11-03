@@ -9,6 +9,22 @@ use serde_json::json;
 
 use super::blocking;
 
+#[tauri::command]
+pub async fn run_followup(run: String, card: String, text: String) -> Result<serde_json::Value, String> {
+    blocking(move || {
+        let id = o_core::run::followup::start(&store::default_home(), &run, &card, &text, &start_followup)?;
+        Ok(json!({ "runId": id }))
+    }).await?
+}
+
+pub(super) fn start_followup(id: &str) -> std::io::Result<()> {
+    let exe = super::o_binary().ok_or_else(|| std::io::Error::other("O CLI를 찾지 못했습니다"))?;
+    let output = o_core::sys::proc::hide_window(std::process::Command::new(&exe).args(["about", "--json"])).output()?;
+    let capable = output.status.success() && serde_json::from_slice::<serde_json::Value>(&output.stdout).ok().and_then(|v| v.get("capabilities").and_then(|v| v.as_array()).cloned()).is_some_and(|caps| caps.iter().any(|v| v.as_str() == Some("session-followup-v1")));
+    if !capable { return Err(std::io::Error::other("이 O CLI는 세션 이어쓰기를 지원하지 않습니다. 앱과 같은 버전으로 설치하세요")); }
+    o_core::sys::proc::spawn_detached(std::process::Command::new(&exe).args(["_followup", id])).map(|_| ())
+}
+
 /// `o runs --json` lists this many by default.
 const DEFAULT_RUNS: usize = 50;
 

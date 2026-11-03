@@ -132,6 +132,8 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           <span className="min-w-0 whitespace-pre-wrap">{item.text}</span>
         </p>
       );
+    case "followup":
+      return <p role="status" className="text-xs text-chat-foreground-faint">{item.cardId} 에이전트의 후속 지시를 접수했습니다 · {item.runId}</p>;
     case "plan":
       return <p className="text-xs text-chat-foreground-faint">{item.title} · {item.runId ? `분배한 작업 ${item.runId}` : "오른쪽 설계에서 최신 분배안을 확인하세요."}</p>;
   }

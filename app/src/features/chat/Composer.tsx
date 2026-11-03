@@ -152,6 +152,7 @@ export function Composer({
         ? "첨부를 올리는 중입니다"
         : undefined;
   const canSend = Boolean(text.trim()) && !blocker && !busy && Boolean(agent) && yolo !== undefined;
+  const dispatched = lead.thread?.events.some((event) => event.t === "lead.dispatch") ?? false;
 
   const addFiles = (list: FileList | File[]) => {
     if (!project) return setNotice("프로젝트 폴더를 먼저 정하세요");
@@ -445,7 +446,7 @@ export function Composer({
         aria-live="polite"
         className={`mx-auto mt-1.5 max-w-3xl px-1 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : "Enter 보내기 · Ctrl+Enter 줄바꿈 · 설계를 확인한 뒤 작업을 분배합니다")}
+        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "Enter 보내기 · Ctrl+Enter 줄바꿈 · 기존 작업의 후속 요청은 자동 전달됩니다" : "Enter 보내기 · Ctrl+Enter 줄바꿈 · 설계를 확인한 뒤 작업을 분배합니다")}
       </p>
     </form>
   );

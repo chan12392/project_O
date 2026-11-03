@@ -51,6 +51,7 @@ use crate::sys::proc;
 use crate::usage::{budget, UsageWindow};
 
 pub use files::Attachment;
+type StartRun<'a> = dyn Fn(&str) -> io::Result<()> + 'a;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all_fields = "camelCase")]
@@ -107,6 +108,8 @@ pub enum LeadEvent {
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         yolo: bool,
     },
+    #[serde(rename = "lead.followup")]
+    Followup { at: String, source_run_id: String, card_id: String, run_id: String },
     #[serde(rename = "lead.autorun")]
     AutoRun { at: String, plan_id: String, hash: Option<String>, reason: Option<String> },
     /// Tokens one lead turn spent (`o tokens` counts them as planning overhead).
@@ -414,7 +417,7 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent]) -> Vec<String> {
     events
         .iter()
         .filter_map(|e| match e {
-            LeadEvent::Dispatch { run_id, .. } if is_run_id(run_id) => Some(match snapshot(&read_events(home, run_id)) {
+            LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if is_run_id(run_id) => Some(match snapshot(&read_events(home, run_id)) {
                 Some(view) => prompt::run_status(&view),
                 None => format!("- 실행 {run_id}: 아직 기록 없음(시작 전이거나 시작하지 못함)"),
             }),
@@ -478,6 +481,15 @@ pub const TURN_LIMIT: Duration = Duration::from_secs(15 * 60);
 
 /// [`send`] with its own time limit for the CLI.
 pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration) -> Result<Vec<LeadEvent>, String> {
+    send_within_followups(home, req, spawner, limit, None)
+}
+
+pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+    send_within_followups(home, req, spawner, TURN_LIMIT, Some(start))
+}
+
+fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>) -> Result<Vec<LeadEvent>, String> {
+    let turn_started = Utc::now();
     check_request(home, req)?;
     let thread_id = thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?;
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
@@ -828,6 +840,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
 
     let (prose, plan) = prompt::split_plan(&answer);
     let (prose, design) = prompt::split_design(&prose);
+    let (prose, followups) = prompt::split_followups(&prose);
     if !prose.is_empty() {
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
     }
@@ -837,6 +850,40 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         Err(message) => {
             emit(LeadEvent::Error { at: now_iso(), text: message })?;
             return Ok(added);
+        }
+    }
+    match followups {
+        Ok(None) => {},
+        Err(message) => { emit(LeadEvent::Error { at: now_iso(), text: message })?; return Ok(added); }
+        Ok(Some(items)) => {
+            let Some(start) = start else { emit(LeadEvent::Error { at: now_iso(), text: "이 실행 환경에서는 후속 지시를 자동 전달할 수 없습니다".into() })?; return Ok(added); };
+            if !matches!(plan, Ok(None)) { emit(LeadEvent::Error { at: now_iso(), text: "새 설계와 후속 지시가 함께 있어 실행하지 않았습니다".into() })?; return Ok(added); }
+            // "새 설계" changes the current thread under current.lock: hold it while the thread is
+            // checked and the follow-ups start, so they never go out for a thread just replaced.
+            // Same order as `dispatch` (current.lock, then dispatch.lock). This turn already holds
+            // turn.lock; that is safe because no current.lock holder waits on turn.lock (`dispatch`
+            // only tries it, `thread_for` never takes it).
+            let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+            current.lock().map_err(|e| e.to_string())?;
+            let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, &thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
+            lock.lock().map_err(|e| e.to_string())?;
+            let stopped = fs::read_to_string(thread_dir(home, &thread_id).join("stop-all-at")).ok().and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
+            if stopped || current_thread(home, req.project).as_deref() != Some(&thread_id) {
+                emit(LeadEvent::Error { at: now_iso(), text: "중지되었거나 새 설계로 전환되어 후속 지시를 보내지 않았습니다".into() })?;
+                return Ok(added);
+            }
+            let allowed: BTreeSet<_> = before.iter().filter_map(|e| match e { LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => Some(run_id.as_str()), _ => None }).collect();
+            let mut seen = BTreeSet::new();
+            if items.iter().any(|item| !allowed.contains(item.run.as_str()) || !seen.insert((&item.run, &item.card))) {
+                emit(LeadEvent::Error { at: now_iso(), text: "이 대화에서 분배한 서로 다른 작업만 이어갈 수 있습니다".into() })?;
+                return Ok(added);
+            }
+            for item in items {
+                match crate::run::followup::start(home, &item.run, &item.card, &item.task, start) {
+                    Ok(run_id) => emit(LeadEvent::Followup { at: now_iso(), source_run_id: item.run, card_id: item.card, run_id })?,
+                    Err(error) => emit(LeadEvent::Error { at: now_iso(), text: format!("{} 후속 지시를 보내지 못했습니다: {error}", item.card) })?,
+                }
+            }
         }
     }
     match plan {
@@ -1004,19 +1051,23 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
 
 /// Run a lead turn and, when allowed, hand its plan to the same checked dispatch path.
 pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
-    send_with_auto(home, req, spawner, start, false)
+    send_with_auto(home, req, spawner, start, None, false)
+}
+
+pub fn send_with_autorun_and_followups(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>, resume: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+    send_with_auto(home, req, spawner, start, Some(resume), false)
 }
 
 /// A user-created schedule authorizes dispatch, but keeps the lead and cards in normal mode.
 pub fn send_with_scheduled_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
     if req.yolo { return Err("예약 요청은 일반 권한으로 실행해야 합니다".into()); }
     if req.provider == ProviderId::Agy { return Err("예약에서는 Antigravity를 실행할 수 없습니다".into()); }
-    send_with_auto(home, req, spawner, start, true)
+    send_with_auto(home, req, spawner, start, None, true)
 }
 
-fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
+fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>, resume: Option<&StartRun<'_>>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
-    let mut added = send(home, req, spawner)?;
+    let mut added = send_within_followups(home, req, spawner, TURN_LIMIT, resume)?;
     let Some((plan_id, plan, ok)) = added.iter().find_map(|e| match e {
         LeadEvent::Plan { plan_id, plan, ok, .. } => Some((plan_id.clone(), plan.clone(), *ok)),
         _ => None,
@@ -1029,7 +1080,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
     let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_for(&plan, &ctx, Profile::of_clean(req.clean.is_some())));
     let valid = checked.as_ref().ok().and_then(|result| result.plan.clone());
     let running: Vec<String> = events.iter().filter_map(|e| match e {
-        LeadEvent::Dispatch { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),
+        LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),
         _ => None,
     }).collect();
     let past: Vec<PastAutoRun> = events.iter().filter_map(|e| match e {
@@ -1105,10 +1156,23 @@ pub fn stop_all(home: &Path, project: &str) -> Result<usize, String> {
     lock.lock().map_err(|e| e.to_string())?;
     fs::write(thread_dir(home, &thread).join("stop-all-at"), Utc::now().to_rfc3339()).map_err(|e| e.to_string())?;
     let mut count = usize::from(stop(home, Some(project)));
-    for event in read_thread(home, &thread) {
-        if let LeadEvent::Dispatch { run_id, .. } = event {
-            if store::run_is_live(home, &run_id) && crate::run::runner::stop_run(home, &run_id).map_err(|e| e.to_string())? { count += 1; }
-        }
+    let mut runs: BTreeSet<String> = read_thread(home, &thread).into_iter().filter_map(|event| match event {
+        LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if is_run_id(&run_id) => Some(run_id),
+        _ => None,
+    }).collect();
+    let references: Vec<(String, String)> = fs::read_dir(home.join("runs")).into_iter().flatten().flatten().filter_map(|entry| {
+        let id = entry.file_name().to_string_lossy().into_owned();
+        if !is_run_id(&id) { return None; }
+        let (source, _): (String, String) = serde_json::from_slice(&fs::read(entry.path().join("followup.json")).ok()?).ok()?;
+        is_run_id(&source).then_some((id, source))
+    }).collect();
+    loop {
+        let before = runs.len();
+        for (id, source) in &references { if runs.contains(source) { runs.insert(id.clone()); } }
+        if runs.len() == before { break; }
+    }
+    for run_id in runs {
+        if store::run_is_live(home, &run_id) && crate::run::runner::stop_run(home, &run_id).map_err(|e| e.to_string())? { count += 1; }
     }
     Ok(count)
 }

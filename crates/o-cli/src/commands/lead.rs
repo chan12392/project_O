@@ -159,7 +159,10 @@ fn send(home: &Path, args: &[String]) -> i32 {
     let start = |run_id: &str| -> std::io::Result<()> {
         proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
     };
-    let result = if a.manual_dispatch { lead::send(home, &req, spawner.as_ref()) } else { lead::send_with_autorun(home, &req, spawner.as_ref(), &start) };
+    let resume = |run_id: &str| -> std::io::Result<()> {
+        proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_followup", run_id])).map(|_| ())
+    };
+    let result = if a.manual_dispatch { lead::send_with_followups(home, &req, spawner.as_ref(), &resume) } else { lead::send_with_autorun_and_followups(home, &req, spawner.as_ref(), &start, &resume) };
     match result {
         Ok(events) => {
             let thread = lead::current_thread(home, project);

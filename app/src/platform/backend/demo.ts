@@ -138,6 +138,7 @@ export const demoBackend: Backend = {
   leadShow: async () => ({ thread: null, projects: [] }),
   leadNote: async () => { throw new Error(LEAD_REFUSED); },
   leadNew: () => Promise.reject(new Error(LEAD_REFUSED)),
+  followup: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadAttach: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadSend: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadDispatch: () => Promise.reject(new Error(LEAD_REFUSED)),
