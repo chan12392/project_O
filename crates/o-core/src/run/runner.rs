@@ -9,7 +9,7 @@ use std::io::{self, BufRead, BufReader, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::Duration;
@@ -29,7 +29,7 @@ use crate::sys::proc;
 use crate::providers::{launch_spec_for, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
-    active_markers, append_event, clear_active, cooldown_times, is_clean, is_yolo, link_slot, mark_runner, mark_active, policy_context, read_events, read_plan, release_slot,
+    append_event, clear_active, cooldown_times, is_clean, is_yolo, link_slot, mark_runner, mark_active, policy_context, read_events, read_plan, release_slot,
     reserve_slot, resolved_path, run_dir, set_cooldown, stop_requested, ActiveMarker, Reservation, Reserved,
 };
 
@@ -401,18 +401,23 @@ impl Drop for Slot<'_> {
 /// An early I/O error must not leave a worker running after its slot is released.
 struct RunningChild {
     child: Child,
-    _tree: Option<proc::KillOnClose>,
+    _tree: Option<Arc<Mutex<proc::KillOnClose>>>,
+    stop_watch: Option<(mpsc::Sender<()>, thread::JoinHandle<()>)>,
     exited: Arc<AtomicBool>,
 }
 
 impl Drop for RunningChild {
     fn drop(&mut self) {
+        if let Some((done, watcher)) = self.stop_watch.take() {
+            let _ = done.send(());
+            let _ = watcher.join();
+        }
+        let tree_exited = self._tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|tree| tree.stop_and_confirm()));
+        #[cfg(windows)]
         if !matches!(self.child.try_wait(), Ok(Some(_))) {
-            proc::kill_tree(self.child.id());
             let _ = self.child.kill();
         }
         let exited = self.child.wait().is_ok();
-        let tree_exited = self._tree.as_ref().is_some_and(proc::KillOnClose::stop_and_confirm);
         self.exited.store(exited && tree_exited, Ordering::Release);
     }
 }
@@ -538,8 +543,21 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         }
     };
     slot.started = true;
-    let tree = proc::contain(&child);
-    let mut running_child = RunningChild { child, _tree: tree, exited: Arc::clone(&slot.exited) };
+    let tree = proc::contain(&child).map(|tree| Arc::new(Mutex::new(tree)));
+    let stop_watch = tree.as_ref().map(|tree| {
+        let tree = Arc::clone(tree);
+        let stop = run_dir(home, run_id).join("stop");
+        let (done, receiver) = mpsc::channel();
+        let watcher = thread::spawn(move || loop {
+            if stop.exists() {
+                if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); }
+                break;
+            }
+            if !matches!(receiver.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Timeout)) { break; }
+        });
+        (done, watcher)
+    });
+    let mut running_child = RunningChild { child, _tree: tree, stop_watch, exited: Arc::clone(&slot.exited) };
     let child = &mut running_child.child;
     let pid = child.id();
 
@@ -560,13 +578,6 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         }
         return Err(error);
     }
-    // An `o stop` that ran while the CLI was starting found no marker to kill: stop it here.
-    // (A stop from now on finds the marker written above.)
-    if stop_requested(home, run_id) {
-        proc::kill_tree(pid);
-        let _ = child.kill();
-    }
-
     if let Some(mut stdin) = child.stdin.take() {
         let text = spec.stdin.clone().unwrap_or_default();
         thread::spawn(move || {
@@ -691,16 +702,12 @@ pub fn official_command(spec: &LaunchSpec, cwd: &str) -> io::Result<Command> {
     Ok(command)
 }
 
-/// `o stop`: asks the runner to stop and ends the run's live card processes
-/// with their trees. `false` when there is no such run.
+/// `o stop`: ask the owning runner to stop. `false` when there is no such run.
 pub fn stop_run(home: &Path, run_id: &str) -> io::Result<bool> {
     if !run_dir(home, run_id).exists() {
         return Ok(false);
     }
     crate::run::store::request_stop(home, run_id)?;
-    for marker in active_markers(home).into_iter().filter(|m| m.run_id == run_id) {
-        proc::kill_tree(marker.pid);
-    }
     Ok(true)
 }
 

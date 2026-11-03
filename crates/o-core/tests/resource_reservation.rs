@@ -343,6 +343,60 @@ fn stopping_a_worker_releases_after_the_job_exits() {
 
 #[cfg(windows)]
 #[test]
+fn stop_never_kills_an_unowned_or_mismatched_marker_pid() {
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::stop_run;
+    use o_core::run::store::{create_run, mark_active, stop_requested, ActiveMarker};
+    let (home, project) = fixture();
+    let card = card("one", vec![]);
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card.clone()] };
+    let mut children: Vec<_> = (0..2).map(|_| {
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        o_core::sys::proc::hide_window(&mut command).spawn().unwrap()
+    }).collect();
+    for run in ["legacy", "mismatch"] { create_run(&home, run, &plan).unwrap(); }
+    let lease = granted(reserve(&home, &project, "mismatch", &card));
+    link_slot(&home, &lease, children[1].id()).unwrap();
+    for run in ["legacy", "mismatch"] {
+        mark_active(&home, &ActiveMarker { run_id: run.into(), card_id: card.id.clone(), provider: card.provider, pid: children[0].id() }).unwrap();
+        assert!(stop_run(&home, run).unwrap());
+        assert!(stop_requested(&home, run));
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    for child in &mut children {
+        assert!(child.try_wait().unwrap().is_none());
+        child.kill().unwrap();
+        child.wait().unwrap();
+    }
+    assert!(resource_held(&home, "mismatch", "one").unwrap());
+}
+
+#[cfg(windows)]
+#[test]
+fn stop_requested_during_start_is_handled_by_the_owner() {
+    use o_core::run::events::CardStatus;
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, stop_run, Spawner};
+    use o_core::run::store::create_run;
+    let (home, project) = fixture();
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card("one", vec![])] };
+    create_run(&home, "one", &plan).unwrap();
+    let stopping = home.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+        assert!(stop_run(&stopping, "one").unwrap());
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1");
+        Ok(command)
+    });
+    let started = std::time::Instant::now();
+    assert_eq!(run_plan(&home, "one", &plan, None, spawner).unwrap(), CardStatus::Stopped);
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(!resource_held(&home, "one", "one").unwrap());
+}
+
+#[cfg(windows)]
+#[test]
 fn worker_descendant_exits_before_resources_are_released() {
     use o_core::run::events::CardStatus;
     use o_core::run::plan::Plan;
