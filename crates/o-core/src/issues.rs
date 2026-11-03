@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::review::Gh;
-use crate::run::store::{is_run_id, locked_event_text, plan_card_ids, read_plan};
+use crate::run::{events::{CardStatus, OEvent}, store::{is_run_id, locked_event_text, plan_card_ids, read_plan}};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -154,9 +154,11 @@ pub fn resolve(home: &Path, id: i64, resolution: Option<Resolution>) -> Result<(
             let event: serde_json::Value = serde_json::from_str(line).map_err(|_| "검증 기록이 손상되었습니다")?;
             let kind = event.get("t").and_then(serde_json::Value::as_str).ok_or("검증 기록이 손상되었습니다")?;
             if matches!(kind, "card.start" | "card.queued" | "card.end") {
-                let card = event.get("cardId").and_then(serde_json::Value::as_str).ok_or("검증 기록이 손상되었습니다")?;
-                if kind == "card.end" && event.get("status").and_then(serde_json::Value::as_str).is_none() { return Err("검증 기록이 손상되었습니다".into()); }
-                if card == r.card_id { success = kind == "card.end" && event["status"] == "done"; }
+                match serde_json::from_value::<OEvent>(event).map_err(|_| "검증 기록이 손상되었습니다")? {
+                    OEvent::CardEnd { card_id, status, .. } if card_id == r.card_id => success = status == CardStatus::Done,
+                    OEvent::CardStart { card_id, .. } | OEvent::CardQueued { card_id, .. } if card_id == r.card_id => success = false,
+                    _ => {}
+                }
             }
         }
         if !cards.contains(&r.card_id) || !success {
