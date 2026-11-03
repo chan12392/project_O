@@ -461,6 +461,8 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     check_request(home, req)?;
     let thread_id = thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?;
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
+    let progress_path = thread_dir(home, &thread_id).join("progress.json");
+    let _ = fs::write(&progress_path, "[]");
     let before = read_thread(home, &thread_id);
     let attachments = req.attach.iter().map(|path| files::import(home, &thread_id, path)).collect::<Result<Vec<_>, _>>()?;
 
@@ -612,6 +614,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let mut last_message = String::new();
     let mut last: Option<(bool, String)> = None;
     let mut limited = false;
+    let mut progress = Vec::<Value>::new();
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout);
         let mut buf = Vec::new();
@@ -649,11 +652,16 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
                         let _ = budget::record(home, &[reading], Utc::now());
                     }
                     StreamSignal::Final { ok, text } => last = Some((ok, text)),
-                    StreamSignal::Tool { .. } => {}
+                    StreamSignal::Tool { name, summary } => {
+                        progress.push(json!({ "name": name, "summary": summary }));
+                        if progress.len() > 3 { progress.remove(0); }
+                        if let Ok(text) = serde_json::to_string(&progress) { let _ = fs::write(&progress_path, text); }
+                    }
                 }
             }
         }
     }
+    let _ = fs::write(&progress_path, "[]");
     // The watcher is done before the child is reaped, so it never ends a pid reused since.
     drop(done);
     let timed_out = watcher.join().unwrap_or(false);
@@ -975,6 +983,8 @@ pub struct ThreadView {
     pub project: String,
     /// A turn is running: its provider, or `"starting"` before its marker is written.
     pub busy: Option<String>,
+    /// Recent tools from this turn; never part of conversation history.
+    pub progress: Vec<Value>,
     /// Every event as written (screens ignore kinds they do not know).
     pub events: Vec<Value>,
 }
@@ -1000,11 +1010,17 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
         Some(project) => current_thread(home, project),
         None => projects.first().map(|p| p.thread_id.clone()),
     };
-    let thread = thread_id.map(|id| ThreadView {
-        project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
-        busy: running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string())),
-        events: event_values(home, &id),
-        thread_id: id,
+    let thread = thread_id.map(|id| {
+        let busy = running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()));
+        let progress = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
+            .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
+        ThreadView {
+            project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
+            busy,
+            progress,
+            events: event_values(home, &id),
+            thread_id: id,
+        }
     });
     json!({ "thread": thread, "projects": projects })
 }

@@ -17,6 +17,7 @@ use serde_json::{json, Value};
 
 const FAKE: &str = "O_FAKE_LEAD_LINES";
 const FAKE_SLEEP: &str = "O_FAKE_LEAD_SLEEP_MS";
+const FAKE_PAUSE: &str = "O_FAKE_LEAD_PAUSE_EACH_MS";
 /// Set for a fake CLI: the file it makes when it runs at all.
 const FAKE_RAN: &str = "O_FAKE_LEAD_RAN";
 /// Set for this binary as a turn's owner in its own process (the app, standing in): a JSON job.
@@ -37,13 +38,17 @@ fn main() {
         let keys: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| watched.iter().any(|n| n.eq_ignore_ascii_case(k))).collect();
         for line in lines {
             println!("{}", line.replace("{keys}", &keys.join(",")).replace("{agent-role}", &std::env::var("O_AGENT_ROLE").unwrap_or_default()));
+            if let Some(ms) = std::env::var(FAKE_PAUSE).ok().and_then(|v| v.parse().ok()) {
+                std::thread::sleep(std::time::Duration::from_millis(ms));
+            }
         }
         return;
     }
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 26] = [
+    let tests: [(&str, fn()); 27] = [
+        ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
         ("design snapshots persist and malformed ones do not dispatch", design_snapshots),
         ("only the latest plan in the current thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
@@ -186,6 +191,33 @@ fn lead_child_marker() {
     let (spawner, _) = fake(claude_answer("session", "{agent-role}"));
     let events = lead::send(&home, &request(&project, "확인"), spawner.as_ref()).unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "lead")));
+}
+
+fn live_tool_progress() {
+    let (home, project) = setup("tool-progress");
+    let mut lines = vec![json!({ "type": "assistant", "message": { "content": [{ "type": "tool_use", "name": "Read", "input": { "file_path": "src/demo.py" } }] } }).to_string()];
+    lines.extend(claude_answer("session", "완료"));
+    let worker_home = home.clone();
+    let worker_project = project.clone();
+    let worker = std::thread::spawn(move || {
+        let spawner = move |_: &LaunchSpec, cwd: &str| {
+            let mut command = Command::new(std::env::current_exe()?);
+            command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_PAUSE, "500");
+            Ok(command)
+        };
+        lead::send(&worker_home, &request(&worker_project, "읽어줘"), &spawner).unwrap();
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let view = lead::show(&home, Some(&project));
+        if view["thread"]["progress"].as_array().is_some_and(|items| items.iter().any(|item| item["name"] == "Read" && item["summary"] == "src/demo.py")) { break; }
+        assert!(std::time::Instant::now() < deadline, "tool progress never became visible: {view}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    worker.join().unwrap();
+    let view = lead::show(&home, Some(&project));
+    assert_eq!(view["thread"]["progress"], json!([]));
+    assert!(view["thread"]["events"].as_array().unwrap().iter().all(|event| event["t"] != "lead.tool"));
 }
 
 fn autorun() {

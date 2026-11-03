@@ -1,5 +1,5 @@
 import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play } from "lucide-react";
-import { useId, useState, type FormEvent } from "react";
+import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadReadProblem, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
@@ -14,6 +14,7 @@ import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
 /** Thread events may name an agent this build does not know; it shows as its id. */
 const LEAD_NAME: Record<string, string> = NAMES;
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+const TOOL_NAME: Record<string, string> = { Read: "파일 읽기", Grep: "내용 검색", Glob: "파일 찾기", shell: "명령 실행", edit: "파일 변경", web_search: "웹 검색" };
 
 interface Props {
   project: string | undefined;
@@ -27,6 +28,16 @@ interface Props {
 export function LeadThread({ project, lead, onCompose, onStartProject }: Props) {
   const scroller = useFollowBottom([lead.items, lead.busy]);
   const [stopError, setStopError] = useState("");
+  const seen = useRef<{ thread: string; replies: Set<string> } | undefined>(undefined);
+  const threadId = lead.thread?.threadId;
+  useEffect(() => {
+    if (!threadId) { seen.current = undefined; return; }
+    const replies = new Set(lead.items.flatMap((item, i) => item.kind === "reply" ? [`${item.at}-${i}`] : []));
+    seen.current = { thread: threadId, replies };
+  }, [threadId, lead.items]);
+  const known = seen.current;
+  const lastUser = lead.items.findLastIndex((item) => item.kind === "user");
+  const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "error");
   return (
     <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
       <div className="mx-auto flex max-w-3xl flex-col gap-6 px-6 py-6 text-sm text-chat-foreground">
@@ -50,7 +61,7 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
           </Notice>
         )}
         {lead.items.map((item, i) => (
-          <Item key={`${item.kind}-${item.at}-${i}`} item={item} />
+          <Item key={`${threadId}-${item.kind}-${item.at}-${i}`} item={item} animate={Boolean(item.kind === "reply" && threadId && known && known.thread === threadId && !known.replies.has(`${item.at}-${i}`))} />
         ))}
         {project && lead.failed && lead.loaded && (
           // Read once, then a check failed: what shows may be old. One line, not the whole notice.
@@ -64,18 +75,20 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
             </button>
           </p>
         )}
-        {lead.busy && (
-          <p role="status" className="flex items-center gap-2 text-xs text-chat-foreground-faint">
-            <span className="shimmer h-2 w-16 rounded-full" aria-hidden="true" />
-            총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 프로젝트를 읽고 답하는 중…
-          </p>
+        {answering && (
+          <div role="status" className="space-y-1 text-xs text-chat-foreground-faint">
+            {(lead.thread?.progress ?? []).map((step, i) => (
+              <p key={`${step.name}-${step.summary}-${i}`} className="break-all">{TOOL_NAME[step.name] ?? step.name}{step.summary ? ` · ${step.summary}` : ""}</p>
+            ))}
+            <p>총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…</p>
+          </div>
         )}
       </div>
     </div>
   );
 }
 
-function Item({ item }: { item: LeadItem }) {
+function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
   switch (item.kind) {
     case "user":
       return (
@@ -105,7 +118,7 @@ function Item({ item }: { item: LeadItem }) {
           <p className="mb-1.5 text-xs text-chat-foreground-faint">
             총괄 {LEAD_NAME[item.provider] ?? item.provider} <time dateTime={item.at}>{timeOf(item.at)}</time>
           </p>
-          <Markdown text={item.text} />
+          <ReplyText text={item.text} animate={animate} />
         </article>
       );
     case "error":
@@ -118,6 +131,23 @@ function Item({ item }: { item: LeadItem }) {
     case "plan":
       return <p className="text-xs text-chat-foreground-faint">{item.title} · {item.runId ? `분배한 작업 ${item.runId}` : "오른쪽 설계에서 최신 분배안을 확인하세요."}</p>;
   }
+}
+
+function ReplyText({ text, animate }: { text: string; animate: boolean }) {
+  const chars = Array.from(text);
+  const [visible, setVisible] = useState(() => animate && !window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : chars.length);
+  useEffect(() => {
+    if (visible >= chars.length) return;
+    const start = performance.now();
+    const duration = Math.min(2000, Math.max(400, chars.length * 5));
+    const timer = window.setInterval(() => {
+      const next = Math.min(chars.length, Math.ceil(chars.length * (performance.now() - start) / duration));
+      setVisible(next);
+      if (next >= chars.length) window.clearInterval(timer);
+    }, 45);
+    return () => window.clearInterval(timer);
+  }, [text]);
+  return <Markdown text={chars.slice(0, visible).join("")} />;
 }
 
 /** A proposed plan: its cards, what the policy said, and 실행 (once). */

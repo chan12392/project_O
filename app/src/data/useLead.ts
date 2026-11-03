@@ -26,6 +26,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
   const [view, dispatchView] = useReducer(leadView, LEAD_VIEW);
   const [sending, setSending] = useState(false);
   const seq = useRef(0);
+  const busyPoll = useRef(false);
 
   const refresh = useCallback(async () => {
     if (!enabled) return;
@@ -46,7 +47,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
       run: refresh,
       delay: POLL_MS,
       hidden: () => document.hidden,
-      setTimer: (fn, ms) => window.setTimeout(fn, ms),
+      setTimer: (fn, ms) => window.setTimeout(fn, busyPoll.current ? 600 : ms),
       clearTimer: (id) => window.clearTimeout(id),
     });
     const onVisibility = () => poll.wake();
@@ -61,6 +62,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
   const show = view.project === project ? view.show : undefined;
   const failed = view.project === project ? view.failed : undefined;
   const thread = show?.thread && (!project || show.thread.project === project || sameFolder(show.thread.project, project)) ? show.thread : null;
+  busyPoll.current = sending || Boolean(thread?.busy);
   const items = useMemo(() => leadItems(thread?.events ?? []), [thread]);
 
   const send = useCallback(

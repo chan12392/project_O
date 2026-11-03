@@ -41,7 +41,7 @@ export type LeadEvent =
 
 /** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
 }
 
