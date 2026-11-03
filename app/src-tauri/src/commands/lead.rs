@@ -192,6 +192,21 @@ pub async fn lead_retry(run_id: String, message_id: String) -> Result<Value, Str
 }
 
 #[tauri::command]
+pub async fn lead_answer_approval(run_id: String, message_id: String, text: String) -> Result<Value, String> {
+    blocking(move || {
+        use o_core::run::team::{self, Caller, Refused};
+        let home = store::default_home();
+        let speaker = team::speaker(&home, Caller { env_card: None, env_run: None, flag_run: Some(run_id), flag_as: Some("lead".into()) })?;
+        team::answer_approval(&home, &speaker, &message_id, &text)
+            .map(|id| json!({ "id": id }))
+            .map_err(|e| match e {
+                Refused::Policy(violations) => violations.into_iter().map(|v| v.message).collect::<Vec<_>>().join("\n"),
+                Refused::Io(error) => error.to_string(),
+            })
+    }).await?
+}
+
+#[tauri::command]
 pub async fn lead_stop_all(project: String) -> Result<Value, String> {
     blocking(move || lead::stop_all(&store::default_home(), &project).map(|stopped| json!({ "stopped": stopped }))).await?
 }

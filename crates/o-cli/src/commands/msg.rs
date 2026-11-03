@@ -1,6 +1,7 @@
 //! `o msg send|read|post`: the run's team channel.
 
 use std::collections::HashMap;
+use std::io::Read;
 use std::path::Path;
 
 use o_core::run::team::{self, Caller, Refused};
@@ -14,6 +15,7 @@ pub const MSG: Command = Command {
   o msg wait                 새 메시지를 최대 30초 기다린 뒤 첫 메시지 인수
   o msg send --question --id <재시도키> ...  질문 구분과 중복 방지 키
   o msg send --approval --id <재시도키> ...  사람의 승인 요청 (총괄 자동 응답 없음)
+  o msg answer-approval --run <실행> --id <요청ID> -  표준 입력으로 승인 요청에 답하기
   o msg send --to <질문자> --reply-to <질문ID> ...  질문에 답하기
   o msg ack|delivered|unknown|retry|cancel --id <메시지ID>  처리 상태 기록
   o msg post                 카드의 outbox 파일(첫 줄 \"to: <상대>\")을 팀 대화로 보내기
@@ -78,6 +80,21 @@ fn message(home: &Path, args: &[String]) -> i32 {
         Err(Refused::Io(error)) => fail(&format!("접수 결과가 불명일 수 있습니다. 같은 --id로 다시 확인해 주세요: {error}")),
     }};
     match verb {
+        "answer-approval" => {
+            if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+                return fail("승인 요청에는 사용자가 직접 답해야 합니다");
+            }
+            let Some(id) = flags.get("id") else { return fail("--id가 필요합니다") };
+            if words != ["-"] { return fail("답변은 표준 입력으로 보내세요") }
+            let mut text = String::new();
+            if let Err(error) = std::io::stdin().take(65_537).read_to_string(&mut text) { return fail(&error.to_string()); }
+            if text.len() > 65_536 { return fail("답변이 너무 깁니다") }
+            match team::answer_approval(home, &speaker, id, &text) {
+                Ok(id) => { println!("{}", serde_json::json!({"id": id})); 0 }
+                Err(Refused::Policy(violations)) => { print_violations(&violations); 2 }
+                Err(Refused::Io(error)) => fail(&error.to_string()),
+            }
+        }
         "send" => send(flags.get("to").map_or(if flags.contains_key("approval") { "lead" } else { "all" }, String::as_str), &words.join(" ")),
         "post" => {
             match team::post(home, &speaker) {

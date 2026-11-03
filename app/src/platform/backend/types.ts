@@ -211,6 +211,7 @@ export interface Backend {
   leadStop(project?: string): Promise<{ stopped: boolean }>;
   leadWake(runId: string): Promise<{ processed: boolean }>;
   leadRetry(runId: string, messageId: string): Promise<{ state: "queued" | "acknowledged" }>;
+  leadAnswerApproval(runId: string, messageId: string, text: string): Promise<{ id: string }>;
   leadStopAll(project: string): Promise<{ stopped: number }>;
   /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
   leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;

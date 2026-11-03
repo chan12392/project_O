@@ -83,6 +83,18 @@ pub fn send_approval(home: &Path, speaker: &Speaker, text: &str, key: Option<&st
     send_kind(home, speaker, "lead", text, "approval", key, None)
 }
 
+/// A person's answer references the approval request and keeps retries idempotent.
+pub fn answer_approval(home: &Path, speaker: &Speaker, question_id: &str, text: &str) -> Result<String, Refused> {
+    if speaker.me != "lead" { return Err(Refused::Io(io::Error::other("승인 요청에는 사용자가 직접 답해야 합니다"))); }
+    let messages = read(home, speaker, true).map_err(Refused::Io)?;
+    let request = messages.iter().find(|m| m.id == question_id && m.kind == "approval" && m.to == "lead")
+        .ok_or_else(|| Refused::Io(io::Error::other("승인 요청을 찾지 못했습니다")))?;
+    let id = send_reply(home, speaker, &request.from, text, false, None, Some(question_id))?;
+    transition(home, speaker, question_id, "acknowledged")
+        .map_err(|e| Refused::Io(io::Error::other(format!("답변은 저장됐지만 승인 요청의 상태를 확인하지 못했습니다: {e}"))))?;
+    Ok(id)
+}
+
 fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, key: Option<&str>, reply_to: Option<&str>) -> Result<String, Refused> {
     let violations = check_message(text, &Parties { from: &speaker.me, to, known: &speaker.cards });
     if !violations.is_empty() {

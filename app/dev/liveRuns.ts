@@ -201,6 +201,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     run(o(["lead", "retry", runId, messageId]));
     return true;
   }
+  if (path === "/lead/answer-approval") {
+    const runId = query.get("run") ?? "";
+    const messageId = query.get("message") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId) || !/^[A-Za-z0-9_-]{1,160}$/.test(messageId)) { fail(400, "실행 또는 메시지 ID가 올바르지 않습니다"); return true; }
+    try { run(oWithInput(["msg", "answer-approval", "--run", runId, "--id", messageId, "-"], await body(req, 65_536), 60_000)); }
+    catch (e) { fail(413, (e as Error).message); }
+    return true;
+  }
   if (path === "/lead/followup") {
     const runId = query.get("run") ?? "";
     const card = query.get("card") ?? "";

@@ -160,6 +160,7 @@ export const demoBackend: Backend = {
   leadStop: async () => ({ stopped: false }),
   leadWake: async () => { throw new Error("미리보기에서는 총괄을 실행할 수 없습니다"); },
   leadRetry: async () => { throw new Error("미리보기에서는 메시지를 복구할 수 없습니다"); },
+  leadAnswerApproval: async () => { throw new Error("미리보기에서는 답변을 보낼 수 없습니다"); },
   leadStopAll: async () => ({ stopped: 0 }),
   leadModels: async (provider) => ({ provider, models: DEMO_MODELS[provider] }),
   projects: async () => demoList(),
