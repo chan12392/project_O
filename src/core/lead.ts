@@ -159,7 +159,31 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
   return items;
 }
 
-const isObject = (v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
+type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
+
+/**
+ * A thread's plans for the design panel: the latest, the only one offered to run, and the
+ * earlier ones newest first, which stay readable (cards, dependencies, violations) but never run (#40).
+ */
+export function leadPlans(items: readonly LeadItem[]): { latest?: LeadPlan; earlier: LeadPlan[] } {
+  const plans = items.filter((item): item is LeadPlan => item.kind === "plan");
+  return { latest: plans.at(-1), earlier: plans.slice(0, -1).reverse() };
+}
+
+/** A plan the user wrote after, or the lead proposed another after, is out of date: it is not dispatched. */
+export function planIsStale(items: readonly LeadItem[], planId: string): boolean {
+  const position = items.findIndex((item) => item.kind === "plan" && item.planId === planId);
+  return position < 0 || items.slice(position + 1).some((item) => item.kind === "user" || item.kind === "plan");
+}
+
+/** What became of an earlier plan, for its line in the earlier-designs list. */
+export function earlierPlanOutcome(plan: LeadPlan): string {
+  if (plan.runId) return `실행 ${plan.runId}`;
+  if (plan.problems.length > 0) return "형식 오류";
+  return plan.ok ? "실행하지 않음" : "정책 차단";
+}
+
+const isObject =(v: unknown): v is Record<string, unknown> => typeof v === "object" && v !== null && !Array.isArray(v);
 const text = (v: unknown): string | undefined => (typeof v === "string" ? v : undefined);
 
 /**

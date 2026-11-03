@@ -11,16 +11,19 @@ import {
   attachProblem,
   canLead,
   draftKey,
+  earlierPlanOutcome,
   draftOf,
   editDraft,
   effortFor,
   fileSize,
   leadItems,
+  leadPlans,
   leadProgressSummary,
   leadReadProblem,
   leadToolLabel,
   leadView,
   modelLabel,
+  planIsStale,
   restoreDraft,
   takeDraft,
   taskIsLong,
@@ -148,6 +151,52 @@ test("a stored plan of the wrong shape draws as a safe plan with a notice, never
   const stored: LeadEvent = { t: "lead.plan", at: "5", planId: "th-p5", plan: { title: "README", cards: [{ id: "docs", provider: "claude", task: "한 줄" }] }, ok: true, violations: [] };
   const good = leadItems([stored]);
   assert.ok(good[0].kind === "plan" && good[0].ok && good[0].problems.length === 0);
+});
+
+test("an earlier plan stays readable after a newer one, and only the latest can run (#40)", () => {
+  const items = leadItems([
+    { t: "lead.user", at: "1", text: "로그인 고쳐 줘", provider: "claude", attachments: [] },
+    {
+      t: "lead.plan",
+      at: "2",
+      planId: "th-a",
+      plan: { title: "계획 A", cards: [{ id: "api", provider: "codex", task: "토큰 검사" }, { id: "ui", provider: "openclaw", task: "로그인 화면", depends_on: ["api"] }] },
+      ok: false,
+      violations: [{ rule: "provider", cardId: "ui", message: "허용하지 않는 프로바이더" }],
+    },
+    { t: "lead.user", at: "3", text: "Claude로 바꿔 줘", provider: "claude", attachments: [] },
+    {
+      t: "lead.plan",
+      at: "4",
+      planId: "th-b",
+      plan: { title: "계획 B", cards: [{ id: "fix", provider: "claude", task: "토큰과 화면" }, { id: "test", provider: "codex", task: "테스트", depends_on: ["fix"] }] },
+      ok: false,
+      violations: [{ rule: "daily-budget", cardId: "test", message: "오늘 예산 소진" }],
+    },
+  ] as LeadEvent[]);
+  const { latest, earlier } = leadPlans(items);
+  assert.equal(latest?.planId, "th-b");
+  assert.deepEqual(earlier.map((plan) => plan.planId), ["th-a"]);
+  // A's own cards, dependencies and violation, not B's.
+  const [a] = earlier;
+  assert.deepEqual(a.cards.map((card) => [card.id, card.task, card.depends_on]), [["api", "토큰 검사", undefined], ["ui", "로그인 화면", ["api"]]]);
+  assert.deepEqual(a.violations, [{ rule: "provider", cardId: "ui", message: "허용하지 않는 프로바이더" }]);
+  assert.equal(earlierPlanOutcome(a), "정책 차단");
+  // A is out of date, so it is not dispatched; B still is the one to run.
+  assert.equal(planIsStale(items, "th-a"), true);
+  assert.equal(planIsStale(items, "th-b"), false);
+  assert.equal(earlierPlanOutcome({ ...a, ok: true, violations: [] }), "실행하지 않음");
+  assert.equal(earlierPlanOutcome({ ...a, runId: "r1" }), "실행 r1");
+  // The earlier-designs list draws the read-only details; only the latest gets the PlanCard with its run button.
+  const source = (path: string) => readFileSync(new URL(`../app/src/features/${path}`, import.meta.url), "utf8");
+  const work = source("work/WorkTab.tsx");
+  assert.match(work, /<PlanCard plan=\{latest\}/);
+  assert.equal(work.match(/<PlanCard\b/g)?.length, 1);
+  assert.match(work, /<PlanDetails plan=\{plan\} \/>/);
+  const thread = source("chat/LeadThread.tsx");
+  const details = thread.slice(thread.indexOf("export function PlanDetails"), thread.indexOf("function CardTask"));
+  assert.ok(details.length > 0);
+  assert.doesNotMatch(details, /dispatch|BUTTON_PRIMARY/);
 });
 
 const shown = (project: string, projects: string[]): LeadShow => ({
