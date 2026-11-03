@@ -202,7 +202,14 @@ const PROJECT_CONFIG: [&str; 3] = ["opencode.json", "opencode.jsonc", ".opencode
 
 /// The first OpenCode project config a run in `cwd` would load, nearest folder first (#37).
 pub fn project_config(cwd: &Path) -> Option<std::path::PathBuf> {
-    cwd.ancestors().flat_map(|dir| PROJECT_CONFIG.map(|name| dir.join(name))).find(|path| path.exists())
+    cwd.ancestors().flat_map(|dir| PROJECT_CONFIG.map(|name| dir.join(name))).find(|path| path.exists() && !install_folder_only(path))
+}
+
+/// OpenCode's install script puts its binary in `~/.opencode/bin`: a `.opencode` holding only
+/// that is not project config. Anything else in it, or a folder that can't be read, still counts.
+fn install_folder_only(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".opencode")
+        && std::fs::read_dir(path).is_ok_and(|entries| entries.into_iter().all(|entry| entry.is_ok_and(|e| e.file_name() == "bin")))
 }
 
 /// Why a card without YOLO does not start where `project_config` found something.

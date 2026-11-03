@@ -724,7 +724,10 @@ fn opencode_project_config_is_found_from_the_folder_up() {
     let deep = base.join("a").join("b");
     std::fs::create_dir_all(&deep).unwrap();
     assert!(project_config(&deep).is_none_or(|found| !found.starts_with(&base)));
-    std::fs::create_dir_all(base.join(".opencode")).unwrap();
+    // The install script's `~/.opencode/bin` alone is not project config.
+    std::fs::create_dir_all(base.join(".opencode").join("bin")).unwrap();
+    assert!(project_config(&deep).is_none_or(|found| !found.starts_with(&base)));
+    std::fs::create_dir_all(base.join(".opencode").join("plugins")).unwrap();
     assert_eq!(project_config(&deep), Some(base.join(".opencode")));
     std::fs::write(base.join("a").join("opencode.json"), "{}").unwrap();
     assert_eq!(project_config(&deep), Some(base.join("a").join("opencode.json")));
