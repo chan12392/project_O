@@ -23,10 +23,32 @@ const FAKE_SLEEP: &str = "O_FAKE_LEAD_SLEEP_MS";
 const FAKE_PAUSE: &str = "O_FAKE_LEAD_PAUSE_EACH_MS";
 /// Set for a fake CLI: the file it makes when it runs at all.
 const FAKE_RAN: &str = "O_FAKE_LEAD_RAN";
+/// Set for the Codex app-server probe: "1" prints the app-server help, "0" the top-level help
+/// an older CLI prints for `app-server --help` (it reads `app-server` as a prompt).
+const FAKE_PROBE: &str = "O_FAKE_LEAD_PROBE";
+/// Set with FAKE_PROBE: a file the probe adds a line to each time it runs.
+const FAKE_PROBE_LOG: &str = "O_FAKE_LEAD_PROBE_LOG";
 /// Set for this binary as a turn's owner in its own process (the app, standing in): a JSON job.
 const OWNER: &str = "O_FAKE_LEAD_OWNER";
 
 fn main() {
+    if let Ok(probe) = std::env::var(FAKE_PROBE) {
+        if let Some(log) = std::env::var_os(FAKE_PROBE_LOG) {
+            let mut file = std::fs::OpenOptions::new().create(true).append(true).open(log).unwrap();
+            writeln!(file, "probe").unwrap();
+        }
+        if probe == "1" {
+            println!("[experimental] Run the app server or related tooling
+
+Usage: codex app-server [OPTIONS] [COMMAND]");
+        } else {
+            println!("Codex CLI
+
+Usage: codex [OPTIONS] [PROMPT]
+       codex [OPTIONS] <COMMAND> [ARGS]");
+        }
+        return;
+    }
     if let Ok(lines) = std::env::var(FAKE) {
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
         if std::env::var_os(FAKE_APP_SERVER).is_some() { return fake_app_server(lines); }
@@ -87,7 +109,8 @@ fn main() {
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 5] = [
+    let extra: [(&str, fn()); 6] = [
+        ("a Codex CLI without app-server leads through read-only exec, probed once, resuming across transports", codex_exec_fallback),
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
         ("Codex declines read-only approval requests and continues", codex_approval),
         ("Codex shows partial prose while keeping the plan hidden", codex_partial),
@@ -288,9 +311,42 @@ fn fake_app_server(lines: Vec<String>) {
 
 /// A fake lead CLI that waits `ms` before printing `lines`.
 fn fake_slow(lines: Vec<String>, ms: u64) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
+    fake_cli(lines, ms, APP_SERVER)
+}
+
+/// What the fake Codex answers to the app-server probe. `tag` names the fake CLI: O keeps one
+/// probe result per CLI command line, so a different tag is a different (unprobed) CLI.
+struct FakeProbe {
+    app_server: bool,
+    tag: &'static str,
+    log: Option<PathBuf>,
+}
+
+/// A fake Codex CLI without app-server (an older one), printing `lines` from `codex exec`.
+fn fake_without_app_server(lines: Vec<String>, tag: &'static str, log: PathBuf) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
+    fake_cli(lines, 0, FakeProbe { app_server: false, tag, log: Some(log) })
+}
+
+/// The fake Codex every app-server test uses.
+const APP_SERVER: FakeProbe = FakeProbe { app_server: true, tag: "app-server", log: None };
+
+/// The fake CLI's answer when `spec` is the app-server probe.
+fn probe_command(spec: &LaunchSpec, cwd: &str, probe: &FakeProbe) -> Option<std::io::Result<Command>> {
+    if spec.bin != "codex" || spec.args != o_core::providers::codex::APP_SERVER_PROBE { return None; }
+    Some(std::env::current_exe().map(|exe| {
+        let mut command = Command::new(exe);
+        command.current_dir(cwd).arg(format!("probe-{}", probe.tag)).env(FAKE_PROBE, if probe.app_server { "1" } else { "0" });
+        if let Some(log) = &probe.log { command.env(FAKE_PROBE_LOG, log); }
+        command
+    }))
+}
+
+/// The probe's launch is answered by `probe` and not kept with the turn launches.
+fn fake_cli(lines: Vec<String>, ms: u64, probe: FakeProbe) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
     let keep = seen.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        if let Some(command) = probe_command(spec, cwd, &probe) { return command; }
         keep.lock().unwrap().push(spec.clone());
         let mut command = Command::new(std::env::current_exe()?);
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_SLEEP, ms.to_string());
@@ -354,7 +410,8 @@ fn live_tool_progress() {
     let worker_home = home.clone();
     let worker_project = project.clone();
     let worker = std::thread::spawn(move || {
-        let spawner = move |_: &LaunchSpec, cwd: &str| {
+        let spawner = move |spec: &LaunchSpec, cwd: &str| {
+            if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
             let mut command = Command::new(std::env::current_exe()?);
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_PAUSE, "500");
             Ok(command)
@@ -398,7 +455,8 @@ fn codex_approval() {
         json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string()];
     let (worker_home, worker_project) = (home.clone(), project.clone());
     let worker = std::thread::spawn(move || {
-        let spawner = move |_: &LaunchSpec, cwd: &str| {
+        let spawner = move |spec: &LaunchSpec, cwd: &str| {
+            if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
             let mut command = Command::new(std::env::current_exe()?);
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
                 .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
@@ -434,7 +492,8 @@ fn codex_slow_shutdown() {
     let (home, project) = setup("codex-slow-shutdown");
     let lines = vec![json!({"type":"item.completed","item":{"type":"agent_message","text":"끝났습니다."}}).to_string(),
         json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string()];
-    let spawner = move |_: &LaunchSpec, cwd: &str| {
+    let spawner = move |spec: &LaunchSpec, cwd: &str| {
+        if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
         let mut command = Command::new(std::env::current_exe()?);
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
             .env(FAKE_APP_SERVER, "1").env(FAKE_LINGER, "20000");
@@ -458,7 +517,8 @@ fn codex_partial() {
     ];
     let (worker_home, worker_project) = (home.clone(), project.clone());
     let worker = std::thread::spawn(move || {
-        let spawner = move |_: &LaunchSpec, cwd: &str| {
+        let spawner = move |spec: &LaunchSpec, cwd: &str| {
+            if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
             let mut command = Command::new(std::env::current_exe()?);
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
                 .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
@@ -1442,4 +1502,48 @@ fn session_index() {
     ids.sort();
     assert_eq!(ids, ["sess-ix", "th-old"]);
     assert!(std::fs::read_to_string(old_dir.join("sessions.txt")).unwrap().contains("th-old"));
+}
+
+/// An older Codex CLI (no app-server) leads through the earlier read-only `codex exec`, probed
+/// once per CLI. The conversation id is the same in both transports, so a thread that started
+/// on exec resumes on app-server (after an update) and back again (after a downgrade).
+fn codex_exec_fallback() {
+    let (home, project) = setup("codex-exec-fallback");
+    let log = home.join("probes.log");
+    let lines = vec![
+        json!({ "type": "thread.started", "thread_id": "th-old" }).to_string(),
+        json!({ "type": "item.completed", "item": { "type": "agent_message", "text": "네 {keys}" } }).to_string(),
+        json!({ "type": "turn.completed", "usage": { "input_tokens": 3, "cached_input_tokens": 1, "output_tokens": 2 } }).to_string(),
+    ];
+    let (old, seen) = fake_without_app_server(lines.clone(), "exec-fallback", log.clone());
+    let req = SendRequest { provider: ProviderId::Codex, effort: None, ..request(&project, "codex 처음") };
+    let events = lead::send(&home, &req, old.as_ref()).unwrap();
+    // The API key of the shell never reaches the lead ("{keys}" stays empty).
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "네")), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Session { session_id, .. } if session_id == "th-old")));
+    lead::send(&home, &SendRequest { text: "codex 이어서", ..req }, old.as_ref()).unwrap();
+    let specs = seen.lock().unwrap().clone();
+    assert_eq!(specs.len(), 2);
+    assert_eq!(specs[0].args, ["exec", "-s", "read-only", "-C", project.as_str(), "--skip-git-repo-check", "--disable", "hooks", "--json", "-"]);
+    assert!(specs[0].stdin.as_deref().unwrap().contains("codex 처음"));
+    assert_eq!(specs[1].args, ["exec", "-s", "read-only", "-C", project.as_str(), "--skip-git-repo-check", "--disable", "hooks", "resume", "--json", "th-old", "-"]);
+    for spec in &specs {
+        assert_eq!(spec.env_remove, ["CODEX_API_KEY"]);
+    }
+    // Probed once for this CLI, not on every turn.
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
+
+    // Updated to a CLI with app-server: the same conversation resumes there.
+    let (new, seen) = fake(lines.clone());
+    lead::send(&home, &SendRequest { text: "업데이트 후", ..req }, new.as_ref()).unwrap();
+    assert_eq!(seen.lock().unwrap()[0].args, ["app-server", "--disable", "hooks"]);
+    let sent: Value = serde_json::from_slice(&std::fs::read(Path::new(&project).join("fake-codex-input.json")).unwrap()).unwrap();
+    assert_eq!(sent["thread"]["method"], "thread/resume");
+    assert_eq!(sent["thread"]["params"]["threadId"], "th-old");
+
+    // And back on a CLI without it, exec resumes the conversation app-server kept.
+    let (back, seen) = fake_without_app_server(lines, "exec-fallback-again", log.clone());
+    lead::send(&home, &SendRequest { text: "다시 예전 CLI", ..req }, back.as_ref()).unwrap();
+    assert_eq!(arg_after(&seen.lock().unwrap()[0].args, "--json"), Some("th-old"));
+    assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 2);
 }

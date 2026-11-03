@@ -238,7 +238,7 @@ mod tests {
     fn resume_sends_read_only_turn_and_delivers_stream() {
         let images = vec!["/tmp/image.png".to_string()];
         let turn = LeadTurn { project: "/project", prompt: "hello".into(), session: Some("session-1"), model: Some("m-1"),
-            effort: Some("high"), files_dir: None, images: &images };
+            effort: Some("high"), files_dir: None, images: &images, app_server: true };
         let input = concat!(
             "{\"id\":1,\"result\":{}}\n",
             "{\"id\":2,\"result\":{\"thread\":{\"id\":\"session-1\"}}}\n",

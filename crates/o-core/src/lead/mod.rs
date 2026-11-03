@@ -555,6 +555,11 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
     let files_dir = files::thread_files(home, &thread_id);
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
     let images: Vec<String> = attachments.iter().filter(|a| a.image).map(|a| a.path.clone()).collect();
+    // The read-only Codex lead runs on app-server when the CLI has it, else on `codex exec`
+    // (ADR-0023). Decided here, before the turn starts; the result is kept per CLI.
+    let app_server = req.provider == ProviderId::Codex
+        && !req.yolo
+        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(providers::codex::supports_app_server);
     let turn = LeadTurn {
         project: req.project,
         prompt: text,
@@ -563,6 +568,7 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         effort: req.effort.filter(|e| !e.is_empty()),
         files_dir: files_dir.as_deref(),
         images: &images,
+        app_server,
     };
     let Some(spec) = providers::lead_spec(req.provider, &turn, req.yolo) else {
         return Err(format!("{}는 총괄로 쓸 수 없습니다", req.provider));
@@ -623,7 +629,6 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
             }
         })
     };
-    let app_server = req.provider == ProviderId::Codex && !req.yolo;
     if !app_server {
         if let Some(mut stdin) = child.stdin.take() {
             let text = spec.stdin.clone().unwrap_or_default();
