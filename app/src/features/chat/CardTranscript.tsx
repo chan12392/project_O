@@ -80,6 +80,9 @@ function Entry({
     );
   }
   if (entry.kind === "tool" && entry.tool) {
+    if (entry.tool.word === "O 작업 폴더") {
+      return <li className="min-w-0 px-2 py-1"><span className="text-xs text-chat-foreground-faint">작업 폴더</span><p className="mt-1 select-text break-all font-mono text-chat-code">{entry.tool.detail}</p></li>;
+    }
     const Icon = TOOL_ICON[entry.tool.word] ?? Wrench;
     return (
       <li className="flex min-w-0 items-center gap-2 rounded-md px-2 py-1 hover:bg-accent/20">

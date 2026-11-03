@@ -390,8 +390,6 @@ function MainWindow() {
               <LeadThread
                 project={project?.path}
                 lead={lead}
-                runOf={(runId) => runs.find((r) => r.view.runId === runId)?.view}
-                onOpenCard={openCard}
                 onCompose={compose}
                 onStartProject={async (path) => {
                   // A folder started here goes on the list too, or it would vanish from the sidebar (ADR-0009).

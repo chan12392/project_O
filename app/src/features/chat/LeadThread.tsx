@@ -18,16 +18,13 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 interface Props {
   project: string | undefined;
   lead: LeadState;
-  /** The run a dispatched plan started, once its first events are read. */
-  runOf: (runId: string) => RunView | undefined;
-  onOpenCard: (runId: string, cardId: string) => void;
   onCompose: () => void;
   /** A folder chosen when there is no project yet; resolves once its thread exists. */
   onStartProject: (path: string) => Promise<void>;
 }
 
 /** The real lead chat (ADR-0008): messages, the lead's answers, its plans and what they started. */
-export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStartProject }: Props) {
+export function LeadThread({ project, lead, onCompose, onStartProject }: Props) {
   const scroller = useFollowBottom([lead.items, lead.busy]);
   const [stopError, setStopError] = useState("");
   return (
@@ -53,7 +50,7 @@ export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStar
           </Notice>
         )}
         {lead.items.map((item, i) => (
-          <Item key={`${item.kind}-${item.at}-${i}`} item={item} lead={lead} runOf={runOf} onOpenCard={onOpenCard} />
+          <Item key={`${item.kind}-${item.at}-${i}`} item={item} />
         ))}
         {project && lead.failed && lead.loaded && (
           // Read once, then a check failed: what shows may be old. One line, not the whole notice.
@@ -78,7 +75,7 @@ export function LeadThread({ project, lead, runOf, onOpenCard, onCompose, onStar
   );
 }
 
-function Item({ item, lead, runOf, onOpenCard }: { item: LeadItem; lead: LeadState; runOf: Props["runOf"]; onOpenCard: Props["onOpenCard"] }) {
+function Item({ item }: { item: LeadItem }) {
   switch (item.kind) {
     case "user":
       return (
@@ -119,12 +116,12 @@ function Item({ item, lead, runOf, onOpenCard }: { item: LeadItem; lead: LeadSta
         </p>
       );
     case "plan":
-      return <PlanCard plan={item} lead={lead} run={item.runId ? runOf(item.runId) : undefined} onOpenCard={onOpenCard} />;
+      return <p className="text-xs text-chat-foreground-faint">{item.title} · {item.runId ? `분배한 작업 ${item.runId}` : "오른쪽 설계에서 최신 분배안을 확인하세요."}</p>;
   }
 }
 
 /** A proposed plan: its cards, what the policy said, and 실행 (once). */
-export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: Props["onOpenCard"] }) {
+export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: (runId: string, cardId: string) => void }) {
   const { clean } = useSettings();
   const budget = useBudget();
   const over = budget?.providers.filter((entry) => entry.state === "over" && plan.cards.some((card) => card.provider === entry.provider)) ?? [];
@@ -134,6 +131,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
   const stale = position < 0 || lead.items.slice(position + 1).some((item) => item.kind === "user" || item.kind === "plan");
   // Passed when saved, then refused by the runner's own check right before the start.
   const refused = run !== undefined && failedBeforeCards(run) && Boolean(run.blocked?.length);
+  const isolated = run?.cards.some((card) => card.log.some((entry) => entry.kind === "tool" && entry.text.startsWith("O 작업 폴더 ")));
   const dispatch = async () => {
     setState({ busy: true });
     try {
@@ -253,7 +251,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
               실행 {plan.runId}는 카드를 시작하기 전에 막혔습니다. 아래 이유를 확인하세요.
             </p>
           ) : run ? (
-            <p className="text-xs text-muted-foreground">실행 {plan.runId}를 시작했습니다. 진행은 아래와 작업 보기에서 볼 수 있습니다.</p>
+            <p className="text-xs text-muted-foreground">실행 {plan.runId}의 진행은 아래에서 볼 수 있습니다.{isolated && " 결과는 각 작업 폴더에 보존되며 원본에 자동으로 합쳐지지 않습니다."}</p>
           ) : (
             <p role="status" className="text-xs text-muted-foreground">
               실행 {plan.runId}를 시작했습니다. 첫 기록을 기다리는 중…
@@ -261,7 +259,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
           )
         ) : plan.ok ? (
           <>
-            <p role="note" className="w-full text-xs text-status-warning-text">작업은 같은 폴더에서 실행됩니다. 다른 세션이나 병렬 작업이 같은 파일을 수정하지 않도록 확인하세요.</p>
+            <p role="note" className="w-full text-xs text-status-warning-text">Git의 미커밋 변경을 정리한 뒤 분배하세요. 결과는 작업별 폴더에 남으며 자동으로 합쳐지지 않습니다.</p>
             <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
               <Play className="size-3.5" aria-hidden="true" />
               {state.busy ? "분배하는 중…" : "작업 분배"}

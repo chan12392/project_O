@@ -50,7 +50,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 20] = [
+    let tests: [(&str, fn()); 21] = [
+        ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
         ("dependencies wait for success and never start after failure", dependency_order),
         ("devin transcript and answer become card events", devin_transcript),
         ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
@@ -82,6 +83,61 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn isolated_worktrees() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let git = |args: &[&str]| {
+        let mut command = Command::new("git");
+        command.current_dir(&project).args(args);
+        let out = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init"]);
+    std::fs::write(project.join("shared.txt"), "base\n").unwrap();
+    git(&["add", "shared.txt"]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+    let mut a = card("a", ProviderId::Claude, "first");
+    let b = card("b", ProviderId::Claude, "second");
+    a.depends_on = vec!["b".into()];
+    let mut p = plan(vec![a, b]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "isolated", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "isolated").join("isolated-worktrees"), "").unwrap();
+    let paths = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
+    let observed = Arc::clone(&paths);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+        let id = spec.env["O_CARD_ID"].clone();
+        if id == "a" {
+            let previous = observed.lock().unwrap()["b"].clone();
+            assert!(spec.stdin.as_deref().unwrap().contains(&previous.replace('\\', "\\\\")));
+            assert_eq!(std::fs::read_to_string(PathBuf::from(&previous).join("shared.txt")).unwrap(), "b\n");
+        }
+        std::fs::write(PathBuf::from(cwd).join("shared.txt"), format!("{id}\n")).unwrap();
+        observed.lock().unwrap().insert(id, cwd.into());
+        inner(spec, cwd)
+    });
+    assert_eq!(run_plan(&home, "isolated", &p, None, spawner).unwrap(), CardStatus::Done);
+    let paths = paths.lock().unwrap();
+    assert_ne!(paths["a"], paths["b"]);
+    assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "base\n");
+    assert_eq!(std::fs::read_to_string(PathBuf::from(&paths["a"]).join("shared.txt")).unwrap(), "a\n");
+    drop(paths);
+
+    std::fs::write(project.join("shared.txt"), "user change\n").unwrap();
+    create_run(&home, "dirty", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "dirty").join("isolated-worktrees"), "").unwrap();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let never: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("must not start")) });
+    assert_eq!(run_plan(&home, "dirty", &p, None, never).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "user change\n");
+    assert!(read_events(&home, "dirty").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("커밋하지 않은"))));
 }
 
 fn dependency_order() {
@@ -495,6 +551,14 @@ fn a_link_swapped_after_the_check_is_refused() {
     let refused = read_events(&home, "rx").into_iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("정책 검사 뒤")));
     assert!(refused);
     assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+
+    create_run(&home, "rx-isolated", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "rx-isolated").join("isolated-worktrees"), "").unwrap();
+    let checked = home.join("project").to_string_lossy().into_owned();
+    let elsewhere = std::env::temp_dir().to_string_lossy().into_owned();
+    let workdir = Workdir { checked, resolve: Arc::new(move |_: &str| elsewhere.clone()) };
+    assert_eq!(run_plan_in(&home, "rx-isolated", &p, None, quiet(), workdir).unwrap(), CardStatus::Failed);
+    assert!(read_events(&home, "rx-isolated").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("정책 검사 뒤"))));
 }
 
 /// A key left in the person's environment must not reach the card's CLI, in any case spelling.

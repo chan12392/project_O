@@ -811,6 +811,8 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
         return Err(DispatchError::Blocked(checked.violations));
     };
 
+    crate::run::workspaces::preflight(&plan.project).map_err(|e| format!("작업 폴더를 분리할 수 없습니다: {e}"))?;
+
     // Made once: a second dispatch of the same plan, even a concurrent one, stops here.
     let marks = thread_dir(home, thread_id).join("dispatched");
     fs::create_dir_all(&marks).map_err(|e| e.to_string())?;
@@ -823,6 +825,7 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
     let run_id = new_run_id(now);
     let started = store::create_run(home, &run_id, &plan)
         .and_then(|()| store::mark_mode(home, &run_id, &mode))
+        .and_then(|()| fs::write(run_dir(home, &run_id).join("isolated-worktrees"), ""))
         .and_then(|()| start(&run_id));
     if let Err(error) = started {
         // Nothing runs: the plan may be dispatched again.

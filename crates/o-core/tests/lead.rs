@@ -172,6 +172,15 @@ fn good_plan() -> Value {
     json!({ "title": "README 한 줄", "cards": [{ "id": "docs", "provider": "claude", "effort": "low", "task": "README.md 끝에 한 줄 추가" }] })
 }
 
+fn init_git(project: &str) {
+    for args in [vec!["init"], vec!["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--allow-empty", "-m", "fixture"]] {
+        let mut command = Command::new("git");
+        command.current_dir(project).args(args);
+        let out = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    }
+}
+
 fn lead_child_marker() {
     let (home, project) = setup("lead-marker");
     let (spawner, _) = fake(claude_answer("session", "{agent-role}"));
@@ -182,6 +191,7 @@ fn lead_child_marker() {
 fn autorun() {
     use std::sync::atomic::{AtomicUsize, Ordering};
     let (home, project) = setup("autorun");
+    init_git(&project);
     let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
     let starts = AtomicUsize::new(0);
     let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
@@ -369,6 +379,7 @@ fn resumes_session() {
 
 fn dispatch_once() {
     let (home, project) = setup("dispatch");
+    init_git(&project);
     let (spawner, _) = fake(claude_answer("s", &plan_answer(good_plan())));
     let events = lead::send(&home, &request(&project, "해 줘"), spawner.as_ref()).unwrap();
     let plan_id = plans(&events).remove(0).0;
@@ -377,11 +388,17 @@ fn dispatch_once() {
         started.lock().unwrap().push(run.to_string());
         Ok(())
     };
+    let untracked = Path::new(&project).join("uncommitted.txt");
+    std::fs::write(&untracked, "user edit").unwrap();
+    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), &start), Err(DispatchError::Other(m)) if m.contains("커밋하지 않은")));
+    assert!(started.lock().unwrap().is_empty());
+    std::fs::remove_file(untracked).unwrap();
     let done = lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), &start).ok().unwrap();
     assert_eq!(*started.lock().unwrap(), vec![done.run_id.clone()]);
     assert_eq!(done.cards, ["docs"]);
     assert!(home.join("runs").join(&done.run_id).join("plan.json").exists());
     assert!(home.join("runs").join(&done.run_id).join("clean").exists());
+    assert!(home.join("runs").join(&done.run_id).join("isolated-worktrees").exists());
     let again = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &start);
     assert!(matches!(again, Err(DispatchError::Other(m)) if m.contains("이미 실행")));
     assert_eq!(started.lock().unwrap().len(), 1);
