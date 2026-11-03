@@ -24,6 +24,13 @@ fn records_and_lists_findings_through_cli() {
     let resolved: serde_json::Value = serde_json::from_slice(&resolved.stdout).unwrap();
     assert_eq!(resolved[0]["finding"]["resolution"]["evidence"], "checked");
     assert!(command().args(["issues", "reopen", &id]).output().unwrap().status.success());
+    let events = home.join("runs/run-1/events.jsonl");
+    let complete = fs::read_to_string(&events).unwrap();
+    fs::write(&events, format!("{complete}{{\"t\":\"card.end\"")).unwrap();
+    let incomplete = command().args(["issues", "resolve", &id, "run-1", "card-1", "checked"]).output().unwrap();
+    assert!(!incomplete.status.success());
+    assert!(String::from_utf8_lossy(&incomplete.stderr).contains("불완전"));
+    fs::write(&events, complete).unwrap();
     let project = dir.join("project");
     let unrelated = dir.join("other");
     fs::create_dir_all(&project).unwrap();
