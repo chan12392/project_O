@@ -50,7 +50,8 @@ fn base(project: &str) -> io::Result<Option<(PathBuf, PathBuf, String)>> {
 }
 
 type Entries = BTreeMap<PathBuf, (bool, u64, SystemTime)>;
-type Snapshot = BTreeMap<PathBuf, Option<(Vec<u8>, fs::Permissions)>>;
+type SnapshotEntry = Option<(Vec<u8>, fs::Permissions)>;
+type Snapshot = BTreeMap<PathBuf, SnapshotEntry>;
 
 fn snapshot(root: &Path, skip_git: bool) -> io::Result<Snapshot> {
     if PathBuf::from(resolved_path(&root.to_string_lossy())) != root {
@@ -154,7 +155,7 @@ impl Workspaces {
                 Ok(())
             };
             unchanged()?;
-            let mut changes: BTreeMap<PathBuf, Option<Option<(Vec<u8>, fs::Permissions)>>> = BTreeMap::new();
+            let mut changes: BTreeMap<PathBuf, Option<SnapshotEntry>> = BTreeMap::new();
             for id in &card.depends_on {
                 let path = Path::new(self.paths.get(id).ok_or_else(|| io::Error::other("선행 작업 폴더가 없습니다"))?);
                 let git_base = self.copy_git.get(id).ok_or_else(|| io::Error::other("복사본 Git 기준이 없습니다"))?;
