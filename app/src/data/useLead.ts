@@ -27,6 +27,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
   const [sending, setSending] = useState(false);
   const seq = useRef(0);
   const busyPoll = useRef(false);
+  const noteWrite = useRef<Promise<void> | null>(null);
 
   const refresh = useCallback(async () => {
     if (!enabled) return;
@@ -72,6 +73,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
       // The message is on record before the lead starts: show it (and the busy lead) right away.
       const early = window.setTimeout(() => void refresh(), 400);
       try {
+        if (noteWrite.current) await noteWrite.current;
         await api.leadSend({ project, ...input });
       } finally {
         window.clearTimeout(early);
@@ -127,7 +129,9 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     startNew,
     dispatch,
     changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {
-      await api.leadNote(threadId, change);
+      const write = api.leadNote(threadId, change);
+      noteWrite.current = write;
+      try { await write; } finally { if (noteWrite.current === write) noteWrite.current = null; }
       await refresh();
     },
   };
