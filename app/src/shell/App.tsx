@@ -22,7 +22,6 @@ import { readParams, writeParam, type PanelView, type ScreenState } from "../dat
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadThread } from "../features/chat/LeadThread.tsx";
-import { CardTranscript } from "../features/chat/CardTranscript.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
@@ -32,13 +31,14 @@ import { AccountMenu, SETTINGS_BUTTON_ID } from "../features/settings/AccountMen
 import { Onboarding } from "../features/settings/Onboarding.tsx";
 import type { SettingsSection } from "../features/settings/sections/index.ts";
 import { Settings } from "../features/settings/Settings.tsx";
+import { AgentPanes } from "../features/work/AgentPanes.tsx";
 import { AllNextUp } from "../features/work/AllNextUp.tsx";
 import { WorkDashboard } from "../features/work/WorkDashboard.tsx";
 import { Automation } from "../features/work/Automation.tsx";
 import { UpdatePrompt } from "../features/updates/UpdatePrompt.tsx";
 import { actionCount, useHandled } from "../features/work/NextUp.tsx";
 import { useNow } from "../features/work/WorkTab.tsx";
-import { ICON_BUTTON, names } from "../lib/format.ts";
+import { ICON_BUTTON } from "../lib/format.ts";
 import { backend } from "../platform/backend/index.ts";
 import { demoBackend } from "../platform/backend/demo.ts";
 import { useAnnouncer } from "./announcer.ts";
@@ -355,15 +355,7 @@ function MainWindow() {
       {screen === "new" && <NewRequest projects={projects} current={project?.path} onPick={openProject} />}
       <main ref={layout.container} hidden={screen !== "app"} className="flex min-h-0 min-w-0 max-lg:flex-col">
         {agentRun && current?.view.runId === agentRun ? (
-          <section aria-label="에이전트 작업" className="flex min-h-0 min-w-0 flex-1 flex-col bg-chat-canvas">
-            <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs font-medium">
-              <span className="truncate">{current.view.title}</span>
-              <button type="button" onClick={() => setAgentRun(undefined)} className="ml-auto rounded px-2 py-1 text-muted-foreground hover:bg-accent focus-ring">총괄 대화</button>
-            </header>
-              {current.view.cards.length ? <div className="grid min-h-0 flex-1 auto-rows-fr grid-cols-[repeat(auto-fit,minmax(min(100%,22rem),1fr))] overflow-auto">
-                {agentPanes(runs.map((entry) => entry.view), current.view.runId).map(({ card, run }) => <div key={card.id} className="flex min-h-64 min-w-0 flex-col border-r border-b"><CardTranscript card={card} run={run} names={names(run)} api={api} onFollowup={() => {}} /></div>)}
-            </div> : <p className="p-4 text-sm text-muted-foreground">아직 표시할 에이전트가 없습니다.</p>}
-          </section>
+          <AgentPanes key={agentRun} title={current.view.title} panes={agentPanes(runs.map((entry) => entry.view), current.view.runId)} api={api} onClose={() => setAgentRun(undefined)} />
         ) : (
         <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
           <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs">

@@ -55,16 +55,18 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
   };
   const scroller = useFollowBottom([card.log.length]);
   const pr = prOf(card);
+  // Where follow-ups can't go, one line says why instead of a disabled input.
+  const readOnly = card.provider === "agy" ? "Antigravity 실행은 보류 중이라 후속 지시를 보낼 수 없습니다" : run.runId.startsWith("session-") ? "외부 세션은 기록만 볼 수 있습니다" : undefined;
   return (
     <ImageScope.Provider value={{ project: run.project, run: run.runId, card: card.id }}><div className="flex min-h-0 flex-1 flex-col bg-chat-canvas">
-      <header className="flex shrink-0 items-center gap-3 border-b px-6 py-2.5">
+      <header className="flex min-w-0 shrink-0 items-center gap-3 border-b px-6 py-2.5">
         <AgentStateDot state={card.state} size="md" />
         <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
-        <span className="text-sm font-medium">{card.label}</span>
-        <span className="font-mono text-xs text-muted-foreground">
+        <span className="min-w-0 truncate text-sm font-medium" title={card.label}>{card.label}</span>
+        <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
           {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
         </span>
-        <span className="ml-auto text-xs text-muted-foreground">
+        <span className="ml-auto shrink-0 text-xs whitespace-nowrap text-muted-foreground">
           {STATE_WORD[card.state]}
           {card.startedAt && ` ${timeOf(card.startedAt)}`}
           {card.endedAt && `–${timeOf(card.endedAt)}`}
@@ -79,13 +81,19 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
           ))}
         </ol>
       </div>
-      {api && onFollowup && <form className="shrink-0 border-t p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
-        <label className="sr-only" htmlFor={`followup-${run.runId}-${card.id}`}>{card.label}에게 후속 지시</label>
-        <textarea id={`followup-${run.runId}-${card.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKey} disabled={sending || card.provider === "agy" || run.runId.startsWith("session-")} placeholder={card.provider === "agy" ? "Antigravity 실행은 보류 중입니다" : run.runId.startsWith("session-") ? "외부 세션은 기록만 볼 수 있습니다" : card.state === "running" || card.state === "queued" || card.state === "waiting" ? "현재 작업이 끝나면 전달합니다. 이미 보낸 지시가 대기·실행 중이면 그 지시가 끝난 뒤 보내세요" : "후속 지시를 입력하세요"} className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-ring disabled:opacity-50" rows={2} />
-        {error && <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>}
-        {notice && <p role="status" className="mt-1 text-xs text-muted-foreground">{notice}</p>}
-        <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground"><span>Enter 전송 · Ctrl+Enter 줄바꿈</span><button type="submit" disabled={sending || !draft.trim() || card.provider === "agy" || run.runId.startsWith("session-")} className="rounded-md border px-2 py-1 hover:bg-accent focus-ring disabled:opacity-50">{sending ? "보내는 중…" : "보내기"}</button></div>
-      </form>}
+      {api && onFollowup && (readOnly ? (
+        <p className="shrink-0 border-t px-4 py-2 text-xs text-chat-foreground-faint">{readOnly}</p>
+      ) : (
+        <form className="shrink-0 border-t p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+          <label className="sr-only" htmlFor={`followup-${run.runId}-${card.id}`}>{card.label}에게 후속 지시</label>
+          <div className="flex items-end gap-2">
+            <textarea id={`followup-${run.runId}-${card.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKey} disabled={sending} placeholder={card.state === "running" || card.state === "queued" || card.state === "waiting" ? "현재 작업이 끝나면 전달합니다. 이미 보낸 지시가 대기·실행 중이면 그 지시가 끝난 뒤 보내세요" : "후속 지시를 입력하세요"} className="min-w-0 flex-1 resize-y rounded-md border bg-background px-3 py-2 text-sm focus-ring disabled:opacity-50" rows={2} />
+            <button type="submit" disabled={sending || !draft.trim()} className="shrink-0 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent focus-ring disabled:opacity-50">{sending ? "보내는 중…" : "보내기"}</button>
+          </div>
+          {error && <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>}
+          {notice && <p role="status" className="mt-1 text-xs text-muted-foreground">{notice}</p>}
+        </form>
+      ))}
     </div></ImageScope.Provider>
   );
 }

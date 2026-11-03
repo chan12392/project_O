@@ -6,6 +6,22 @@ import type { OEvent } from "../src/core/events.ts";
 import { describeTool, foldRuns, snapshot } from "../src/core/snapshot.ts";
 import { agentPanes } from "../src/core/followup.ts";
 
+test("an external session's main thread stays out of its subagents' transcripts", () => {
+  const events: OEvent[] = [
+    { t: "run.start", at: "1", runId: "session-abc", title: "s", project: "p", cards: [{ id: "a", label: "a", provider: "claude" }, { id: "b", label: "b", provider: "claude" }] },
+    { t: "msg", at: "2", from: "lead", to: "all", text: "main thread says" },
+    { t: "card.message", at: "3", cardId: "a", text: "a works" },
+  ];
+  const view = snapshot(events);
+  assert.ok(view);
+  assert.deepEqual(view.cards.map((c) => c.log.map((l) => l.text)), [["a works"], []]);
+  assert.equal(view.messages.length, 1);
+  // In an O run a message to everyone still reaches every card.
+  const run = snapshot([{ ...events[0], runId: "r1" } as OEvent, events[1], events[2]]);
+  assert.ok(run);
+  assert.deepEqual(run.cards.map((c) => c.log.filter((l) => l.kind === "team").length), [1, 1]);
+});
+
 test("follow-ups retain the team and append the user request to the correct session", () => {
   const root = snapshot([
     { t: "run.start", at: "1", runId: "root", title: "team", project: "p", cards: [{ id: "a", label: "a", provider: "codex" }, { id: "b", label: "b", provider: "claude" }] },

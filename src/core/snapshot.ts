@@ -138,8 +138,11 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     if (!run) continue;
     if (e.t === "msg") {
       run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text });
+      // An external session's "lead to all" lines are its main thread talking, not words sent to
+      // each subagent: they stay in the team chat instead of repeating in every card's transcript.
+      const monologue = run.runId.startsWith("session-") && e.from === "lead" && e.to === "all";
       for (const card of run.cards) {
-        if (card.id === e.from || card.id === e.to || (e.to === "all" && card.id !== e.from)) {
+        if (card.id === e.from || card.id === e.to || (e.to === "all" && card.id !== e.from && !monologue)) {
           card.log.push({ at: e.at, kind: "team", text: e.text, team: { from: e.from, to: e.to } });
         }
       }
