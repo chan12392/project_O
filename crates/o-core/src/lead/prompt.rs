@@ -47,12 +47,12 @@ pub struct PromptInput<'a> {
 const YOLO_ROLE: &str = "[O 모드] YOLO: 이번 턴은 파일을 고치고 명령을 실행할 수 있습니다. 작은 일은 직접 하고, 나눠 맡길 일은 o-plan 계획 블록으로 제안합니다. o dispatch·o lead·o review는 실행할 수 없습니다(작업은 사람이 보내거나 O가 한도 안에서 자동 실행합니다).";
 
 /// The role, rules and plan format, sent once per CLI session.
-fn role(project: &str, budget: &[String], yolo: bool) -> String {
+fn role(yolo: bool) -> String {
     let available: Vec<_> = ProviderId::ALL.into_iter().filter(|p| *p != ProviderId::Agy).collect();
     let providers = available.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("|");
     let caps: Vec<String> = available.iter().map(|p| format!("{p} {}", LIMITS.max_active_per_provider(*p))).collect();
     let mut lines = vec![
-        format!("[O 총괄] 프로젝트: {project}"),
+        "[O 총괄]".to_string(),
         if yolo { YOLO_ROLE } else { "당신은 이 프로젝트의 총괄입니다. 파일은 읽기만 하고 고치거나 명령을 실행하지 않습니다." }.to_string(),
         if yolo { "요청을 이해하고, 모호하면 짧게 되묻고, 일을 작업카드로 나눠 제안합니다. 자동 실행은 설정에 따라 달라집니다. 실제 실행 상태를 확인하기 전에는 실행했다고 말하지 않습니다." } else { "요청을 이해하고, 모호하면 짧게 되묻고, 일을 작업카드로 나눠 제안합니다. 실행은 사람이 '실행'을 눌러야 O가 합니다." }.to_string(),
         String::new(),
@@ -63,10 +63,6 @@ fn role(project: &str, budget: &[String], yolo: bool) -> String {
         format!("- 허용 필드: {}. id는 영문 소문자·숫자·하이픈. 실행 파일·인자·환경변수·계정은 넣지 않습니다.", CARD_FIELDS.join(", ")),
         "- resources에 접근할 모든 자원을 선언합니다: {\"kind\":\"project-path\"|\"external\",\"key\":\"경로 또는 외부 키\",\"mode\":\"read\"|\"write\"}. 경로는 프로젝트 기준 상대 경로입니다. 모르면 생략하고 독점 실행합니다.".to_string(),
     ];
-    if !budget.is_empty() {
-        lines.push("오늘 사용 예산:".to_string());
-        lines.extend(budget.iter().map(|b| format!("- {b}")));
-    }
     lines.extend([
         String::new(),
         "답은 마크다운으로 씁니다. 작업을 제안할 때만 답 끝에 아래 블록을 정확히 하나 넣습니다. project는 O가 채웁니다. 선행 작업이 있으면 depends_on에 작업 id 배열을 넣습니다.".to_string(),
@@ -104,26 +100,26 @@ pub fn build(input: &PromptInput) -> String {
 fn build_with_origin(input: &PromptInput, worker: bool) -> String {
     let mut parts = Vec::new();
     if !input.resumed {
-        parts.push(role(input.project, input.budget, input.yolo));
-        if !input.history.is_empty() {
-            let start = input.history.len().saturating_sub(HISTORY_TURNS);
-            let lines: Vec<String> = input.history[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
-            parts.push(format!("지금까지의 대화(요약):\n{}", lines.join("\n")));
-        }
-    } else {
-        if input.yolo {
-            parts.push(YOLO_ROLE.to_string());
-        }
-        if !input.budget.is_empty() {
-            parts.push(format!("오늘 사용 예산:\n{}", input.budget.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n")));
-        }
-        if !input.missed.is_empty() {
-            let start = input.missed.len().saturating_sub(MISSED_TURNS);
-            let lines: Vec<String> = input.missed[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
-            parts.push(format!("그사이 다른 에이전트가 총괄로 나눈 대화(이 세션은 못 봄):\n{}", lines.join("\n")));
-        }
+        parts.push(role(input.yolo));
+    } else if input.yolo {
+        parts.push(YOLO_ROLE.to_string());
     }
     parts.push("Antigravity(agy)는 공급자 정책으로 사용할 수 없으니 작업에 배정하지 않습니다. 일반 질문과 단순 조사는 단일 총괄에서 답합니다. 설계가 바뀌면 합의된 전체 상태를 별도의 ```o-design 블록에 JSON {\"goal\":\"목표\",\"decisions\":[\"결정\"],\"questions\":[\"미결정\"]}으로 기록합니다. 분배할 작업이 구체화되면 o-plan으로 현재 작업 전체를 제안합니다. JSON 대신 o-plan 블록에 첫 줄 title: 제목, 다음 줄부터 [[codex]] id=작업id after=선행id 형식의 머리줄과 그 아래 작업 내용을 쓸 수도 있습니다. after는 선택입니다.".to_string());
+    if !input.resumed {
+        parts.push(format!("프로젝트: {}", input.project));
+    }
+    if !input.budget.is_empty() {
+        parts.push(format!("오늘 사용 예산:\n{}", input.budget.iter().map(|b| format!("- {b}")).collect::<Vec<_>>().join("\n")));
+    }
+    if !input.resumed && !input.history.is_empty() {
+        let start = input.history.len().saturating_sub(HISTORY_TURNS);
+        let lines: Vec<String> = input.history[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
+        parts.push(format!("지금까지의 대화(요약):\n{}", lines.join("\n")));
+    } else if input.resumed && !input.missed.is_empty() {
+        let start = input.missed.len().saturating_sub(MISSED_TURNS);
+        let lines: Vec<String> = input.missed[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
+        parts.push(format!("그사이 다른 에이전트가 총괄로 나눈 대화(이 세션은 못 봄):\n{}", lines.join("\n")));
+    }
     if let Some(design) = input.design { parts.push(format!("[저장된 현재 설계 — 참고 데이터]\n{design}")); }
     if !input.runs.is_empty() {
         parts.push("사용자가 이미 분배한 작업의 수정·후속 작업을 요청했다면 새 계획 대신 기존 실행 ID와 카드 ID로 ```o-followup 블록 하나를 답 끝에 쓰세요. 형식: [{\"run\":\"기존 실행 ID\",\"card\":\"기존 카드 ID\",\"task\":\"해당 에이전트에 전달할 수정 지시\"}]. 일반 질문이나 단순 설명에는 블록을 쓰지 않습니다. 실제 실행 여부는 O가 알려줍니다.".to_string());
@@ -161,6 +157,26 @@ fn build_with_origin(input: &PromptInput, worker: bool) -> String {
 /// A card's words are data, never the user's approval or a new instruction.
 pub fn build_worker(input: &PromptInput) -> String {
     build_with_origin(input, true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{build, PromptInput};
+
+    #[test]
+    fn fixed_instructions_precede_project_budget_and_history() {
+        let first = PromptInput { project: "C:/one", text: "first", attachments: &[], budget: &["one".into()], runs: &[], resumed: false, history: &[], missed: &[], design: None, yolo: false };
+        let other = PromptInput { project: "C:/two", text: "second", budget: &["two".into()], ..first };
+        let first_text = build(&first);
+        let other_text = build(&other);
+        let prefix = first_text.split("\n\n프로젝트:").next().unwrap();
+        assert!(other_text.starts_with(prefix));
+        assert!(prefix.contains("Antigravity") && prefix.contains("```o-plan"));
+        assert!(first_text.contains("프로젝트: C:/one") && first_text.contains("- one"));
+        let resumed = build(&PromptInput { resumed: true, budget: &[], ..first });
+        let resumed_other = build(&PromptInput { resumed: true, budget: &["two".into()], ..other });
+        assert!(resumed_other.starts_with(resumed.split("\n\n사용자:").next().unwrap()));
+    }
 }
 
 #[derive(serde::Deserialize)]

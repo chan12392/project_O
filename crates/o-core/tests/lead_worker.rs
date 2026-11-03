@@ -259,9 +259,11 @@ fn cleanup(home: &std::path::Path) {
 }
 
 fn fixture() -> (PathBuf, String, Speaker) {
-    let root = std::env::temp_dir().join(format!("o-worker-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!("o-worker-{}-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let home = root.join("state");
     let project = root.join("project");
+    fs::create_dir(&root).unwrap();
     fs::create_dir_all(&project).unwrap();
     fs::create_dir_all(home.join("runs/run-1")).unwrap();
     fs::write(home.join("runs/run-1/events.jsonl"), "").unwrap();
