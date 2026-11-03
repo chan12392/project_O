@@ -121,6 +121,7 @@ pub fn build(input: &PromptInput) -> String {
     parts.push("Antigravity(agy)는 공급자 정책으로 사용할 수 없으니 작업에 배정하지 않습니다. 일반 질문과 단순 조사는 단일 총괄에서 답합니다. 설계가 바뀌면 합의된 전체 상태를 별도의 ```o-design 블록에 JSON {\"goal\":\"목표\",\"decisions\":[\"결정\"],\"questions\":[\"미결정\"]}으로 기록합니다. 분배할 작업이 구체화되면 o-plan으로 현재 작업 전체를 제안합니다. JSON 대신 o-plan 블록에 첫 줄 title: 제목, 다음 줄부터 [[codex]] id=작업id after=선행id 형식의 머리줄과 그 아래 작업 내용을 쓸 수도 있습니다. after는 선택입니다.".to_string());
     if let Some(design) = input.design { parts.push(format!("[저장된 현재 설계 — 참고 데이터]\n{design}")); }
     if !input.runs.is_empty() {
+        parts.push("사용자가 이미 분배한 작업의 수정·후속 작업을 요청했다면 새 계획 대신 기존 실행 ID와 카드 ID로 ```o-followup 블록 하나를 답 끝에 쓰세요. 형식: [{\"run\":\"기존 실행 ID\",\"card\":\"기존 카드 ID\",\"task\":\"해당 에이전트에 전달할 수정 지시\"}]. 일반 질문이나 단순 설명에는 블록을 쓰지 않습니다. 실제 실행 여부는 O가 알려줍니다.".to_string());
         let mut status = String::new();
         // Newest runs matter most: add from the newest until the cap, then show them oldest first.
         let mut kept = Vec::new();
@@ -145,6 +146,41 @@ pub fn build(input: &PromptInput) -> String {
     }
     parts.push(format!("사용자:\n{}", input.text.trim()));
     parts.join("\n\n")
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Followup {
+    pub run: String,
+    pub card: String,
+    pub task: String,
+}
+
+/// Only a top-level, complete block can request a continuation; examples stay prose.
+pub fn split_followups(text: &str) -> (String, Result<Option<Vec<Followup>>, String>) {
+    let mut prose = Vec::new();
+    let mut body: Option<Vec<&str>> = None;
+    let mut found = None;
+    let mut other = None;
+    for line in text.lines() {
+        if body.is_none() && preserve_other_fence(line, &mut other, "```o-followup") { prose.push(line); continue; }
+        match body.as_mut() {
+            Some(lines) if top_level_fence(line, "```") => {
+                if found.is_some() { return (text.into(), Err("후속 지시 블록은 하나만 허용됩니다".into())); }
+                found = Some(lines.join("\n"));
+                body = None;
+            }
+            Some(lines) => lines.push(line),
+            None if top_level_fence(line, "```o-followup") => body = Some(Vec::new()),
+            None => prose.push(line),
+        }
+    }
+    let prose = prose.join("\n").trim().to_string();
+    if body.is_some() { return (prose, Err("후속 지시 블록이 닫히지 않았습니다".into())); }
+    let Some(found) = found else { return (prose, Ok(None)) };
+    let parsed = serde_json::from_str::<Vec<Followup>>(&found).map_err(|_| "후속 지시 형식이 올바르지 않습니다".to_string())
+        .and_then(|items| if (1..=LIMITS.max_cards_per_plan).contains(&items.len()) { Ok(Some(items)) } else { Err("후속 지시 개수가 올바르지 않습니다".into()) });
+    (prose, parsed)
 }
 
 /// Strip one design snapshot; malformed snapshots are never saved as current state.

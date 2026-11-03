@@ -188,6 +188,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
+  if (path === "/lead/followup") {
+    const runId = query.get("run") ?? "";
+    const card = query.get("card") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(card)) { fail(400, "실행 또는 작업 ID가 올바르지 않습니다"); return true; }
+    try { run(oWithInput(["followup", runId, card], await body(req, 64 * 1024), 60_000)); }
+    catch (e) { fail(413, (e as Error).message); }
+    return true;
+  }
   if (path === "/lead/note") {
     const thread = query.get("thread") ?? "";
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }

@@ -11,12 +11,30 @@ import { prOf } from "../../../../src/core/attention.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { ReviewButton, isReviewCard } from "../work/ReviewRequest.tsx";
 import { useFollowBottom } from "./Thread.tsx";
-import type { ReactNode } from "react";
+import { useState, type ReactNode } from "react";
+import type { Backend } from "../../platform/backend/index.ts";
 
 const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTerminal, "파일 읽기": FileText, "파일 수정": FilePen, "웹 검색": Globe };
 
 /** One work card's session, read back as Orca shows an agent transcript. */
-export function CardTranscript({ card, run, names }: { card: CardView; run: RunView; names: (party: string) => string }) {
+export function CardTranscript({ card, run, names, api, onFollowup }: { card: CardView; run: RunView; names: (party: string) => string; api?: Backend; onFollowup?: (runId: string) => void }) {
+  const [draft, setDraft] = useState("");
+  const [sending, setSending] = useState(false);
+  const [error, setError] = useState<string>();
+  const [notice, setNotice] = useState<string>();
+  const send = async () => {
+    if (!api || !onFollowup || !draft.trim() || sending) return;
+    setSending(true);
+    setError(undefined);
+    setNotice(undefined);
+    try {
+      const result = await api.followup(run.runId, card.id, draft);
+      setDraft("");
+      setNotice("후속 지시를 접수했습니다. 작업 상태가 곧 표시됩니다.");
+      onFollowup(result.runId);
+    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    finally { setSending(false); }
+  };
   // Who wrote a team message, drawn as in the team chat: a card's own person, or the lead.
   const avatarOf = (party: string) => {
     const sender = run.cards.find((c) => c.id === party);
@@ -48,6 +66,13 @@ export function CardTranscript({ card, run, names }: { card: CardView; run: RunV
           ))}
         </ol>
       </div>
+      {api && onFollowup && <form className="shrink-0 border-t p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
+        <label className="sr-only" htmlFor={`followup-${run.runId}-${card.id}`}>{card.label}에게 후속 지시</label>
+        <textarea id={`followup-${run.runId}-${card.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.ctrlKey && !event.shiftKey && !event.nativeEvent.isComposing) { event.preventDefault(); void send(); } }} disabled={sending || card.provider === "agy" || run.runId.startsWith("session-")} placeholder={card.provider === "agy" ? "Antigravity 실행은 보류 중입니다" : run.runId.startsWith("session-") ? "외부 세션은 기록만 볼 수 있습니다" : card.state === "running" || card.state === "queued" || card.state === "waiting" ? "후속 지시를 입력하면 현재 작업 후 전달합니다" : "후속 지시를 입력하세요"} className="w-full resize-y rounded-md border bg-background px-3 py-2 text-sm focus-ring disabled:opacity-50" rows={2} />
+        {error && <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>}
+        {notice && <p role="status" className="mt-1 text-xs text-muted-foreground">{notice}</p>}
+        <div className="mt-1 flex items-center justify-between text-xs text-muted-foreground"><span>Enter 전송 · Ctrl+Enter 줄바꿈</span><button type="submit" disabled={sending || !draft.trim() || card.provider === "agy" || run.runId.startsWith("session-")} className="rounded-md border px-2 py-1 hover:bg-accent focus-ring disabled:opacity-50">{sending ? "보내는 중…" : "보내기"}</button></div>
+      </form>}
     </div></ImageScope.Provider>
   );
 }
@@ -103,6 +128,7 @@ function Entry({
       </li>
     );
   }
+  if (entry.kind === "input") return <li className="my-2 ml-auto max-w-[90%] rounded-lg border border-chat-user-border bg-chat-user-surface px-3 py-2"><Markdown text={entry.text} /></li>;
   if (entry.kind === "message") {
     return (
       <li className="my-2 px-2">

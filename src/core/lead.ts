@@ -61,6 +61,7 @@ export type LeadEvent =
   | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
+  | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
   | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
   | { t: "lead.error"; at: string; text: string }
@@ -112,6 +113,7 @@ export function leadView(state: LeadView, action: LeadViewAction): LeadView {
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
+  | { kind: "followup"; at: string; cardId: string; runId: string }
   | {
       kind: "plan";
       at: string;
@@ -144,6 +146,9 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         break;
       case "lead.dispatch":
         for (const item of items) if (item.kind === "plan" && item.planId === e.planId) item.runId = e.runId;
+        break;
+      case "lead.followup":
+        items.push({ kind: "followup", at: e.at, cardId: e.cardId, runId: e.runId });
         break;
       case "lead.autorun":
         for (const item of items) if (item.kind === "plan" && item.planId === e.planId && e.reason) item.autoRunReason = e.reason;

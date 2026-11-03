@@ -294,7 +294,7 @@ const TEAM_COMMAND: &str = "o msg";
 /// The `o` commands no card or lead may run, in any mode (ADR-0014): only a person sends work.
 /// `o` itself refuses them inside a card or a lead turn (`run::inside`); CLIs with deny rules
 /// also get these, in YOLO mode, as rules that hold even when nothing else asks.
-pub const AGENT_ONLY_COMMANDS: [&str; 5] = ["o dispatch", "o lead", "o review", "o _run", "o _review"];
+pub const AGENT_ONLY_COMMANDS: [&str; 7] = ["o dispatch", "o followup", "o lead", "o review", "o _run", "o _followup", "o _review"];
 
 /// The card prompt's tool line with YOLO on, in place of the CLI's own `tool_note`.
 const YOLO_NOTE: &str = "YOLO 모드: 파일 수정과 셸 명령을 승인 없이 실행합니다. 맡은 일 밖의 파일·명령은 건드리지 마세요. o dispatch·o lead·o review는 쓸 수 없습니다(작업은 사람이 보냅니다).";

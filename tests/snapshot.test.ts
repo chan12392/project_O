@@ -4,6 +4,26 @@ import { test } from "node:test";
 
 import type { OEvent } from "../src/core/events.ts";
 import { describeTool, foldRuns, snapshot } from "../src/core/snapshot.ts";
+import { agentPanes } from "../src/core/followup.ts";
+
+test("follow-ups retain the team and append the user request to the correct session", () => {
+  const root = snapshot([
+    { t: "run.start", at: "1", runId: "root", title: "team", project: "p", cards: [{ id: "a", label: "a", provider: "codex" }, { id: "b", label: "b", provider: "claude" }] },
+    { t: "card.message", at: "2", cardId: "a", text: "first" },
+  ]);
+  const child = snapshot([
+    { t: "run.start", at: "3", runId: "child", title: "followup", project: "p", cards: [{ id: "a", label: "a", provider: "codex" }] },
+    { t: "run.followup", at: "3", sourceRunId: "root", cardId: "a" },
+    { t: "card.input", at: "4", cardId: "a", text: "change it" },
+    { t: "card.queued", at: "5", cardId: "a", reason: "waiting" },
+  ]);
+  assert.ok(root && child);
+  const panes = agentPanes([child, root], "child");
+  assert.deepEqual(panes.map(({ card }) => card.id), ["a", "b"]);
+  assert.equal(panes[0].run.runId, "child");
+  assert.deepEqual(panes[0].card.log.map(({ text }) => text), ["first", "change it", "waiting"]);
+  assert.equal(panes[1].run.runId, "root");
+});
 
 // The app's demo fixture is today's real end-to-end run, paths sanitised.
 const demo = JSON.parse(readFileSync(new URL("../app/src/data/demo-runs.json", import.meta.url), "utf8")) as { runs: { events: OEvent[] }[] };

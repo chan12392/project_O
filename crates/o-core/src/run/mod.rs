@@ -5,6 +5,7 @@
 //! and processes.
 
 pub mod events;
+pub mod followup;
 pub mod index;
 pub mod mode;
 pub mod plan;

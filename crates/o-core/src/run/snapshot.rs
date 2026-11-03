@@ -51,6 +51,7 @@ pub enum LogKind {
     Queued,
     Tool,
     Message,
+    Input,
     Limit,
     End,
     Team,
@@ -279,6 +280,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
             | OEvent::CardStart { card_id, .. }
             | OEvent::CardSession { card_id, .. }
             | OEvent::CardMessage { card_id, .. }
+            | OEvent::CardInput { card_id, .. }
             | OEvent::CardTool { card_id, .. }
             | OEvent::CardLimit { card_id, .. }
             | OEvent::CardEnd { card_id, .. }
@@ -308,6 +310,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.activity = first_line(text);
                 card.log.push(entry(at, LogKind::Message, text.clone()));
             }
+            OEvent::CardInput { at, text, .. } => card.log.push(entry(at, LogKind::Input, text.clone())),
             OEvent::CardLimit { at, until, .. } => {
                 card.activity = format!("사용량 한도: {until}까지 차단");
                 card.log.push(entry(at, LogKind::Limit, card.activity.clone()));
