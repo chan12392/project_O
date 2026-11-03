@@ -18,7 +18,8 @@ fn o(base: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
 }
 
 fn setup(name: &str) -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("o-msg-{name}-{}", std::process::id()));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("o-msg-{name}-{}-{nonce}", std::process::id()));
     let home = base.join("project_O");
     let card = |id: &str, provider, task: &str| Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] };
     let plan = Plan {
@@ -180,6 +181,47 @@ fn answers_reference_only_a_question_addressed_to_the_sender_and_retries_are_ide
     assert!(matches!(&events[1], OEvent::Msg { reply_to: Some(id), .. } if id == "k1-a-q"));
     let read = o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]);
     assert!(String::from_utf8_lossy(&read.stdout).contains("답변 대상: k1-a-q"));
+}
+
+#[test]
+fn a_waiting_card_receives_an_answer_without_starting_a_followup_run() {
+    let (base, _) = setup("wait-answer");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--to", "lead", "--question", "--id", "q", "which file?"], &env).status.success());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_o"));
+    command.args(["msg", "wait"]).env("LOCALAPPDATA", &base).env("O_RUN_ID", "r1").env("O_CARD_ID", "a")
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let child = command.spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-q", "--id", "answer", "app.rs"], &[]).status.success());
+    let received = child.wait_with_output().unwrap();
+    assert!(received.status.success());
+    assert!(String::from_utf8_lossy(&received.stdout).contains("답변 대상: k1-a-q"));
+    let again = o(&base, &["msg", "wait"], &env);
+    assert!(!again.status.success());
+    assert!(String::from_utf8_lossy(&again.stderr).contains("k4-lead-answer"));
+    assert!(o(&base, &["msg", "ack", "--id", "k4-lead-answer"], &env).status.success());
+}
+
+#[test]
+fn wait_keeps_the_first_unconfirmed_message_in_order() {
+    let (base, _) = setup("wait-order");
+    for (key, text) in [("first", "first"), ("second", "second")] {
+        assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "--id", key, text], &[]).status.success());
+    }
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    let first = o(&base, &["msg", "wait"], &env);
+    assert!(String::from_utf8_lossy(&first.stdout).contains("k4-lead-first"));
+    assert!(!o(&base, &["msg", "wait"], &env).status.success());
+    assert!(o(&base, &["msg", "ack", "--id", "k4-lead-first"], &env).status.success());
+    let second = o(&base, &["msg", "wait"], &env);
+    assert!(String::from_utf8_lossy(&second.stdout).contains("k4-lead-second"));
+    assert!(!o(&base, &["msg", "wait", "--all"], &env).status.success());
 }
 
 #[test]
