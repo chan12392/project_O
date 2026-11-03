@@ -6,6 +6,7 @@ use serde_json::json;
 #[test]
 fn fake_cli() {
     if std::env::var_os("O_TEST_WORKER_CLI").is_none() { return; }
+    if std::env::var_os("O_TEST_FAIL").is_some() { std::process::exit(3); }
     if std::env::var_os("O_TEST_SLOW").is_some() { std::thread::sleep(std::time::Duration::from_millis(500)); }
     if let Some(home) = std::env::var_os("O_TEST_CARD_HOME") {
         let home = PathBuf::from(home);
@@ -26,11 +27,11 @@ fn fake_cli() {
 }
 
 #[test]
-fn unknown_and_oversized_answers_are_not_silently_retried_or_cut() {
+fn failed_answer_is_not_silently_retried() {
     let (home, project, card) = fixture();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
         let mut command = Command::new(std::env::current_exe()?);
-        command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_ANSWER", "x".repeat(4001));
+        command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_FAIL", "1");
         Ok(command)
     });
     let id = team::send_tracked(&home, &card, "lead", "질문", true, Some("large")).ok().unwrap();
@@ -41,11 +42,58 @@ fn unknown_and_oversized_answers_are_not_silently_retried_or_cut() {
     assert_eq!(messages[0].state, "unknown");
     assert_eq!(messages[0].id, id);
     assert!(team::read(&home, &card, false).unwrap().is_empty());
-    let thread = lead::current_thread(&home, &project).unwrap();
-    assert!(lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text.len() == 4001)));
     assert_eq!(lead::retry_card(&home, "run-1", &id).unwrap(), "queued");
     assert_eq!(team::read(&home, &recipient, false).unwrap()[0].state, "stored");
-    fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    cleanup(&home);
+}
+
+#[test]
+fn long_answer_is_delivered_by_verified_complete_chunks() {
+    use o_core::run::result;
+    let (home, project, card) = fixture();
+    let answer = "가".repeat(4001);
+    let fake_answer = answer.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_ANSWER", &fake_answer);
+        Ok(command)
+    });
+    let question = team::send_tracked(&home, &card, "lead", "질문", true, Some("long")).ok().unwrap();
+    assert!(lead::wake_card(&home, &project, "run-1", &card.cards, spawner.as_ref()).unwrap());
+    let hash = result::digest(&answer);
+    assert_eq!(result::store_lead(&home, "run-1", &answer).unwrap(), hash);
+    let messages = team::read(&home, &card, false).unwrap();
+    assert_eq!(messages[0].text, result::lead_reference(&question, &hash));
+    let mut offset = 0;
+    let mut combined = String::new();
+    loop {
+        let part = result::read_lead(&home, "run-1", "a", &question, &hash, offset).unwrap();
+        combined.push_str(&part.text);
+        match part.next_offset { Some(next) => offset = next, None => break }
+    }
+    assert_eq!(combined, answer);
+    assert!(result::read_lead(&home, "run-1", "other", &question, &hash, 0).is_err());
+    assert!(result::read_lead(&home, "run-1", "a", &question, &hash, 1).is_err());
+    fs::write(home.join("runs/run-1/lead-results").join(&hash), "modified").unwrap();
+    assert!(result::read_lead(&home, "run-1", "a", &question, &hash, 0).is_err());
+    assert!(result::store_lead(&home, "run-1", &answer).is_err());
+    cleanup(&home);
+}
+
+#[test]
+fn long_answer_is_not_referenced_when_the_card_cannot_read_context() {
+    let (home, project, card) = fixture();
+    fs::write(home.join("runs/run-1/plan.json"), json!({"title":"작업","project":project,"cards":[{"id":"a","provider":"devin","task":"질문","depends_on":[]}]}).to_string()).unwrap();
+    let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_ANSWER", "x".repeat(4001));
+        Ok(command)
+    });
+    team::send_tracked(&home, &card, "lead", "질문", true, Some("unsupported")).ok().unwrap();
+    assert!(lead::wake_card(&home, &project, "run-1", &card.cards, spawner.as_ref()).is_err());
+    assert!(team::read(&home, &card, false).unwrap().is_empty());
+    assert!(!home.join("runs/run-1/lead-results").exists());
+    cleanup(&home);
 }
 
 #[test]
@@ -68,7 +116,7 @@ fn replacing_thread_during_turn_prevents_answer_delivery() {
     assert!(team::read(&home, &card, false).unwrap().is_empty());
     let recipient = Speaker { run_id: "run-1".into(), me: "lead".into(), cards: card.cards.clone() };
     assert!(team::read(&home, &recipient, false).unwrap().iter().any(|m| m.id == id && m.state == "unknown"));
-    fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    cleanup(&home);
 }
 
 #[test]
@@ -88,7 +136,14 @@ fn runner_wakes_lead_while_card_waits() {
     assert_eq!(status, CardStatus::Done);
     let thread = lead::current_thread(&home, &project).unwrap();
     assert!(lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::Worker { .. })));
-    fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    cleanup(&home);
+}
+
+fn cleanup(home: &std::path::Path) {
+    let root = home.parent().unwrap().canonicalize().unwrap();
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    assert!(root.starts_with(&temp) && root != temp && root.file_name().unwrap().to_string_lossy().starts_with("o-worker-"));
+    fs::remove_dir_all(root).unwrap();
 }
 
 fn fixture() -> (PathBuf, String, Speaker) {
@@ -119,7 +174,7 @@ fn recovery_acknowledges_existing_reply_instead_of_sending_again() {
     assert_eq!(lead::retry_card(&home, "run-1", &id).unwrap(), "acknowledged");
     assert!(team::read(&home, &recipient, false).unwrap().is_empty());
     assert_eq!(team::read(&home, &card, false).unwrap().len(), 1);
-    fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    cleanup(&home);
 }
 
 #[test]
@@ -154,5 +209,5 @@ fn card_question_is_untrusted_and_answered_without_resuming_yolo_or_dispatching(
     assert!(!events.iter().any(|e| matches!(e, LeadEvent::Plan { .. } | LeadEvent::Followup { .. })));
     assert_eq!(lead::tokens(&home, Some(&project), None).requested, 2);
     assert!(lead::session_ids(&home).iter().any(|id| id == "ephemeral"));
-    fs::remove_dir_all(home.parent().unwrap()).unwrap();
+    cleanup(&home);
 }
