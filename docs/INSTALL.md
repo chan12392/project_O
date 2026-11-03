@@ -29,7 +29,7 @@ project_O 데스크톱 앱(`project_O.exe`)과 `o` CLI(`o.exe`)를 설치 파일
 
 - Tauri의 사용자별 기본 설치 폴더는 `%LOCALAPPDATA%\<제품 이름>` = `%LOCALAPPDATA%\project_O`로, O 상태 폴더와 겹친다. 그래서 설치 파일이 기본 폴더를 `%LOCALAPPDATA%\Programs\project_O`로 옮긴다(`scripts/installer/hooks.nsh`). 설치 화면에서 상태 폴더를 직접 골라도 같은 곳으로 바꾼다.
 - 시작 메뉴에 `project_O`, 바탕 화면에 바로가기가 생긴다(설치 마지막 화면에서 바탕 화면 바로가기를 끌 수 있다).
-- 앱은 시작할 때 자기 폴더를 PATH 맨 앞에 붙인다. 그래서 앱이 띄우는 에이전트 CLI·`o dispatch`·카드의 `o msg`/`o context`는 `cargo install` 없이도 함께 설치된 `o.exe`를 쓴다. 터미널에서 `o`를 쓰려면 저장소에서 `cargo install --path crates/o-cli`를 하거나 앱 폴더를 사용자 PATH에 더한다.
+- 앱과 `o.exe`는 시작할 때 자기 폴더를 그 프로세스의 PATH 맨 앞에 붙인다(저장된 PATH는 바꾸지 않는다). 그래서 앱이나 예약 작업의 `o.exe`가 띄우는 에이전트 CLI·`o dispatch`·카드의 `o msg`/`o context`는 `cargo install` 없이도 함께 설치된 `o.exe`를 쓴다. 터미널에서 `o`를 쓰려면 저장소에서 `cargo install --path crates/o-cli`를 하거나 앱 폴더를 사용자 PATH에 더한다.
 - 조용한 설치: `project_O_<버전>_x64-setup.exe /S`. 폴더를 바꾸려면 `/D=<폴더>`를 맨 끝에 따옴표 없이 붙인다.
 
 ## 처음 실행
