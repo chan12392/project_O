@@ -104,6 +104,8 @@ pub enum OEvent {
         cached: f64,
         #[serde(serialize_with = "ser_num")]
         output: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        complete: Option<bool>,
     },
     /// A subscription window the provider reported: share used (0 to 1) and when it resets.
     #[serde(rename = "quota")]
@@ -200,7 +202,7 @@ pub enum StreamSignal {
     Message { text: String },
     Tool { name: String, summary: String },
     Limit { until: String },
-    Usage { input: f64, cached: f64, output: f64 },
+    Usage { input: f64, cached: f64, output: f64, complete: bool },
     Quota { window: String, used: f64, resets_at: String },
     Final { ok: bool, text: String },
 }

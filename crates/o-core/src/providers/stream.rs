@@ -13,6 +13,10 @@ pub(super) fn num(value: Option<&Value>) -> f64 {
     as_number(value).filter(|n| n.is_finite()).unwrap_or(0.0)
 }
 
+pub(super) fn reported(values: &[Option<&Value>]) -> bool {
+    values.iter().all(|value| value.and_then(Value::as_f64).is_some_and(|n| n.is_finite() && n >= 0.0))
+}
+
 /// How the CLIs and APIs say a plan or rate limit stopped the turn. A bare "429"
 /// is not enough: file names, line numbers and sizes contain it too.
 static LIMIT_TEXT: LazyLock<Regex> = LazyLock::new(|| {

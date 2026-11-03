@@ -393,14 +393,14 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
     if kind == Some("turn.usage") {
         if let Some(u) = data.get("usage").and_then(Value::as_object) {
             let cached = num(u.get("cached_input_tokens"));
-            return vec![StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")) }];
+            return vec![StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")), complete: super::stream::reported(&[u.get("input_tokens"), u.get("cached_input_tokens"), u.get("output_tokens")]) && cached <= num(u.get("input_tokens")) }];
         }
     }
     if kind == Some("turn.completed") {
         let mut out = Vec::new();
         if let Some(u) = data.get("usage").and_then(Value::as_object) {
             let cached = num(u.get("cached_input_tokens"));
-            out.push(StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")) });
+            out.push(StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")), complete: super::stream::reported(&[u.get("input_tokens"), u.get("cached_input_tokens"), u.get("output_tokens")]) && cached <= num(u.get("input_tokens")) });
         }
         out.push(StreamSignal::Final { ok: true, text: String::new() });
         return out;

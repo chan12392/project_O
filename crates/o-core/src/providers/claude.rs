@@ -304,6 +304,7 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                 input: num(u.get("input_tokens")) + num(u.get("cache_creation_input_tokens")),
                 cached: num(u.get("cache_read_input_tokens")),
                 output: num(u.get("output_tokens")),
+                complete: super::stream::reported(&[u.get("input_tokens"), u.get("cache_creation_input_tokens"), u.get("cache_read_input_tokens"), u.get("output_tokens")]),
             });
         }
         let text = coalesce([data.get("result")]).map(js_string).unwrap_or_default().trim().to_string();

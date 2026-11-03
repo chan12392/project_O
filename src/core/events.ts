@@ -34,7 +34,7 @@ export type OEvent =
   | { t: "msg"; at: string; from: string; to: string; text: string; id?: string; kind?: "message" | "question" | "approval"; replyTo?: string }
   | { t: "msg.state"; at: string; id: string; recipient: string; state: "stored" | "delivered" | "unknown" | "acknowledged" | "cancelled" }
   /** Tokens a card spent since its last usage event (fresh input, cached input, output). */
-  | { t: "card.usage"; at: string; cardId: string; input: number; cached: number; output: number }
+  | { t: "card.usage"; at: string; cardId: string; input: number; cached: number; output: number; complete?: boolean }
   /** A subscription window the provider reported: share used (0 to 1) and when it resets. */
   | { t: "quota"; at: string; provider: ProviderId; window: string; used: number; resetsAt: string }
   | { t: "run.end"; at: string; runId: string; status: CardStatus }

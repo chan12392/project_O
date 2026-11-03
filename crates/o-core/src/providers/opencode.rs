@@ -355,6 +355,7 @@ fn read_stream(session: &mut bool, answer: &mut String, data: &Map<String, Value
                     input: num(tokens.get("input")) + num(cache.and_then(|c| c.get("write"))),
                     cached: num(cache.and_then(|c| c.get("read"))),
                     output: num(tokens.get("output")) + num(tokens.get("reasoning")),
+                    complete: super::stream::reported(&[tokens.get("input"), cache.and_then(|c| c.get("write")), cache.and_then(|c| c.get("read")), tokens.get("output"), tokens.get("reasoning")]),
                 });
             }
         }

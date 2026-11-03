@@ -233,7 +233,8 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
                     let (input, cached, output) = (number(event.get("input")), number(event.get("cached")), number(event.get("output")));
                     card.3.add(&Tokens { input, cached, output, total: input + cached + output });
                     card.4 = true;
-                    card.5 &= ["input", "cached", "output"].iter().all(|key| valid_number(event.get(*key)));
+                    card.5 &= event.get("complete").and_then(Value::as_bool) == Some(true)
+                        && ["input", "cached", "output"].iter().all(|key| valid_number(event.get(*key)));
                 }
             }
             _ => {}
@@ -249,14 +250,16 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
     let lead = crate::lead::tokens(home, query.project, query.since);
     let mut summary = Summary::default();
     for run in &runs {
-        summary.reported.add(&run.tokens);
+        for card in &run.cards {
+            if !run.incomplete_cards.contains(&card.card_id) { summary.reported.add(&card.tokens); }
+        }
         summary.reported_cards += run.cards.len();
         summary.unreported_cards += run.unreported_cards.len();
         summary.incomplete_cards += run.incomplete_cards.len();
     }
-    summary.reported.add(&Tokens { input: lead.input, cached: lead.cached, output: lead.output, total: lead.total });
+    summary.reported.add(&lead.complete_tokens);
     let input = summary.reported.input.saturating_add(summary.reported.cached);
-    if input > 0 {
+    if input > 0 && summary.unreported_cards == 0 && summary.incomplete_cards == 0 && lead.unreported == 0 && lead.incomplete == 0 {
         summary.cache_percent = Some(summary.reported.cached as f64 * 100.0 / input as f64);
     }
     Ok(Report { groups, compare, runs, lead, summary })
@@ -268,7 +271,7 @@ fn group(runs: &[RunTokens], clean: bool, context: bool, key: &str, label: &str)
     let mut run_count = 0usize;
     let mut providers: BTreeMap<String, (usize, Tokens)> = BTreeMap::new();
     for run in runs.iter().filter(|r| r.clean == clean) {
-        let mine: Vec<&CardTokens> = run.cards.iter().filter(|c| c.context == context).collect();
+        let mine: Vec<&CardTokens> = run.cards.iter().filter(|c| c.context == context && !run.incomplete_cards.contains(&c.card_id)).collect();
         if mine.is_empty() {
             continue;
         }

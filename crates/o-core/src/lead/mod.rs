@@ -119,7 +119,7 @@ pub enum LeadEvent {
     AutoRun { at: String, plan_id: String, hash: Option<String>, reason: Option<String> },
     /// Tokens one lead turn spent (`o tokens` counts them as planning overhead).
     #[serde(rename = "lead.usage")]
-    Usage { at: String, provider: ProviderId, input: f64, cached: f64, output: f64 },
+    Usage { at: String, provider: ProviderId, input: f64, cached: f64, output: f64, #[serde(default, skip_serializing_if = "Option::is_none")] complete: Option<bool> },
     #[serde(rename = "lead.error")]
     Error { at: String, text: String },
     /// A CLI session got the turn whose `lead.user` is event `through` of the thread (as
@@ -750,6 +750,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let mut used_session = if app_server { None } else { session.clone() };
     let (mut input, mut cached, mut output) = (0.0, 0.0, 0.0);
     let mut used = false;
+    let mut usage_complete = true;
     let mut last_message = String::new();
     let mut last: Option<(bool, String)> = None;
     let mut limited = false;
@@ -814,8 +815,9 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                         used_session = Some(session_id);
                     }
                     StreamSignal::Message { text } => last_message = text,
-                    StreamSignal::Usage { input: i, cached: c, output: o } => {
+                    StreamSignal::Usage { input: i, cached: c, output: o, complete } => {
                         (input, cached, output, used) = (input + i, cached + c, output + o, true);
+                        usage_complete &= complete;
                     }
                     StreamSignal::Limit { until } => {
                         limited = true;
@@ -918,7 +920,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         }
     }
     if used {
-        emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output })?;
+        emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output, complete: Some(usage_complete) })?;
     }
 
     if slot.stop_asked() {
@@ -1518,10 +1520,14 @@ pub struct LeadTokens {
     pub requested: u64,
     /// Requests without a subsequent usage event before the next request in this thread.
     pub unreported: u64,
+    /// Usage events with missing fields or old records whose completeness is unknown.
+    pub incomplete: u64,
     pub input: u64,
     pub cached: u64,
     pub output: u64,
     pub total: u64,
+    #[serde(skip)]
+    pub complete_tokens: crate::context::tokens::Tokens,
 }
 
 pub fn tokens(home: &Path, project: Option<&str>, since: Option<&str>) -> LeadTokens {
@@ -1543,15 +1549,23 @@ pub fn tokens(home: &Path, project: Option<&str>, since: Option<&str>) -> LeadTo
                     reported = false;
                     if selected { sum.requested += 1; }
                 }
-                LeadEvent::Usage { at, input, cached, output, .. } => {
+                LeadEvent::Usage { at, input, cached, output, complete, .. } => {
                     if selected { reported = true; }
                     if since.is_some_and(|s| at.as_str() < s) { continue; }
+                    let complete = complete == Some(true) && [input, cached, output].iter().all(|n| n.is_finite() && *n >= 0.0);
                     let (i, c, o) = (input.max(0.0) as u64, cached.max(0.0) as u64, output.max(0.0) as u64);
                     sum.turns += 1;
+                    if !complete { sum.incomplete += 1; }
                     sum.input += i;
                     sum.cached += c;
                     sum.output += o;
                     sum.total += i + c + o;
+                    if complete {
+                        sum.complete_tokens.input += i;
+                        sum.complete_tokens.cached += c;
+                        sum.complete_tokens.output += o;
+                        sum.complete_tokens.total += i + c + o;
+                    }
                 }
                 _ => {}
             }
