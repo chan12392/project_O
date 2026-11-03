@@ -94,6 +94,17 @@ test("badges count what waits on a person: not a note to read, not a Claude Code
   assert.deepEqual(recommend([told], after(team.endedAt!, 60_000)).filter((p) => p.kind === "answer").map((p) => p.item?.cardId), ["a"]);
 });
 
+test("explicit message kind takes precedence over punctuation while older messages keep the heuristic", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const told: RunView = { ...team, messages: [
+    { at: at(1000), from: "a", to: "lead", kind: "question", text: "방향을 정해야 합니다" },
+    { at: at(2000), from: "b", to: "lead", kind: "message", text: "질문 예시: 어떻게 할까요?" },
+  ] };
+  const answers = nextUp([told], after(team.endedAt!, 60_000)).todo.filter((i) => i.kind === "answer");
+  assert.deepEqual(answers.map((i) => [i.cardId, isNote(i)]), [["a", false], ["b", true]]);
+});
+
 test("fleet stats and activity read the same runs", () => {
   const now = after(byId("20261101-162328-9p0b").endedAt!, 0);
   const stats = fleetStats(runs, now);
