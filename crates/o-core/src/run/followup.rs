@@ -37,7 +37,9 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
         OEvent::CardEnd { card_id, status, .. } if card_id == &card.id => Some(*status),
         _ => None,
     });
-    if ended.is_none() && (run_is_live(home, run) || !dir.join("followup.json").exists() || store::active_markers(home).iter().any(|m| m.run_id == run)) {
+    let active = store::active_markers(home);
+    if active.iter().any(|m| m.run_id == run && m.card_id == card.id)
+        || (ended.is_none() && (run_is_live(home, run) || !dir.join("followup.json").exists() || active.iter().any(|m| m.run_id == run))) {
         return Err("이전 작업이 아직 실행 중이거나 정상적으로 종료되지 않았습니다".into());
     }
     let mut session = events.iter().rev().find_map(|event| match event {

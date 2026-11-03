@@ -3,6 +3,7 @@
 //! the tests need no node, shell or provider CLI.
 
 use std::collections::BTreeMap;
+use std::io::Write;
 use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -29,6 +30,10 @@ const DUMP_ENV: &str = "--dump-env";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--fake-raw") {
+        std::io::stdout().write_all(b"\xff\r\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}\r\n").unwrap();
+        return;
+    }
     if args.get(1).map(String::as_str) == Some("--fake-devin") {
         std::fs::write(&args[2], r#"{"session_id":"fake-session","steps":[{"source":"agent","tool_calls":[{"function_name":"read","arguments":{"path":"demo.txt"}}]}]}"#).unwrap();
         println!("작업 완료");
@@ -50,7 +55,10 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 27] = [
+    let tests: [(&str, fn()); 30] = [
+        ("a failed log stops the worker and its dependent", failed_log),
+        ("raw output is preserved byte for byte", raw_output_preserved),
+        ("dependency results are complete or the dependent is refused", dependency_result_limit),
         ("queued follow-ups stop safely and never run in parallel for one session", followup_queue_and_stop),
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
@@ -157,6 +165,9 @@ fn followup_resumes_workspace() {
         fake_cli(|_| vec![r#"{"type":"system","subtype":"init","session_id":"s1"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])(spec, cwd)
     });
     assert_eq!(run_plan(&home, "original", &initial, None, original).unwrap(), CardStatus::Done);
+    mark_active(&home, &ActiveMarker { run_id: "original".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() }).unwrap();
+    assert!(o_core::run::followup::target(&home, "original", "a").is_err());
+    clear_active(&home, "original", "a");
     let id = o_core::run::followup::start(&home, "original", "a", "다시 확인해 주세요", &|_| Ok(())).unwrap();
     let follow: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
     let resume: Arc<Spawner> = Arc::new(|spec, cwd| {
@@ -331,6 +342,70 @@ fn isolated_worktrees_refuse_submodules() {
     let spawner: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("fixture stops here")) });
     let _ = run_plan(&home, "beside-submodule", &app, None, spawner);
     assert!(started.load(Ordering::SeqCst));
+}
+
+fn failed_log() {
+    for blocked_log in ["first.raw.jsonl", "first.err.log"] {
+        let home = temp_home();
+        let first = card("first", ProviderId::Claude, "first");
+        let mut second = card("second", ProviderId::Claude, "second");
+        second.depends_on = vec!["first".into()];
+        let p = plan(vec![first, second]);
+        create_run(&home, "bad-log", &p).unwrap();
+        std::fs::create_dir(o_core::run::store::run_dir(&home, "bad-log").join("cards").join(blocked_log)).unwrap();
+        let launched = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&launched);
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            if spec.env["O_CARD_ID"] == "second" { observed.store(true, Ordering::SeqCst); }
+            let mut command = Command::new(std::env::current_exe()?);
+            command.current_dir(cwd).env(FAKE, "[]").env(FAKE_SLEEP, "30000");
+            Ok(command)
+        });
+        let start = std::time::Instant::now();
+        assert_eq!(run_plan(&home, "bad-log", &p, None, spawner).unwrap(), CardStatus::Failed);
+        assert!(start.elapsed() < Duration::from_secs(10));
+        assert!(!launched.load(Ordering::SeqCst));
+        assert!(active_markers(&home).is_empty());
+    }
+}
+
+fn raw_output_preserved() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Claude, "raw")]);
+    create_run(&home, "raw", &p).unwrap();
+    let spawner: Arc<Spawner> = Arc::new(|_, cwd| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).arg("--fake-raw");
+        Ok(command)
+    });
+    assert_eq!(run_plan(&home, "raw", &p, None, spawner).unwrap(), CardStatus::Done);
+    let raw = std::fs::read(o_core::run::store::run_dir(&home, "raw").join("cards/a.raw.jsonl")).unwrap();
+    assert_eq!(raw, b"\xff\r\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}\r\n");
+}
+
+fn dependency_result_limit() {
+    for (run, size, expected) in [("within", 2000, CardStatus::Done), ("too-large", 13000, CardStatus::Failed)] {
+        let home = temp_home();
+        let first = card("first", ProviderId::Claude, "first");
+        let mut second = card("second", ProviderId::Claude, "second");
+        second.depends_on = vec!["first".into()];
+        let p = plan(vec![first, second]);
+        create_run(&home, run, &p).unwrap();
+        let seen = Arc::new(AtomicBool::new(false));
+        let observed = Arc::clone(&seen);
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            if spec.env["O_CARD_ID"] == "second" {
+                assert!(spec.stdin.as_deref().unwrap().contains(&format!("{}END", "x".repeat(size))));
+                observed.store(true, Ordering::SeqCst);
+            }
+            let line = serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "result":format!("{}END", "x".repeat(size))}).to_string();
+            let mut command = Command::new(std::env::current_exe()?);
+            command.current_dir(cwd).env(FAKE, serde_json::to_string(&vec![line]).unwrap());
+            Ok(command)
+        });
+        assert_eq!(run_plan(&home, run, &p, None, spawner).unwrap(), expected);
+        assert_eq!(seen.load(Ordering::SeqCst), expected == CardStatus::Done);
+    }
 }
 
 fn dependency_order() {
