@@ -194,6 +194,25 @@ impl Provider for OpenCode {
     }
 }
 
+/// Project config OpenCode loads on its own: `opencode.json(c)` and `.opencode/` (its config and
+/// auto-discovered `.opencode/plugins/`), "from the current directory to the filesystem root"
+/// (opencode.ai/v2/docs/config). A plugin's setup runs when it loads (docs/build/plugins/server),
+/// whatever the permission rules say, and no documented flag or variable turns this discovery off.
+const PROJECT_CONFIG: [&str; 3] = ["opencode.json", "opencode.jsonc", ".opencode"];
+
+/// The first OpenCode project config a run in `cwd` would load, nearest folder first (#37).
+pub fn project_config(cwd: &Path) -> Option<std::path::PathBuf> {
+    cwd.ancestors().flat_map(|dir| PROJECT_CONFIG.map(|name| dir.join(name))).find(|path| path.exists())
+}
+
+/// Why a card without YOLO does not start where `project_config` found something.
+pub fn project_config_refusal(found: &Path) -> String {
+    format!(
+        "{}이 있어 OpenCode 카드를 시작하지 않았습니다 (프로젝트 설정·플러그인이 권한 규칙과 별개로 실행될 수 있음). 그 파일을 치우거나 다른 에이전트를 고르세요",
+        found.to_string_lossy()
+    )
+}
+
 fn config_dir(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("opencode")
 }

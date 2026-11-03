@@ -232,7 +232,7 @@ fn card_prompt_text_is_unchanged() {
     .join("\n");
     assert_eq!(card_prompt(&p.cards[0], &p, &TEAM), expected);
     let codex = launch_spec(&p.cards[0], &p, &TEAM);
-    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", "C:/o/runs/r1", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
+    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", "C:/o/runs/r1", "--skip-git-repo-check", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
     assert_eq!(codex.args, expected_args);
     let claude = launch_spec(&p.cards[1], &p, &TEAM);
     let expected_args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "Bash(o context *)", "--effort", "high"];
@@ -451,7 +451,7 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
     assert_eq!(claude.args, expected);
     assert_eq!(
         codex.args,
-        ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "C:/work/demo", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"]
+        ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "C:/work/demo", "--skip-git-repo-check", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"]
     );
     let prompt = agy.args.last().unwrap().clone();
     assert_eq!(
@@ -713,4 +713,22 @@ fn opencode_model_list_keeps_provider_model_lines() {
     let out = "opencode/deepseek-v4.1-flash-free\nopenrouter/openrouter/free\n\nsome banner line\nollama/qwen3:0.6b\n";
     let ids: Vec<String> = o_core::providers::opencode::parse_models(out).into_iter().map(|m| m.id).collect();
     assert_eq!(ids, ["opencode/deepseek-v4.1-flash-free", "openrouter/openrouter/free", "ollama/qwen3:0.6b"]);
+}
+
+/// #37: OpenCode project config is found in the folder and every parent, nearest first.
+#[test]
+fn opencode_project_config_is_found_from_the_folder_up() {
+    use o_core::providers::opencode::project_config;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("o-opencode-config-{}-{nanos}", std::process::id()));
+    let deep = base.join("a").join("b");
+    std::fs::create_dir_all(&deep).unwrap();
+    assert!(project_config(&deep).is_none_or(|found| !found.starts_with(&base)));
+    std::fs::create_dir_all(base.join(".opencode")).unwrap();
+    assert_eq!(project_config(&deep), Some(base.join(".opencode")));
+    std::fs::write(base.join("a").join("opencode.json"), "{}").unwrap();
+    assert_eq!(project_config(&deep), Some(base.join("a").join("opencode.json")));
+    std::fs::write(deep.join("opencode.jsonc"), "{}").unwrap();
+    assert_eq!(project_config(&deep), Some(deep.join("opencode.jsonc")));
+    std::fs::remove_dir_all(&base).unwrap();
 }
