@@ -123,10 +123,10 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
     const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
     for (const m of run.messages) {
       if (m.to !== "lead") continue;
-      const questionId = m.kind === "question" ? m.id : undefined;
+      const questionId = m.kind === "question" || m.kind === "approval" ? m.id : undefined;
       if (questionId ? run.messages.some((reply) => reply.from === "lead" && reply.to === m.from && reply.replyTo === questionId) : m.at <= answeredAt(m.from)) continue;
       const card = cardOf.get(m.from);
-      keep(todo, { ...base, key: `answer:${run.runId}:${m.from}:${m.at}`, kind: "answer", cardId: m.from, provider: card?.provider, title: card?.label ?? m.from, detail: m.text, since: m.at, question: m.kind === undefined ? undefined : m.kind === "question", questionId });
+      keep(todo, { ...base, key: `answer:${run.runId}:${m.from}:${m.at}`, kind: "answer", cardId: m.from, provider: card?.provider, title: card?.label ?? m.from, detail: m.kind === "approval" ? `[승인 요청] ${m.text}` : m.text, since: m.at, question: m.kind === undefined ? undefined : m.kind === "question" || m.kind === "approval", questionId });
     }
 
     for (const card of run.cards) {

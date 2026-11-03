@@ -31,7 +31,7 @@ export type OEvent =
   | { t: "card.limit"; at: string; cardId: string; until: string }
   | { t: "card.end"; at: string; cardId: string; status: CardStatus; result?: string; exitCode: number | null }
   /** A team message between agents of one run (`o msg send`), "lead" for the supervisor, "all" for everyone. */
-  | { t: "msg"; at: string; from: string; to: string; text: string; id?: string; kind?: "message" | "question"; replyTo?: string }
+  | { t: "msg"; at: string; from: string; to: string; text: string; id?: string; kind?: "message" | "question" | "approval"; replyTo?: string }
   | { t: "msg.state"; at: string; id: string; recipient: string; state: "stored" | "delivered" | "unknown" | "acknowledged" | "cancelled" }
   /** Tokens a card spent since its last usage event (fresh input, cached input, output). */
   | { t: "card.usage"; at: string; cardId: string; input: number; cached: number; output: number }

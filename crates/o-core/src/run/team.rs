@@ -74,6 +74,16 @@ pub fn send_tracked(home: &Path, speaker: &Speaker, to: &str, text: &str, questi
 
 /// An answer names a question in the same run and may only be sent back to its author.
 pub fn send_reply(home: &Path, speaker: &Speaker, to: &str, text: &str, question: bool, key: Option<&str>, reply_to: Option<&str>) -> Result<String, Refused> {
+    send_kind(home, speaker, to, text, if question { "question" } else { "message" }, key, reply_to)
+}
+
+/// A request for the person's decision must never be answered by an autonomous lead.
+pub fn send_approval(home: &Path, speaker: &Speaker, text: &str, key: Option<&str>) -> Result<String, Refused> {
+    if speaker.me == "lead" { return Err(Refused::Io(io::Error::other("카드만 승인 요청을 보낼 수 있습니다"))); }
+    send_kind(home, speaker, "lead", text, "approval", key, None)
+}
+
+fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, key: Option<&str>, reply_to: Option<&str>) -> Result<String, Refused> {
     let violations = check_message(text, &Parties { from: &speaker.me, to, known: &speaker.cards });
     if !violations.is_empty() {
         return Err(Refused::Policy(violations));
@@ -84,7 +94,6 @@ pub fn send_reply(home: &Path, speaker: &Speaker, to: &str, text: &str, question
     with_events(home, &speaker.run_id, |file| {
         let content = event_text(file)?;
         let id = key.map_or_else(|| format!("m{}", content.len()), |key| format!("k{}-{}-{key}", speaker.me.len(), speaker.me));
-        let kind = if question { "question" } else { "message" };
         let events = records(&content);
         if let Some(existing) = events.iter().find(|m| m.id == id) {
             if existing.from == speaker.me && existing.to == to && existing.text == text && existing.kind == kind && existing.reply_to.as_deref() == reply_to { return Ok(id); }
@@ -92,7 +101,7 @@ pub fn send_reply(home: &Path, speaker: &Speaker, to: &str, text: &str, question
         }
         if let Some(question_id) = reply_to {
             let original = events.iter().find(|m| m.id == question_id).ok_or_else(|| io::Error::other("답할 질문을 찾지 못했습니다"))?;
-            if question || original.kind != "question" || original.from != to || original.from == speaker.me || (original.to != speaker.me && original.to != "all") {
+            if kind != "message" || !matches!(original.kind.as_str(), "question" | "approval") || original.from != to || original.from == speaker.me || (original.to != speaker.me && original.to != "all") {
                 return Err(io::Error::other("이 질문의 수신자만 작성자에게 답할 수 있습니다"));
             }
             if states_for(home, &speaker.run_id, &content, &speaker.me)?.get(question_id).is_some_and(|s| s == "cancelled") {

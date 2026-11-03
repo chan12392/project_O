@@ -21,7 +21,7 @@ export interface CardLogEntry {
 interface TeamMessage {
   at: string;
   id?: string;
-  kind?: "message" | "question";
+  kind?: "message" | "question" | "approval";
   replyTo?: string;
   recipients?: Record<string, "stored" | "delivered" | "unknown" | "acknowledged" | "cancelled">;
   from: string;

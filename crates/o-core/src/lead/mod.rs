@@ -517,6 +517,14 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
     let Some(profile) = profile else { return Err("이전 총괄의 프로필이 기록되지 않아 자동 응답할 수 없습니다".into()) };
     let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: cards.to_vec() };
     let Some(message) = team::read(home, &speaker, false).map_err(|e| e.to_string())?.into_iter().next() else { return Ok(false) };
+    if message.kind == "approval" {
+        let answered = team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.from == "lead" && m.to == message.from && m.reply_to.as_deref() == Some(&message.id));
+        if answered {
+            team::transition(home, &speaker, &message.id, "acknowledged").map_err(|e| e.to_string())?;
+            return Ok(true);
+        }
+        return Err("승인 요청은 대표님의 답변을 기다립니다".into());
+    }
     if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
     let root = clean::default_root();
     let req = SendRequest { project, provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };

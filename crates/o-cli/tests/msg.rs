@@ -184,6 +184,21 @@ fn answers_reference_only_a_question_addressed_to_the_sender_and_retries_are_ide
 }
 
 #[test]
+fn approval_requests_only_accept_a_persons_direct_answer() {
+    let (base, home) = setup("approval");
+    let card = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--approval", "--id", "p", "승인해 주세요"], &card).status.success());
+    let reply = ["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-p", "--id", "human", "허용합니다"];
+    assert!(!o(&base, &reply, &[("O_AGENT_ROLE", "lead")]).status.success());
+    assert!(o(&base, &reply, &[("O_AGENT_ROLE", "")]).status.success());
+    assert!(read_events(&home, "r1").iter().any(|event| matches!(event, OEvent::Msg { kind: Some(kind), .. } if kind == "approval")));
+    let lead = o(&base, &["msg", "read", "--run", "r1"], &[("O_AGENT_ROLE", "")]);
+    assert!(String::from_utf8_lossy(&lead.stdout).contains("새 메시지가 없습니다"));
+    let answer = o(&base, &["msg", "read"], &card);
+    assert!(String::from_utf8_lossy(&answer.stdout).contains("허용합니다"));
+}
+
+#[test]
 fn a_question_receives_one_complete_answer_even_when_retried_with_a_new_key() {
     let (base, home) = setup("reply-dedup");
     let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
