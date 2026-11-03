@@ -50,7 +50,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 23] = [
+    let tests: [(&str, fn()); 24] = [
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
         ("a repository with a submodule entry is refused before any worker starts", isolated_worktrees_refuse_submodules),
