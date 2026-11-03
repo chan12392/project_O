@@ -74,12 +74,13 @@ pub fn code_rules() -> impl Iterator<Item = &'static Rule> {
 
 /// Protected branches: they only change by merging PRs (no direct commits or
 /// pushes), and checkouts on them are mirrors agents may read and test in,
-/// never change. Keep in sync with .github/workflows/branch-flow.yml and
+/// never change. `test_1_hotfix` is the hotfix lane into test_1 (ADR-0021).
+/// Keep in sync with .github/workflows/branch-flow.yml and
 /// crates/o-core/src/sys/mirror.rs.
-pub const READ_ONLY_BRANCHES: [&str; 3] = ["test_1", "test_2", "main"];
+pub const READ_ONLY_BRANCHES: [&str; 4] = ["test_1", "test_1_hotfix", "test_2", "main"];
 
 /// The owner's GitHub login (member A): the only account that may merge into
-/// `test_1` and `main`; his agents run under the same `gh` login. Shared
+/// `test_1`, `test_1_hotfix` and `main`; his agents run under the same `gh` login. Shared
 /// boundary — keep in sync with .github/workflows/merge-guard.yml.
 pub const OWNER: &str = "chan12392";
 

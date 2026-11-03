@@ -237,7 +237,7 @@ fn card_prompt_text_is_unchanged() {
     .join("\n");
     assert_eq!(card_prompt(&p.cards[0], &p, &TEAM), expected);
     let codex = launch_spec(&p.cards[0], &p, &TEAM);
-    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", "C:/o/runs/r1", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
+    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", "C:/o/runs/r1", "--skip-git-repo-check", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
     assert_eq!(codex.args, expected_args);
     let claude = launch_spec(&p.cards[1], &p, &TEAM);
     let expected_args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "Bash(o context *)", "--effort", "high"];
@@ -258,6 +258,11 @@ fn cards_drop_api_key_variables_so_each_cli_uses_its_own_sign_in() {
 }
 
 fn lead_spec(provider: ProviderId, session: Option<&str>, effort: Option<&str>, images: &[String]) -> Option<LaunchSpec> {
+    lead_spec_on(provider, session, effort, images, true)
+}
+
+/// `app_server`: whether the Codex CLI has app-server (`codex::supports_app_server`).
+fn lead_spec_on(provider: ProviderId, session: Option<&str>, effort: Option<&str>, images: &[String], app_server: bool) -> Option<LaunchSpec> {
     o_core::providers::get(provider).lead(&LeadTurn {
         project: "C:/work/demo",
         prompt: "계획해 줘".into(),
@@ -266,6 +271,7 @@ fn lead_spec(provider: ProviderId, session: Option<&str>, effort: Option<&str>, 
         effort,
         files_dir: Some("C:/o-lead/t1"),
         images,
+        app_server,
     })
 }
 
@@ -294,6 +300,25 @@ fn the_codex_lead_starts_app_server_with_hooks_disabled() {
     assert!(next.stdin.is_none());
 }
 
+/// A CLI without app-server gets the earlier read-only exec lead, hooks off, resumed by id.
+#[test]
+fn the_codex_lead_falls_back_to_read_only_exec_without_app_server() {
+    let images = vec!["C:/o-lead/t1/01-a.png".to_string()];
+    let first = lead_spec_on(ProviderId::Codex, None, Some("high"), &images, false).unwrap();
+    assert_eq!(first.bin, "codex");
+    assert_eq!(
+        first.args,
+        ["exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "--disable", "hooks", "-i", "C:/o-lead/t1/01-a.png", "--json", "-c", "model_reasoning_effort=high", "-"]
+    );
+    assert_eq!(first.stdin.as_deref(), Some("계획해 줘"));
+    assert_eq!(first.env_remove, ["CODEX_API_KEY"]);
+    let next = lead_spec_on(ProviderId::Codex, Some("th-9"), None, &[], false).unwrap();
+    assert_eq!(
+        next.args,
+        ["exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "--disable", "hooks", "resume", "--json", "th-9", "-"]
+    );
+}
+
 #[test]
 fn the_agy_lead_plans_with_every_change_denied_and_resumes_its_conversation() {
     let first = lead_spec(ProviderId::Agy, None, Some("low"), &["C:/o-lead/t1/01-a.png".to_string()]).unwrap();
@@ -307,7 +332,7 @@ fn the_agy_lead_plans_with_every_change_denied_and_resumes_its_conversation() {
     assert!(first.stdin.is_none());
     assert_eq!(first.env.get("AGY_CLI_DISABLE_AUTO_UPDATE").map(String::as_str), Some("true"));
     let next = o_core::providers::get(ProviderId::Agy)
-        .lead(&LeadTurn { project: "C:/work/demo", prompt: "또".into(), session: Some("c-1"), model: Some("gemini-3.8-flash-high"), effort: None, files_dir: None, images: &[] })
+        .lead(&LeadTurn { project: "C:/work/demo", prompt: "또".into(), session: Some("c-1"), model: Some("gemini-3.8-flash-high"), effort: None, files_dir: None, images: &[], app_server: false })
         .unwrap();
     assert_eq!(after(&next.args, "--conversation"), "c-1");
     assert_eq!(after(&next.args, "--model"), "gemini-3.8-flash-high");
@@ -319,7 +344,7 @@ fn the_agy_lead_plans_with_every_change_denied_and_resumes_its_conversation() {
 fn every_lead_takes_the_model_it_is_given() {
     for (provider, flag) in [(ProviderId::Claude, "--model"), (ProviderId::Agy, "--model")] {
         for session in [None, Some("s")] {
-            let turn = LeadTurn { project: "C:/work/demo", prompt: "p".into(), session, model: Some("m-1"), effort: None, files_dir: None, images: &[] };
+            let turn = LeadTurn { project: "C:/work/demo", prompt: "p".into(), session, model: Some("m-1"), effort: None, files_dir: None, images: &[], app_server: false };
             let spec = o_core::providers::get(provider).lead(&turn).unwrap();
             assert_eq!(after(&spec.args, flag), "m-1", "{provider} {session:?}");
         }
@@ -331,9 +356,9 @@ fn every_lead_takes_the_model_it_is_given() {
 #[test]
 fn lead_launches_never_write_and_never_turn_approvals_off() {
     for provider in ProviderId::ALL.into_iter().filter(|p| o_core::providers::can_lead(*p)) {
-        for session in [None, Some("s")] {
-            let spec = lead_spec(provider, session, Some("high"), &[]).unwrap_or_else(|| panic!("{provider} cannot lead"));
-            let turn = LeadTurn { project: "C:/work/demo", prompt: "계획해 줘".into(), session, model: None, effort: Some("high"), files_dir: Some("C:/o-lead/t1"), images: &[] };
+        for (session, app_server) in [(None, false), (Some("s"), false), (None, true), (Some("s"), true)] {
+            let spec = lead_spec_on(provider, session, Some("high"), &[], app_server).unwrap_or_else(|| panic!("{provider} cannot lead"));
+            let turn = LeadTurn { project: "C:/work/demo", prompt: "계획해 줘".into(), session, model: None, effort: Some("high"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server };
             assert_eq!(o_core::providers::lead_spec(provider, &turn, false).as_ref(), Some(&spec), "{provider}: YOLO off is the read-only lead");
             let line = spec.args.join(" ");
             assert!(find_hits(&line, code_rules()).is_empty(), "{provider}: {line}");
@@ -449,7 +474,7 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
     assert_eq!(claude.args, expected);
     assert_eq!(
         codex.args,
-        ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "C:/work/demo", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"]
+        ["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", "C:/work/demo", "--skip-git-repo-check", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"]
     );
     let prompt = agy.args.last().unwrap().clone();
     assert_eq!(
@@ -471,7 +496,7 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
 }
 
 fn yolo_lead(provider: ProviderId, session: Option<&str>) -> LaunchSpec {
-    let turn = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session, model: None, effort: Some("low"), files_dir: Some("C:/o-lead/t1"), images: &[] };
+    let turn = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session, model: None, effort: Some("low"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server: false };
     o_core::providers::lead_spec(provider, &turn, true).unwrap()
 }
 
@@ -711,4 +736,25 @@ fn opencode_model_list_keeps_provider_model_lines() {
     let out = "opencode/deepseek-v4.1-flash-free\nopenrouter/openrouter/free\n\nsome banner line\nollama/qwen3:0.6b\n";
     let ids: Vec<String> = o_core::providers::opencode::parse_models(out).into_iter().map(|m| m.id).collect();
     assert_eq!(ids, ["opencode/deepseek-v4.1-flash-free", "openrouter/openrouter/free", "ollama/qwen3:0.6b"]);
+}
+
+/// #37: OpenCode project config is found in the folder and every parent, nearest first.
+#[test]
+fn opencode_project_config_is_found_from_the_folder_up() {
+    use o_core::providers::opencode::project_config;
+    let nanos = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("o-opencode-config-{}-{nanos}", std::process::id()));
+    let deep = base.join("a").join("b");
+    std::fs::create_dir_all(&deep).unwrap();
+    assert!(project_config(&deep).is_none_or(|found| !found.starts_with(&base)));
+    // The install script's `~/.opencode/bin` alone is not project config.
+    std::fs::create_dir_all(base.join(".opencode").join("bin")).unwrap();
+    assert!(project_config(&deep).is_none_or(|found| !found.starts_with(&base)));
+    std::fs::create_dir_all(base.join(".opencode").join("plugins")).unwrap();
+    assert_eq!(project_config(&deep), Some(base.join(".opencode")));
+    std::fs::write(base.join("a").join("opencode.json"), "{}").unwrap();
+    assert_eq!(project_config(&deep), Some(base.join("a").join("opencode.json")));
+    std::fs::write(deep.join("opencode.jsonc"), "{}").unwrap();
+    assert_eq!(project_config(&deep), Some(deep.join("opencode.jsonc")));
+    std::fs::remove_dir_all(&base).unwrap();
 }

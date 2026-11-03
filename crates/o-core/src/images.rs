@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Serialize;
+use crate::run::events::OEvent;
 use crate::run::store;
 
 const MAX_IMAGE: u64 = 10 * 1024 * 1024;
+/// The tool name under which the runner records a card's separate work folder.
+const WORK_FOLDER: &str = "O 작업 폴더";
 
 #[derive(Serialize)]
 pub struct Image {
@@ -36,7 +39,9 @@ fn image_path(home: &Path, user: &Path, project: &str, run: Option<&str>, card: 
     if project.starts_with(r"\\") || project.starts_with("//") { return Err("네트워크 프로젝트의 이미지는 열 수 없습니다".into()); }
     crate::projects::check(home, user, project)?;
     let root = PathBuf::from(store::resolved_path(project));
+    // `roots` bound what may be opened; `bases` resolve relative paths, the card's own folder first.
     let mut roots = vec![root.clone()];
+    let mut bases = vec![root.clone()];
     if let (Some(run), Some(card)) = (run, card) {
         if !store::is_run_id(run) { return Err("올바르지 않은 실행 ID입니다".into()); }
         if let Ok(plan) = store::read_plan(home, run) {
@@ -47,14 +52,31 @@ fn image_path(home: &Path, user: &Path, project: &str, run: Option<&str>, card: 
             let name = home.file_name().ok_or("상태 폴더가 올바르지 않습니다")?.to_string_lossy();
             let base = home.with_file_name(format!("{name}-worktrees"));
             let worktree = base.join(run).join((index + 1).to_string());
-            if base.parent().is_some_and(|parent| no_links(parent, &base)) && no_links(&base, &worktree) && worktree.is_dir() { roots.push(PathBuf::from(store::resolved_path(&worktree.to_string_lossy()))); }
+            if base.parent().is_some_and(|parent| no_links(parent, &base)) && no_links(&base, &worktree) && worktree.is_dir() {
+                let checkout = PathBuf::from(store::resolved_path(&worktree.to_string_lossy()));
+                // The folder the card ran in as recorded at its start (`<checkout>/<project's place in the repository>`),
+                // not one guessed again from the repository as it is now.
+                let recorded = store::read_events(home, run).into_iter().find_map(|event| match event {
+                    OEvent::CardTool { card_id, name, summary, .. } if card_id == card && name == WORK_FOLDER => Some(PathBuf::from(store::resolved_path(&summary))),
+                    _ => None,
+                });
+                let card_base = match recorded {
+                    Some(cwd) if cwd == checkout || (no_links(&checkout, &cwd) && cwd.is_dir()) => Some(cwd),
+                    Some(_) => None,
+                    None => Some(checkout.clone()),
+                };
+                if let Some(cwd) = card_base {
+                    roots.push(checkout);
+                    bases.insert(0, cwd);
+                }
+            }
         }
     }
     let path = Path::new(path);
     if path.components().any(|part| matches!(part, std::path::Component::ParentDir)) || path.to_string_lossy().starts_with(r"\\") || path.to_string_lossy().starts_with("//") {
         return Err("네트워크 또는 상위 폴더 경로는 열 수 없습니다".into());
     }
-    let candidates: Vec<PathBuf> = if path.is_absolute() { vec![path.to_path_buf()] } else { roots.iter().rev().map(|root| root.join(path)).collect() };
+    let candidates: Vec<PathBuf> = if path.is_absolute() { vec![path.to_path_buf()] } else { bases.iter().map(|base| base.join(path)).collect() };
     for candidate in candidates {
         let norm = |path: &Path| { let text = path.to_string_lossy().replace('\\', "/"); if cfg!(windows) { text.to_lowercase() } else { text } };
         let text = norm(&candidate);
@@ -126,5 +148,58 @@ mod tests {
         assert!(read(&home, &user, p, None, None, "//example.invalid/image.png").is_err());
         assert!(read(&home, &user, p, None, None, "bad.png").is_err());
         assert!(read(&home, &user, p, Some("run1"), Some("wrong"), "b.png").is_err());
+    }
+
+    #[test]
+    fn relative_previews_use_the_folder_the_card_ran_in() {
+        let root = std::env::temp_dir().join(format!("o-image-sub-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let user = root.join("user");
+        let home = root.join("state");
+        // The project is `repo/app`; each card ran in `<checkout>/app`.
+        let project = root.join("repo").join("app");
+        let runs = root.join("state-worktrees").join("run1");
+        let (first, second) = (runs.join("1"), runs.join("2"));
+        let outside = root.join("outside");
+        for dir in [&user, &home, &project.join("assets"), &first.join("app/assets"), &second.join("app"), &outside] { fs::create_dir_all(dir).unwrap(); }
+        let image = |tag: &str| [b"\x89PNG\r\n\x1a\n".as_slice(), tag.as_bytes()].concat();
+        fs::write(project.join("assets/output.png"), image("original")).unwrap();
+        fs::write(project.join("assets/only.png"), image("only original")).unwrap();
+        fs::write(first.join("app/assets/output.png"), image("card a")).unwrap();
+        fs::write(first.join("top.png"), image("checkout top")).unwrap();
+        fs::write(outside.join("x.png"), image("outside")).unwrap();
+        fs::create_dir_all(home.join("runs/run1")).unwrap();
+        fs::write(home.join("runs/run1/plan.json"), serde_json::json!({"project": project.to_string_lossy(), "cards": [{"id": "a"}, {"id": "b"}, {"id": "c"}]}).to_string()).unwrap();
+        let folder = |card: &str, path: &Path| store::append_event(&home, "run1", &OEvent::CardTool { at: "2026-01-01T00:00:00Z".into(), card_id: card.into(), name: WORK_FOLDER.into(), summary: store::resolved_path(&path.to_string_lossy()) }).unwrap();
+        folder("a", &first.join("app"));
+        folder("b", &second.join("app"));
+        // A forged record pointing out of the card's checkout gives no card folder at all.
+        fs::create_dir_all(runs.join("3")).unwrap();
+        folder("c", &outside);
+        let p = project.to_str().unwrap();
+        let read_as = |card: Option<&str>, path: &str| read(&home, &user, p, card.map(|_| "run1"), card, path).map(|image| image.bytes);
+        // The new work result wins over the original image of the same name.
+        assert_eq!(read_as(Some("a"), "assets/output.png").unwrap(), image("card a"));
+        assert_eq!(read_as(None, "assets/output.png").unwrap(), image("original"));
+        // A file the card did not make still comes from the original project.
+        assert_eq!(read_as(Some("a"), "assets/only.png").unwrap(), image("only original"));
+        // Relative paths start at the card's folder, not the checkout root; an absolute path in the checkout still opens.
+        assert!(read_as(Some("a"), "top.png").is_err());
+        assert_eq!(read_as(Some("a"), first.join("top.png").to_str().unwrap()).unwrap(), image("checkout top"));
+        // Another card's folder and outside paths stay closed.
+        assert_eq!(read_as(Some("b"), "assets/output.png").unwrap(), image("original"));
+        assert!(read_as(Some("b"), first.join("app/assets/output.png").to_str().unwrap()).is_err());
+        assert!(read_as(Some("c"), "x.png").is_err());
+        assert!(read_as(Some("c"), outside.join("x.png").to_str().unwrap()).is_err());
+
+        // A project at the repository root ran in the checkout itself.
+        let project = root.join("whole");
+        let checkout = root.join("state-worktrees").join("run2").join("1");
+        for dir in [&project.join("assets"), &checkout.join("assets")] { fs::create_dir_all(dir).unwrap(); }
+        fs::write(project.join("assets/output.png"), image("original")).unwrap();
+        fs::write(checkout.join("assets/output.png"), image("card")).unwrap();
+        fs::create_dir_all(home.join("runs/run2")).unwrap();
+        fs::write(home.join("runs/run2/plan.json"), serde_json::json!({"project": project.to_string_lossy(), "cards": [{"id": "a"}]}).to_string()).unwrap();
+        store::append_event(&home, "run2", &OEvent::CardTool { at: "2026-01-01T00:00:00Z".into(), card_id: "a".into(), name: WORK_FOLDER.into(), summary: store::resolved_path(&checkout.to_string_lossy()) }).unwrap();
+        assert_eq!(read(&home, &user, project.to_str().unwrap(), Some("run2"), Some("a"), "assets/output.png").unwrap().bytes, image("card"));
     }
 }

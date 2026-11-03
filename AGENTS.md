@@ -11,8 +11,8 @@
 
 ## 브랜치
 
-- 보호 브랜치는 3개다: `test_2`, `test_1`, `main`. 직접 커밋·push하지 않고 PR 병합으로만 바뀐다.
-- 고정 브랜치는 5개다: `main`, `test_1`, `test_2`, `younchan`, `yongwoo`. 이 외의 최상위 브랜치를 만들지 않는다.
+- 보호 브랜치는 4개다: `test_2`, `test_1_hotfix`, `test_1`, `main`. 직접 커밋·push하지 않고 PR 병합으로만 바뀐다.
+- 고정 브랜치는 6개다: `main`, `test_1`, `test_1_hotfix`, `test_2`, `younchan`, `yongwoo`. 이 외의 최상위 브랜치를 만들지 않는다.
 - 각자 자기 개인 브랜치에서 작업한다. 개인 브랜치에서 한 단계 더 갈라진 작업 브랜치(브랜치의 브랜치)를 허용한다.
   - 이름: `<개인 브랜치>-<주제>` (예: `yongwoo-account-vault`). 작업 브랜치에서 다시 가지를 치지 않는다.
   - `/`로 나누지 않는 이유: git은 `younchan` 브랜치가 있으면 `younchan/<주제>`를 만들 수 없다.
@@ -24,12 +24,14 @@
 
 ```
 개인·작업 브랜치 ──PR──▶ test_2 ──PR──▶ test_1 ──PR──▶ main
+핫픽스: 개인·작업 브랜치 ──PR──▶ test_1_hotfix ──PR──▶ test_1
 ```
 
 | PR | 올릴 수 있는 브랜치 | 병합하는 사람 |
 |---|---|---|
 | → `test_2` | 개인 브랜치(`younchan`, `yongwoo`)와 그 작업 브랜치(`<개인>-<주제>`) | 누구나 (자유 통합) |
-| → `test_1` | `test_2`만 (`test_2`에서 문제없이 돌아간 것만) | 대표(A)와 대표의 에이전트만 |
+| → `test_1_hotfix` | 개인·작업 브랜치(`test_1`에서 갈라 만든 급한 수정), `test_1` 동기화 | 대표(A)와 대표의 에이전트만 |
+| → `test_1` | `test_2`(`test_2`에서 문제없이 돌아간 것), `test_1_hotfix` | 대표(A)와 대표의 에이전트만 |
 | → `main` | `test_1`만 | 대표(A)와 대표의 에이전트만 |
 | → 개인 브랜치 | 자기 `<개인>-<주제>`, 또는 `main`·`test_1` 동기화 | 본인 |
 
@@ -38,14 +40,15 @@
 3. `test_2`에서 확인된 것을 `test_2` → `test_1` PR로 올리고, 대표가 확인 후 병합한다.
 4. `test_1` → `main` PR도 대표가 병합한다.
 5. 병합 후 각자 `main`(또는 `test_1`)을 개인 브랜치에 병합해 맞춘다.
+6. 배포된 빌드의 급한 수정은 `test_1`에서 가른 작업 브랜치 → `test_1_hotfix` → `test_1`로 올린다(ADR-0021). `test_1`에 들어간 뒤 개인 브랜치에 `test_1`을 병합해 `test_2`로 올려 되맞춘다.
 
 - 대표의 에이전트는 대표의 `gh` 로그인(`chan12392`)으로 돌기 때문에 대표와 같이 취급한다.
 - PR 교차 검토(ADR-0006, ADR-0012): 필요할 때 사람이나 `o review <PR> --post`로 검토한다. 검토 자체는 병합의 필수 조건이 아니다. `o review`는 검토 댓글만 남기고 승인이나 병합은 하지 않는다. 병합은 위 표의 규칙을 따른다.
 - 병합 방식은 merge commit만 쓴다(squash·rebase 병합은 저장소에서 꺼 두었다). 브랜치 간 이력이 어긋나지 않게 하기 위해서다.
 - 비공개 무료 플랜이라 GitHub 브랜치 보호를 켤 수 없다. 그래서 아래 지점에서 막거나 알린다. 검사가 빨간색이면 병합하지 않는다.
-  - 에이전트 훅(`o hook`): 보호 브랜치 커밋·push, 대표가 아닌 `gh` 로그인으로 `test_1`·`main`에 병합(`gh pr merge`, `gh api` 병합 호출)을 막는다. PR의 base나 로그인 계정을 확인하지 못하면 막는다.
+  - 에이전트 훅(`o hook`): 보호 브랜치 커밋·push, 대표가 아닌 `gh` 로그인으로 `test_1`·`test_1_hotfix`·`main`에 병합(`gh pr merge`, `gh api` 병합 호출)을 막는다. PR의 base나 로그인 계정을 확인하지 못하면 막는다(base를 모르면 대표도 막는다).
   - git 훅(`o scan`): 보호 브랜치 커밋, 보호 브랜치로의 push를 막는다.
-  - CI: `branch-flow.yml`은 흐름에 맞지 않는 PR을 실패시키고, `merge-guard.yml`은 대표가 아닌 사람이 `test_1`·`main`에 병합·push하면 실패로 알린다(사후 경보 — 이미 병합된 것을 막지는 못한다. 대표가 되돌린다).
+  - CI: `branch-flow.yml`은 흐름에 맞지 않는 PR을 실패시키고, `merge-guard.yml`은 대표가 아닌 사람이 `test_1`·`test_1_hotfix`·`main`에 병합·push하면 실패로 알린다(사후 경보 — 이미 병합된 것을 막지는 못한다. 대표가 되돌린다).
   - 사람이 GitHub 웹 화면의 병합 버튼을 누르는 것은 기술적으로 막을 수 없다. 규칙으로 지킨다.
 
 ## 작업 폴더 (Orca 프로젝트 `project_O`)
@@ -77,7 +80,7 @@
 
 개인 하네스(사용자 훅·전역 지시·스킬·플러그인·MCP·메모리)가 없는 공식 CLI로 테스트할 때 쓴다. 평소 설정(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`)은 건드리지 않는다.
 
-- 프로필: `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy|opencode>/home` (`o agents path`). O 상태 폴더(`%LOCALAPPDATA%/project_O`, 보호 대상) 밖에 둔다. 로그인은 CLI마다 한 번 `o agents login <claude|codex|opencode>` (agy는 시스템 로그인을 그대로 씀). OpenCode는 카드만 지원하고 Claude 구독 로그인을 사용하지 않는다(ADR-0015).
+- 프로필: `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy|opencode>/home` (`o agents path`). O 상태 폴더(`%LOCALAPPDATA%/project_O`, 보호 대상) 밖에 둔다. 로그인은 CLI마다 한 번 `o agents login <claude|codex|opencode>` (agy는 시스템 로그인을 그대로 씀). OpenCode는 카드만 지원하고 Claude 구독 로그인을 사용하지 않는다(ADR-0015). YOLO가 아닌 OpenCode 카드는 작업 폴더나 그 상위에 `opencode.json(c)`·`.opencode/`가 있으면 시작하지 않는다(프로젝트 플러그인을 끌 공식 옵션이 없음). O는 Codex 프로필에 프로젝트 신뢰를 기록하지 않는다(신뢰 전에는 프로젝트 `.codex/` 설정·MCP·훅을 싣지 않음, ADR-0017).
 - Devin은 설정 폴더를 옮길 수 없어 project_O 프로필을 켠 계획에서 거부한다. 평소 프로필에서 카드만 지원하며 총괄은 아직 지원하지 않는다(ADR-0016).
 - 확인: `o agents doctor` — 로그인 상태와 프로필 오염 검사. 수동 테스트: `o agents shell <cli>`. 카드 실행: `o dispatch plan.json`(기본 `--profile project-o`, `--clean`과 같음). 평소 CLI 설정으로는 `--profile own`. 앱의 "project_O 프로필 사용"이 같은 선택이다(ADR-0013).
 - 테스트 프로젝트는 홈 폴더 밖에 둔다(Claude는 시작 폴더 위의 지시 파일을 읽는다. 홈 폴더의 것만 프로필이 뺀다).
@@ -105,7 +108,7 @@ Antigravity는 공급자 정책에 따라 총괄·카드·예약 실행과 자�
 | CI (`.github/workflows/guard.yml`, `branch-flow.yml`, `merge-guard.yml`) | 전체 파일 정책 검사 + 테스트 + 타입 검사, PR 방향 검사, 대표 외 test_1·main 병합 경보 (읽기 전용 토큰) |
 | O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002), 오늘 사용 예산을 다 쓴 서비스(`daily-budget`, 하루 사용 예산이 켜져 있을 때만 — 기본 켜짐, `o budget --on\|--off`. 카드 시작 직전에도 확인 — ADR-0004, ADR-0013), 현재 설계 대화에서 분배하지 않은 실행으로의 총괄 후속 지시(ADR-0022) |
 
-- YOLO가 꺼진 기본 모드에서 총괄 CLI는 읽기 전용이다(ADR-0008): Claude는 `--tools Read,Grep,Glob`(MCP 없음), Codex는 `codex app-server`에 읽기 전용 샌드박스와 승인 `never`(승인 검토자 `user`, ADR-0023), Antigravity는 `--mode plan --sandbox`에 파일 쓰기·셸·MCP·URL 동작을 모두 거부하는 세션 설정(plan 모드만으로는 막히지 않아 거부 규칙이 필수, ADR-0008 개정 1). 계획 승인 전에 프로젝트 훅이 돌지 않게 Claude는 `--setting-sources user --settings {"disableAllHooks":true}`, Codex는 `codex app-server --disable hooks`, agy는 프로젝트에 `.agents/hooks.json`이 있으면 총괄을 맡지 않는다(개정 2). 총괄 모델은 고르지 않으면 CLI 기본이고, 고르면 카드 `model`과 같은 형식 검사를 거친다. 총괄의 계획은 `o dispatch`와 같은 정책을 두 번(저장할 때·실행할 때) 거치고, 사람이 "실행"을 눌러야 한 번만 전달된다. 예외는 총괄의 후속 지시(`o-followup`, ADR-0022)다: 현재 설계 대화에서 사람이 승인해 분배한 실행(과 그 후속 실행)의 카드에만, 그 대화가 아직 현재 대화일 때 "실행" 없이 접수된다. 분배 전이거나 "새 설계"로 대화가 바뀌었으면 보내지 않으며, 새 작업은 새 설계에서 계획을 다시 승인해야 한다. 첨부는 O 상태 폴더 밖(`%LOCALAPPDATA%/project_O-lead`)에 새 파일로만 저장하고 링크·로그인 정보 위치는 받지 않는다. 총괄 CLI는 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`·`CODEX_API_KEY`)를 물려받지 않는다.
+- YOLO가 꺼진 기본 모드에서 총괄 CLI는 읽기 전용이다(ADR-0008): Claude는 `--tools Read,Grep,Glob`(MCP 없음), Codex는 `codex app-server`에 읽기 전용 샌드박스와 승인 `never`(승인 검토자 `user`, ADR-0023, app-server가 없는 CLI는 이전처럼 `codex exec -s read-only --disable hooks`), Antigravity는 `--mode plan --sandbox`에 파일 쓰기·셸·MCP·URL 동작을 모두 거부하는 세션 설정(plan 모드만으로는 막히지 않아 거부 규칙이 필수, ADR-0008 개정 1). 계획 승인 전에 프로젝트 훅이 돌지 않게 Claude는 `--setting-sources user --settings {"disableAllHooks":true}`, Codex는 `--disable hooks`(app-server·exec 모두), agy는 프로젝트에 `.agents/hooks.json`이 있으면 총괄을 맡지 않는다(개정 2). 총괄 모델은 고르지 않으면 CLI 기본이고, 고르면 카드 `model`과 같은 형식 검사를 거친다. 총괄의 계획은 `o dispatch`와 같은 정책을 두 번(저장할 때·실행할 때) 거치고, 사람이 "실행"을 눌러야 한 번만 전달된다. 예외는 총괄의 후속 지시(`o-followup`, ADR-0022)다: 현재 설계 대화에서 사람이 승인해 분배한 실행(과 그 후속 실행)의 카드에만, 그 대화가 아직 현재 대화일 때 "실행" 없이 접수된다. 분배 전이거나 "새 설계"로 대화가 바뀌었으면 보내지 않으며, 새 작업은 새 설계에서 계획을 다시 승인해야 한다. 첨부는 O 상태 폴더 밖(`%LOCALAPPDATA%/project_O-lead`)에 새 파일로만 저장하고 링크·로그인 정보 위치는 받지 않는다. 총괄 CLI는 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`·`CODEX_API_KEY`)를 물려받지 않는다.
 - YOLO가 켜지면 총괄과 카드가 승인 없이 파일과 명령을 다룬다(ADR-0014). 하루 예산이 켜져 있고 제한에 맞는 계획은 자동 실행한다. O 표식·CLI 거부 규칙·가드로 에이전트의 직접 전달을 제한하지만, 같은 Windows 사용자 권한에서 표식 제거 또는 별도 프로세스를 이용한 우회는 막을 수 없다. Claude YOLO는 O 가드 훅을 주입하며 Codex·Antigravity에는 동일한 훅 적용이 확인되지 않았다.
 - 기본 모드의 카드 CLI에 열어 주는 권한은 팀 대화 명령(`o msg`)과 읽기 전용 컨텍스트 검색(`o context`, ADR-0005)뿐이다: Claude는 `--allowedTools "Bash(o msg *)" "Bash(o context *)"`, Codex는 실행 폴더 `--add-dir`(셸 명령은 샌드박스 안에서 그대로 실행), Antigravity는 정확히 `o msg read`·`o msg post` 두 명령(그 CLI의 허용 규칙은 전체 일치만 지원해 `o context`는 열지 않고, 프롬프트에 주입된 컨텍스트만 쓴다). 카드 안의 `o context`는 o.db를 읽기만 하고 `o context add`는 거부한다. 그 밖의 권한 확인은 그대로 둔다.
 

@@ -36,28 +36,6 @@ use crate::sys::{proc, resolve::resolve_cli};
 
 pub struct OpenCode;
 
-pub fn check_workspace(cwd: &Path) -> Result<(), String> {
-    for dir in cwd.ancestors() {
-        for name in ["opencode.json", "opencode.jsonc", ".opencode"] {
-            let path = dir.join(name);
-            match fs::symlink_metadata(&path) {
-                Ok(_) if install_folder_only(&path) => {},
-                Ok(_) => return Err("OpenCode는 작업 폴더나 상위 폴더에 프로젝트 설정·플러그인이 있으면 일반 모드로 실행할 수 없습니다".into()),
-                Err(e) if e.kind() == io::ErrorKind::NotFound => {},
-                Err(_) => return Err("OpenCode 프로젝트 설정을 확인하지 못했습니다".into()),
-            }
-        }
-    }
-    Ok(())
-}
-
-/// OpenCode's install script puts its binary in `~/.opencode/bin`: a `.opencode` holding only
-/// that is not project config. Anything else in it, or a folder that can't be read, still counts.
-fn install_folder_only(path: &Path) -> bool {
-    path.file_name().is_some_and(|name| name == ".opencode")
-        && fs::read_dir(path).is_ok_and(|entries| entries.into_iter().all(|entry| entry.is_ok_and(|e| e.file_name() == "bin")))
-}
-
 /// `run --session` can create a missing id, so require the official list to contain it first.
 pub fn check_session(root: Option<&Path>, cwd: &Path, session: &str) -> Result<(), String> {
     crate::sys::resolve::ensure_paths();
@@ -241,6 +219,36 @@ impl Provider for OpenCode {
     }
 }
 
+/// Project config OpenCode loads on its own: `opencode.json(c)` and `.opencode/` (its config and
+/// auto-discovered `.opencode/plugins/`), "from the current directory to the filesystem root"
+/// (opencode.ai/v2/docs/config). A plugin's setup runs when it loads (docs/build/plugins/server),
+/// whatever the permission rules say, and no documented flag or variable turns this discovery off.
+const PROJECT_CONFIG: [&str; 3] = ["opencode.json", "opencode.jsonc", ".opencode"];
+
+/// The first OpenCode project config a run in `cwd` would load, nearest folder first (#37).
+/// A name that can't be checked (anything but "not found") counts as found: fail closed.
+pub fn project_config(cwd: &Path) -> Option<std::path::PathBuf> {
+    cwd.ancestors().flat_map(|dir| PROJECT_CONFIG.map(|name| dir.join(name))).find(|path| match fs::symlink_metadata(path) {
+        Ok(_) => !install_folder_only(path),
+        Err(e) => e.kind() != io::ErrorKind::NotFound,
+    })
+}
+
+/// OpenCode's install script puts its binary in `~/.opencode/bin`: a `.opencode` holding only
+/// that is not project config. Anything else in it, or a folder that can't be read, still counts.
+fn install_folder_only(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".opencode")
+        && std::fs::read_dir(path).is_ok_and(|entries| entries.into_iter().all(|entry| entry.is_ok_and(|e| e.file_name() == "bin")))
+}
+
+/// Why a card without YOLO does not start where `project_config` found something.
+pub fn project_config_refusal(found: &Path) -> String {
+    format!(
+        "{}이 있어 OpenCode 카드를 시작하지 않았습니다 (프로젝트 설정·플러그인이 권한 규칙과 별개로 실행될 수 있음). 그 파일을 치우거나 다른 에이전트를 고르세요",
+        found.to_string_lossy()
+    )
+}
+
 fn config_dir(home: &Path) -> std::path::PathBuf {
     home.join(".config").join("opencode")
 }
@@ -384,7 +392,7 @@ mod session_tests {
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         fs::write(root.join("opencode.json"), "{}").unwrap();
-        assert!(check_workspace(&project).is_err());
+        assert_eq!(project_config(&project), Some(root.join("opencode.json")));
         fs::remove_file(root.join("opencode.json")).unwrap();
         fs::remove_dir(project).unwrap();
         fs::remove_dir(root).unwrap();
@@ -396,9 +404,9 @@ mod session_tests {
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         fs::create_dir_all(root.join(".opencode").join("bin")).unwrap();
-        assert!(check_workspace(&project).is_ok());
+        assert!(project_config(&project).is_none_or(|found| !found.starts_with(&root)));
         fs::create_dir_all(root.join(".opencode").join("plugin")).unwrap();
-        assert!(check_workspace(&project).is_err());
+        assert_eq!(project_config(&project), Some(root.join(".opencode")));
         fs::remove_dir_all(root).unwrap();
     }
 }

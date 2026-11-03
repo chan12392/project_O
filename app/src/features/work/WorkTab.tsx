@@ -1,13 +1,14 @@
-import { ArrowLeft, ClipboardList, KanbanSquare, LayoutDashboard, type LucideIcon } from "lucide-react";
+import { ArrowLeft, ChevronRight, ClipboardList, KanbanSquare, LayoutDashboard, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { earlierPlanOutcome, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
-import { names } from "../../lib/format.ts";
+import { names, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { readStored, writeStored } from "../../lib/storage.ts";
 import type { PanelViewDef } from "../../shell/SidePanel.tsx";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
-import { PlanCard } from "../chat/LeadThread.tsx";
+import { PlanCard, PlanDetails } from "../chat/LeadThread.tsx";
 import { Markdown } from "../chat/Markdown.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
 import { DesignAnnotations } from "./DesignAnnotations.tsx";
@@ -20,6 +21,7 @@ export const WORK_VIEW: PanelViewDef = {
 };
 
 type Sub = "design" | "dashboard";
+type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
 
 /** What every sub-view of the work tab is drawn from. */
 interface SubContext {
@@ -94,8 +96,7 @@ function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[
       {removed.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계에서 바뀐 내용 {removed.length}개</summary><ul className="mt-1 space-y-1">{removed.map((line, i) => <li key={i}><del>{line}</del></li>)}</ul></details>}
     </section>
   );
-  const plans = lead.items.filter((item) => item.kind === "plan");
-  const latest = plans.at(-1);
+  const { latest, earlier: earlierPlans } = leadPlans(lead.items);
   if (!latest) return <DesignAnnotations lead={lead}>{summary}<p className="text-sm text-muted-foreground">총괄과 작업을 논의하면 제안된 작업이 여기에 나타납니다.</p></DesignAnnotations>;
   const previous = lead.items[lead.items.indexOf(latest) - 1];
   return (
@@ -104,8 +105,25 @@ function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[
       {summary}
       {previous?.kind === "reply" && <details className="text-sm"><summary className="cursor-pointer text-xs text-muted-foreground focus-ring">총괄 설명과 미결정 사항</summary><div className="mt-2"><Markdown text={previous.text} /></div></details>}
       <PlanCard plan={latest} lead={lead} run={runs.find((run) => run.runId === latest.runId)} onOpenCard={(run, card) => onCard({ run, card })} />
-      {plans.length > 1 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계 {plans.length - 1}개</summary><ol className="mt-2 space-y-1 pl-4">{plans.slice(0, -1).reverse().map((plan) => <li key={plan.planId}>{plan.title}</li>)}</ol></details>}
+      {earlierPlans.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계 {earlierPlans.length}개</summary><ol className="mt-2 space-y-2">{earlierPlans.map((plan) => <li key={plan.planId}><EarlierPlan plan={plan} /></li>)}</ol></details>}
     </DesignAnnotations>
+  );
+}
+
+/** A plan a newer one replaced: opened, it reads like the latest one, without a way to run it (#40). */
+function EarlierPlan({ plan }: { plan: LeadPlan }) {
+  return (
+    <details className="group @container overflow-hidden rounded-lg border bg-card text-card-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 focus-ring focus-visible:ring-inset">
+        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate" title={plan.title}>{plan.title}</span>
+        <span className="shrink-0 text-2xs text-muted-foreground">{earlierPlanOutcome(plan)} · 작업 {plan.cards.length}개 · <time dateTime={plan.at}>{timeOf(plan.at)}</time></span>
+      </summary>
+      <div className="border-t">
+        <PlanDetails plan={plan} />
+        <p className="border-t px-4 py-2 text-xs text-muted-foreground">이전 설계는 실행할 수 없습니다. 다시 하려면 총괄에게 최신 설계로 요청하세요.</p>
+      </div>
+    </details>
   );
 }
 

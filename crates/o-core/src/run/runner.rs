@@ -421,9 +421,6 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
     if resumed_workspace.is_some() && (!same_folder(&resolved_path(cwd), cwd) || !Path::new(cwd).is_dir()) {
         return Err(io::Error::other("기존 작업 폴더가 변경되어 시작하지 않았습니다"));
     }
-    if card.provider == ProviderId::OpenCode && !yolo {
-        crate::providers::opencode::check_workspace(Path::new(cwd)).map_err(io::Error::other)?;
-    }
     if let Some(path) = workspace {
         if !same_folder(&resolved_path(path), path) || !Path::new(path).is_dir() {
             drop(slot);
@@ -431,6 +428,15 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
             return Ok(CardStatus::Failed);
         }
         emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "O 작업 폴더".into(), summary: path.to_string() })?;
+    }
+    // #37: without YOLO an OpenCode card must not run project-provided config or plugins, and
+    // OpenCode has no switch to skip them, so a folder that has some (or a parent of it) is refused.
+    if card.provider == ProviderId::OpenCode && !yolo {
+        if let Some(found) = crate::providers::opencode::project_config(Path::new(cwd)) {
+            drop(slot);
+            emit(end(CardStatus::Failed, Some(crate::providers::opencode::project_config_refusal(&found)), None))?;
+            return Ok(CardStatus::Failed);
+        }
     }
     let checked_plan = Plan { project: cwd.to_string(), ..plan.clone() };
     let mut spec = launch_spec_for(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context, yolo);
@@ -456,7 +462,6 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         // A clean card sees nothing of this process's environment but the kept system variables.
         if let Some(root) = clean {
             let env = clean::environment(root, card.provider)?;
-            let _ = clean::trust_preflight(root, card.provider, Path::new(cwd));
             command.env_clear().envs(env);
         } else if card.provider == ProviderId::OpenCode {
             command.env_clear().envs(clean::own_profile_environment());

@@ -1,12 +1,13 @@
-//! Codex: app-server for the read-only lead, exec for cards and the YOLO lead.
+//! Codex: app-server for the read-only lead (read-only exec on a CLI without it), exec for
+//! cards and the YOLO lead.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,7 @@ use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
 use crate::sys::js::{coalesce, iso_from_secs, js_string, number_text};
-use crate::sys::proc::Contained;
+use crate::sys::proc::{capture, Contained};
 use crate::sys::resolve::resolve_cli;
 use crate::usage::UsageWindow;
 
@@ -28,10 +29,12 @@ pub struct Codex;
 
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
+    /// O never marks a project trusted (#35): Codex then skips the project's `.codex/` layers
+    /// (config, MCP servers, hooks), and `--skip-git-repo-check` lets it run outside a Git repository.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
-        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir]));
+        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir, "--skip-git-repo-check"]));
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
@@ -61,11 +64,18 @@ impl Provider for Codex {
     }
 
     /// The lead drives app-server over stdio; turn settings are sent through its protocol.
-    fn lead(&self, _turn: &LeadTurn) -> Option<LaunchSpec> {
+    /// A CLI without app-server gets the earlier read-only `exec` lead: a read-only sandbox in
+    /// the project (it reads anywhere, writes nowhere), resumed with `exec resume <id>`.
+    fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
         // A trusted project's `.codex/` may add hooks; `--disable hooks` (`-c features.hooks=false`,
-        // `codex app-server --help`) outranks every config layer, so none runs before a plan is approved.
-        Some(LaunchSpec { bin: "codex".into(), args: strings(&["app-server", "--disable", "hooks"]),
-            stdin: None, env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+        // `codex app-server --help`, `codex exec --help`) outranks every config layer, so none runs
+        // before a plan is approved.
+        if turn.app_server {
+            return Some(LaunchSpec { bin: "codex".into(), args: strings(&["app-server", "--disable", "hooks"]),
+                stdin: None, env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) });
+        }
+        let head = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
+        Some(self.lead_with(head, turn))
     }
 
     /// No approvals and no sandbox. Codex has no flag that adds a hook for one run, so hooks
@@ -79,6 +89,7 @@ impl Provider for Codex {
     /// Without a sandbox there is nothing to open for `o msg`, so the run folder is not added.
     fn yolo_launch(&self, card: &Card, plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
         let mut args = strings(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", &plan.project]);
+        args.push("--skip-git-repo-check".into());
         args.extend(opt("-m", card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
@@ -173,6 +184,37 @@ impl Codex {
         args.push("-".into());
         LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) }
     }
+}
+
+/// The arguments that ask the CLI whether it has `app-server` (`supports_app_server`).
+pub const APP_SERVER_PROBE: [&str; 2] = ["app-server", "--help"];
+
+/// The probe's launch, built by the lead's spawner like the turn itself.
+pub fn app_server_probe() -> LaunchSpec {
+    LaunchSpec { bin: "codex".into(), args: strings(&APP_SERVER_PROBE), stdin: None, env: BTreeMap::new(), env_remove: strings(Codex.api_key_vars()) }
+}
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Probe results per CLI command line (the resolved program and its arguments).
+static PROBED: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Whether `command` (`codex app-server --help`, from `app_server_probe`) shows the
+/// app-server subcommand's help: once per CLI command line per process, no shell, no window,
+/// no stdin, within `PROBE_TIMEOUT`. A CLI without the subcommand reads `app-server` as a
+/// prompt and prints the top-level help, so success alone is not enough. A failed or slow
+/// probe counts as no app-server: the lead then uses the read-only `exec` launch.
+pub fn supports_app_server(mut command: Command) -> bool {
+    let key = format!("{:?} {:?}", command.get_program(), command.get_args().collect::<Vec<_>>());
+    let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(known) = probed.get(&key) {
+        return *known;
+    }
+    super::without_api_keys(&mut command, ProviderId::Codex);
+    let supported = matches!(capture(&mut command, PROBE_TIMEOUT),
+        Ok((status, stdout, _)) if status.success() && stdout.lines().any(|line| line.contains("Usage:") && line.contains("app-server")));
+    probed.insert(key, supported);
+    supported
 }
 
 static HOOK_OR_MCP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*(?:\[\[?\s*)?(?:mcp_servers|hooks)\b").unwrap());

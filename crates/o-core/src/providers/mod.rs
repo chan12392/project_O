@@ -240,6 +240,9 @@ pub struct LeadTurn<'a> {
     pub files_dir: Option<&'a str>,
     /// Image attachments, for CLIs that take images natively.
     pub images: &'a [String],
+    /// Codex only: the CLI has `app-server` (`codex::supports_app_server`); without it the
+    /// read-only lead runs through `codex exec` as before (ADR-0023).
+    pub app_server: bool,
 }
 
 /// Whether a provider can be the lead (`Provider::lead_efforts` is not empty).

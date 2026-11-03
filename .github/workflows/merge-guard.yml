@@ -1,6 +1,6 @@
 name: merge-guard
 
-# Only the owner (member A) merges into test_1 and main; test_2 is free for both.
+# Only the owner (member A) merges into test_1, test_1_hotfix and main; test_2 is free for both.
 #
 # The repository is private on GitHub's free plan, which has no branch protection
 # or rulesets, so nothing on GitHub can stop someone else from merging. This job
@@ -14,7 +14,7 @@ permissions:
 
 on:
   push:
-    branches: [test_1, main]
+    branches: [test_1, test_1_hotfix, main]
 
 jobs:
   owner-only:
