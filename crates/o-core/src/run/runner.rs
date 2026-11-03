@@ -18,7 +18,7 @@ use serde_json::Value;
 
 use crate::usage::budget::{self, Pace};
 use crate::run::events::{CardInfo, CardStatus, OEvent, StreamSignal};
-use crate::run::mode::Profile;
+use crate::run::mode::{Profile, RunMode};
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -35,6 +35,15 @@ use crate::run::store::{
 /// Builds the command for a card's CLI. The runner adds the environment, pipes,
 /// the hidden window and the kill-on-close job; tests swap in a fake CLI here.
 pub type Spawner = dyn Fn(&LaunchSpec, &str) -> io::Result<Command> + Send + Sync;
+
+/// Prepare a regular dispatch with the same isolation as a lead's plan.
+pub fn prepare_isolated(home: &Path, run_id: &str, plan: &Plan, mode: &RunMode) -> io::Result<()> {
+    if !crate::run::store::is_run_id(run_id) { return Err(io::Error::other("올바르지 않은 실행 ID")); }
+    super::workspaces::preflight(&plan.project).map_err(|e| io::Error::other(format!("작업 폴더를 분리할 수 없습니다: {e}")))?;
+    crate::run::store::create_run(home, run_id, plan)?;
+    crate::run::store::mark_mode(home, run_id, mode)?;
+    fs::write(run_dir(home, run_id).join("isolated-worktrees"), "")
+}
 
 const WAIT_FOR_SLOT: Duration = Duration::from_millis(2_000);
 

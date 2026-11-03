@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use o_core::run::snapshot::snapshot;
+use o_core::run::events::OEvent;
 use o_core::run::store;
 use o_core::sys::js::{collapse_spaces, js_head};
 
@@ -29,7 +30,8 @@ fn status(home: &Path, run_id: Option<&str>) -> i32 {
         println!("실행 기록이 없습니다.");
     }
     for id in ids {
-        let Some(run) = snapshot(&store::read_events(home, &id)) else { continue };
+        let events = store::read_events(home, &id);
+        let Some(run) = snapshot(&events) else { continue };
         println!("{id}  {}  [{}]", run.title, run.status.as_str());
         if run.failed_before_cards() {
             println!("  막힘     카드를 시작하지 않음: {}", collapse_spaces(&run.blocked_reason()));
@@ -37,6 +39,10 @@ fn status(home: &Path, run_id: Option<&str>) -> i32 {
         for c in run.cards {
             let activity = collapse_spaces(&c.activity);
             println!("  {:<8} {} ({} · {}) {}", c.state.as_str(), c.id, c.provider, c.label, js_head(&activity, 100));
+            if let Some(path) = events.iter().rev().find_map(|event| match event {
+                OEvent::CardTool { card_id, name, summary, .. } if card_id == &c.id && name == "O 작업 폴더" => Some(summary),
+                _ => None,
+            }) { println!("           작업 폴더: {path}"); }
         }
     }
     0
