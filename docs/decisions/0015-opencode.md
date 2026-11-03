@@ -3,6 +3,7 @@
 - 상태: 채택
 - 결정: OpenCode v2를 작업카드에 연결하고, 다른 공식 에이전트 CLI의 감지 상태와 설치 안내를 설정에 표시한다.
 - 실행은 `opencode run --format json --standalone`을 사용한다. YOLO에서만 공식 `--auto`를 더한다. 총괄은 검증된 읽기 전용 모드가 없어 지원하지 않는다.
+- (개정, #37) OpenCode는 작업 폴더에서 파일 시스템 루트까지 `opencode.json`·`opencode.jsonc`·`.opencode/`를 찾아 싣고(opencode.ai/v2/docs/config: "OpenCode searches from the current directory to the filesystem root."), `.opencode/plugins/`의 플러그인은 권한 규칙과 별개로 로드할 때 setup을 실행한다. 공식 문서에 이 탐색을 끄는 옵션이 없으므로 YOLO가 아닌 카드는 작업 폴더나 그 상위에 이 중 하나가 있으면 시작 직전에 거부한다.
 - 권한 우회 옵션 검사에도 `--auto`를 추가한다. 이름이 같은 다른 도구의 옵션도 제한되며, 허용된 프로바이더 코드·테스트와 문서에서만 적을 수 있다. OpenCode의 명시적 거부 규칙은 이 옵션으로 해제되지 않는다.
 - project_O 프로필은 필요한 파일을 새로 만들며 기존 인증 정보를 복사하지 않는다. OpenCode의 공식 상태 명령에서 Anthropic·Claude 구독 연결 또는 확인 실패가 나타나면 실행을 보류한다. 평소 프로필에서도 개인 인증 환경변수는 전달하지 않는다. 다른 이름의 제공자나 개인 플러그인을 통한 연결까지 식별하지는 못한다.
 - Claude 구독 로그인은 Anthropic 약관상 OpenCode에 연결해 사용하지 않는다. OpenCode Console/Go, OpenRouter 및 본인 API 키 등 OpenCode 자체 연결을 사용한다.

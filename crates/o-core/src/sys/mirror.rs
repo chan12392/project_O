@@ -13,7 +13,7 @@ use crate::sys::js::now_iso;
 use crate::sys::proc;
 
 /// The protected branches; sync refuses any other checkout.
-pub const MIRROR_BRANCHES: [&str; 3] = o_guard::rules::READ_ONLY_BRANCHES;
+pub const MIRROR_BRANCHES: [&str; 4] = o_guard::rules::READ_ONLY_BRANCHES;
 
 /// Runs one sync and logs to `<home>/mirror-sync.log`; returns the exit code.
 pub fn sync_mirror(home: &Path, mirror: Option<&str>) -> i32 {
@@ -96,7 +96,7 @@ mod tests {
         for branch in ["younchan", "test"] {
             let dir = repo_on(branch);
             let error = sync(&home, Some(&dir.to_string_lossy())).unwrap_err();
-            assert_eq!(error, format!("거울 브랜치(test_1, test_2, main)가 아닙니다: {branch}"));
+            assert_eq!(error, format!("거울 브랜치(test_1, test_1_hotfix, test_2, main)가 아닙니다: {branch}"));
         }
         // A protected branch passes the check and goes on to fetch (which fails here: no origin).
         for branch in MIRROR_BRANCHES {

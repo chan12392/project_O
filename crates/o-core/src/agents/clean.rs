@@ -20,7 +20,6 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -116,27 +115,6 @@ pub fn ensure_profile(root: &Path, provider: ProviderId, real_home: &Path) -> io
     fs::create_dir_all(&home)?;
     providers::get(provider).prepare_profile(&home, real_home)?;
     Ok(home)
-}
-
-/// Trust the first project in a new Codex profile without reading or overwriting any existing configuration.
-/// Existing configuration is left to the CLI because it may have been changed by the user.
-pub fn trust_preflight(root: &Path, provider: ProviderId, project: &Path) -> io::Result<()> {
-    if provider != ProviderId::Codex || root.file_name().is_none_or(|name| name != "project_O-agents") { return Ok(()); }
-    let project = project.canonicalize()?;
-    let real_home = user_home().canonicalize()?;
-    if !project.is_dir() || real_home.starts_with(&project) { return Ok(()); }
-    let root = root.canonicalize()?;
-    let config_dir = profile_home(&root, provider).join(".codex");
-    let actual = config_dir.canonicalize()?;
-    if actual != config_dir { return Ok(()); }
-    let path = project.to_string_lossy();
-    let key = serde_json::to_string(path.as_ref()).map_err(io::Error::other)?;
-    let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(actual.join("config.toml")) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    write!(file, "[projects.{key}]\ntrust_level = \"trusted\"\n")
 }
 
 /// The official CLI with the clean environment, run in the current folder.

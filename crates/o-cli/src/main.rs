@@ -7,6 +7,9 @@ use o_core::run::store::default_home;
 mod commands;
 
 fn main() {
+    // Children (`o _run`, agent CLIs, cards running `o msg`/`o context`) find this `o`, also
+    // when a scheduled task starts it by its full path with its folder not on PATH.
+    o_core::sys::resolve::own_folder_first_on_path();
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::process::exit(run(&args));
 }

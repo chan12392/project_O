@@ -50,12 +50,13 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 25] = [
+    let tests: [(&str, fn()); 27] = [
         ("queued follow-ups stop safely and never run in parallel for one session", followup_queue_and_stop),
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
+        ("a repository with a submodule entry is refused before any worker starts", isolated_worktrees_refuse_submodules),
         ("dependencies wait for success and never start after failure", dependency_order),
         ("devin transcript and answer become card events", devin_transcript),
         ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
@@ -76,6 +77,7 @@ fn main() {
         ("a clean run starts its cards with only the clean environment", clean_run),
         ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
         ("a card's CLI never inherits the API key variables it prefers over its sign-in", api_keys_dropped),
+        ("an OpenCode card without YOLO does not start under OpenCode project config", opencode_project_config_refused),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -280,6 +282,57 @@ fn isolated_worktrees() {
     assert!(read_events(&home, "dirty").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("커밋하지 않은"))));
 }
 
+fn isolated_worktrees_refuse_submodules() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(project.join("vendor")).unwrap();
+    let git = |args: &[&str]| {
+        let mut command = Command::new("git");
+        command.current_dir(&project).args(args);
+        let out = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init"]);
+    std::fs::write(project.join("shared.txt"), "base
+").unwrap();
+    git(&["add", "shared.txt"]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+    // A gitlink (mode 160000) is what a submodule leaves in the index; the empty folder is its uninitialized checkout.
+    let commit = git(&["rev-parse", "HEAD"]);
+    git(&["update-index", "--add", "--cacheinfo", &format!("160000,{commit},vendor/lib")]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "submodule"]);
+    std::fs::create_dir_all(project.join("vendor/lib")).unwrap();
+    assert_eq!(git(&["status", "--porcelain=v1", "--untracked-files=all"]), "");
+    let mut p = plan(vec![card("a", ProviderId::Claude, "first")]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "submodule", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "submodule").join("isolated-worktrees"), "").unwrap();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let never: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("must not start")) });
+    assert_eq!(run_plan(&home, "submodule", &p, None, never).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert!(read_events(&home, "submodule").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("서브모듈") && reason.contains("vendor/lib"))));
+    assert!(!home.with_file_name("state-worktrees").join("submodule").join("1").exists());
+
+    // A project in another folder of the same repository never reads the submodule: it starts.
+    std::fs::create_dir_all(project.join("app")).unwrap();
+    std::fs::write(project.join("app").join("main.txt"), "app\n").unwrap();
+    git(&["add", "app/main.txt"]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "app"]);
+    let mut app = plan(vec![card("a", ProviderId::Claude, "first")]);
+    app.project = project.join("app").to_string_lossy().into_owned();
+    create_run(&home, "beside-submodule", &app).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "beside-submodule").join("isolated-worktrees"), "").unwrap();
+    let started = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&started);
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("fixture stops here")) });
+    let _ = run_plan(&home, "beside-submodule", &app, None, spawner);
+    assert!(started.load(Ordering::SeqCst));
+}
+
 fn dependency_order() {
     let home = temp_home();
     let first = card("first", ProviderId::Claude, "first");
@@ -410,6 +463,41 @@ fn parallel_and_limit() {
     // The run start carries labels, and every card start a pid.
     assert!(events.iter().any(|e| matches!(e, OEvent::RunStart { cards, .. } if cards[0].label.as_deref() == Some("설계"))));
     assert!(events.iter().filter(|e| matches!(e, OEvent::CardStart { pid: Some(_), .. })).count() == 2);
+}
+
+/// #37: OpenCode loads `opencode.json(c)` and `.opencode/` (plugins too) from the folder up to the
+/// root, so a card without YOLO is refused when the project or a parent has one.
+fn opencode_project_config_refused() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let plugins = fixture.join(".opencode").join("plugins");
+    std::fs::create_dir_all(&plugins).unwrap();
+    std::fs::write(plugins.join("marker.js"), "// harmless fixture, never loaded\n").unwrap();
+    let mut p = plan(vec![card("a", ProviderId::OpenCode, "x")]);
+    p.project = project.to_string_lossy().into_owned();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, _: &str| {
+        seen.store(true, Ordering::SeqCst);
+        Err(std::io::Error::other("fake start"))
+    });
+    create_run(&home, "oc-parent", &p).unwrap();
+    assert_eq!(run_plan(&home, "oc-parent", &p, None, Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert!(read_events(&home, "oc-parent").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains(".opencode") && reason.contains("OpenCode 카드를 시작하지 않았습니다"))));
+
+    std::fs::remove_dir_all(fixture.join(".opencode")).unwrap();
+    std::fs::write(project.join("opencode.jsonc"), "{}\n").unwrap();
+    create_run(&home, "oc-project", &p).unwrap();
+    assert_eq!(run_plan(&home, "oc-project", &p, None, Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+
+    std::fs::remove_file(project.join("opencode.jsonc")).unwrap();
+    create_run(&home, "oc-clean", &p).unwrap();
+    run_plan(&home, "oc-clean", &p, None, spawner).unwrap();
+    assert!(launched.load(Ordering::SeqCst));
 }
 
 fn cooling_down() {

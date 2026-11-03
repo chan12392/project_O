@@ -577,7 +577,6 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
                 return Err(io::Error::other(why));
             }
             let env = clean::environment(root, req.provider)?;
-            let _ = clean::trust_preflight(root, req.provider, Path::new(req.project));
             command.env_clear().envs(env);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.
@@ -946,11 +945,34 @@ pub struct Dispatched {
 /// hands its id to `start` (which launches `o _run <runId>` in the background).
 /// `mode` is the profile and context choice (ADR-0013), saved with the run like `o dispatch` does.
 pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
+    let _locks = lock_latest(home, plan_id)?;
+    dispatch_locked(home, plan_id, mode, start, true)
+}
+
+/// The locks every dispatch (by hand or automatic) holds while it checks and starts a plan.
+struct DispatchLocks {
+    _current: fs::File,
+    _turn: fs::File,
+    _dispatch: fs::File,
+}
+
+/// Takes the dispatch locks in their one order (the thread list, the thread's turn, its
+/// dispatch) and checks that the plan's thread is still the project's current one, that
+/// no turn is answering, and that the plan is still the thread's latest word.
+fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, String> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
     let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
     current.lock().map_err(|e| e.to_string())?;
     let turn = turn_lock(home, thread_id).map_err(|e| e.to_string())?;
-    turn.try_lock().map_err(|_| "총괄이 답하는 중입니다. 새 설계를 확인한 뒤 분배하세요".to_string())?;
+    // `show` holds the lock for an instant when it looks; only a turn holds it longer.
+    let deadline = Instant::now() + Duration::from_millis(300);
+    loop {
+        match turn.try_lock() {
+            Ok(()) => break,
+            Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
+            Err(_) => return Err("총괄이 답하는 중입니다. 새 설계를 확인한 뒤 분배하세요".to_string()),
+        }
+    }
     let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
     lock.lock().map_err(|e| e.to_string())?;
     let events = read_thread(home, thread_id);
@@ -961,9 +983,9 @@ pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) 
         _ => None,
     }).flatten();
     if current_thread(home, &project).as_deref() != Some(thread_id) || latest != Some(plan_id) {
-        return Err("설계가 변경되었습니다. 최신 설계를 확인한 뒤 분배하세요".to_string().into());
+        return Err("설계가 변경되었습니다. 최신 설계를 확인한 뒤 분배하세요".to_string());
     }
-    dispatch_locked(home, plan_id, mode, start, true)
+    Ok(DispatchLocks { _current: current, _turn: turn, _dispatch: lock })
 }
 
 fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>, retry: bool) -> Result<Dispatched, DispatchError> {
@@ -1073,8 +1095,15 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
         _ => None,
     }) else { return Ok(added) };
     let thread = plan_thread(&plan_id).ok_or("계획 id 형식이 아닙니다")?;
-    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread).join("dispatch.lock")).map_err(|e| e.to_string())?;
-    lock.lock().map_err(|e| e.to_string())?;
+    // The same locks and checks as a dispatch by hand: a newer thread, request or turn wins.
+    // Nothing is written then, since another turn may own the thread.
+    let _locks = match lock_latest(home, &plan_id) {
+        Ok(locks) => locks,
+        Err(why) => {
+            added.push(LeadEvent::AutoRun { at: now_iso(), plan_id, hash: None, reason: Some(format!("자동 실행을 취소했습니다: {why}")) });
+            return Ok(added);
+        }
+    };
     let events = read_thread(home, thread);
     let now = Utc::now();
     let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_for(&plan, &ctx, Profile::of_clean(req.clean.is_some())));
@@ -1083,8 +1112,18 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
         LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),
         _ => None,
     }).collect();
-    let past: Vec<PastAutoRun> = events.iter().filter_map(|e| match e {
-        LeadEvent::AutoRun { at, hash: Some(hash), .. } => chrono::DateTime::parse_from_rfc3339(at).ok().map(|at| PastAutoRun { at: at.with_timezone(&Utc), hash: hash.clone() }),
+    // Only auto-runs that started count: a reservation followed by its plan's dispatch, not
+    // by the note that the start failed (a missing `o`, a start error, the last policy check).
+    let past: Vec<PastAutoRun> = events.iter().enumerate().filter_map(|(i, e)| match e {
+        LeadEvent::AutoRun { at, plan_id, hash: Some(hash), .. } => {
+            let started = events[i + 1..].iter().find_map(|next| match next {
+                LeadEvent::Dispatch { plan_id: id, .. } if id == plan_id => Some(true),
+                LeadEvent::AutoRun { plan_id: id, .. } if id == plan_id => Some(false),
+                _ => None,
+            }).unwrap_or(false);
+            if !started { return None; }
+            chrono::DateTime::parse_from_rfc3339(at).ok().map(|at| PastAutoRun { at: at.with_timezone(&Utc), hash: hash.clone() })
+        }
         _ => None,
     }).collect();
     let hash = valid.as_ref().map(yolo::plan_hash);

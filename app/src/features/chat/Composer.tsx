@@ -441,12 +441,13 @@ export function Composer({
           </div>
         </div>
       </div>
+      {/* Stays mounted so a notice is announced; empty, it takes no space. */}
       <p
         id="ask-help"
         aria-live="polite"
-        className={`mx-auto mt-1.5 max-w-3xl px-1 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
+        className={`mx-auto mt-1.5 max-w-3xl px-1 empty:mt-0 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "Enter 보내기 · Ctrl+Enter 줄바꿈 · 기존 작업의 후속 요청은 자동 전달됩니다" : "Enter 보내기 · Ctrl+Enter 줄바꿈 · 설계를 확인한 뒤 작업을 분배합니다")}
+        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
       </p>
     </form>
   );

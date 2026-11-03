@@ -1,7 +1,7 @@
 import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
-import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
+import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -163,8 +163,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
   const over = budget?.providers.filter((entry) => entry.state === "over" && plan.cards.some((card) => card.provider === entry.provider)) ?? [];
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
   const titleId = useId();
-  const position = lead.items.findIndex((item) => item.kind === "plan" && item.planId === plan.planId);
-  const stale = position < 0 || lead.items.slice(position + 1).some((item) => item.kind === "user" || item.kind === "plan");
+  const stale = planIsStale(lead.items, plan.planId);
   // Passed when saved, then refused by the runner's own check right before the start.
   const refused = run !== undefined && failedBeforeCards(run) && Boolean(run.blocked?.length);
   const retryable = run?.status === "failed";
@@ -212,6 +211,72 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
           </span>
         )}
       </header>
+      <PlanDetails plan={plan} />
+      {!plan.runId && over.length > 0 && <div role="note" className="border-t px-4 py-3 text-xs text-destructive">
+        <p>최근 확인한 예산이 소진되어 실행이 차단될 수 있습니다. 실행 직전에 다시 검사합니다.</p>
+        {over.map((entry) => <p key={entry.provider} className="mt-1">{entry.message}</p>)}
+      </div>}
+      {!plan.runId && budgetBlocked && !budgetResolved && <p role="note" className="border-t px-4 py-3 text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
+      <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
+        {!plan.runId && plan.autoRunReason && <p role="status" className="w-full text-xs text-muted-foreground">{plan.autoRunReason}</p>}
+        {plan.runId ? (
+          run && failedBeforeCards(run) ? (
+            <p role="alert" className="text-xs text-destructive">
+              실행 {plan.runId}는 카드를 시작하기 전에 막혔습니다. 아래 이유를 확인하세요.
+            </p>
+          ) : run ? (
+            <p className="text-xs text-muted-foreground">실행 {plan.runId}의 진행은 아래에서 볼 수 있습니다.{isolated && " 결과는 각 작업 폴더에 보존되며 원본에 자동으로 합쳐지지 않습니다."}</p>
+          ) : (
+            <p role="status" className="text-xs text-muted-foreground">
+              실행 {plan.runId}를 시작했습니다. 첫 기록을 기다리는 중…
+            </p>
+          )
+        ) : plan.problems.length === 0 ? (
+          <>
+            <p role="note" className="w-full text-xs text-status-warning-text">Git 프로젝트는 미커밋 변경을 정리한 뒤 분배하세요. 결과는 작업별 폴더에 남으며 자동으로 합쳐지지 않습니다.</p>
+            <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
+              <Play className="size-3.5" aria-hidden="true" />
+              {state.busy ? "분배하는 중…" : plan.ok ? "작업 분배" : "다시 확인하고 분배"}
+            </button>
+            <p id={`${titleId}-how`} className="min-w-0 flex-1 text-xs text-muted-foreground">
+              {stale ? "이후 대화가 있습니다. 총괄에게 최신 설계를 다시 요청하세요." : `실행 직전에 정책${budget?.enabled === false ? "" : "(하루 예산 포함)"}을 다시 검사한 뒤 ${clean ? "project_O 프로필" : "내 설정"}로 작업을 시작합니다.`}
+            </p>
+          </>
+        ) : (
+          <p className="text-xs text-muted-foreground">
+            {plan.problems.length > 0 && plan.violations.length === 0 ? "형식이 올바르지 않은 계획" : "정책에 막힌 계획"}은 실행하지 않습니다. 총괄에게 사유를 알려 다시
+            계획해 달라고 하세요.
+          </p>
+        )}
+        {retryable && <>
+          {budgetBlocked && !budgetResolved && <p role="note" className="w-full text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
+          {(!budgetBlocked || run?.blocked?.some((violation) => violation.rule !== "daily-budget")) && <p role="note" className="w-full text-xs text-status-warning-text">아래 실행 기록에서 실패 원인을 확인하고 해결한 뒤 다시 실행하세요.</p>}
+          {!failedBeforeCards(run) && <p className="w-full text-xs text-status-warning-text">다시 실행하면 완료된 작업도 새 작업 폴더에서 다시 시작합니다.</p>}
+          <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} className={BUTTON_PRIMARY}><Play className="size-3.5" aria-hidden="true" />{state.busy ? "재실행 준비 중…" : "다시 실행"}</button>
+          {stale && <p className="text-xs text-muted-foreground">대화가 변경되어 최신 설계가 필요합니다.</p>}
+        </>}
+        {state.error && (
+          <p role="alert" className="w-full text-xs whitespace-pre-wrap text-destructive">
+            {state.error}
+          </p>
+        )}
+      </footer>
+      {run && (
+        <div className="border-t p-3">
+          <RunCard run={run} onOpenCard={(card) => onOpenCard(run.runId, card)} />
+        </div>
+      )}
+    </section>
+  );
+}
+
+/**
+ * What a plan proposes: its cards with their dependencies, shape problems and policy violations.
+ * Read-only, so an earlier plan stays readable after a newer one replaced it (#40); running is PlanCard's.
+ */
+export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }> }) {
+  return (
+    <>
       {plan.cards.length > 0 && (
         <div className="relative overflow-x-auto">
           {/* relative: the sr-only caption stays inside the chat instead of stretching the page. */}
@@ -281,61 +346,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
           ))}
         </ul>
       )}
-      {!plan.runId && over.length > 0 && <div role="note" className="border-t px-4 py-3 text-xs text-destructive">
-        <p>최근 확인한 예산이 소진되어 실행이 차단될 수 있습니다. 실행 직전에 다시 검사합니다.</p>
-        {over.map((entry) => <p key={entry.provider} className="mt-1">{entry.message}</p>)}
-      </div>}
-      {!plan.runId && budgetBlocked && !budgetResolved && <p role="note" className="border-t px-4 py-3 text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
-      <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
-        {!plan.runId && plan.autoRunReason && <p role="status" className="w-full text-xs text-muted-foreground">{plan.autoRunReason}</p>}
-        {plan.runId ? (
-          run && failedBeforeCards(run) ? (
-            <p role="alert" className="text-xs text-destructive">
-              실행 {plan.runId}는 카드를 시작하기 전에 막혔습니다. 아래 이유를 확인하세요.
-            </p>
-          ) : run ? (
-            <p className="text-xs text-muted-foreground">실행 {plan.runId}의 진행은 아래에서 볼 수 있습니다.{isolated && " 결과는 각 작업 폴더에 보존되며 원본에 자동으로 합쳐지지 않습니다."}</p>
-          ) : (
-            <p role="status" className="text-xs text-muted-foreground">
-              실행 {plan.runId}를 시작했습니다. 첫 기록을 기다리는 중…
-            </p>
-          )
-        ) : plan.problems.length === 0 ? (
-          <>
-            <p role="note" className="w-full text-xs text-status-warning-text">Git 프로젝트는 미커밋 변경을 정리한 뒤 분배하세요. 결과는 작업별 폴더에 남으며 자동으로 합쳐지지 않습니다.</p>
-            <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
-              <Play className="size-3.5" aria-hidden="true" />
-              {state.busy ? "분배하는 중…" : plan.ok ? "작업 분배" : "다시 확인하고 분배"}
-            </button>
-            <p id={`${titleId}-how`} className="min-w-0 flex-1 text-xs text-muted-foreground">
-              {stale ? "이후 대화가 있습니다. 총괄에게 최신 설계를 다시 요청하세요." : `실행 직전에 정책${budget?.enabled === false ? "" : "(하루 예산 포함)"}을 다시 검사한 뒤 ${clean ? "project_O 프로필" : "내 설정"}로 작업을 시작합니다.`}
-            </p>
-          </>
-        ) : (
-          <p className="text-xs text-muted-foreground">
-            {plan.problems.length > 0 && plan.violations.length === 0 ? "형식이 올바르지 않은 계획" : "정책에 막힌 계획"}은 실행하지 않습니다. 총괄에게 사유를 알려 다시
-            계획해 달라고 하세요.
-          </p>
-        )}
-        {retryable && <>
-          {budgetBlocked && !budgetResolved && <p role="note" className="w-full text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
-          {(!budgetBlocked || run?.blocked?.some((violation) => violation.rule !== "daily-budget")) && <p role="note" className="w-full text-xs text-status-warning-text">아래 실행 기록에서 실패 원인을 확인하고 해결한 뒤 다시 실행하세요.</p>}
-          {!failedBeforeCards(run) && <p className="w-full text-xs text-status-warning-text">다시 실행하면 완료된 작업도 새 작업 폴더에서 다시 시작합니다.</p>}
-          <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} className={BUTTON_PRIMARY}><Play className="size-3.5" aria-hidden="true" />{state.busy ? "재실행 준비 중…" : "다시 실행"}</button>
-          {stale && <p className="text-xs text-muted-foreground">대화가 변경되어 최신 설계가 필요합니다.</p>}
-        </>}
-        {state.error && (
-          <p role="alert" className="w-full text-xs whitespace-pre-wrap text-destructive">
-            {state.error}
-          </p>
-        )}
-      </footer>
-      {run && (
-        <div className="border-t p-3">
-          <RunCard run={run} onOpenCard={(card) => onOpenCard(run.runId, card)} />
-        </div>
-      )}
-    </section>
+    </>
   );
 }
 

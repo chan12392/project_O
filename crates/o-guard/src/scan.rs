@@ -84,7 +84,7 @@ fn run(mode: &str) -> io::Result<i32> {
         io::stdin().read_to_string(&mut stdin)?;
         let blocked = blocked_refs(&stdin);
         if !blocked.is_empty() {
-            return Ok(fail("보호 브랜치(test_1·test_2·main)에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
+            return Ok(fail("보호 브랜치(test_1·test_1_hotfix·test_2·main)에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
         }
         return Ok(0);
     }
