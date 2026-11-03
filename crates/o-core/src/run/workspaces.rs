@@ -472,6 +472,14 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
         let original = snapshot_copy_base(&root, source)?;
         Some(original)
     } else { None };
+    let baseline = match &git_base {
+        Some((_, _, commit)) => serde_json::json!({"gitCommit": commit}),
+        None => serde_json::json!({"copyPath": run.join("base")}),
+    };
+    let mut baseline_file = fs::OpenOptions::new().write(true).create_new(true)
+        .open(crate::run::store::run_dir(home, run_id).join("workspace-baseline.json"))?;
+    serde_json::to_writer(&mut baseline_file, &baseline).map_err(io::Error::other)?;
+    baseline_file.sync_all()?;
     Ok(Workspaces { paths: result, project: project.to_string(), git_base, copy_base, copy_git })
 }
 

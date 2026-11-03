@@ -33,6 +33,17 @@ fn status(home: &Path, run_id: Option<&str>) -> i32 {
         let events = store::read_events(home, &id);
         let Some(run) = snapshot(&events) else { continue };
         println!("{id}  {}  [{}]", run.title, run.status.as_str());
+        if let Ok(bytes) = std::fs::read(store::run_dir(home, &id).join("workspace-baseline.json")) {
+            if let Ok(baseline) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                if let Some(commit) = baseline.get("gitCommit").and_then(|v| v.as_str()) {
+                    println!("  작업 전 Git 기준: {commit}");
+                    println!("  분리된 결과는 원본에 자동 반영되지 않습니다. 기준과 작업 폴더를 비교해 검토하세요.");
+                } else if let Some(path) = baseline.get("copyPath").and_then(|v| v.as_str()) {
+                    println!("  작업 전 복사본 (변경 가능): {path}");
+                    println!("  분리된 결과는 원본에 자동 반영되지 않습니다. 기준과 작업 폴더를 비교해 검토하세요.");
+                }
+            }
+        }
         if run.failed_before_cards() {
             println!("  막힘     카드를 시작하지 않음: {}", collapse_spaces(&run.blocked_reason()));
         }

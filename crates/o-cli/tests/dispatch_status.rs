@@ -13,9 +13,12 @@ fn status_shows_the_complete_isolated_workspace_path() {
         serde_json::json!({"t":"card.end","at":"2026-01-01T00:00:02Z","cardId":"a","status":"done","result":"done"}),
     ];
     fs::write(run.join("events.jsonl"), events.iter().map(|event| format!("{event}\n")).collect::<String>()).unwrap();
+    fs::write(run.join("workspace-baseline.json"), serde_json::json!({"gitCommit":"0123456789abcdef"}).to_string()).unwrap();
     let output = Command::new(env!("CARGO_BIN_EXE_o")).args(["status", "run-1"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
     assert!(output.status.success());
-    assert!(String::from_utf8_lossy(&output.stdout).contains(&format!("작업 폴더: {path}")));
+    let output = String::from_utf8_lossy(&output.stdout);
+    assert!(output.contains(&format!("작업 폴더: {path}")));
+    assert!(output.contains("작업 전 Git 기준: 0123456789abcdef"));
 }
 
 #[cfg(windows)]
@@ -70,4 +73,12 @@ fn dispatch_creates_isolated_copy_before_starting_the_fake_cli() {
     assert!(path.canonicalize().unwrap().starts_with(base.join("project_O-worktrees").canonicalize().unwrap()));
     assert_eq!(fs::read_to_string(path.join("original.txt")).unwrap(), "unchanged");
     assert_eq!(fs::read_to_string(project.join("original.txt")).unwrap(), "unchanged");
+    let status = Command::new(cli).args(["status", id]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    assert!(status.status.success());
+    let status = String::from_utf8_lossy(&status.stdout);
+    let baseline: serde_json::Value = serde_json::from_slice(&fs::read(base.join("project_O/runs").join(id).join("workspace-baseline.json")).unwrap()).unwrap();
+    let baseline = baseline["copyPath"].as_str().unwrap();
+    assert_eq!(std::path::Path::new(baseline).canonicalize().unwrap(), base.join("project_O-worktrees").join(id).join("base").canonicalize().unwrap());
+    assert!(status.contains(baseline));
+    assert!(status.contains("자동 반영되지 않습니다"));
 }
