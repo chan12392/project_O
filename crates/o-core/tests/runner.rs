@@ -55,7 +55,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 31] = [
+    let tests: [(&str, fn()); 32] = [
+        ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
         ("a failed log stops the worker and its dependent", failed_log),
         ("raw output is preserved byte for byte", raw_output_preserved),
@@ -314,7 +315,7 @@ fn isolated_worktrees() {
 }
 
 fn unsafe_handoffs() {
-    for scenario in ["conflict", "target-change", "base-change", "handoff-file", "ignored", "outside", "staged-overlap", "eol-only", "eol-changed", "non-git", "non-git-unchanged"] {
+    for scenario in ["conflict", "target-change", "base-change", "handoff-file", "ignored", "outside", "staged-overlap", "eol-only", "eol-changed", "non-git-unchanged"] {
         let fixture = temp_home();
         let home = fixture.join("state");
         let root = fixture.join("project");
@@ -382,6 +383,79 @@ fn unsafe_handoffs() {
             let target = home.with_file_name("state-worktrees").join("unsafe/2/sub/shared.txt");
             assert_eq!(std::fs::read_to_string(target).unwrap(), "human\n");
         }
+    }
+}
+
+fn non_git_handoffs() {
+    for scenario in ["changes", "independent", "conflict", "target", "target-git", "original", "base", "link", "staged"] {
+        let fixture = temp_home();
+        let home = fixture.join("state");
+        let project = fixture.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        std::fs::write(project.join("edit"), b"base").unwrap();
+        std::fs::write(project.join("delete"), b"base").unwrap();
+        let first = card("a", ProviderId::Claude, "first");
+        let mut last = card("c", ProviderId::Claude, "last");
+        last.depends_on = if matches!(scenario, "conflict" | "independent") { vec!["a".into(), "b".into()] } else { vec!["a".into()] };
+        let mut p = plan(if matches!(scenario, "conflict" | "independent") { vec![first, card("b", ProviderId::Claude, "second"), last] } else { vec![first, last] });
+        p.project = project.to_string_lossy().into_owned();
+        create_run(&home, "copy-handoff", &p).unwrap();
+        std::fs::write(o_core::run::store::run_dir(&home, "copy-handoff").join("isolated-worktrees"), "").unwrap();
+        let run = home.with_file_name("state-worktrees").join("copy-handoff");
+        let launched = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&launched);
+        let original = project.clone();
+        let copies = run.clone();
+        let inner = quiet();
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            let id = &spec.env["O_CARD_ID"];
+            let cwd = PathBuf::from(cwd);
+            if id == "c" {
+                seen.store(true, Ordering::SeqCst);
+                assert_eq!(std::fs::read(cwd.join("edit")).unwrap(), b"changed");
+                if scenario == "changes" {
+                    assert!(!cwd.join("delete").exists());
+                    assert_eq!(std::fs::read(cwd.join("new/file")).unwrap(), [0, 255]);
+                } else { assert_eq!(std::fs::read(cwd.join("other")).unwrap(), b"second"); }
+            } else {
+                if scenario == "independent" && id == "b" {
+                    std::fs::write(cwd.join("other"), "second").unwrap();
+                } else { std::fs::write(cwd.join("edit"), if id == "a" { "changed" } else { "conflict" }).unwrap(); }
+                if scenario == "changes" {
+                    std::fs::remove_file(cwd.join("delete")).unwrap();
+                    std::fs::create_dir(cwd.join("new")).unwrap();
+                    std::fs::write(cwd.join("new/file"), [0, 255]).unwrap();
+                }
+                if scenario == "target" { std::fs::write(copies.join("2/edit"), "human").unwrap(); }
+                if scenario == "target-git" { std::fs::write(copies.join("2/.git/human"), "human").unwrap(); }
+                if scenario == "original" { std::fs::write(original.join("edit"), "human").unwrap(); }
+                if scenario == "base" { std::fs::write(copies.join("base/edit"), "tampered").unwrap(); }
+                if scenario == "staged" {
+                    let mut command = Command::new("git");
+                    command.current_dir(&cwd).args(["add", "edit"]);
+                    assert!(o_core::sys::proc::hide_window(&mut command).status().unwrap().success());
+                    std::fs::write(cwd.join("edit"), "unstaged").unwrap();
+                }
+                #[cfg(unix)]
+                if scenario == "link" { std::os::unix::fs::symlink(original.join("edit"), cwd.join("link")).unwrap(); }
+                #[cfg(windows)]
+                if scenario == "link" && std::os::windows::fs::symlink_file(original.join("edit"), cwd.join("link")).is_err() {
+                    std::fs::create_dir(cwd.join("nested")).unwrap();
+                    std::fs::create_dir(cwd.join("nested/.git")).unwrap();
+                }
+            }
+            inner(spec, &cwd.to_string_lossy())
+        });
+        let succeeds = matches!(scenario, "changes" | "independent");
+        assert_eq!(run_plan(&home, "copy-handoff", &p, None, spawner).unwrap(), if succeeds { CardStatus::Done } else { CardStatus::Failed }, "{scenario}");
+        assert_eq!(launched.load(Ordering::SeqCst), succeeds, "{scenario}");
+        if scenario == "changes" {
+            assert_eq!(std::fs::read(run.join("handoff-2/edit")).unwrap(), b"base");
+            assert_eq!(std::fs::read(run.join("handoff-2/delete")).unwrap(), b"base");
+        }
+        if scenario == "target" { assert_eq!(std::fs::read(run.join("2/edit")).unwrap(), b"human"); }
+        if scenario == "target-git" { assert_eq!(std::fs::read(run.join("2/.git/human")).unwrap(), b"human"); }
+        if scenario == "original" { assert_eq!(std::fs::read(project.join("edit")).unwrap(), b"human"); }
     }
 }
 
