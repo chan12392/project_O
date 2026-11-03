@@ -269,6 +269,17 @@ fn autorun() {
     assert_eq!(starts.load(Ordering::SeqCst), 1);
     let blocked_schedule = lead::send_with_scheduled_autorun(&scheduled_home, &request(&scheduled_project, "예약"), spawner.as_ref(), &start).unwrap();
     assert!(blocked_schedule.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("진행 중"))));
+    let (agy_home, agy_project) = setup("autorun-agi-policy");
+    init_git(&agy_project);
+    let mut agy_plan = good_plan();
+    agy_plan["cards"][0]["provider"] = json!("agy");
+    agy_plan["cards"][0].as_object_mut().unwrap().remove("effort");
+    let (agy_spawner, _) = fake(claude_answer("session", &plan_answer(agy_plan)));
+    let agy = lead::send_with_scheduled_autorun(&agy_home, &request(&agy_project, "예약"), agy_spawner.as_ref(), &start).unwrap();
+    assert!(agy.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("Antigravity"))));
+    assert!(!agy.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    let agy_lead = SendRequest { provider: ProviderId::Agy, ..request(&agy_project, "예약") };
+    assert!(lead::send_with_scheduled_autorun(&agy_home, &agy_lead, agy_spawner.as_ref(), &start).is_err());
     starts.store(0, Ordering::SeqCst);
     let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
     let manual = lead::send(&home, &yolo, spawner.as_ref()).unwrap();

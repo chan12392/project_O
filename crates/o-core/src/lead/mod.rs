@@ -915,6 +915,7 @@ pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, 
 /// A user-created schedule authorizes dispatch, but keeps the lead and cards in normal mode.
 pub fn send_with_scheduled_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
     if req.yolo { return Err("예약 요청은 일반 권한으로 실행해야 합니다".into()); }
+    if req.provider == ProviderId::Agy { return Err("예약에서는 Antigravity를 실행할 수 없습니다".into()); }
     send_with_auto(home, req, spawner, start, true)
 }
 
@@ -945,6 +946,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
         .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
     let reason = if stopped { Some("모두 중지 요청으로 자동 실행을 취소했습니다".to_string()) }
         else if !req.yolo && !scheduled { Some("YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) }
+        else if scheduled && valid.as_ref().is_some_and(|p| p.cards.iter().any(|c| c.provider == ProviderId::Agy)) { Some("예약 설계에 Antigravity 작업이 있어 자동 분배할 수 없습니다".to_string()) }
         else if let (true, Some(valid_plan), Some(plan_hash)) = (ok, valid.as_ref(), hash.as_deref()) {
             let facts = AutoRunFacts { budget_on: budget::read_enabled_for_autorun(home), cards: valid_plan.cards.len(), running: &running, past: &past, hash: plan_hash, now };
             yolo::check_auto_run(&facts, yolo::read_limits(home)).err()

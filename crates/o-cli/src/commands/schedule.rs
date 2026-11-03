@@ -40,7 +40,7 @@ fn run(home: &Path, id: &str) -> Result<(), String> {
     let job = schedule::get(home, id)?;
     if !job.enabled { return Err("일시 중지된 예약입니다".into()); }
     let req = job.request;
-    let provider = match req.provider.as_str() { "claude" => ProviderId::Claude, "codex" => ProviderId::Codex, "agy" => ProviderId::Agy, _ => return Err("예약의 총괄 에이전트가 올바르지 않습니다".into()) };
+    let provider = match req.provider.as_str() { "claude" => ProviderId::Claude, "codex" => ProviderId::Codex, _ => return Err("예약의 총괄 에이전트가 올바르지 않습니다".into()) };
     let root = req.clean.then(clean::default_root);
     let request = SendRequest { project: &req.project, provider, model: None, effort: None, text: &req.text, attach: &[], fresh: false, clean: root.as_deref(), yolo: false };
     let start = |run_id: &str| -> std::io::Result<()> { o_core::sys::proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ()) };

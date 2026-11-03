@@ -69,7 +69,7 @@ fn validate(home: &Path, user: &Path, request: &Request) -> Result<(), String> {
     crate::projects::check(home, user, &request.project)?;
     if request.name.trim().is_empty() || request.name.chars().count() > 80 { return Err("예약 이름은 1–80자로 입력하세요".into()); }
     if request.text.trim().is_empty() || request.text.len() > 32_000 { return Err("요청은 1–32000바이트로 입력하세요".into()); }
-    if !matches!(request.provider.as_str(), "claude" | "codex" | "agy") { return Err("총괄 에이전트를 확인하세요".into()); }
+    if !matches!(request.provider.as_str(), "claude" | "codex") { return Err("예약 총괄은 Claude 또는 Codex를 선택하세요".into()); }
     if !matches!(request.repeat.as_str(), "once" | "daily" | "weekly") { return Err("반복 주기를 확인하세요".into()); }
     let date = NaiveDateTime::parse_from_str(&request.start, "%Y-%m-%dT%H:%M").map_err(|_| "예약 날짜와 시간을 확인하세요")?;
     if date <= Local::now().naive_local() { return Err("현재보다 나중 시간을 선택하세요".into()); }
