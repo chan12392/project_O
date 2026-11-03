@@ -105,6 +105,21 @@ test("explicit message kind takes precedence over punctuation while older messag
   assert.deepEqual(answers.map((i) => [i.cardId, isNote(i)]), [["a", false], ["b", true]]);
 });
 
+test("only a reply linked to its question clears it, and the copied command preserves the link", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const asked: RunView = { ...team, messages: [
+    { at: at(1000), id: "q1", kind: "question", from: "a", to: "lead", text: "첫 질문" },
+    { at: at(2000), id: "q2", kind: "question", from: "a", to: "lead", text: "둘째 질문" },
+    { at: at(3000), from: "lead", to: "all", text: "일반 공지" },
+    { at: at(4000), from: "lead", to: "a", replyTo: "q1", text: "첫 답변" },
+  ] };
+  const answers = nextUp([asked], after(team.endedAt!, 60_000)).todo.filter((i) => i.kind === "answer");
+  assert.deepEqual(answers.map((i) => i.questionId), ["q2"]);
+  assert.match(ticketCommand(answers[0])!.text, /--reply-to q2/);
+  assert.equal(ticketCommand({ ...answers[0], questionId: "q;bad" }), undefined);
+});
+
 test("fleet stats and activity read the same runs", () => {
   const now = after(byId("20261101-162328-9p0b").endedAt!, 0);
   const stats = fleetStats(runs, now);

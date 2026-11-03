@@ -27,6 +27,7 @@ export interface NextItem {
   since: string;
   pr?: string;
   question?: boolean;
+  questionId?: string;
 }
 
 /** Claude Code sessions read as runs (`o runs --sessions`) carry ids that start with this. */
@@ -60,9 +61,13 @@ export function needsAction(item: Pick<NextItem, "kind" | "detail" | "runId" | "
  * Claude Code session is no O run (no plan, events or process of O's), so its tickets get
  * none either: they are read-only records.
  */
-export function ticketCommand(item: Pick<NextItem, "kind" | "runId" | "cardId">): { label: string; text: string } | undefined {
+export function ticketCommand(item: Pick<NextItem, "kind" | "runId" | "cardId" | "questionId">): { label: string; text: string } | undefined {
   if (isSessionRun(item)) return undefined;
-  if (item.kind === "answer") return { label: "답장 명령 복사", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId} "답장 내용"` };
+  if (item.kind === "answer") {
+    if (item.questionId && !/^[a-zA-Z0-9_-]+$/.test(item.questionId)) return undefined;
+    const reply = item.questionId ? ` --reply-to ${item.questionId}` : "";
+    return { label: "답장 명령 복사", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId}${reply} "답장 내용"` };
+  }
   if (item.kind === "silent") return { label: "중지 명령 복사", text: `o stop ${item.runId}` };
   return undefined;
 }
@@ -117,9 +122,11 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
     // An agent wrote to the lead and the lead has not written back to it (or to everyone) since.
     const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
     for (const m of run.messages) {
-      if (m.to !== "lead" || m.at <= answeredAt(m.from)) continue;
+      if (m.to !== "lead") continue;
+      const questionId = m.kind === "question" ? m.id : undefined;
+      if (questionId ? run.messages.some((reply) => reply.from === "lead" && reply.to === m.from && reply.replyTo === questionId) : m.at <= answeredAt(m.from)) continue;
       const card = cardOf.get(m.from);
-      keep(todo, { ...base, key: `answer:${run.runId}:${m.from}:${m.at}`, kind: "answer", cardId: m.from, provider: card?.provider, title: card?.label ?? m.from, detail: m.text, since: m.at, question: m.kind === undefined ? undefined : m.kind === "question" });
+      keep(todo, { ...base, key: `answer:${run.runId}:${m.from}:${m.at}`, kind: "answer", cardId: m.from, provider: card?.provider, title: card?.label ?? m.from, detail: m.text, since: m.at, question: m.kind === undefined ? undefined : m.kind === "question", questionId });
     }
 
     for (const card of run.cards) {
