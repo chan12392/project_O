@@ -14,7 +14,7 @@ fn main() {
 fn run(args: &[String]) -> i32 {
     if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
         let blocked = matches!(args.first().map(String::as_str), Some("dispatch" | "_run" | "review" | "_review"))
-            || matches!((args.first().map(String::as_str), args.get(1).map(String::as_str)), (Some("lead"), Some("send" | "dispatch")));
+            || matches!((args.first().map(String::as_str), args.get(1).map(String::as_str)), (Some("lead"), Some("send" | "dispatch" | "note")));
         if blocked {
             eprintln!("에이전트 안에서는 작업을 시작할 수 없습니다. 사용자가 실행해 주세요.");
             return 2;

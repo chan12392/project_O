@@ -25,6 +25,7 @@ pub const LEAD: Command = Command {
                              --mode yolo면 총괄이 파일을 고치고 명령을 실행 (주지 않으면 o yolo 설정, ADR-0014)
   o lead models --provider claude|codex|agy  총괄이 쓸 수 있는 모델 목록 JSON (CLI의 공식 목록·별칭)
   o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
+  o lead note <threadId> -                  설계 주석 추가·삭제 (stdin JSON)
   o lead new --project <폴더>               새 대화 시작
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
   o lead dispatch <planId> [--profile project-o|own] [--no-context] [--mode yolo|normal]
@@ -39,6 +40,7 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("send") => send(home, rest),
         Some("show") => show(home, rest),
+        Some("note") => note(home, rest),
         Some("new") => new(home, rest),
         Some("attach") => attach(home, rest),
         Some("dispatch") => dispatch(home, rest),
@@ -46,6 +48,15 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("stop-all") => stop_all(home, rest),
         Some("models") => models(rest),
         _ => fail(LEAD.usage),
+    }
+}
+
+fn note(home: &Path, args: &[String]) -> i32 {
+    if args.len() != 2 || args[1] != "-" { return fail("o lead note <threadId> - 가 필요합니다"); }
+    let change = stdin_bytes().and_then(|bytes| serde_json::from_slice::<lead::notes::Change>(&bytes).map_err(|e| e.to_string()));
+    match change.and_then(|change| lead::notes::change(home, &args[0], change).map_err(|e| e.to_string())) {
+        Ok(notes) => { println!("{}", json!(notes)); 0 }
+        Err(e) => fail(&e),
     }
 }
 

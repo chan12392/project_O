@@ -128,6 +128,7 @@ export const demoBackend: Backend = {
   tokens: async () => ({ groups: [DEMO_BASELINE, DEMO_SHARED], compare: { baseline: DEMO_BASELINE, shared: DEMO_SHARED } }),
   // The recorded preview shows the demo's own transcripts; nothing reaches a lead.
   leadShow: async () => ({ thread: null, projects: [] }),
+  leadNote: async () => { throw new Error(LEAD_REFUSED); },
   leadNew: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadAttach: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadSend: () => Promise.reject(new Error(LEAD_REFUSED)),

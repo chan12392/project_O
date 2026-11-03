@@ -47,10 +47,11 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 28] = [
+    let tests: [(&str, fn()); 30] = [
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
         ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
         ("design snapshots persist and malformed ones do not dispatch", design_snapshots),
+        ("design notes persist, reach the lead and preserve concurrent edits", design_notes),
         ("only the latest plan in the current thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
         ("lead child receives its agent marker", lead_child_marker),
@@ -58,6 +59,7 @@ fn main() {
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
         ("a Markdown reply keeps every line break from the CLI stream to the thread file", reply_keeps_lines),
+        ("a Codex reply keeps its reported file changes", reply_reported_files),
         ("the plan's project is forced to the thread's", project_forced),
         ("a plan the policy refuses is stored with its violations", policy_refusal_stored),
         ("the next turn resumes the CLI session", resumes_session),
@@ -103,6 +105,27 @@ fn design_snapshots() {
     let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })));
     assert!(!events.iter().any(|e| matches!(e, LeadEvent::Plan { .. } | LeadEvent::Design { .. })));
+}
+
+fn design_notes() {
+    use o_core::lead::notes::{self, Change, Note};
+    let (home, project) = setup("notes");
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let original = Note { id: "note-1".into(), quote: "게임".into(), anchor: "게임".into(), occurrence: 0, tag: "주석".into(), text: "점수 추가".into(), sent: false };
+    notes::change(&home, &thread, Change::Add { note: original.clone() }).unwrap();
+    assert_eq!(notes::read(&home, &thread).unwrap().as_slice(), std::slice::from_ref(&original));
+    assert!(notes::change(&home, "../other", Change::Delete { id: "note-1".into() }).is_err());
+    let (spawner, seen) = fake(claude_answer("note-session", "확인"));
+    lead::send(&home, &request(&project, "설계 수정"), spawner.as_ref()).unwrap();
+    let prompt = seen.lock().unwrap()[0].stdin.clone().unwrap();
+    assert!(prompt.contains("점수 추가") && prompt.contains("게임"));
+    assert!(notes::read(&home, &thread).unwrap()[0].sent);
+    let changed = Note { text: "점수 다시 수정".into(), sent: false, ..original.clone() };
+    notes::change(&home, &thread, Change::Update { note: changed.clone() }).unwrap();
+    notes::change(&home, &thread, Change::Sent { notes: vec![original] }).unwrap();
+    assert_eq!(notes::read(&home, &thread).unwrap(), [changed]);
+    notes::change(&home, &thread, Change::Delete { id: "note-1".into() }).unwrap();
+    assert!(notes::read(&home, &thread).unwrap().is_empty());
 }
 
 fn stale_plan_refused() {
@@ -352,6 +375,21 @@ fn send_records_a_plan() {
 }
 
 /// A table's rows are separate lines; joined, it shows as one line of pipes.
+fn reply_reported_files() {
+    let (home, project) = setup("reply-files");
+    let lines = vec![
+        json!({ "type": "thread.started", "thread_id": "files" }).to_string(),
+        json!({ "type": "item.completed", "item": { "type": "file_change", "status": "completed", "changes": [{"path":"src/a.rs"}, {"path":"src/b.rs"}] } }).to_string(),
+        json!({ "type": "item.completed", "item": { "type": "file_change", "status": "failed", "changes": [{"path":"failed.rs"}] } }).to_string(),
+        json!({ "type": "item.completed", "item": { "type": "agent_message", "text": "완료" } }).to_string(),
+        json!({ "type": "turn.completed", "usage": {} }).to_string(),
+    ];
+    let (spawner, _) = fake(lines);
+    let req = SendRequest { provider: ProviderId::Codex, ..request(&project, "수정") };
+    let events = lead::send(&home, &req, spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { reported_files, .. } if reported_files == &["src/a.rs", "src/b.rs"])));
+}
+
 fn reply_keeps_lines() {
     let (home, project) = setup("lines");
     let prose = "정리했습니다.\n\n## 진행 상황 요약\n\n### ✅ 끝난 것\n\n| 영역 | 내용 | 근거 |\n|---|---|---|\n| 기술 스택 | **B 확인 필요** | `docs/decisions/0001.md` |\n| Rust 이관 | 끝 | `crates/` |\n\n- 하나\n  - 둘";
@@ -443,6 +481,19 @@ fn dispatch_once() {
     let again = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &start);
     assert!(matches!(again, Err(DispatchError::Other(m)) if m.contains("이미 실행")));
     assert_eq!(started.lock().unwrap().len(), 1);
+    use o_core::run::events::{CardStatus, OEvent};
+    let at = Utc::now().to_rfc3339();
+    o_core::run::store::append_event(&home, &done.run_id, &OEvent::RunStart { at: at.clone(), run_id: done.run_id.clone(), title: "test".into(), project: project.clone(), cards: vec![] }).unwrap();
+    o_core::run::store::append_event(&home, &done.run_id, &OEvent::RunEnd { at, run_id: done.run_id.clone(), status: CardStatus::Failed }).unwrap();
+    let thread = lead::current_thread(&home, &project).unwrap();
+    let retry_mark = home.join("leads").join(thread).join("dispatched").join(format!("{plan_id}.retry"));
+    std::fs::write(&retry_mark, "unrecorded-run").unwrap();
+    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("확인할 수 없어")));
+    std::fs::remove_file(retry_mark).unwrap();
+    let retried = lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), &start).ok().expect("failed run can be retried");
+    assert_ne!(retried.run_id, done.run_id);
+    assert_eq!(started.lock().unwrap().len(), 2);
+    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("이미 실행")));
     assert!(matches!(lead::dispatch(&home, "nope", RunMode::of(Profile::Own), &start), Err(DispatchError::Other(_))));
     // The next turn hears how the dispatched run is doing.
     let (spawner, seen) = fake(claude_answer("s", "확인했습니다"));

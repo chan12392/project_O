@@ -43,6 +43,7 @@ export const devBackend: Backend = {
   setYolo: (change) => fetch("/api/yolo", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),
   leadShow: (project) => fetch(`/api/lead/show${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<LeadShow>(r)),
+  leadNote: (threadId, change) => fetch(`/api/lead/note?${new URLSearchParams({ thread: threadId })}`, { method: "POST", body: JSON.stringify(change) }).then((r) => json<unknown>(r)).then(() => {}),
   leadNew: (project) => fetch(`/api/lead/new?${new URLSearchParams({ project })}`, { method: "POST" }).then((r) => json<{ threadId: string }>(r)),
   leadAttach: (project, file) =>
     fetch(`/api/lead/attach?${new URLSearchParams({ project, name: file.name })}`, { method: "POST", body: file }).then((r) => json<LeadAttachment>(r)),

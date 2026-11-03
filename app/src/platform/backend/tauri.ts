@@ -38,6 +38,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     setYolo: (change) => invoke("yolo_set", { enabled: null, maxCards: null, perHour: null, dedupeMinutes: null, ...change }) as ReturnType<Backend["setYolo"]>,
     tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
     leadShow: (project) => invoke("lead_show", { project: project ?? null }) as Promise<LeadShow>,
+    leadNote: (threadId, change) => invoke("lead_note", { threadId, change }) as Promise<void>,
     leadNew: (project) => invoke("lead_new", { project }) as Promise<{ threadId: string }>,
     // The bytes go as the raw body; the project and name ride percent-encoded in headers.
     leadAttach: async (project, file) =>

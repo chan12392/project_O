@@ -162,10 +162,11 @@ export interface Backend {
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
   tokens(project?: string): Promise<TokenReport>;
 
-  // The lead chat (ADR-0008). The lead only reads and proposes; `leadDispatch` runs a plan once.
+  // The lead chat (ADR-0008). `leadDispatch` starts a plan or explicitly retries a failed run.
 
   /** The project's current lead thread and every project that has one (`o lead show --json`). */
   leadShow(project?: string): Promise<LeadShow>;
+  leadNote(threadId: string, change: import("../../../../src/core/lead.ts").DesignNoteChange): Promise<void>;
   /** Starts a new thread for the project ("새 대화"). */
   leadNew(project: string): Promise<{ threadId: string }>;
   /** Saves one image or document for the project's current thread; rejects with the reason. */

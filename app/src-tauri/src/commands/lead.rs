@@ -87,6 +87,11 @@ pub async fn lead_attach(request: tauri::ipc::Request<'_>) -> Result<Value, Stri
     .await?
 }
 
+#[tauri::command]
+pub async fn lead_note(thread_id: String, change: o_core::lead::notes::Change) -> Result<(), String> {
+    blocking(move || o_core::lead::notes::change(&store::default_home(), &thread_id, change).map(|_| ()).map_err(|e| e.to_string())).await?
+}
+
 /// One message to the lead (`o lead send`); returns when the lead has answered.
 #[tauri::command]
 pub async fn lead_send(

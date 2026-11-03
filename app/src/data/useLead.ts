@@ -126,6 +126,10 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     stopAll,
     startNew,
     dispatch,
+    changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {
+      await api.leadNote(threadId, change);
+      await refresh();
+    },
   };
 }
 

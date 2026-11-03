@@ -119,6 +119,7 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           <p className="mb-1.5 text-xs text-chat-foreground-faint">
             총괄 {LEAD_NAME[item.provider] ?? item.provider} <time dateTime={item.at}>{timeOf(item.at)}</time>
           </p>
+          {item.reportedFiles && item.reportedFiles.length > 0 && <details className="mb-2 text-xs text-chat-foreground-faint"><summary className="cursor-pointer rounded py-1 focus-ring">변경 보고된 파일 {item.reportedFiles.length}{item.reportedFiles.length === 100 ? "개 이상" : "개"} · 줄 수 미제공</summary><ul className="mt-1 space-y-1">{item.reportedFiles.map((path) => <li key={path} className="break-all">{path}</li>)}</ul></details>}
           <ReplyText text={item.text} animate={animate} />
         </article>
       );
@@ -151,7 +152,7 @@ function ReplyText({ text, animate }: { text: string; animate: boolean }) {
   return <Markdown text={chars.slice(0, visible).join("")} />;
 }
 
-/** A proposed plan: its cards, what the policy said, and 실행 (once). */
+/** A proposed plan, its policy result, and explicit dispatch or retry. */
 export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: (runId: string, cardId: string) => void }) {
   const { clean } = useSettings();
   const budget = useBudget();
@@ -162,6 +163,12 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
   const stale = position < 0 || lead.items.slice(position + 1).some((item) => item.kind === "user" || item.kind === "plan");
   // Passed when saved, then refused by the runner's own check right before the start.
   const refused = run !== undefined && failedBeforeCards(run) && Boolean(run.blocked?.length);
+  const retryable = run?.status === "failed";
+  const budgetViolations = (run?.blocked ?? (!plan.ok ? plan.violations : [])).filter((violation) => violation.rule === "daily-budget");
+  const budgetBlocked = budgetViolations.length > 0;
+  const budgetCards = budgetViolations.map((violation) => violation.cardId);
+  const budgetProviders = plan.cards.filter((card) => budgetCards.includes(card.id) || budgetCards.includes(undefined)).map((card) => card.provider);
+  const budgetResolved = budget && (budget.enabled === false || (budgetProviders.length > 0 && budgetProviders.every((provider) => budget.providers.some((entry) => entry.provider === provider && ["ok", "behind", "farBehind", "off"].includes(entry.state)))));
   const isolated = run?.cards.some((card) => card.log.some((entry) => entry.kind === "tool" && entry.text.startsWith("O 작업 폴더 ")));
   const dispatch = async () => {
     setState({ busy: true });
@@ -197,7 +204,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
         ) : (
           <span className="flex shrink-0 items-center gap-1 rounded-full border border-destructive/40 px-2 py-0.5 text-2xs text-destructive">
             <OctagonX className="size-3" aria-hidden="true" />
-            정책 차단
+            계획 당시 정책 차단
           </span>
         )}
       </header>
@@ -274,6 +281,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
         <p>최근 확인한 예산이 소진되어 실행이 차단될 수 있습니다. 실행 직전에 다시 검사합니다.</p>
         {over.map((entry) => <p key={entry.provider} className="mt-1">{entry.message}</p>)}
       </div>}
+      {!plan.runId && budgetBlocked && !budgetResolved && <p role="note" className="border-t px-4 py-3 text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
       <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
         {!plan.runId && plan.autoRunReason && <p role="status" className="w-full text-xs text-muted-foreground">{plan.autoRunReason}</p>}
         {plan.runId ? (
@@ -288,15 +296,15 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
               실행 {plan.runId}를 시작했습니다. 첫 기록을 기다리는 중…
             </p>
           )
-        ) : plan.ok ? (
+        ) : plan.problems.length === 0 ? (
           <>
             <p role="note" className="w-full text-xs text-status-warning-text">Git 프로젝트는 미커밋 변경을 정리한 뒤 분배하세요. 결과는 작업별 폴더에 남으며 자동으로 합쳐지지 않습니다.</p>
             <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
               <Play className="size-3.5" aria-hidden="true" />
-              {state.busy ? "분배하는 중…" : "작업 분배"}
+              {state.busy ? "분배하는 중…" : plan.ok ? "작업 분배" : "다시 확인하고 분배"}
             </button>
             <p id={`${titleId}-how`} className="min-w-0 flex-1 text-xs text-muted-foreground">
-              {stale ? "이후 대화가 있습니다. 총괄에게 최신 설계를 다시 요청하세요." : `실행 직전에 정책${budget?.enabled === false ? "" : "(하루 예산 포함)"}을 다시 검사한 뒤 ${clean ? "project_O 프로필" : "내 설정"}로 작업을 시작합니다. 한 번만 실행할 수 있습니다.`}
+              {stale ? "이후 대화가 있습니다. 총괄에게 최신 설계를 다시 요청하세요." : `실행 직전에 정책${budget?.enabled === false ? "" : "(하루 예산 포함)"}을 다시 검사한 뒤 ${clean ? "project_O 프로필" : "내 설정"}로 작업을 시작합니다.`}
             </p>
           </>
         ) : (
@@ -305,6 +313,13 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
             계획해 달라고 하세요.
           </p>
         )}
+        {retryable && <>
+          {budgetBlocked && !budgetResolved && <p role="note" className="w-full text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
+          {(!budgetBlocked || run?.blocked?.some((violation) => violation.rule !== "daily-budget")) && <p role="note" className="w-full text-xs text-status-warning-text">아래 실행 기록에서 실패 원인을 확인하고 해결한 뒤 다시 실행하세요.</p>}
+          {!failedBeforeCards(run) && <p className="w-full text-xs text-status-warning-text">다시 실행하면 완료된 작업도 새 작업 폴더에서 다시 시작합니다.</p>}
+          <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} className={BUTTON_PRIMARY}><Play className="size-3.5" aria-hidden="true" />{state.busy ? "재실행 준비 중…" : "다시 실행"}</button>
+          {stale && <p className="text-xs text-muted-foreground">대화가 변경되어 최신 설계가 필요합니다.</p>}
+        </>}
         {state.error && (
           <p role="alert" className="w-full text-xs whitespace-pre-wrap text-destructive">
             {state.error}

@@ -14,6 +14,7 @@ import { AgentBoard } from "./AgentBoard.tsx";
 import { NextUp, actionCount, useHandled } from "./NextUp.tsx";
 import { ReviewRequestForm } from "./ReviewRequest.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
+import { DesignAnnotations } from "./DesignAnnotations.tsx";
 
 /** The side panel's "에이전트 작업" view. */
 export const WORK_VIEW: PanelViewDef = {
@@ -94,33 +95,52 @@ function DesignPanel({ lead, runs, onCard }: { lead?: LeadState; runs: RunView[]
   if (!lead) return <p className="text-sm text-muted-foreground">실제 프로젝트의 총괄 대화에서 설계를 확인할 수 있습니다.</p>;
   if (lead.failed) return <p role="alert" className="text-sm text-destructive">설계를 읽지 못했습니다. <button type="button" className="underline focus-ring" onClick={() => void lead.refresh()}>다시 시도</button></p>;
   if (!lead.loaded) return <p role="status" className="text-sm text-muted-foreground">설계를 불러오는 중…</p>;
+  return <DesignContent key={lead.thread?.threadId} lead={lead} runs={runs} onCard={onCard} />;
+}
+
+function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[]; onCard: Props["onCard"] }) {
   const events = lead.thread?.events ?? [];
   const designIndex = events.findLastIndex((event) => event.t === "lead.design");
   const event = events[designIndex];
   const design = event?.t === "lead.design" ? event.design : undefined;
+  const earlier = events.slice(0, designIndex).findLast((item) => item.t === "lead.design");
+  const old = earlier?.t === "lead.design" ? earlier.design : undefined;
+  const removed = old && design && Array.isArray(old.decisions) && Array.isArray(old.questions) && Array.isArray(design.decisions) && Array.isArray(design.questions) ? [old.goal, ...old.decisions, ...old.questions].filter((line) => line && ![design.goal, ...design.decisions, ...design.questions].includes(line)) : [];
   const designStale = designIndex >= 0 && events.slice(designIndex + 1).some((item) => item.t === "lead.user");
   const summary = design && typeof design.goal === "string" && Array.isArray(design.decisions) && Array.isArray(design.questions) && (
-    <section aria-label="설계 요약" className="space-y-3 border-b pb-4 text-sm">
+    <section key={event?.at} aria-label="설계 요약" className="design-rewrite space-y-3 border-b pb-4 text-sm">
+      <DesignChanges revision={event.at} removed={removed} />
       <div><h3 className="text-xs text-muted-foreground">목표</h3><p className="mt-1 whitespace-pre-wrap">{design.goal || "아직 정하지 않았습니다."}</p></div>
       {[["결정", design.decisions], ["미결정", design.questions]].map(([label, entries]) => (
         <div key={label as string}><h3 className="text-xs text-muted-foreground">{label}</h3><ul className="mt-1 list-disc space-y-1 pl-4">{(entries as string[]).filter((entry) => typeof entry === "string").map((entry, i) => <li key={i} className="whitespace-pre-wrap">{entry}</li>)}</ul></div>
       ))}
       {designStale && <p role="status" className="text-xs text-status-warning-text">이후 대화가 있어 설계가 최신이 아닐 수 있습니다.</p>}
+      {removed.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계에서 바뀐 내용 {removed.length}개</summary><ul className="mt-1 space-y-1">{removed.map((line, i) => <li key={i}><del>{line}</del></li>)}</ul></details>}
     </section>
   );
   const plans = lead.items.filter((item) => item.kind === "plan");
   const latest = plans.at(-1);
-  if (!latest) return <div className="space-y-4">{summary}<p className="text-sm text-muted-foreground">총괄과 작업을 논의하면 제안된 작업이 여기에 나타납니다.</p></div>;
+  if (!latest) return <DesignAnnotations lead={lead}>{summary}<p className="text-sm text-muted-foreground">총괄과 작업을 논의하면 제안된 작업이 여기에 나타납니다.</p></DesignAnnotations>;
   const previous = lead.items[lead.items.indexOf(latest) - 1];
   return (
-    <div className="space-y-4">
+    <DesignAnnotations lead={lead}>
       <div><h2 className="text-sm font-medium">현재 설계</h2><p className="mt-1 text-xs text-muted-foreground">총괄의 최신 제안을 확인하고 작업을 분배하세요.</p></div>
       {summary}
       {previous?.kind === "reply" && <details className="text-sm"><summary className="cursor-pointer text-xs text-muted-foreground focus-ring">총괄 설명과 미결정 사항</summary><div className="mt-2"><Markdown text={previous.text} /></div></details>}
       <PlanCard plan={latest} lead={lead} run={runs.find((run) => run.runId === latest.runId)} onOpenCard={(run, card) => onCard({ run, card })} />
       {plans.length > 1 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계 {plans.length - 1}개</summary><ol className="mt-2 space-y-1 pl-4">{plans.slice(0, -1).reverse().map((plan) => <li key={plan.planId}>{plan.title}</li>)}</ol></details>}
-    </div>
+    </DesignAnnotations>
   );
+}
+
+function DesignChanges({ revision, removed }: { revision: string; removed: string[] }) {
+  const [visible, setVisible] = useState(removed.length > 0);
+  useEffect(() => {
+    if (!visible) return;
+    const timer = window.setTimeout(() => setVisible(false), 1800);
+    return () => window.clearTimeout(timer);
+  }, [revision, visible]);
+  return visible && removed.length > 0 ? <div className="design-removed text-xs text-muted-foreground" role="status"><p>이전 내용 수정 중</p>{removed.map((line, i) => <p key={i} className="break-words"><del>{line}</del></p>)}</div> : null;
 }
 
 /** The clock tickets age by: the caller's (a replay's) or the wall clock, re-read every half minute. */

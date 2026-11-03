@@ -19,9 +19,10 @@
 //! checked like any plan before it is stored, and again before it runs.
 
 pub mod files;
+pub mod notes;
 pub mod prompt;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
@@ -42,7 +43,7 @@ use crate::run::events::StreamSignal;
 use crate::run::mode::{Profile, RunMode};
 use crate::run::plan::ProviderId;
 use crate::run::runner::Spawner;
-use crate::run::snapshot::snapshot;
+use crate::run::snapshot::{snapshot, RunStatus};
 use crate::run::yolo::{self, AutoRunFacts, PastAutoRun};
 use crate::run::store::{self, is_run_id, new_run_id, policy_context, read_events, record_blocked, run_dir};
 use crate::sys::js::{js_len, js_tail, now_iso};
@@ -88,7 +89,7 @@ pub enum LeadEvent {
     },
     /// The lead's answer as Markdown, without its plan block.
     #[serde(rename = "lead.reply")]
-    Reply { at: String, provider: ProviderId, text: String },
+    Reply { at: String, provider: ProviderId, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] reported_files: Vec<String> },
     #[serde(rename = "lead.design")]
     Design { at: String, design: Value },
     /// A proposed plan with the project forced to the thread's and the policy check's result.
@@ -461,6 +462,13 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     check_request(home, req)?;
     let thread_id = thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?;
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
+    let pending: Vec<_> = notes::read(home, &thread_id).map_err(|e| format!("설계 주석을 읽지 못했습니다: {e}"))?.into_iter().filter(|note| !note.sent).collect();
+    let mut user_text = req.text.trim().to_string();
+    if !pending.is_empty() {
+        user_text.push_str("\n\n[설계에 남긴 주석]\n");
+        for note in &pending { user_text.push_str(&format!("- [{}] “{}”: {}\n", note.tag, note.quote, note.text)); }
+        if js_len(&user_text) > LIMITS.max_task_chars { return Err("메시지와 주석을 합친 길이가 너무 깁니다. 주석을 줄인 뒤 다시 보내세요".into()); }
+    }
     let progress_path = thread_dir(home, &thread_id).join("progress.json");
     let _ = fs::write(&progress_path, "[]");
     let before = read_thread(home, &thread_id);
@@ -474,7 +482,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     };
     emit(LeadEvent::User {
         at: now_iso(),
-        text: req.text.trim().to_string(),
+        text: user_text.clone(),
         attachments: attachments.clone(),
         provider: req.provider,
         model: req.model.filter(|m| !m.is_empty()).map(str::to_string),
@@ -503,7 +511,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
     let text = prompt::build(&prompt::PromptInput {
         project: req.project,
-        text: req.text,
+        text: &user_text,
         attachments: &attachments,
         budget: &budget,
         runs: &runs,
@@ -616,6 +624,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let mut limited = false;
     let mut progress = Vec::<Value>::new();
     let mut counts = [0u64; 4];
+    let mut reported_files = BTreeSet::new();
     if let Some(stdout) = child.stdout.take() {
         let mut lines = BufReader::new(stdout);
         let mut buf = Vec::new();
@@ -628,6 +637,15 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
             }
             let text = String::from_utf8_lossy(&buf);
             let line = text.trim_end_matches(['\r', '\n']);
+            if let Ok(value) = serde_json::from_str::<Value>(line) {
+                if req.provider == ProviderId::Codex && value["type"] == "item.completed" && value["item"]["type"] == "file_change" && value["item"]["status"] != "failed" {
+                    if let Some(changes) = value["item"]["changes"].as_array() {
+                        for path in changes.iter().filter_map(|change| change["path"].as_str()).take(100) {
+                            if reported_files.len() < 100 && !path.is_empty() { reported_files.insert(path.chars().take(1024).collect::<String>()); }
+                        }
+                    }
+                }
+            }
             if let Some(raw) = raw.as_mut() {
                 let _ = raw.write_all(format!("{line}\n").as_bytes());
             }
@@ -677,8 +695,12 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
     // The CLI got this turn's message: its session has seen the thread through it.
+    let session_seen = used_session.is_some();
     if let Some(session_id) = used_session {
         emit(LeadEvent::Seen { at: now_iso(), provider: req.provider, session_id, through: before.len() })?;
+        if !pending.is_empty() && notes::change(home, &thread_id, notes::Change::Sent { notes: pending.clone() }).is_err() {
+            emit(LeadEvent::Error { at: now_iso(), text: "주석은 전달했지만 전달 상태를 저장하지 못했습니다. 다시 보내기 전에 주석을 확인하세요".into() })?;
+        }
     }
     if used {
         emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output })?;
@@ -705,10 +727,14 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
         return Ok(added);
     }
 
+    if !session_seen && !pending.is_empty() && notes::change(home, &thread_id, notes::Change::Sent { notes: pending }).is_err() {
+        emit(LeadEvent::Error { at: now_iso(), text: "주석은 전달했지만 전달 상태를 저장하지 못했습니다. 다시 보내기 전에 주석을 확인하세요".into() })?;
+    }
+
     let (prose, plan) = prompt::split_plan(&answer);
     let (prose, design) = prompt::split_design(&prose);
     if !prose.is_empty() {
-        emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose })?;
+        emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
     }
     match design {
         Ok(Some(design)) => emit(LeadEvent::Design { at: now_iso(), design })?,
@@ -774,7 +800,7 @@ pub struct Dispatched {
     pub yolo: bool,
 }
 
-/// Dispatches a stored plan once: checks it again like `o dispatch`, makes the run and
+/// Dispatches a stored plan, or explicitly retries a failed run: checks it again like `o dispatch`, makes the run and
 /// hands its id to `start` (which launches `o _run <runId>` in the background).
 /// `mode` is the profile and context choice (ADR-0013), saved with the run like `o dispatch` does.
 pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
@@ -795,10 +821,10 @@ pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) 
     if current_thread(home, &project).as_deref() != Some(thread_id) || latest != Some(plan_id) {
         return Err("설계가 변경되었습니다. 최신 설계를 확인한 뒤 분배하세요".to_string().into());
     }
-    dispatch_locked(home, plan_id, mode, start)
+    dispatch_locked(home, plan_id, mode, start, true)
 }
 
-fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
+fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>, retry: bool) -> Result<Dispatched, DispatchError> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
     let events = read_thread(home, thread_id);
     let project = thread_project(&events).ok_or_else(|| format!("총괄 대화가 없습니다: {thread_id}"))?;
@@ -809,11 +835,15 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
             _ => None,
         })
         .ok_or_else(|| format!("이 대화에 그런 계획이 없습니다: {plan_id}"))?;
-    if let Some(run) = events.iter().find_map(|e| match e {
+    let previous_run = events.iter().rev().find_map(|e| match e {
         LeadEvent::Dispatch { plan_id: id, run_id, .. } if id == plan_id => Some(run_id.clone()),
         _ => None,
-    }) {
-        return Err(format!("이미 실행한 계획입니다 (실행 {run})").into());
+    });
+    if let Some(run) = &previous_run {
+        let failed = is_run_id(run) && snapshot(&read_events(home, run)).is_some_and(|view| view.status == RunStatus::Failed);
+        if !retry || !failed || store::run_is_live(home, run) {
+            return Err(format!("이미 실행한 계획입니다 (실행 {run})").into());
+        }
     }
 
     let now = Utc::now();
@@ -830,27 +860,42 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
 
     crate::run::workspaces::preflight(&plan.project).map_err(|e| format!("작업 폴더를 분리할 수 없습니다: {e}"))?;
 
-    // Made once: a second dispatch of the same plan, even a concurrent one, stops here.
+    // The marker prevents duplicate dispatch, including when a prior start did not leave an event.
     let marks = thread_dir(home, thread_id).join("dispatched");
     fs::create_dir_all(&marks).map_err(|e| e.to_string())?;
     let mark = marks.join(plan_id);
-    match OpenOptions::new().write(true).create_new(true).open(&mark) {
-        Ok(_) => {}
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => return Err("이미 실행한 계획입니다".to_string().into()),
-        Err(e) => return Err(e.to_string().into()),
+    let retry_mark = marks.join(format!("{plan_id}.retry"));
+    if previous_run.is_some() && retry_mark.exists() {
+        let recorded = fs::read_to_string(&retry_mark).map_err(|e| e.to_string())?;
+        if previous_run.as_deref() != Some(recorded.as_str()) {
+            return Err("이전 재실행의 시작 여부를 확인할 수 없어 중복 실행을 막았습니다".to_string().into());
+        }
+        fs::remove_file(&retry_mark).map_err(|e| e.to_string())?;
+    }
+    if previous_run.is_none() {
+        match OpenOptions::new().write(true).create_new(true).open(&mark) {
+            Ok(_) => {}
+            Err(e) if e.kind() == ErrorKind::AlreadyExists => return Err("이미 실행한 계획입니다".to_string().into()),
+            Err(e) => return Err(e.to_string().into()),
+        }
     }
     let run_id = new_run_id(now);
+    if previous_run.is_some() {
+        let mut marker = OpenOptions::new().write(true).create_new(true).open(&retry_mark).map_err(|e| e.to_string())?;
+        marker.write_all(run_id.as_bytes()).and_then(|()| marker.sync_all()).map_err(|e| e.to_string())?;
+    }
     let started = store::create_run(home, &run_id, &plan)
         .and_then(|()| store::mark_mode(home, &run_id, &mode))
         .and_then(|()| fs::write(run_dir(home, &run_id).join("isolated-worktrees"), ""))
         .and_then(|()| start(&run_id));
     if let Err(error) = started {
         // Nothing runs: the plan may be dispatched again.
-        let _ = fs::remove_file(&mark);
+        if previous_run.is_none() { let _ = fs::remove_file(&mark); } else { let _ = fs::remove_file(&retry_mark); }
         return Err(format!("실행기를 시작하지 못했습니다: {error}").into());
     }
     let dispatched = LeadEvent::Dispatch { at: now_iso(), plan_id: plan_id.to_string(), run_id: run_id.clone(), clean: mode.clean(), profile: Some(mode.profile), yolo: mode.yolo };
     append(home, thread_id, &dispatched).map_err(|e| e.to_string())?;
+    if previous_run.is_some() { let _ = fs::remove_file(&retry_mark); }
     Ok(Dispatched {
         plan_id: plan_id.to_string(),
         events: run_dir(home, &run_id).join("events.jsonl").to_string_lossy().into_owned(),
@@ -900,7 +945,7 @@ pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, 
     added.push(event);
     if run {
         let mode = RunMode { yolo: true, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
-        match dispatch_locked(home, &plan_id, mode, start) {
+        match dispatch_locked(home, &plan_id, mode, start, false) {
             Ok(_) => added.extend(read_thread(home, thread).into_iter().rev().find(|e| matches!(e, LeadEvent::Dispatch { plan_id: id, .. } if id == &plan_id))),
             Err(e) => {
                 let why = match e {
@@ -995,6 +1040,8 @@ pub struct ThreadView {
     /// Recent tools from this turn; never part of conversation history.
     pub progress: Vec<Value>,
     pub progress_counts: Value,
+    pub notes: Vec<notes::Note>,
+    pub notes_error: Option<String>,
     /// Every event as written (screens ignore kinds they do not know).
     pub events: Vec<Value>,
 }
@@ -1021,6 +1068,7 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
         None => projects.first().map(|p| p.thread_id.clone()),
     };
     let thread = thread_id.map(|id| {
+        let (notes, notes_error) = match notes::read(home, &id) { Ok(notes) => (notes, None), Err(error) => (Vec::new(), Some(error.to_string())) };
         let busy = running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()));
         let state: Value = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
             .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
@@ -1031,6 +1079,8 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
             busy,
             progress,
             progress_counts,
+            notes,
+            notes_error,
             events: event_values(home, &id),
             thread_id: id,
         }

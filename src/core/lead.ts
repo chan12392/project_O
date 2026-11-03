@@ -16,6 +16,8 @@ export interface LeadAttachment {
 export type LeadViolation = Violation;
 
 export interface LeadProgressCounts { reads: number; searches: number; edits: number; commands: number }
+export interface DesignNote { id: string; quote: string; anchor?: string; occurrence?: number; tag: string; text: string; sent: boolean }
+export type DesignNoteChange = { op: "add" | "update"; note: DesignNote } | { op: "delete"; id: string };
 
 /** Counts are tool calls, not a claim that the work is still running or succeeded. */
 export function leadProgressSummary(counts: LeadProgressCounts | null | undefined): string {
@@ -55,7 +57,7 @@ export type LeadEvent =
   | { t: "lead.start"; at: string; threadId: string; project: string }
   | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
-  | { t: "lead.reply"; at: string; provider: ProviderId; text: string }
+  | { t: "lead.reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
@@ -67,7 +69,7 @@ export type LeadEvent =
 
 /** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
 }
 
@@ -109,7 +111,7 @@ export function leadView(state: LeadView, action: LeadViewAction): LeadView {
 /** One thing the chat draws, in order. */
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
-  | { kind: "reply"; at: string; provider: ProviderId; text: string }
+  | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | {
       kind: "plan";
       at: string;
@@ -135,7 +137,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
         break;
       case "lead.reply":
-        items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text });
+        items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text, reportedFiles: e.reportedFiles });
         break;
       case "lead.plan":
         items.push(planItem(raw as Record<string, unknown>, items.length));

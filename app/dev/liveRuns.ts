@@ -173,6 +173,13 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
+  if (path === "/lead/note") {
+    const thread = query.get("thread") ?? "";
+    if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
+    try { run(oWithInput(["lead", "note", thread, "-"], await body(req, 64 * 1024), 60_000)); }
+    catch (e) { fail(413, (e as Error).message); }
+    return true;
+  }
   if (path === "/lead/stop") {
     const args = leadStopArgs(project);
     if (!args) {
