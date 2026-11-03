@@ -3,7 +3,7 @@ use std::{fs, io::{ErrorKind, Write}, path::{Path, PathBuf}};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use super::store::{is_run_id, read_plan, run_dir};
+use super::store::{is_run_id, locked_event_text, read_plan, run_dir};
 
 pub const CHUNK_BYTES: usize = 4096;
 
@@ -81,7 +81,7 @@ pub fn read_lead(home: &Path, run: &str, card: &str, question: &str, hash: &str,
     if !is_run_id(run) || !is_run_id(card) || !valid_message_id(question) || !valid_hash(hash) { return Err("실행·카드·메시지 ID 또는 결과 해시가 올바르지 않습니다".into()); }
     let plan = read_plan(home, run).map_err(|e| e.to_string())?;
     if !plan["cards"].as_array().is_some_and(|cards| cards.iter().any(|c| c["id"] == card)) { return Err("이 실행의 카드가 아닙니다".into()); }
-    let events = fs::read_to_string(run_dir(home, run).join("events.jsonl")).map_err(|e| e.to_string())?;
+    let events = locked_event_text(home, run).map_err(|e| e.to_string())?;
     let values = events.lines().map(|line| serde_json::from_str::<Value>(line).map_err(|_| "실행 기록이 손상되었습니다".to_string())).collect::<Result<Vec<_>, _>>()?;
     let asked = values.iter().any(|v| v["t"] == "msg" && v["id"] == question && v["from"] == card && (v["to"] == "lead" || v["to"] == "all") && v["kind"] == "question");
     let delivered = values.iter().any(|v| v["t"] == "msg" && v["from"] == "lead" && v["to"] == card && v["replyTo"] == question && v["text"] == lead_reference(question, hash));
@@ -108,7 +108,7 @@ pub fn read(home: &Path, run_id: &str, recipient: &str, source: &str, expected: 
         .and_then(|card| card["depends_on"].as_array())
         .is_some_and(|dependencies| dependencies.iter().any(|id| id == source));
     if !allowed { return Err("이 카드가 의존하는 선행 결과만 읽을 수 있습니다".into()); }
-    let events = fs::read_to_string(run_dir(home, run_id).join("events.jsonl")).map_err(|e| format!("실행 기록을 읽지 못했습니다: {e}"))?;
+    let events = locked_event_text(home, run_id).map_err(|e| format!("실행 기록을 읽지 못했습니다: {e}"))?;
     let mut found: Option<Value> = None;
     for line in events.lines() {
         let event: Value = serde_json::from_str(line).map_err(|_| "실행 기록이 불완전하거나 손상되었습니다")?;

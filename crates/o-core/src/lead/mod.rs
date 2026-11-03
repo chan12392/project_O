@@ -761,8 +761,12 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     // An error that ends the turn after cleanup, and whether app-server finished the turn successfully.
     let mut fatal = None::<String>;
     let mut finished = false;
+    let mut raw_issue = None::<String>;
     if let Some(stdout) = child.stdout.take() {
-        let mut raw = OpenOptions::new().create(true).append(true).open(dir.join("turn.raw.jsonl")).ok();
+        let mut raw = match OpenOptions::new().create(true).append(true).open(dir.join("turn.raw.jsonl")) {
+            Ok(file) => Some(file),
+            Err(error) => { raw_issue = Some(error.to_string()); None }
+        };
         let mut process_line = |line: &str| -> Result<(), String> {
             if let Ok(value) = serde_json::from_str::<Value>(line) {
                 if value["type"] == "o.delta" {
@@ -793,8 +797,11 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                     }
                 }
             }
-            if let Some(raw) = raw.as_mut() {
-                let _ = raw.write_all(format!("{line}\n").as_bytes());
+            if let Some(file) = raw.as_mut() {
+                if let Err(error) = file.write_all(format!("{line}\n").as_bytes()) {
+                    raw_issue = Some(error.to_string());
+                    raw = None;
+                }
             }
             for signal in reader.read(line) {
                 match signal {
@@ -859,7 +866,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             loop {
                 buf.clear();
                 match lines.read_until(b'\n', &mut buf) {
-                    Ok(0) | Err(_) => break,
+                    Ok(0) => break,
+                    Err(error) => { fatal = Some(format!("총괄 출력을 끝까지 읽지 못했습니다: {error}")); break; }
                     Ok(_) => {}
                 }
                 let text = String::from_utf8_lossy(&buf);
@@ -898,6 +906,9 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
     if let Some(error) = fatal { return Err(error); }
+    if let Some(error) = raw_issue {
+        emit(LeadEvent::Error { at: now_iso(), text: format!("총괄 원시 출력 기록이 불완전합니다: {error}") })?;
+    }
     // The CLI got this turn's message: its session has seen the thread through it.
     let session_seen = used_session.is_some();
     if let Some(session_id) = used_session.filter(|_| worker.is_none()) {

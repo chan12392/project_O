@@ -27,6 +27,49 @@ fn fake_cli() {
 }
 
 #[test]
+fn missing_raw_log_is_reported_without_losing_the_answer() {
+    let (home, project, card) = fixture();
+    let thread = lead::current_thread(&home, &project).unwrap();
+    fs::create_dir(lead::thread_dir(&home, &thread).join("turn.raw.jsonl")).unwrap();
+    let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
+        Ok(command)
+    });
+    let id = team::send_tracked(&home, &card, "lead", "질문", true, Some("raw")).ok().unwrap();
+    assert!(lead::wake_card(&home, &project, "run-1", &card.cards, spawner.as_ref()).unwrap());
+    assert!(lead::read_thread(&home, &thread).iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains("원시 출력 기록이 불완전"))));
+    assert!(team::read(&home, &card, false).unwrap().iter().any(|message| message.reply_to.as_deref() == Some(&id)));
+    cleanup(&home);
+}
+
+#[test]
+fn reading_a_long_answer_waits_for_the_current_event_write() {
+    use o_core::run::result;
+    let (home, _, card) = fixture();
+    let question = team::send_tracked(&home, &card, "lead", "질문", true, Some("locking")).ok().unwrap();
+    let speaker = Speaker { run_id: "run-1".into(), me: "lead".into(), cards: card.cards.clone() };
+    let hash = result::store_lead(&home, "run-1", "완전한 답변").unwrap();
+    team::send_reply(&home, &speaker, "a", &result::lead_reference(&question, &hash), false, None, Some(&question)).ok().unwrap();
+    let dir = home.join("runs/run-1");
+    let lock = fs::OpenOptions::new().write(true).open(dir.join("events.lock")).unwrap();
+    lock.lock().unwrap();
+    let mut events = fs::OpenOptions::new().append(true).open(dir.join("events.jsonl")).unwrap();
+    write!(events, "{{\"t\":\"test").unwrap();
+    events.flush().unwrap();
+    let (state, q, digest) = (home.clone(), question.clone(), hash.clone());
+    let reader = std::thread::spawn(move || result::read_lead(&state, "run-1", "a", &q, &digest, 0));
+    std::thread::sleep(std::time::Duration::from_millis(100));
+    assert!(!reader.is_finished(), "기록이 끝나기 전에 읽으면 안 됩니다");
+    writeln!(events, "\"}}").unwrap();
+    events.flush().unwrap();
+    drop(lock);
+    assert_eq!(reader.join().unwrap().unwrap().text, "완전한 답변");
+    drop(events);
+    cleanup(&home);
+}
+
+#[test]
 fn failed_answer_is_not_silently_retried() {
     let (home, project, card) = fixture();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
