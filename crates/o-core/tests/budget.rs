@@ -5,7 +5,8 @@ use std::path::PathBuf;
 
 use chrono::{DateTime, Duration, Utc};
 use o_core::usage::budget::{
-    assess, local_day_of, lower_effort, over_budget, read_percent, record, weekly_snapshots, write_percent, Day, Pace, Snapshot, DEFAULT_PERCENT,
+    assess, assess_now, local_day_of, lower_effort, over_budget, read_enabled, read_percent, record, report, weekly_snapshots, write_enabled, write_percent, Day, Pace,
+    Snapshot, DEFAULT_PERCENT,
 };
 use o_core::run::plan::ProviderId;
 use o_core::usage::probe::save_usage;
@@ -217,4 +218,98 @@ fn a_provider_over_budget_is_named_in_the_policy_context() {
     assert!(!over.contains_key(&ProviderId::Claude));
     let ctx = policy_context(&home, now).unwrap();
     assert!(ctx.over_budget[&ProviderId::Codex].contains("사용 예산"));
+}
+
+/// Codex spent 14 points of the weekly window today: over a 13% day.
+fn seed_over(home: &std::path::Path, now: DateTime<Utc>) {
+    let start = local_day_of(now).start;
+    record(home, &[window(ProviderId::Codex, "seven_day", 0.20)], start - Duration::minutes(1)).unwrap();
+    record(home, &[window(ProviderId::Codex, "seven_day", 0.34)], now).unwrap();
+}
+
+fn codex_plan() -> Value {
+    json!({ "title": "예산", "project": "C:/work/app", "cards": [{ "id": "a", "provider": "codex", "task": "x", "effort": "xhigh" }] })
+}
+
+fn budget_rules(home: &std::path::Path, now: DateTime<Utc>) -> Vec<String> {
+    let checked = o_core::policy::check_plan(&codex_plan(), &policy_context(home, now).unwrap());
+    checked.violations.into_iter().map(|v| v.rule.to_string()).filter(|r| r == "daily-budget").collect()
+}
+
+#[test]
+fn the_budget_switch_is_on_unless_saved_off_and_keeps_other_settings() {
+    let home = temp_home("switch");
+    assert!(read_enabled(&home));
+    write_percent(&home, &json!(14)).unwrap();
+    assert_eq!(write_enabled(&home, false), Ok(false));
+    assert!(!read_enabled(&home));
+    assert_eq!(read_percent(&home), 14);
+    let saved: Value = serde_json::from_str(&fs::read_to_string(home.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(saved, json!({ "dailyBudgetPercent": 14, "dailyBudgetEnabled": false }));
+    write_enabled(&home, true).unwrap();
+    assert!(read_enabled(&home));
+    // Anything but a saved false is on.
+    fs::write(home.join("settings.json"), r#"{ "dailyBudgetEnabled": "no" }"#).unwrap();
+    assert!(read_enabled(&home));
+}
+
+#[test]
+fn an_exhausted_day_blocks_only_while_the_budget_is_on() {
+    let home = temp_home("switch-policy");
+    let now = Utc::now();
+    seed_over(&home, now);
+    assert_eq!(budget_rules(&home, now), ["daily-budget"]);
+
+    write_enabled(&home, false).unwrap();
+    assert!(budget_rules(&home, now).is_empty());
+    assert!(over_budget(&home, now).unwrap().is_empty());
+    // The numbers stay; nothing is refused or lowered.
+    let off = assess_now(&home, ProviderId::Codex, now).unwrap();
+    assert_eq!((off.state, off.steps_down, off.efforts.len()), (Pace::Off, 0, 0));
+    assert_eq!(off.spent, Some(14.0));
+    assert!(off.message.contains("예산 꺼짐"), "{}", off.message);
+    let r = report(&home, now).unwrap();
+    assert!(!r.enabled && r.providers.iter().all(|p| p.state == Pace::Off || ([ProviderId::OpenCode, ProviderId::Devin].contains(&p.provider) && p.state == Pace::NotApplied)));
+}
+
+#[test]
+fn opencode_has_no_budget_on_or_off() {
+    let home = temp_home("opencode-not-applied");
+    let now = Utc::now();
+    seed_over(&home, now);
+    for enabled in [true, false] {
+        write_enabled(&home, enabled).unwrap();
+        let b = assess_now(&home, ProviderId::OpenCode, now).unwrap();
+        assert_eq!((b.state, b.steps_down, b.efforts.len(), b.spent), (Pace::NotApplied, 0, 0, None));
+        assert!(b.message.contains("예산 적용 안 됨"), "{}", b.message);
+        assert!(!over_budget(&home, now).unwrap().contains_key(&ProviderId::OpenCode));
+    }
+}
+
+#[test]
+fn a_fast_day_lowers_effort_only_while_the_budget_is_on() {
+    let behind = noon_with(0.08);
+    assert!(behind.steps_down > 0 && !behind.efforts.is_empty());
+    let off = behind.switched_off();
+    assert_eq!((off.state, off.steps_down), (Pace::Off, 0));
+    assert!(off.efforts.is_empty());
+}
+
+#[test]
+fn the_budget_never_applies_to_devin_whose_usage_o_cannot_read() {
+    let home = temp_home("devin");
+    let now = Utc::now();
+    // Even a weekly reading saved under its name changes nothing: O has no probe for it.
+    record(&home, &[UsageWindow { provider: ProviderId::Devin, window: "seven_day".into(), group: None, used: 0.99, resets_at: NEXT_WEEK.into() }], now - Duration::hours(30)).unwrap();
+    for enabled in [true, false] {
+        write_enabled(&home, enabled).unwrap();
+        let budget = assess_now(&home, ProviderId::Devin, now).unwrap();
+        assert_eq!(budget.state, Pace::NotApplied);
+        assert_eq!((budget.steps_down, budget.spent), (0, None));
+        assert!(budget.efforts.is_empty());
+        assert!(budget.message.contains("예산 적용 안 됨"), "{}", budget.message);
+        assert!(!over_budget(&home, now).unwrap().contains_key(&ProviderId::Devin));
+    }
+    let report = report(&home, now).unwrap();
+    assert_eq!(serde_json::to_value(&report).unwrap()["providers"][3]["state"], "notApplied");
 }

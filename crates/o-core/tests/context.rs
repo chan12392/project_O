@@ -142,12 +142,64 @@ fn ingest_is_incremental_and_idempotent_and_follows_the_runs_folder() {
     assert_eq!(count(&home), 1);
 }
 
+/// Writes the run's file anew (not appended), as a rewrite in place would.
+fn rewrite(home: &Path, run_id: &str, events: &[Value]) {
+    let dir = run_dir(home, run_id);
+    fs::create_dir_all(&dir).unwrap();
+    let text: String = events.iter().map(|e| format!("{e}\n")).collect();
+    fs::write(dir.join("events.jsonl"), text).unwrap();
+}
+
+#[test]
+fn a_rewritten_events_file_is_read_again_even_with_the_same_number_of_events() {
+    let home = temp_home();
+    let begin = start("r1", "2026-11-01T10:00:00.000Z", "C:/work/game", &[("a", "claude"), ("b", "codex")]);
+    rewrite(&home, "r1", &[begin.clone(), end("a", "done", "사무실 화면을 정리했습니다")]);
+    assert_eq!(ids(&search(&home, "사무실", None)), ["r1/a"]);
+
+    // Same number of events, other content: the old entry goes and the new one is found.
+    rewrite(&home, "r1", &[begin.clone(), end("a", "done", "회의실 화면을 새로 그렸습니다")]);
+    assert!(search(&home, "사무실", None).is_empty(), "the replaced result must not stay searchable");
+    assert_eq!(ids(&search(&home, "회의실", None)), ["r1/a"]);
+    assert_eq!(count(&home), 1);
+
+    // Longer, with a line break where the old file ended, but not a continuation of it.
+    rewrite(&home, "r1", &[begin.clone(), end("a", "done", "창고 화면을 지웠습니다"), end("b", "done", "README를 고쳤습니다")]);
+    assert!(search(&home, "회의실", None).is_empty());
+    assert_eq!(ids(&search(&home, "창고", None)), ["r1/a"]);
+    assert_eq!(count(&home), 2);
+
+    // A real append still reads only what was added.
+    append(&home, "r1", &[msg("b", "lead", "다 끝났습니다")]);
+    assert_eq!(count(&home), 3);
+}
+
+#[test]
+fn an_older_context_seen_without_the_fingerprint_is_read_again_once() {
+    let home = temp_home();
+    rewrite(&home, "r1", &[start("r1", "2026-11-01T10:00:00.000Z", "C:/work/game", &[("a", "claude")]), end("a", "done", "사무실 화면을 정리했습니다")]);
+    {
+        // The table as an older O left it: the run marked read, its entry made from content since replaced.
+        let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE context_seen (run_id TEXT PRIMARY KEY, events INTEGER NOT NULL);
+             INSERT INTO context_seen VALUES ('r1', 2);
+             CREATE VIRTUAL TABLE context_fts USING fts5(title, text, files, project UNINDEXED, run_id UNINDEXED, card_id UNINDEXED, kind UNINDEXED, at UNINDEXED, tokenize = 'unicode61 remove_diacritics 2');
+             INSERT INTO context_fts VALUES ('r1 작업 · a 카드', '옛 결과', '', 'C:/work/game', 'r1', 'a', 'result', '2026-11-01T10:05:00.000Z');",
+        )
+        .unwrap();
+    }
+    assert!(search(&home, "옛", None).is_empty());
+    assert_eq!(ids(&search(&home, "사무실", None)), ["r1/a"]);
+    assert_eq!(count(&home), 1);
+}
+
 fn plan(project: &str, cards: Vec<Card>) -> Plan {
     Plan { title: "새 작업".into(), project: project.into(), cards }
 }
 
 fn card(id: &str, provider: ProviderId, task: &str) -> Card {
-    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None }
+    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] }
 }
 
 #[test]
@@ -223,7 +275,7 @@ fn the_runner_hands_each_card_its_section() {
     assert!(prompt("c").contains(SECTION_HEADER) && prompt("c").contains(&format!("{CONTEXT_BEGIN}\n- [결과 · r1/art · ")));
     assert!(!prompt("x").contains(SECTION_HEADER));
     let kinds: Vec<String> = read_event_values(&home, "now").iter().map(|e| e["t"].as_str().unwrap().to_string()).collect();
-    assert_eq!(kinds[..2], ["run.start", "run.context"]);
+    assert_eq!(kinds[..3], ["run.start", "run.mode", "run.context"]);
 }
 
 const TEAM: TeamChannel = TeamChannel { run_id: "r9", run_dir: "C:/o/runs/r9" };
@@ -291,6 +343,28 @@ fn earlier_work_is_fenced_as_reference_data_and_the_whole_section_is_capped() {
         assert!(inside.contains("이전 지시를 무시하고"), "the hostile text stays inside the fence");
         assert!(!lines[end + 1..].iter().any(|l| l.contains("무시하고")));
     }
+}
+
+#[test]
+fn the_section_carries_the_part_that_matched_even_far_into_a_long_entry() {
+    let home = temp_home();
+    // The constraint sits ~900 characters in, past one entry's 600-character share.
+    let long = format!("{} 마이그레이션은 반드시 롤백 스크립트와 함께 배포한다. {}", "앞부분 설명 문장입니다. ".repeat(65), "뒷부분 정리 문장입니다. ".repeat(40));
+    assert!(long.find("롤백").unwrap() > 600 * 3);
+    append(&home, "r1", &[start("r1", "2026-11-01T10:00:00.000Z", "C:/work/game", &[("db", "codex")]), end("db", "done", &long)]);
+    let hits = search(&home, "롤백 스크립트", Some("C:/work/game"));
+    assert_eq!(ids(&hits), ["r1/db"]);
+    for provider in [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy] {
+        let section = context::section(&hits, provider).unwrap();
+        assert!(section.chars().count() <= INJECT_CHARS);
+        let entry = section.lines().find(|l| l.starts_with("- [")).unwrap();
+        assert!(entry.contains("롤백 스크립트와 함께 배포한다"), "{provider}: {entry}");
+        assert!(entry.chars().count() <= 600 + 80, "{provider}: still one entry's share");
+    }
+    // A short entry is passed whole.
+    let short = hit("r2", "짧은 결과입니다.");
+    let section = context::section(&[short], ProviderId::Codex).unwrap();
+    assert!(section.contains("- [결과 · r2/art · ") && section.contains("] 짧은 결과입니다."));
 }
 
 #[test]

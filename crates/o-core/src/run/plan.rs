@@ -15,16 +15,22 @@ pub enum ProviderId {
     Claude,
     Codex,
     Agy,
+    /// OpenCode v2 (ADR-0015). Serialized "opencode".
+    OpenCode,
+    /// Cognition's Devin CLI: cards only (ADR-0016).
+    Devin,
 }
 
 impl ProviderId {
-    pub const ALL: [ProviderId; 3] = [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy];
+    pub const ALL: [ProviderId; 5] = [ProviderId::Claude, ProviderId::Codex, ProviderId::Agy, ProviderId::OpenCode, ProviderId::Devin];
 
     pub fn as_str(self) -> &'static str {
         match self {
             ProviderId::Claude => "claude",
             ProviderId::Codex => "codex",
             ProviderId::Agy => "agy",
+            ProviderId::OpenCode => "opencode",
+            ProviderId::Devin => "devin",
         }
     }
 
@@ -39,7 +45,7 @@ impl fmt::Display for ProviderId {
     }
 }
 
-pub const CARD_FIELDS: [&str; 6] = ["id", "provider", "role", "task", "model", "effort"];
+pub const CARD_FIELDS: [&str; 7] = ["id", "provider", "role", "task", "model", "effort", "depends_on"];
 pub const PLAN_FIELDS: [&str; 3] = ["title", "project", "cards"];
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -54,6 +60,9 @@ pub struct Card {
     pub model: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
+    /// Work that must finish successfully before this task starts.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub depends_on: Vec<String>,
 }
 
 impl Card {

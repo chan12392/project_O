@@ -15,18 +15,25 @@ use o_core::sys::js::{iso, parse_time};
 use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
-use o_core::run::runner::{run_plan, Spawner};
+use o_core::run::runner::{run_detached, run_plan, run_plan_in, Spawner, Workdir};
 use o_core::run::store::{
     active_markers, clear_active, cooldown_times, create_run, mark_active, read_events, record_start, request_stop, set_cooldown, started_on,
     ActiveMarker,
 };
 
 const FAKE: &str = "O_FAKE_CLI_LINES";
+/// Milliseconds the fake waits before printing: a CLI that is still working.
+const FAKE_SLEEP: &str = "O_FAKE_CLI_SLEEP_MS";
 /// `--dump-env <file>`: the fake writes its environment there as JSON and succeeds.
 const DUMP_ENV: &str = "--dump-env";
 
 fn main() {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--fake-devin") {
+        std::fs::write(&args[2], r#"{"session_id":"fake-session","steps":[{"source":"agent","tool_calls":[{"function_name":"read","arguments":{"path":"demo.txt"}}]}]}"#).unwrap();
+        println!("작업 완료");
+        return;
+    }
     if args.get(1).map(String::as_str) == Some(DUMP_ENV) {
         let env: BTreeMap<String, String> = std::env::vars().collect();
         std::fs::write(&args[2], serde_json::to_string(&env).unwrap()).unwrap();
@@ -34,13 +41,28 @@ fn main() {
         return;
     }
     if let Ok(lines) = std::env::var(FAKE) {
+        if let Some(ms) = std::env::var(FAKE_SLEEP).ok().and_then(|ms| ms.parse().ok()) {
+            std::thread::sleep(Duration::from_millis(ms));
+        }
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
         for line in lines {
             println!("{line}");
         }
         return;
     }
-    let tests: [(&str, fn()); 10] = [
+    let tests: [(&str, fn()); 22] = [
+        ("non-Git projects run in independent copies without changing the source", isolated_copies),
+        ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
+        ("dependencies wait for success and never start after failure", dependency_order),
+        ("devin transcript and answer become card events", devin_transcript),
+        ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
+        ("budget off keeps effort and refuses nothing", budget_off_keeps_effort_and_refuses_nothing),
+        ("cards start in the folder the policy checked, not the link the plan names", cards_run_in_the_checked_folder),
+        ("a project link pointed elsewhere after the check refuses the card", a_link_swapped_after_the_check_is_refused),
+        ("a stop that comes while a card's CLI is starting still ends it", stop_while_starting),
+        ("runs dispatched together never take more slots than the caps between them", runners_share_slots),
+        ("runs dispatched together never start more cards than the day allows", runners_share_the_days_last_start),
+        ("a card whose CLI cannot start gives back its slot and its start", failed_start_gives_back),
         ("behind today's budget, cards start with lower effort and say so", budget_lowers_effort),
         ("a provider over today's budget starts no card", budget_over_refuses),
         ("runs cards in parallel, records a limit as a provider cooldown", parallel_and_limit),
@@ -64,6 +86,143 @@ fn main() {
     }
 }
 
+fn isolated_copies() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("src").join("game.py"), "original\n").unwrap();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "first"), card("b", ProviderId::Claude, "second")]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "copies", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "copies").join("isolated-worktrees"), "").unwrap();
+    let paths = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
+    let observed = Arc::clone(&paths);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+        let id = spec.env["O_CARD_ID"].clone();
+        let cwd = PathBuf::from(cwd);
+        assert_eq!(std::fs::read_to_string(cwd.join("src/game.py")).unwrap(), "original\n");
+        assert!(cwd.join(".git").is_dir());
+        std::fs::write(cwd.join("src/game.py"), &id).unwrap();
+        observed.lock().unwrap().insert(id, cwd.to_string_lossy().into_owned());
+        inner(spec, &cwd.to_string_lossy())
+    });
+    assert_eq!(run_plan(&home, "copies", &p, None, spawner).unwrap(), CardStatus::Done);
+    let paths = paths.lock().unwrap();
+    assert_ne!(paths["a"], paths["b"]);
+    assert_eq!(std::fs::read_to_string(project.join("src/game.py")).unwrap(), "original\n");
+    assert!(!project.join(".git").exists());
+    assert_eq!(std::fs::read_to_string(PathBuf::from(&paths["a"]).join("src/game.py")).unwrap(), "a");
+    drop(paths);
+
+    std::fs::create_dir(project.join("src/.git")).unwrap();
+    create_run(&home, "nested", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "nested").join("isolated-worktrees"), "").unwrap();
+    let never: Arc<Spawner> = Arc::new(|_, _| panic!("nested repository must not start"));
+    assert_eq!(run_plan(&home, "nested", &p, None, never).unwrap(), CardStatus::Failed);
+    assert!(read_events(&home, "nested").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("중첩 Git"))));
+}
+
+fn isolated_worktrees() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let git = |args: &[&str]| {
+        let mut command = Command::new("git");
+        command.current_dir(&project).args(args);
+        let out = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init"]);
+    std::fs::write(project.join("shared.txt"), "base\n").unwrap();
+    git(&["add", "shared.txt"]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+    let mut a = card("a", ProviderId::Claude, "first");
+    let b = card("b", ProviderId::Claude, "second");
+    a.depends_on = vec!["b".into()];
+    let mut p = plan(vec![a, b]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "isolated", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "isolated").join("isolated-worktrees"), "").unwrap();
+    let paths = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
+    let observed = Arc::clone(&paths);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+        let id = spec.env["O_CARD_ID"].clone();
+        if id == "a" {
+            let previous = observed.lock().unwrap()["b"].clone();
+            assert!(spec.stdin.as_deref().unwrap().contains(&previous.replace('\\', "\\\\")));
+            assert_eq!(std::fs::read_to_string(PathBuf::from(&previous).join("shared.txt")).unwrap(), "b\n");
+        }
+        std::fs::write(PathBuf::from(cwd).join("shared.txt"), format!("{id}\n")).unwrap();
+        observed.lock().unwrap().insert(id, cwd.into());
+        inner(spec, cwd)
+    });
+    assert_eq!(run_plan(&home, "isolated", &p, None, spawner).unwrap(), CardStatus::Done);
+    let paths = paths.lock().unwrap();
+    assert_ne!(paths["a"], paths["b"]);
+    assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "base\n");
+    assert_eq!(std::fs::read_to_string(PathBuf::from(&paths["a"]).join("shared.txt")).unwrap(), "a\n");
+    drop(paths);
+
+    std::fs::write(project.join("shared.txt"), "user change\n").unwrap();
+    create_run(&home, "dirty", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "dirty").join("isolated-worktrees"), "").unwrap();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let never: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("must not start")) });
+    assert_eq!(run_plan(&home, "dirty", &p, None, never).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "user change\n");
+    assert!(read_events(&home, "dirty").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("커밋하지 않은"))));
+}
+
+fn dependency_order() {
+    let home = temp_home();
+    let first = card("first", ProviderId::Claude, "first");
+    let mut second = card("second", ProviderId::Claude, "second");
+    second.depends_on = vec!["first".into()];
+    let p = plan(vec![second, first]);
+    create_run(&home, "graph-ok", &p).unwrap();
+    let received = Arc::new(AtomicBool::new(false));
+    let observed = Arc::clone(&received);
+    let spawner = fake_cli(move |spec| {
+        if spec.stdin.as_deref().is_some_and(|s| s.contains("[선행 작업 결과") && s.contains("first")) { observed.store(true, Ordering::SeqCst); }
+        vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+    });
+    assert_eq!(run_plan(&home, "graph-ok", &p, None, spawner).unwrap(), CardStatus::Done);
+    assert!(received.load(Ordering::SeqCst));
+    let events = read_events(&home, "graph-ok");
+    let first_end = events.iter().position(|e| matches!(e, OEvent::CardEnd { card_id, status: CardStatus::Done, .. } if card_id == "first")).unwrap();
+    let second_start = events.iter().position(|e| matches!(e, OEvent::CardStart { card_id, .. } if card_id == "second")).unwrap();
+    assert!(first_end < second_start);
+
+    create_run(&home, "graph-fail", &p).unwrap();
+    let fail: Arc<Spawner> = Arc::new(|_, _| Err(std::io::Error::other("fake failure")));
+    assert_eq!(run_plan(&home, "graph-fail", &p, None, fail).unwrap(), CardStatus::Failed);
+    let events = read_events(&home, "graph-fail");
+    assert!(!events.iter().any(|e| matches!(e, OEvent::CardStart { card_id, .. } if card_id == "second")));
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { card_id, status: CardStatus::Failed, .. } if card_id == "second")));
+}
+
+fn devin_transcript() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Devin, "x")]);
+    create_run(&home, "devin", &p).unwrap();
+    let spawner: Arc<Spawner> = Arc::new(|spec, cwd| {
+        let export = spec.args.iter().position(|arg| arg == "--export").unwrap();
+        let mut command = Command::new(std::env::current_exe()?);
+        command.current_dir(cwd).args(["--fake-devin", &spec.args[export + 1]]);
+        Ok(command)
+    });
+    assert_eq!(run_plan(&home, "devin", &p, None, spawner).unwrap(), CardStatus::Done);
+    let events = read_events(&home, "devin");
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardTool { name, .. } if name == "read")));
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(result), .. } if result == "작업 완료")));
+}
+
 /// Stands in for a provider CLI: prints the given stream lines, then exits.
 fn fake_cli(lines_for: impl Fn(&LaunchSpec) -> Vec<&'static str> + Send + Sync + 'static) -> Arc<Spawner> {
     Arc::new(move |spec: &LaunchSpec, cwd: &str| {
@@ -80,7 +239,7 @@ fn temp_home() -> PathBuf {
 }
 
 fn card(id: &str, provider: ProviderId, task: &str) -> Card {
-    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None }
+    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] }
 }
 
 fn plan(cards: Vec<Card>) -> Plan {
@@ -99,6 +258,16 @@ fn ends_of(home: &std::path::Path, run_id: &str) -> BTreeMap<String, CardStatus>
 
 fn quiet() -> Arc<Spawner> {
     fake_cli(|_| vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])
+}
+
+fn rejected_plan_records_reason() {
+    let home = temp_home();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "test")]);
+    p.project = home.join("missing-project").to_string_lossy().into_owned();
+    create_run(&home, "rejected", &p).unwrap();
+    assert!(run_detached(&home, "rejected").is_err());
+    let events = read_events(&home, "rejected");
+    assert!(matches!(events.as_slice(), [OEvent::RunStart { cards, .. }, OEvent::RunBlocked { violations, .. }, OEvent::RunEnd { status: CardStatus::Failed, .. }] if cards.is_empty() && !violations.is_empty()));
 }
 
 fn parallel_and_limit() {
@@ -252,6 +421,185 @@ fn same_provider_slots_in_one_plan() {
     assert!(active_markers(&home).is_empty());
 }
 
+/// What the spawner has in flight, per CLI and in total, and the most it ever had.
+#[derive(Default)]
+struct InFlight {
+    now: BTreeMap<String, usize>,
+    peak: BTreeMap<String, usize>,
+    total: usize,
+    peak_total: usize,
+}
+
+/// A spawner that takes 300 ms to start each card (PATH lookup, process creation) and counts
+/// how many starts overlap: the window in which another runner must already see the slot taken.
+fn slow_counting_spawner(seen: Arc<Mutex<InFlight>>) -> Arc<Spawner> {
+    let inner = quiet();
+    Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        {
+            let mut f = seen.lock().unwrap();
+            *f.now.entry(spec.bin.clone()).or_default() += 1;
+            f.total += 1;
+            let now = f.now[&spec.bin];
+            let peak = f.peak.entry(spec.bin.clone()).or_default();
+            *peak = (*peak).max(now);
+            f.peak_total = f.peak_total.max(f.total);
+        }
+        std::thread::sleep(Duration::from_millis(300));
+        {
+            let mut f = seen.lock().unwrap();
+            *f.now.get_mut(&spec.bin).unwrap() -= 1;
+            f.total -= 1;
+        }
+        inner(spec, cwd)
+    })
+}
+
+/// Runs each plan on its own thread, all released at once, like runners of separate dispatches.
+fn run_together(home: &std::path::Path, plans: Vec<(&'static str, Plan)>, spawner: Arc<Spawner>) {
+    let barrier = Arc::new(std::sync::Barrier::new(plans.len()));
+    let handles: Vec<_> = plans
+        .into_iter()
+        .map(|(run_id, p)| {
+            create_run(home, run_id, &p).unwrap();
+            let (home, barrier, spawner) = (home.to_path_buf(), Arc::clone(&barrier), Arc::clone(&spawner));
+            std::thread::spawn(move || {
+                barrier.wait();
+                run_plan(&home, run_id, &p, None, spawner).unwrap();
+            })
+        })
+        .collect();
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+/// Two runs dispatched together, each filling every slot: neither may start a card in a slot
+/// the other is still starting a CLI in (its marker is not on disk yet).
+fn runners_share_slots() {
+    let home = temp_home();
+    let full = |prefix: &str| {
+        let claude = LIMITS.max_active_per_provider(ProviderId::Claude);
+        let codex = LIMITS.max_active_total - claude;
+        let mut cards: Vec<Card> = (0..claude).map(|i| card(&format!("{prefix}c{i}"), ProviderId::Claude, "x")).collect();
+        cards.extend((0..codex).map(|i| card(&format!("{prefix}x{i}"), ProviderId::Codex, "x")));
+        plan(cards)
+    };
+    let seen = Arc::new(Mutex::new(InFlight::default()));
+    run_together(&home, vec![("ra", full("a")), ("rb", full("b"))], slow_counting_spawner(Arc::clone(&seen)));
+    let seen = seen.lock().unwrap();
+    assert!(seen.peak["claude"] <= LIMITS.max_active_per_provider(ProviderId::Claude), "claude {:?}", seen.peak);
+    assert!(seen.peak["codex"] <= LIMITS.max_active_per_provider(ProviderId::Codex), "codex {:?}", seen.peak);
+    assert!(seen.peak_total <= LIMITS.max_active_total, "total {}", seen.peak_total);
+    assert_eq!(ends_of(&home, "ra").len() + ends_of(&home, "rb").len(), 2 * LIMITS.max_active_total);
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 2 * LIMITS.max_active_total);
+    assert!(active_markers(&home).is_empty());
+}
+
+/// Two runs that each want the day's last start: one gets it, the other ends without starting.
+fn runners_share_the_days_last_start() {
+    let home = temp_home();
+    for i in 0..LIMITS.max_cards_per_day - 1 {
+        record_start(&home, "earlier", &format!("c{i}"), ProviderId::Codex, Utc::now()).unwrap();
+    }
+    let seen = Arc::new(Mutex::new(InFlight::default()));
+    let one = || plan(vec![card("a", ProviderId::Claude, "x")]);
+    run_together(&home, vec![("rc", one()), ("rd", one())], slow_counting_spawner(seen));
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), LIMITS.max_cards_per_day);
+    let mut ends: Vec<CardStatus> = ends_of(&home, "rc").into_values().chain(ends_of(&home, "rd").into_values()).collect();
+    ends.sort_by_key(|s| format!("{s:?}"));
+    assert_eq!(ends, [CardStatus::Done, CardStatus::Failed]);
+}
+
+/// A card whose CLI cannot be started gives its slot and its start of the day back.
+fn failed_start_gives_back() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    create_run(&home, "re", &p).unwrap();
+    let spawner: Arc<Spawner> = Arc::new(|_: &LaunchSpec, _: &str| Err(std::io::Error::other("없음")));
+    assert_eq!(run_plan(&home, "re", &p, None, spawner).unwrap(), CardStatus::Failed);
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+    assert!(o_core::run::store::policy_context(&home, Utc::now()).unwrap().active_by_provider.values().all(|n| *n == 0));
+}
+
+/// `o stop` arrives while a card's CLI is being started (slot taken, no marker yet): the stop
+/// kills nothing it can see, so the runner must stop the CLI itself as soon as it is up.
+fn stop_while_starting() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    create_run(&home, "rs", &p).unwrap();
+    let stopping = home.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        assert!(o_core::run::runner::stop_run(&stopping, "rs").unwrap());
+        let mut command = quiet()(spec, cwd)?;
+        command.env(FAKE_SLEEP, "20000");
+        Ok(command)
+    });
+    let started = std::time::Instant::now();
+    assert_eq!(run_plan(&home, "rs", &p, None, spawner).unwrap(), CardStatus::Stopped);
+    assert!(started.elapsed() < Duration::from_secs(10), "the CLI ran on for {:?} after the stop", started.elapsed());
+    assert_eq!(ends_of(&home, "rs"), BTreeMap::from([("a".into(), CardStatus::Stopped)]));
+    assert!(active_markers(&home).is_empty());
+}
+
+/// The plan names the project through a link; the policy passed the folder it resolved to.
+/// Cards start in that checked folder, not wherever the link points later.
+fn cards_run_in_the_checked_folder() {
+    let home = temp_home();
+    let real = home.join("project");
+    std::fs::create_dir_all(&real).unwrap();
+    let checked = real.to_string_lossy().into_owned();
+    let mut p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    p.project = home.join("link-to-project").to_string_lossy().into_owned();
+    create_run(&home, "rw", &p).unwrap();
+    let seen = Arc::new(Mutex::new(Vec::<(String, Vec<String>)>::new()));
+    let log = Arc::clone(&seen);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        log.lock().unwrap().push((cwd.to_string(), spec.args.clone()));
+        inner(spec, cwd)
+    });
+    let to = checked.clone();
+    let workdir = Workdir { checked: checked.clone(), resolve: Arc::new(move |_: &str| to.clone()) };
+    run_plan_in(&home, "rw", &p, None, spawner, workdir).unwrap();
+    let seen = seen.lock().unwrap();
+    assert_eq!(seen.len(), 1);
+    assert_eq!(seen[0].0, checked);
+    // Codex is told the same folder (`-C`), not the link.
+    let at = seen[0].1.iter().position(|a| a == "-C").unwrap();
+    assert_eq!(seen[0].1[at + 1], checked);
+}
+
+/// The link is pointed elsewhere after the check: the card is refused, its CLI never starts.
+fn a_link_swapped_after_the_check_is_refused() {
+    let home = temp_home();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    p.project = home.join("link-to-project").to_string_lossy().into_owned();
+    create_run(&home, "rx", &p).unwrap();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        seen.store(true, Ordering::SeqCst);
+        inner(spec, cwd)
+    });
+    let checked = home.join("project").to_string_lossy().into_owned();
+    let elsewhere = std::env::temp_dir().to_string_lossy().into_owned();
+    let workdir = Workdir { checked, resolve: Arc::new(move |_: &str| elsewhere.clone()) };
+    assert_eq!(run_plan_in(&home, "rx", &p, None, spawner, workdir).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    let refused = read_events(&home, "rx").into_iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("정책 검사 뒤")));
+    assert!(refused);
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+
+    create_run(&home, "rx-isolated", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "rx-isolated").join("isolated-worktrees"), "").unwrap();
+    let checked = home.join("project").to_string_lossy().into_owned();
+    let elsewhere = std::env::temp_dir().to_string_lossy().into_owned();
+    let workdir = Workdir { checked, resolve: Arc::new(move |_: &str| elsewhere.clone()) };
+    assert_eq!(run_plan_in(&home, "rx-isolated", &p, None, quiet(), workdir).unwrap(), CardStatus::Failed);
+    assert!(read_events(&home, "rx-isolated").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("정책 검사 뒤"))));
+}
+
 /// A key left in the person's environment must not reach the card's CLI, in any case spelling.
 fn api_keys_dropped() {
     let home = temp_home();
@@ -364,4 +712,32 @@ fn budget_over_refuses() {
     let refused = read_events(&home, "r8").into_iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("사용 예산을 다 썼습니다")));
     assert!(refused);
     assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+}
+
+fn budget_off_keeps_effort_and_refuses_nothing() {
+    let home = temp_home();
+    seed_codex_spent(&home, 0.1299);
+    o_core::usage::budget::write_enabled(&home, false).unwrap();
+    let mut p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    p.cards[0].effort = Some("xhigh".into());
+    create_run(&home, "off", &p).unwrap();
+    let launched = Arc::new(Mutex::new(Vec::new()));
+    let seen = Arc::clone(&launched);
+    let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
+    let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+        *seen.lock().unwrap() = spec.args.clone();
+        inner(spec, cwd)
+    });
+    let status = run_plan(&home, "off", &p, None, spawner).unwrap();
+    assert_eq!(status, CardStatus::Done, "{:?}", read_events(&home, "off"));
+    assert!(launched.lock().unwrap().iter().any(|a| a == "model_reasoning_effort=xhigh"));
+    assert!(!read_events(&home, "off").iter().any(|e| matches!(e, OEvent::CardBudget { .. })));
+
+    // The day's budget used up: with the switch off the card still starts.
+    let spent_home = temp_home();
+    seed_codex_spent(&spent_home, 0.14);
+    o_core::usage::budget::write_enabled(&spent_home, false).unwrap();
+    create_run(&spent_home, "spent", &p).unwrap();
+    let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
+    assert_eq!(run_plan(&spent_home, "spent", &p, None, inner).unwrap(), CardStatus::Done, "{:?}", read_events(&spent_home, "spent"));
 }

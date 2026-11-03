@@ -1,3 +1,4 @@
+//! Adapted from stablyai/orca (MIT); see THIRD_PARTY_NOTICES.md.
 //! Clean agent profiles: the official CLIs with none of the owner's own
 //! harness (user hooks, global instructions, skills, plugins, MCP servers,
 //! memories, settings), without touching his normal setup.
@@ -7,6 +8,9 @@
 //!   claude: .claude/settings.json            CLAUDE_CONFIG_DIR; only claudeMdExcludes
 //!   codex:  .codex/                          CODEX_HOME
 //!   agy:    .gemini/                         made by agy itself
+//!   opencode: .config/opencode/opencode.json  XDG_CONFIG_HOME; O's permission rules, no plugin or MCP
+//!   (a CLI whose config cannot move, `catalog::profile_support`, gets no profile: "프로필 미지원")
+//!   devin:  (none)                           프로필 미지원: its config folder cannot be moved
 //! ```
 //!
 //! A clean launch sees a short list of system variables plus that home, and
@@ -16,6 +20,7 @@
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -28,6 +33,7 @@ use crate::run::plan::ProviderId;
 use crate::run::store::user_home;
 use crate::sys::proc;
 use crate::sys::resolve::resolve_cli;
+use super::catalog;
 
 /// `%LOCALAPPDATA%/project_O-agents`, or `~/.local/state/project_O-agents` elsewhere. Kept out of
 /// %TEMP% (Codex refuses to set up its helpers there) and out of O's state folder, which is protected.
@@ -57,6 +63,16 @@ fn keeps(name: &str) -> bool {
     KEEP.contains(&name.as_str()) || KEEP_PREFIX.iter().any(|p| name.starts_with(p))
 }
 
+/// OpenCode의 평소 프로필은 유지하되 프로세스에 개인 인증 환경변수는 전달하지 않는다.
+pub fn own_profile_environment() -> BTreeMap<String, String> {
+    std::env::vars_os().filter_map(|(key, value)| {
+        let key = key.into_string().ok()?;
+        let upper = key.to_ascii_uppercase();
+        let profile = matches!(upper.as_str(), "HOME" | "USERPROFILE" | "HOMEDRIVE" | "HOMEPATH" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME" | "XDG_CACHE_HOME");
+        (keeps(&key) || profile).then(|| value.into_string().ok().map(|value| (key, value))).flatten()
+    }).collect()
+}
+
 /// The whole environment of a clean CLI: the kept system variables of `parent`,
 /// the profile home as the user's home, and the provider's own pointer into it.
 pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: &Path, provider: ProviderId) -> BTreeMap<String, String> {
@@ -74,8 +90,12 @@ pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: 
     env
 }
 
-/// The clean environment for a provider, its profile made first if missing.
+/// The clean environment for a provider, its profile made first if missing. A CLI that
+/// cannot run on the profile (`Provider::profile_unsupported`) gets none: never its own setup instead.
 pub fn environment(root: &Path, provider: ProviderId) -> io::Result<BTreeMap<String, String>> {
+    if let Some(why) = providers::get(provider).profile_unsupported() {
+        return Err(io::Error::other(why));
+    }
     let home = ensure_profile(root, provider, &user_home())?;
     let parent = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
     Ok(clean_env_from(parent, &home, provider))
@@ -86,15 +106,46 @@ pub(crate) const INSTRUCTION_FILES: &[&str] = &["AGENTS.md", "CLAUDE.md", "CLAUD
 
 /// Makes a provider's profile home if it is missing, with what that CLI needs
 /// in it (`Provider::prepare_profile`: Claude its settings, Codex its CODEX_HOME).
+/// A CLI whose config cannot move into a profile (`catalog::profile_support`) gets none: it is
+/// refused rather than run with the person's own config.
 pub fn ensure_profile(root: &Path, provider: ProviderId, real_home: &Path) -> io::Result<PathBuf> {
+    if let Err(why) = catalog::profile_support(provider) {
+        return Err(io::Error::other(unsupported(provider, why)));
+    }
     let home = profile_home(root, provider);
     fs::create_dir_all(&home)?;
     providers::get(provider).prepare_profile(&home, real_home)?;
     Ok(home)
 }
 
+/// Trust the first project in a new Codex profile without reading or overwriting any existing configuration.
+/// Existing configuration is left to the CLI because it may have been changed by the user.
+pub fn trust_preflight(root: &Path, provider: ProviderId, project: &Path) -> io::Result<()> {
+    if provider != ProviderId::Codex || root.file_name().is_none_or(|name| name != "project_O-agents") { return Ok(()); }
+    let project = project.canonicalize()?;
+    let real_home = user_home().canonicalize()?;
+    if !project.is_dir() || real_home.starts_with(&project) { return Ok(()); }
+    let root = root.canonicalize()?;
+    let config_dir = profile_home(&root, provider).join(".codex");
+    let actual = config_dir.canonicalize()?;
+    if actual != config_dir { return Ok(()); }
+    let path = project.to_string_lossy();
+    let key = serde_json::to_string(path.as_ref()).map_err(io::Error::other)?;
+    let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(actual.join("config.toml")) {
+        Ok(file) => file,
+        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
+        Err(e) => return Err(e),
+    };
+    write!(file, "[projects.{key}]\ntrust_level = \"trusted\"\n")
+}
+
 /// The official CLI with the clean environment, run in the current folder.
 pub fn command(root: &Path, provider: ProviderId, args: &[&str]) -> io::Result<Command> {
+    if provider == ProviderId::Agy { return Err(io::Error::other(crate::policy::AGY_UNAVAILABLE)); }
+    if let Some(why) = providers::get(provider).profile_unsupported() {
+        return Err(io::Error::other(why));
+    }
+    crate::sys::resolve::ensure_paths();
     let bin = provider.as_str();
     let cli = resolve_cli(bin).ok_or_else(|| io::Error::other(format!("{bin} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다")))?;
     let mut command = Command::new(&cli.command);
@@ -121,6 +172,68 @@ pub fn login_state(root: &Path, provider: ProviderId) -> LoginState {
     match proc::capture(&mut command, Duration::from_secs(30)) {
         Ok((status, out, err)) => read_login(provider, status.success(), &out, &err),
         Err(error) => unknown(format!("상태 확인 {error}")),
+    }
+}
+
+/// "프로필 미지원(<id>): …" — why a CLI cannot run with the project_O profile.
+pub fn unsupported(provider: ProviderId, why: &str) -> String {
+    let name = providers::get(provider).official().name;
+    format!("프로필 미지원({provider}): {name}은(는) project_O 프로필을 쓸 수 없습니다 — {why}. 설정 → 에이전트에서 'project_O 프로필 사용'을 끄면 내 설정으로 실행합니다.")
+}
+
+/// "로그인 필요(<id>): …" — the profile exists but its CLI is signed out there. The app reads
+/// the provider id in the parentheses to offer the official sign-in (`agents::open_login`).
+pub fn login_needed(provider: ProviderId) -> String {
+    let name = providers::get(provider).official().name;
+    format!("로그인 필요({provider}): {name}의 project_O 프로필에 로그인되어 있지 않습니다. 설정 → 에이전트에서 '연결'을 누르거나 o agents login {provider}로 공식 로그인을 마친 뒤 다시 실행하세요.")
+}
+
+/// Before a card or lead starts with the project_O profile (ADR-0015): each provider's profile
+/// is made if missing, and a provider that cannot have one, or whose CLI says it is signed out
+/// there, maps to the reason it must not start. A CLI that signs in through the system (no
+/// login command) or whose status check cannot tell is not refused. Checks run in parallel.
+pub fn not_ready(root: &Path, providers: &[ProviderId]) -> std::collections::HashMap<ProviderId, String> {
+    let mut wanted: Vec<ProviderId> = providers.to_vec();
+    wanted.sort();
+    wanted.dedup();
+    std::thread::scope(|s| {
+        let checks: Vec<_> = wanted
+            .into_iter()
+            .map(|provider| {
+                s.spawn(move || {
+                    if let Err(why) = catalog::profile_support(provider) {
+                        return Some((provider, unsupported(provider, why)));
+                    }
+                    crate::providers::get(provider).login_args()?;
+                    (login_state(root, provider).logged_in == Some(false)).then(|| (provider, login_needed(provider)))
+                })
+            })
+            .collect();
+        checks.into_iter().filter_map(|check| check.join().ok().flatten()).collect()
+    })
+}
+
+/// A connected CLI's project_O profile as Settings → 에이전트 shows it (ADR-0015).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum ProfileState {
+    /// Made, and signed in or the CLI cannot tell (a system sign-in).
+    Created,
+    /// Made; the CLI says it is signed out there.
+    LoginNeeded,
+    /// The CLI's config cannot move into a profile.
+    Unsupported,
+}
+
+impl ProfileState {
+    pub fn of(provider: ProviderId, logged_in: Option<bool>) -> ProfileState {
+        if catalog::profile_support(provider).is_err() {
+            ProfileState::Unsupported
+        } else if logged_in == Some(false) {
+            ProfileState::LoginNeeded
+        } else {
+            ProfileState::Created
+        }
     }
 }
 

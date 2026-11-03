@@ -2,9 +2,11 @@ import { useCallback, useEffect, useRef, useState, type KeyboardEvent, type Poin
 
 import { readStored, writeStored } from "../lib/storage.ts";
 import type { PanelView } from "../data/useRun.ts";
+import { popoutUrl } from "./popoutUrl.ts";
 
 const KEY = "project-o.panel";
 const CHANNEL = "project-o-panel";
+const POPOUT_CLOSED = "project-o:popout-closed";
 const MIN = 320;
 const MIN_CHAT = 360;
 
@@ -51,7 +53,13 @@ export function usePanelLayout(onRemoteSelect: (s: Selection) => void) {
       if (event.data.type === "popout-closed") setPopped(false);
     };
     channel.current = ch;
-    return () => ch.close();
+    // The desktop shell says when the pop-out window closed (app/src-tauri/src/commands/window.rs).
+    const closed = () => setPopped(false);
+    window.addEventListener(POPOUT_CLOSED, closed);
+    return () => {
+      ch.close();
+      window.removeEventListener(POPOUT_CLOSED, closed);
+    };
   }, []);
 
   const clamp = useCallback((next: number) => {
@@ -89,20 +97,27 @@ export function usePanelLayout(onRemoteSelect: (s: Selection) => void) {
     event.preventDefault();
   };
 
-  const popout = (selection: Selection) => {
-    const url = new URL(window.location.href);
-    url.search = "";
-    url.searchParams.set("popout", "panel");
-    url.searchParams.set("view", selection.view);
-    if (selection.project) url.searchParams.set("project", selection.project);
-    if (selection.run) url.searchParams.set("run", selection.run);
-    if (selection.card) url.searchParams.set("card", selection.card);
-    const win = window.open(url, "project-o-panel", "popup,width=760,height=880");
+  /**
+   * `source`: the runs the main window shows, so the pop-out shows the same ones. The desktop
+   * app refuses `window.open`, so its shell opens the pop-out window itself, always on live runs.
+   */
+  const popout = (selection: Selection, source?: "live" | "demo") => {
+    const tauri = window.__TAURI_INTERNALS__;
+    if (tauri) {
+      const { view, project, run, card } = selection;
+      void tauri.invoke("popout_open", { view, project: project ?? null, run: run ?? null, card: card ?? null }).then(
+        () => setPopped(true),
+        () => setPopped(false),
+      );
+      return;
+    }
+    const win = window.open(popoutUrl(window.location.href, selection, source), "project-o-panel", "popup,width=760,height=880");
     if (win) setPopped(true);
   };
 
   const dock = () => {
     channel.current?.postMessage({ type: "dock" } satisfies Signal);
+    void window.__TAURI_INTERNALS__?.invoke("popout_close").catch(() => {});
     setPopped(false);
     setLayout((s) => ({ ...s, open: true }));
   };

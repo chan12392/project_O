@@ -1,6 +1,6 @@
 ---
 name: o
-description: Split a multi-part request into work cards and hand them to agent CLIs (Codex, Antigravity, Claude) through O CLI, let the cards talk to each other and to you on the run's team channel, then watch and summarize the results. Use when the user asks to split project work across agents or run parts in parallel; the lead picks the agent, model and effort per card unless the user names them.
+description: Split a multi-part request into work cards and hand them to agent CLIs through O CLI, let the cards talk to each other and to you on the run's team channel, then watch and summarize the results. Use when the user asks to split project work across agents or run parts in parallel; the lead picks the agent, model and effort per card unless the user names them.
 ---
 
 # O — 작업카드 분배
@@ -20,15 +20,15 @@ description: Split a multi-part request into work cards and hand them to agent C
   "cards": [
     { "id": "ui", "provider": "codex", "model": "gpt-6.1-sol", "effort": "xhigh",
       "task": "무엇을, 어느 파일에서, 완료 기준은 무엇인지" },
-    { "id": "copy", "provider": "agy", "model": "gemini-3.8-flash-high", "role": "문구",
+    { "id": "copy", "provider": "claude", "role": "문구",
       "task": "..." }
   ]
 }
 ```
 
-- `provider`: `claude` | `codex` | `agy`(Antigravity CLI). **카드마다 어느 에이전트·모델·노력 수준(`effort`)으로 할지는 총괄이 일에 맞게 정한다.** 사용자는 무엇을 할지만 말하면 된다.
+- `provider`: `claude` | `codex` | `opencode` | `devin`. Antigravity는 공급자 정책 때문에 실행하지 않는다. **카드마다 어느 에이전트·모델·노력 수준(`effort`)으로 할지는 총괄이 일에 맞게 정한다.**
   - 사용자가 특정 에이전트나 모델을 말한 카드는 그대로 따른다.
-  - 고르기 전에 `o usage`로 구독 한도를 보고, 한도에 가까운(90% 이상) 서비스는 피한다. 동시 실행 상한(Claude 3·Codex 3·Antigravity 2)을 넘지 않게 나눈다.
+  - 고르기 전에 `o usage`로 구독 한도를 보고, 한도에 가까운(90% 이상) 서비스는 피한다. 동시 실행 상한을 넘지 않게 나눈다.
   - 모델 이름은 그 CLI가 받는 것만 쓴다. 확실하지 않으면 `model`을 비워 CLI 기본 모델에 맡기고 `effort`로만 조절한다.
   - 사용자에게 전달을 보고할 때 카드마다 왜 그 에이전트·모델을 골랐는지 한 줄씩 적는다.
 - `role`은 선택 사항인 사람용 이름표다("코딩", "검토" 등). 모델이나 권한과 아무 관계가 없다. 없으면 화면에 카드 id로 보인다.
@@ -40,8 +40,8 @@ description: Split a multi-part request into work cards and hand them to agent C
 
 ```sh
 o check plan.json      # 정책 검사만
-o dispatch plan.json   # 통과하면 백그라운드 병렬 실행, runId 출력
-o dispatch --clean plan.json   # 깨끗한 에이전트(하네스 없음) + 주입된 컨텍스트만으로 실행
+o dispatch plan.json   # 통과하면 백그라운드 병렬 실행, runId 출력 (기본: project_O 프로필 = 깨끗한 에이전트 + 주입된 컨텍스트)
+o dispatch --profile own plan.json   # 이 PC의 평소 CLI 설정(스킬·훅·메모리)으로 실행
 ```
 
 토큰은 `o tokens --compare`로 기본 하네스와 깨끗한+세션 공유를 비교한다(`docs/token-benchmark.md`).

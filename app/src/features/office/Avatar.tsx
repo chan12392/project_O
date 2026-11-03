@@ -10,10 +10,12 @@ const RING: Record<Speaker, string> = {
   claude: "ring-orange-400/60",
   codex: "ring-sky-400/60",
   agy: "ring-emerald-400/60",
+  opencode: "ring-violet-400/60",
+  devin: "ring-blue-400/60",
   lead: "ring-neutral-400/60",
 };
 
-const INITIAL: Record<Speaker, string> = { claude: "Cl", codex: "Cx", agy: "Ag", lead: "총" };
+const INITIAL: Record<Speaker, string> = { claude: "Cl", codex: "Cx", agy: "Ag", opencode: "Oc", devin: "Dv", lead: "총" };
 
 /** Head and shoulders in a composed sheet's first idle frame: a square of CROP px from (CROP_X, CROP_Y). */
 const SHEET_WIDTH = 1024;
@@ -30,10 +32,10 @@ export function spriteUrl(speaker: Speaker): string {
  * look it's that card's composed character; until that is drawn (or if it can't be)
  * the provider's portrait, and the initials if the art is missing.
  */
-export function Avatar({ speaker, size = "md", look }: { speaker: Speaker; size?: "sm" | "md"; look?: Look }) {
+export function Avatar({ speaker, size = "md", look }: { speaker: Speaker; size?: "xs" | "sm" | "md"; look?: Look }) {
   const [missing, setMissing] = useState(false);
   const sheet = useCharacterSheet(look);
-  const box = size === "sm" ? "size-6" : "size-8";
+  const box = size === "xs" ? "size-4" : size === "sm" ? "size-6" : "size-8";
   return (
     <span className={`relative inline-flex shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted ring-1 ${RING[speaker]} ${box}`}>
       {sheet ? (

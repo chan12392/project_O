@@ -1,5 +1,5 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, LeadAttachment, LeadDispatched, LeadEvent, LeadShow, ReviewStarted, TokenReport } from "./types.ts";
-import { DESKTOP_UPDATES_ONLY, type About, type UpdateCheck } from "../updates.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS, type About, type UpdateCheck } from "../updates.ts";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -19,7 +19,14 @@ async function json<T>(res: Response): Promise<T> {
 /** The dev server: the /api routes of app/dev/liveRuns.ts, each answered by `o`. */
 export const devBackend: Backend = {
   kind: "dev",
+  imageRead: (project, path, run, card) => fetch(`/api/lead/image/read?${new URLSearchParams({ project, path, run: run ?? "-", card: card ?? "-" })}`).then((r) => json<Awaited<ReturnType<Backend["imageRead"]>>>(r)),
+  imageOpen: (project, path, folder, run, card) => fetch(`/api/lead/image/${folder ? "folder" : "open"}?${new URLSearchParams({ project, path, run: run ?? "-", card: card ?? "-" })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
+  schedules: () => fetch("/api/lead/schedule").then((r) => json<Awaited<ReturnType<Backend["schedules"]>>>(r)),
+  scheduleCreate: (request) => fetch("/api/lead/schedule", { method: "POST", body: JSON.stringify(request) }).then((r) => json<Awaited<ReturnType<Backend["scheduleCreate"]>>>(r)),
+  scheduleDelete: (id) => fetch(`/api/lead/schedule/delete?id=${encodeURIComponent(id)}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
+  scheduleSetEnabled: (id, enabled) => fetch(`/api/lead/schedule/${enabled ? "enable" : "disable"}?id=${encodeURIComponent(id)}`, { method: "POST" }).then((r) => json<Awaited<ReturnType<Backend["scheduleSetEnabled"]>>>(r)),
   agents: (clean) => fetch(`/api/agents?clean=${clean ? 1 : 0}`).then((r) => json<AgentStatus[]>(r)),
+  agentsCatalog: (refresh = false) => fetch(`/api/agents/catalog${refresh ? "?refresh=1" : ""}`).then((r) => json<Awaited<ReturnType<Backend["agentsCatalog"]>>>(r)),
   install: (id) => fetch(`/api/agents/${id}/install`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
@@ -28,6 +35,7 @@ export const devBackend: Backend = {
   pendingUpdate: async () => null,
   installUpdate: async () => { throw new Error(DESKTOP_UPDATES_ONLY); },
   cancelUpdate: async () => {},
+  updateStatus: async () => NO_UPDATE_STATUS,
   review: async (project, pr, clean) => {
     const res = await fetch(`/api/review?${new URLSearchParams({ project, pr, clean: clean ? "1" : "0" })}`, { method: "POST" });
     const body = (await res.json().catch(() => undefined)) as (ReviewStarted & { error?: string }) | undefined;
@@ -36,8 +44,12 @@ export const devBackend: Backend = {
   },
   budget: () => fetch("/api/budget").then((r) => json<BudgetReport>(r)),
   setBudgetPercent: (percent) => fetch(`/api/budget/percent?value=${percent}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
+  setBudgetEnabled: (enabled) => fetch(`/api/budget/enabled?value=${enabled ? "on" : "off"}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
+  yolo: () => fetch("/api/yolo").then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
+  setYolo: (change) => fetch("/api/yolo", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),
   leadShow: (project) => fetch(`/api/lead/show${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<LeadShow>(r)),
+  leadNote: (threadId, change) => fetch(`/api/lead/note?${new URLSearchParams({ thread: threadId })}`, { method: "POST", body: JSON.stringify(change) }).then((r) => json<unknown>(r)).then(() => {}),
   leadNew: (project) => fetch(`/api/lead/new?${new URLSearchParams({ project })}`, { method: "POST" }).then((r) => json<{ threadId: string }>(r)),
   leadAttach: (project, file) =>
     fetch(`/api/lead/attach?${new URLSearchParams({ project, name: file.name })}`, { method: "POST", body: file }).then((r) => json<LeadAttachment>(r)),
@@ -48,4 +60,15 @@ export const devBackend: Backend = {
   leadDispatch: (planId, clean) =>
     fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
   leadStop: (project) => fetch(`/api/lead/stop${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "POST" }).then((r) => json<{ stopped: boolean }>(r)),
+  leadStopAll: (project) => fetch(`/api/lead/stop-all?project=${encodeURIComponent(project)}`, { method: "POST" }).then((r) => json<{ stopped: number }>(r)),
+  leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
+  projects: () => fetch("/api/projects").then((r) => json<ProjectList>(r)),
+  projectOpen: (path) => fetch(`/api/projects/open?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
+  projectsAdd: (path) => fetch(`/api/projects/add?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),
+  projectsRemove: (path) => fetch(`/api/projects/remove?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),
+  projectsNew: (name) => fetch(`/api/projects/new?${new URLSearchParams({ name })}`, { method: "POST" }).then((r) => json<ProjectList & { created: string }>(r)),
+  projectsRoot: ({ path, reset, create }) =>
+    fetch(`/api/projects/root?${new URLSearchParams({ ...(path ? { path } : {}), reset: reset ? "1" : "0", create: create ? "1" : "0" })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),
+  projectsCheck: (paths) => fetch("/api/projects/check", { method: "POST", body: JSON.stringify(paths) }).then((r) => json<ProjectCheck[]>(r)),
+  // No native picker in the browser: the screen asks for the path as text.
 };

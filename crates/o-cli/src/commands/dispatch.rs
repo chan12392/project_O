@@ -5,27 +5,52 @@ use std::path::Path;
 use std::process::Command as Process;
 
 use chrono::Utc;
-use o_core::policy::check_plan;
-use o_core::run::runner;
+use o_core::policy::check_plan_for;
+use o_core::run::mode::{take_flags, RunMode};
+use o_core::run::{runner, yolo};
 use o_core::run::store::{self, run_dir};
 use o_core::sys::proc;
 use serde_json::{json, Value};
 
 use super::{fail, print_violations, run_id_arg, Command};
 
-pub const CHECK: Command = Command { name: "check", usage: "  o check [plan.json|-]      정책 검사만 (실행 안 함)", run: |home, args| check(home, plan_arg(args), false, false, false) };
+pub const CHECK: Command = Command {
+    name: "check",
+    usage: "  o check [plan.json|-]      정책 검사만 (실행 안 함)",
+    run: |home, args| match plan_flags(home, args) {
+        Ok((mode, plan)) => check(home, plan.as_deref(), false, mode),
+        Err(error) => fail(&error),
+    },
+};
 
 pub const DISPATCH: Command = Command {
     name: "dispatch",
-    usage: "  o dispatch [--clean] [--no-context] [plan.json|-]
+    usage: "  o dispatch [--profile project-o|own] [--no-context] [--mode yolo|normal] [plan.json|-]
                              정책 검사 후 백그라운드 실행, runId 출력
-                             --clean: 카드를 깨끗한 에이전트 프로필로 실행 (o agents)
-                             --no-context: 이전 작업 컨텍스트를 카드에 넣지 않음 (토큰 A/B 기준선)",
-    run: |home, args| {
-        let has = |flag: &str| args.iter().any(|a| a == flag);
-        check(home, plan_arg(args), true, has("--clean"), has("--no-context"))
+                             --profile (project_O 프로필 사용, 기본 project-o — ADR-0013):
+                               project-o: 카드를 O의 깨끗한 에이전트 프로필로 실행 (o agents)
+                               own      : 이 PC의 평소 CLI 설정(스킬·훅·메모리) 그대로
+                             --clean: --profile project-o와 같음
+                             --no-context: 이전 작업 컨텍스트를 카드에 넣지 않음 (토큰 A/B 기준선)
+                             --mode yolo|normal: 이 실행만 YOLO 모드 켜기·끄기 (주지 않으면 o yolo 설정, ADR-0014)
+                             하루 사용 예산(차단·effort 낮춤)은 o budget --on|--off로 따로 정함",
+    run: |home, args| match plan_flags(home, args) {
+        Ok((mode, plan)) => check(home, plan.as_deref(), true, mode),
+        Err(error) => fail(&error),
     },
 };
+
+/// The run mode and the plan file among `check`/`dispatch` arguments; any other flag is refused
+/// (a removed or misspelled one included, so it never reads as a plan file name).
+fn plan_flags(home: &Path, args: &[String]) -> Result<(RunMode, Option<String>), String> {
+    let (mut mode, rest) = take_flags(args)?;
+    let (yolo, rest) = yolo::take_flag(rest)?;
+    mode.yolo = yolo::resolve(home, yolo);
+    if let Some(flag) = rest.iter().find(|a| a.starts_with("--")) {
+        return Err(format!("알 수 없는 인자: {flag}"));
+    }
+    Ok((mode, rest.into_iter().next()))
+}
 
 /// `o _run <runId>`: the runner `o dispatch` starts in the background.
 pub const RUN: Command = Command {
@@ -55,12 +80,7 @@ fn read_input(path: Option<&str>) -> Result<Value, String> {
     Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
 }
 
-/// The plan file among `check`/`dispatch` arguments (`--clean`, `--no-context` are flags).
-fn plan_arg(args: &[String]) -> Option<&str> {
-    args.iter().map(String::as_str).find(|a| *a != "--clean" && *a != "--no-context")
-}
-
-fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool, no_context: bool) -> i32 {
+fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 {
     let input = match read_input(path) {
         Ok(input) => input,
         Err(error) => return fail(&error),
@@ -70,7 +90,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool, no_contex
         Ok(ctx) => ctx,
         Err(error) => return fail(&error.to_string()),
     };
-    let checked = check_plan(&input, &ctx);
+    let checked = check_plan_for(&input, &ctx, mode.profile);
     let Some(plan) = checked.plan else {
         if dispatch {
             let title = input.as_object().and_then(|o| o.get("title"));
@@ -87,9 +107,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool, no_contex
         return 0;
     }
     let run_id = store::new_run_id(now);
-    let created = store::create_run(home, &run_id, &plan)
-        .and_then(|()| if clean { store::mark_clean(home, &run_id) } else { Ok(()) })
-        .and_then(|()| if no_context { o_core::context::mark_off(home, &run_id) } else { Ok(()) });
+    let created = store::create_run(home, &run_id, &plan).and_then(|()| store::mark_mode(home, &run_id, &mode));
     if let Err(error) = created {
         return fail(&error.to_string());
     }
@@ -99,6 +117,9 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, clean: bool, no_contex
     }
     let events = run_dir(home, &run_id).join("events.jsonl");
     let cards: Vec<&str> = plan.cards.iter().map(|c| c.id.as_str()).collect();
-    println!("{}", json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "clean": clean }));
+    println!(
+        "{}",
+        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "profile": mode.profile, "clean": mode.clean(), "context": mode.context, "yolo": mode.yolo })
+    );
     0
 }

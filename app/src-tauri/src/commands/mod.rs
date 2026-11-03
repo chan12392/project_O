@@ -3,16 +3,21 @@
 //! blocking thread and calls o-core directly: no shell, and any CLI it asks runs
 //! without a window (sign-in alone opens a console the person drives). Every
 //! domain command has a dev-server twin under `/api` (app/dev/liveRuns.ts) and an `o`
-//! command that prints the same JSON. Desktop updates only expose an unavailable notice in dev.
+//! command that prints the same JSON. Desktop updates only expose an unavailable notice in dev;
+//! the window commands (pop-out) exist only in the desktop app.
 
 mod about;
 mod agents;
 mod lead;
+mod images;
+mod projects;
 mod review;
 mod runs;
+mod schedule;
 mod tokens;
 mod usage;
 pub(crate) mod update;
+pub(crate) mod window;
 
 /// Every command the screens may call.
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
@@ -22,7 +27,11 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         usage::usage_refresh,
         usage::budget,
         usage::budget_set_percent,
+        usage::budget_set_enabled,
+        usage::yolo_get,
+        usage::yolo_set,
         agents::agents_status,
+        agents::agents_catalog,
         agents::agent_install,
         agents::agent_login,
         agents::open_external,
@@ -30,15 +39,38 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         review::review,
         tokens::tokens,
         lead::lead_show,
+        lead::lead_note,
         lead::lead_new,
         lead::lead_attach,
         lead::lead_send,
         lead::lead_dispatch,
         lead::lead_stop,
+        lead::lead_stop_all,
+        lead::lead_models,
+        images::image_read,
+        images::image_open,
+        schedule::schedule_list,
+        schedule::schedule_create,
+        schedule::schedule_delete,
+        schedule::schedule_set_enabled,
+        projects::projects_list,
+        projects::project_open,
+        projects::projects_add,
+        projects::projects_remove,
+        projects::projects_new,
+        projects::projects_root,
+        projects::projects_check,
+        projects::pick_folder,
         update::update_check,
         update::update_install,
         update::update_pending,
         update::update_cancel,
+        update::update_status,
+        window::popout_open,
+        window::popout_close,
+        window::hide_main,
+        window::quit_activity,
+        window::quit_app,
     ]
 }
 

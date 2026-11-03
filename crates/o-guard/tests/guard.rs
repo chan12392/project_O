@@ -162,6 +162,67 @@ fn protected_branch_checkouts_are_read_only_for_agents() {
     assert!(passes(&elsewhere("git -C C:/ws/test_2 status"), &ByFolder));
 }
 
+/// Relative targets are resolved against the folder the command runs in, following `cd`;
+/// a move or path the hook cannot resolve allows only read-only commands.
+#[test]
+fn relative_shell_targets_reach_the_mirror_too() {
+    let personal = |command: &str| json!({ "tool_name": "Bash", "tool_input": { "command": command }, "cwd": "C:/ws/younchan" });
+    let refused = [
+        "echo x > ../test_2/a.txt",
+        "echo x >../test_2/a.txt",
+        "touch ..\\test_2\\a.txt",
+        "cp a.txt ../test_2/",
+        "cd ../test_2 && touch a.txt",
+        "cd ..\\test_2; Remove-Item a.txt",
+        "Set-Location -Path ../test_2\nRemove-Item a.txt",
+        "cd src && echo x > ../../test_2/a.txt",
+        "git -C ../test_2 commit -m x",
+        "npm install --prefix=../test_2",
+        // Unresolvable moves or paths: only read-only commands may follow.
+        "cd $o_guard_unset_dir && touch a.txt",
+        "touch $o_guard_unset_dir/a.txt",
+        "cd - && touch a.txt",
+        "cd $(git rev-parse --show-toplevel) && touch a.txt",
+        // More folders than the hook asks git about.
+        "touch C:/x/1 C:/x/2 C:/x/3 C:/x/4 C:/x/5 C:/x/6 C:/x/7 C:/x/8 C:/ws/test_2/a.txt",
+    ];
+    for bad in refused {
+        assert!(blocked(&personal(bad), &ByFolder), "{bad:?}");
+    }
+    let allowed = [
+        "cd ../test_2 && git status",
+        "cat ../test_2/README.md",
+        "git -C ../test_2 log -1",
+        "touch ../younchan-other/a.txt",
+        "echo x > out/a.txt",
+        "cd src && cargo test",
+        "cd ../younchan-other && touch a.txt",
+        "git diff origin/test_2..HEAD -- crates/o-guard/src/hook.rs",
+        "cd $o_guard_unset_dir && git status",
+        "ls C:/x/1 C:/x/2 C:/x/3 C:/x/4 C:/x/5 C:/x/6 C:/x/7 C:/x/8 C:/x/9",
+    ];
+    for ok in allowed {
+        assert!(passes(&personal(ok), &ByFolder), "{ok:?}");
+    }
+}
+
+/// A patch that moves a file is judged by both ends of the move.
+#[test]
+fn patch_moves_are_checked_at_source_and_destination() {
+    let patch = |from: &str, to: &str, line: &str| {
+        let body = format!("*** Begin Patch\n*** Update File: {from}\n*** Move to: {to}\n@@\n-old\n+{line}\n*** End Patch");
+        json!({ "tool_name": "apply_patch", "tool_input": { "command": body }, "cwd": "C:/ws/younchan" })
+    };
+    assert!(blocked(&patch("src/a.rs", "C:/ws/test_2/src/a.rs", "x"), &ByFolder));
+    assert!(blocked(&patch("src/a.rs", "../test_2/src/a.rs", "x"), &ByFolder));
+    assert!(blocked(&patch("C:/ws/test_2/src/a.rs", "src/a.rs", "x"), &ByFolder));
+    assert!(passes(&patch("src/a.rs", "src/b.rs", "x"), &ByFolder));
+    // Code only the rule file and its tests may spell, moved out of the allowed folder.
+    let bad = format!("let t = \"{OAUTH_TOKEN}\";");
+    assert!(blocked(&patch("crates/o-guard/tests/x.rs", "crates/o-core/src/x.rs", &bad), &ByFolder));
+    assert!(passes(&patch("crates/o-guard/tests/x.rs", "crates/o-guard/tests/y.rs", &bad), &ByFolder));
+}
+
 #[test]
 fn sign_in_files_are_off_limits_to_read_tools_too() {
     let read = |file_path: String| json!({ "tool_name": "Read", "tool_input": { "file_path": file_path } });
@@ -195,6 +256,26 @@ fn hook_blocks_edits_that_introduce_forbidden_code_outside_allowed_files() {
         concat!("api.openai", ".com")
     );
     assert!(blocked(&json!({ "tool_name": "apply_patch", "tool_input": { "command": patch }, "cwd": "C:/repo" }), &OnBranch("a/x")));
+}
+
+/// ADR-0014: the YOLO launch flags live in the provider files (and their test); everywhere
+/// else — another file, a shell command, a patch that also touches another file — they stay blocked.
+#[test]
+fn only_provider_files_may_introduce_bypass_switches() {
+    let edit = |file_path: &str, content: &str| json!({ "tool_name": "Edit", "tool_input": { "file_path": file_path, "new_string": content }, "cwd": "C:/repo" });
+    let flag = format!("args.push(\"{BYPASS_SANDBOX}\".into());");
+    assert!(passes(&edit("C:/repo/crates/o-core/src/providers/codex.rs", &flag), &OnBranch("younchan")));
+    assert!(passes(&edit("C:/repo/crates/o-core/tests/providers.rs", &flag), &OnBranch("younchan")));
+    assert!(blocked(&edit("C:/repo/crates/o-core/src/lead/mod.rs", &flag), &OnBranch("younchan")));
+    assert!(blocked(&edit("C:/repo/app/src/features/chat/Composer.tsx", &flag), &OnBranch("younchan")));
+    // A provider file is exempt from the bypass rule only.
+    assert!(blocked(&edit("C:/repo/crates/o-core/src/providers/claude.rs", &format!("env::var(\"{OAUTH_TOKEN}\")")), &OnBranch("younchan")));
+    // A command that turns the checks off is blocked wherever it runs.
+    assert!(blocked(&bash(&format!("claude -p {SKIP_PERMISSIONS} hi")), &OnBranch("younchan")));
+    let both = format!("*** Begin Patch\n*** Update File: crates/o-core/src/providers/agy.rs\n+{flag}\n*** Update File: crates/o-core/src/policy.rs\n+x\n*** End Patch");
+    assert!(blocked(&json!({ "tool_name": "apply_patch", "tool_input": { "command": both }, "cwd": "C:/repo" }), &OnBranch("younchan")));
+    let one = format!("*** Begin Patch\n*** Update File: crates/o-core/src/providers/agy.rs\n+{flag}\n*** End Patch");
+    assert!(passes(&json!({ "tool_name": "apply_patch", "tool_input": { "command": one }, "cwd": "C:/repo" }), &OnBranch("younchan")));
 }
 
 #[test]
@@ -308,6 +389,31 @@ fn direct_merge_apis_follow_the_same_rule() {
     assert!(blocked(&bash("gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'"), &MEMBER_GH));
     assert!(passes(&bash("gh api repos/chan12392/project_O/pulls/1"), &MEMBER_GH));
     assert!(passes(&bash("gh pr view 1 --json baseRefName"), &MEMBER_GH));
+}
+
+/// A line break (LF or CRLF), a trailing command or a quoted separator must not hide a merge from the owner check.
+#[test]
+fn merge_checks_see_every_line_of_a_command() {
+    let into_protected = [
+        "gh pr merge 1\necho x",
+        "gh pr merge 1\r\necho x",
+        "gh pr merge 1 --merge\ngit log -1",
+        "gh pr merge --subject \"a; b\" 1",
+        "gh pr merge 1 --body \"first line\nsecond line\"",
+        "gh api -X PUT repos/chan12392/project_O/pulls/1/merge\necho x",
+        "gh api -X PUT repos/chan12392/project_O/pulls/1/merge\r\necho x",
+        "echo start\r\ngh api repos/chan12392/project_O/merges -f base=main -f head=test_1\r\nexit 0",
+        "gh api graphql -f query='mutation {\n  mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId }\n}'",
+    ];
+    for command in into_protected {
+        assert!(passes(&bash(command), &OWNER_GH), "{command:?}");
+        let reasons = review(&bash(command), &MEMBER_GH);
+        assert_eq!(reasons.len(), 1, "{command:?} → {reasons:?}");
+        assert!(reasons[0].contains("someone-else"), "{command:?} → {reasons:?}");
+    }
+    for free in ["gh pr merge 2\necho x", "gh pr merge 4 -d\r\necho x", "echo x\ngh api --method PUT repos/{owner}/{repo}/pulls/2/merge\necho y"] {
+        assert!(passes(&bash(free), &MEMBER_GH), "{free:?}");
+    }
 }
 
 fn project_hooks(path: &str) -> Vec<Value> {

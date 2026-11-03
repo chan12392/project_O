@@ -1,6 +1,6 @@
 import { SlidersHorizontal } from "lucide-react";
 
-import { sessionsShown, updateSettings, useSettings, type StartScreen } from "../../../data/settings.ts";
+import { sessionsShown, updateSettings, useSettings, type CloseAction, type StartScreen } from "../../../data/settings.ts";
 import { Segmented, SettingsRow, Switch } from "../../../ui/controls.tsx";
 import { Rows, Section, type SettingsSectionDef } from "../Section.tsx";
 
@@ -17,6 +17,13 @@ function GeneralSection({ demo }: { demo: boolean }) {
   return (
     <Section title="일반" description="앱을 열 때의 화면과 실행 기록을 읽는 방식입니다.">
       <Rows>
+        <SettingsRow
+          label="창 닫기 (X)"
+          description="트레이로 숨기거나 앱을 완전히 종료합니다. 작업 중인 에이전트가 있으면 종료 전에 알려 드립니다."
+          control={<Segmented<CloseAction> label="창 닫기 동작" value={settings.closeAction} onChange={(closeAction) => updateSettings({ closeAction })} options={[
+            { value: "ask", label: "물어보기" }, { value: "tray", label: "트레이" }, { value: "quit", label: "완전 종료" },
+          ]} />}
+        />
         <SettingsRow
           id="sessions-label"
           label="Claude Code 세션도 보기"
@@ -46,21 +53,11 @@ function GeneralSection({ demo }: { demo: boolean }) {
             />
           }
         />
+        {/* What the app does, not a choice it does not offer yet. */}
         <SettingsRow
-          label="실시간 갱신 주기"
-          soon
-          description="이 PC의 O 실행 기록을 2초마다 읽고, 창이 가려져 있으면 쉽니다. 주기 바꾸기는 준비 중입니다."
-          control={
-            <Segmented
-              label="실시간 갱신 주기"
-              value="2"
-              options={[
-                { value: "2", label: "2초" },
-                { value: "5", label: "5초", soon: true },
-                { value: "10", label: "10초", soon: true },
-              ]}
-            />
-          }
+          label="실시간 갱신"
+          description="이 PC의 O 실행 기록을 2초마다 읽고, 창이 가려져 있으면 쉽니다."
+          control={<span className="text-xs text-muted-foreground tabular-nums">2초마다</span>}
         />
       </Rows>
     </Section>

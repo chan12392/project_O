@@ -1,10 +1,22 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
-import type { LeadAttachment, LeadEvent, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
-import type { About, UpdateCheck, UpdateRelease } from "../updates.ts";
+import type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
+import type { ListedProject, ProjectCheck, ProjectList } from "../../../../src/core/projects.ts";
+import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
-export type { LeadAttachment, LeadEvent, LeadProvider, LeadShow };
+export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
 
-export type AgentId = "claude" | "codex" | "agy";
+export type AgentId = "claude" | "codex" | "agy" | "opencode" | "devin";
+
+export interface AgentCatalogEntry {
+  id: string;
+  name: string;
+  detected: boolean;
+  version?: string;
+  status: "connected" | "planned" | "unsupported";
+  installUrl?: string;
+  profileSupported: boolean;
+  note: string;
+}
 
 export interface AgentStatus {
   id: AgentId;
@@ -22,6 +34,7 @@ export interface AgentStatus {
   /** Whether Project O can run the install itself (otherwise it opens installUrl). */
   canInstall: boolean;
   installUrl: string;
+  profileUnsupported?: string;
 }
 
 export interface ActionResult {
@@ -46,8 +59,8 @@ export interface ReviewStarted {
 /** A PR number or a github.com pull address: the only forms `o review` takes. */
 export const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
 
-/** How a provider's spend today compares with how much of the day is left (ADR-0004). */
-export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over";
+/** How a provider's spend today compares with how much of the day is left (ADR-0004); "off" while the daily budget is switched off (ADR-0013). */
+export type BudgetState = "unknown" | "ok" | "behind" | "farBehind" | "over" | "off" | "notApplied";
 
 /** One provider in `o budget --json`: shares are 0 to 1, weeklyUsed/allowance/spent percent points of the weekly window. */
 export interface ProviderBudget {
@@ -75,6 +88,8 @@ export interface ProviderBudget {
 
 export interface BudgetReport {
   at: string;
+  /** The daily budget switch (`o budget --on|--off`); off, nothing is refused or lowered and every provider is "off". */
+  enabled: boolean;
   /** The day's allowance, percent of the weekly window (12–14). */
   percent: number;
   /** When `o usage` last asked Codex and Antigravity; empty when never. */
@@ -115,18 +130,27 @@ export interface Backend {
   kind: "tauri" | "dev" | "demo";
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;
+  agentsCatalog(refresh?: boolean): Promise<AgentCatalogEntry[]>;
   /** Runs the official installer for one CLI and returns when it finishes. */
   install(id: AgentId): Promise<ActionResult>;
   /** Opens the official sign-in for one CLI (a console window and/or the browser). */
   login(id: AgentId, clean: boolean): Promise<ActionResult>;
   /** Opens a web page in the person's browser. */
   openExternal(url: string): Promise<void>;
+  imageRead(project: string, path: string, run?: string, card?: string): Promise<{ mime: string; bytes: number[] }>;
+  imageOpen(project: string, path: string, folder: boolean, run?: string, card?: string): Promise<void>;
+  schedules(): Promise<ScheduleJob[]>;
+  scheduleCreate(request: ScheduleRequest): Promise<ScheduleJob>;
+  scheduleDelete(id: string): Promise<void>;
+  scheduleSetEnabled(id: string, enabled: boolean): Promise<ScheduleJob>;
   /** App version and where O keeps its state, for Settings → About. */
   about(): Promise<About>;
   checkUpdate(): Promise<UpdateCheck>;
   pendingUpdate(): Promise<UpdateRelease | null>;
   installUpdate(tag: string): Promise<void>;
   cancelUpdate(): Promise<void>;
+  /** Whether updates can be checked here (gh) and how the last background check went. */
+  updateStatus(): Promise<UpdateStatus>;
   /**
    * Asks an agent to review a PR of the project folder and comment the review on it
    * (`o review <pr> --post` there). It never approves or merges. Rejects with the
@@ -137,13 +161,18 @@ export interface Backend {
   budget(): Promise<BudgetReport>;
   /** Settings → 에이전트: saves the day's allowance (the machine refuses anything but 12–14). */
   setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
+  /** Turns the daily budget on or off (`o budget --on|--off`) and returns the new report. */
+  setBudgetEnabled(enabled: boolean): Promise<BudgetReport>;
+  yolo(): Promise<YoloReport>;
+  setYolo(change: YoloChange): Promise<YoloReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
   tokens(project?: string): Promise<TokenReport>;
 
-  // The lead chat (ADR-0008). The lead only reads and proposes; `leadDispatch` runs a plan once.
+  // The lead chat (ADR-0008). `leadDispatch` starts a plan or explicitly retries a failed run.
 
   /** The project's current lead thread and every project that has one (`o lead show --json`). */
   leadShow(project?: string): Promise<LeadShow>;
+  leadNote(threadId: string, change: import("../../../../src/core/lead.ts").DesignNoteChange): Promise<void>;
   /** Starts a new thread for the project ("새 대화"). */
   leadNew(project: string): Promise<{ threadId: string }>;
   /** Saves one image or document for the project's current thread; rejects with the reason. */
@@ -154,11 +183,53 @@ export interface Backend {
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
   /** Stops the project's lead while it answers. */
   leadStop(project?: string): Promise<{ stopped: boolean }>;
+  leadStopAll(project: string): Promise<{ stopped: number }>;
+  /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
+  leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
+
+  // The project list (ADR-0009). Nothing here deletes a folder; refusals reject with the reason.
+
+  /** The projects root, its projects and the registered folders (`o projects --json`). */
+  projects(): Promise<ProjectList>;
+  projectOpen(path: string): Promise<void>;
+  /** Registers a folder outside the root (the same rules as a card's project folder). */
+  projectsAdd(path: string): Promise<ProjectList>;
+  /** Takes a registered folder off the list; the folder stays. */
+  projectsRemove(path: string): Promise<ProjectList>;
+  /** "새 프로젝트": a new empty folder in the root. */
+  projectsNew(name: string): Promise<ProjectList & { created: string }>;
+  /** Settings → 프로젝트: another root, back to the default (`reset`), and/or make it (`create`). */
+  projectsRoot(change: { path?: string; reset?: boolean; create?: boolean }): Promise<ProjectList>;
+  /** Which of these folders may be listed, each with the reason when not. */
+  projectsCheck(paths: string[]): Promise<ProjectCheck[]>;
+  /** The native folder picker (desktop only); null when cancelled or unavailable. */
+  pickFolder?(): Promise<string | null>;
 }
+
+export interface ScheduleRequest {
+  name: string;
+  project: string;
+  provider: "claude" | "codex" | "agy";
+  text: string;
+  start: string;
+  repeat: "once" | "daily" | "weekly";
+  clean: boolean;
+  autoDispatch: boolean;
+}
+export type ScheduleJob = ScheduleRequest & { id: string; enabled: boolean; last?: { at: string; ok: boolean; error?: string } };
+
+export interface YoloReport {
+  enabled: boolean;
+  budgetEnabled: boolean;
+  autoRun: { maxCards: number; perHour: number; dedupeMinutes: number };
+}
+export type YoloChange = { enabled?: boolean; maxCards?: number; perHour?: number; dedupeMinutes?: number };
 
 export interface LeadSendRequest {
   project: string;
   provider: LeadProvider;
+  /** A model id (`--model`); none for the CLI's default. */
+  model?: string;
   effort?: string;
   text: string;
   /** Paths `leadAttach` returned. */

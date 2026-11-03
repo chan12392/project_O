@@ -4,6 +4,7 @@
 //! vendors' install scripts are shown to the person, never fetched and run here.
 //! Sign-in opens the CLI's own login in a console window the person drives.
 
+pub mod catalog;
 pub mod clean;
 
 use std::path::{Path, PathBuf};
@@ -36,6 +37,13 @@ pub struct AgentStatus {
     pub install_hint: String,
     pub can_install: bool,
     pub install_url: String,
+    /// Checked with the project_O profile: that profile's state (ADR-0015). Absent for the person's own setup.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile: Option<clean::ProfileState>,
+    /// With the project_O profile on: why this CLI cannot run on it (프로필 미지원). Its sign-in
+    /// is then read from the person's own setup, and its cards are refused while the profile is on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_unsupported: Option<String>,
 }
 
 /// What an install or sign-in did (`ActionResult` in app/src/platform/backend/types.ts).
@@ -88,6 +96,7 @@ fn version(provider: ProviderId, cli: &CliCommand) -> Option<String> {
 /// Signed in, per the CLI's own status command: with the clean profile (as
 /// `o agents doctor` asks) or with the person's normal setup.
 fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> LoginState {
+    if provider == ProviderId::Agy { return LoginState { logged_in: None, detail: crate::policy::AGY_UNAVAILABLE.into() }; }
     if clean {
         return clean::login_state(root, provider);
     }
@@ -112,14 +121,16 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
     let npm_ready = o.npm_package.is_some() && npm().is_some();
     let install_hint = match o.npm_package {
         Some(package) if npm_ready => format!("npm install -g {package}"),
-        _ => format!("PowerShell: {}", o.script),
+        _ if o.script.starts_with("irm ") => format!("PowerShell: {}", o.script),
+        _ => o.script.to_string(),
     };
+    let unsupported = providers::get(provider).profile_unsupported().filter(|_| clean);
     let found: Option<PathBuf> = which(provider.as_str());
     let cli = resolve_cli(provider.as_str());
     let (version, logged_in) = match &cli {
         Some(cli) => thread::scope(|s| {
             let version = s.spawn(|| version(provider, cli));
-            let login = s.spawn(|| login(root, provider, cli, clean));
+            let login = s.spawn(|| if unsupported.is_some() { LoginState { logged_in: None, detail: String::new() } } else { login(root, provider, cli, clean) });
             (version.join().ok().flatten(), login.join().ok().and_then(|l| l.logged_in))
         }),
         None => (None, None),
@@ -134,10 +145,12 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
         install_hint,
         can_install: npm_ready,
         install_url: o.url.into(),
+        profile: (clean && cli.is_some()).then(|| clean::ProfileState::of(provider, logged_in)),
+        profile_unsupported: unsupported.map(str::to_string),
     }
 }
 
-/// Every CLI at once (each status check may take a while), in the order claude, codex, agy.
+/// Every CLI at once (each status check may take a while), in ProviderId::ALL order.
 pub fn status(root: &Path, clean: bool) -> Vec<AgentStatus> {
     thread::scope(|s| {
         let checks: Vec<_> = ProviderId::ALL.into_iter().map(|p| s.spawn(move || status_of(root, p, clean))).collect();

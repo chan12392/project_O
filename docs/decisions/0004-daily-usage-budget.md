@@ -30,6 +30,11 @@
   - 바꿀 때마다 `card.budget { cardId, provider, effortFrom?, effortTo, spent, allowance }` 이벤트를 남긴다. plan.json은 그대로 두고 실행 명령에만 바뀐 effort를 쓴다.
 - `o budget [--json] [--cached]`: 프로바이더별 주간 사용률, 오늘 예산·사용량(%p), 남은 시간, 속도, 지금 적용될 effort 조절. 저장된 기록이 10분보다 오래되면 먼저 조회(`--cached`면 안 함). `o _run`도 Codex·Antigravity 카드가 있으면 같은 조건으로 조회한 뒤 검사한다. `o dispatch`는 응답을 늦추지 않도록 저장된 기록으로만 검사한다.
 
+### 개정 1 (2026-11-02, ADR-0013)
+
+- 하루 사용 예산 전체를 켜고 끌 수 있다: `settings.json`의 `dailyBudgetEnabled`(없으면 켜짐), `o budget --on|--off`, 설정 → 에이전트. 위의 차단(`daily-budget`)과 effort 낮춤은 켜져 있을 때만 적용한다.
+- 꺼져 있으면 모든 프로바이더가 `state: "off"`이고 숫자·"오늘" 고리는 "예산 꺼짐"으로 남는다. 구독 한도·쿨다운·`LIMITS`는 그대로다.
+
 ## 영향
 
 - `PolicyContext`에 `over_budget` 필드가 생겼다(직접 만드는 테스트 코드는 함께 고친다).

@@ -1,8 +1,8 @@
 import { ArrowRight, RefreshCw, ShieldCheck } from "lucide-react";
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type { Backend } from "../../platform/backend/index.ts";
-import { useSettings } from "../../data/settings.ts";
+import { onboardingDone, useSettings } from "../../data/settings.ts";
 import { AgentList, useAgents } from "./AgentSetup.tsx";
 import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 
@@ -13,6 +13,8 @@ import { BUTTON_GHOST, BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/control
 export function Onboarding({ api, onDone, onSettings }: { api: Backend; onDone: () => void; onSettings: () => void }) {
   const { clean } = useSettings();
   const agents = useAgents(api, clean);
+  // First launch, or opened again after it (account menu → 에이전트): then it only closes.
+  const [reopened] = useState(onboardingDone);
   const heading = useRef<HTMLHeadingElement>(null);
   useEffect(() => heading.current?.focus(), []);
 
@@ -41,8 +43,8 @@ export function Onboarding({ api, onDone, onSettings }: { api: Backend; onDone: 
           <ShieldCheck className="mt-px size-3.5 shrink-0" aria-hidden="true" />
           <span>
             {clean
-              ? "깨끗한 프로필로 확인합니다. Project O의 에이전트는 개인 훅·전역 지침·스킬·MCP 없이 실행되어, 평소 쓰는 설정과 섞이지 않습니다."
-              : "평소 로그인과 개인 설정 그대로 확인합니다. 개인 훅·전역 지침·스킬·MCP가 함께 실행됩니다."}{" "}
+              ? "project_O 프로필로 확인합니다. Project O의 에이전트는 개인 훅·전역 지침·스킬·MCP·메모리 없이 실행되어, 평소 쓰는 설정과 섞이지 않습니다."
+              : "내 설정(평소 로그인과 개인 설정) 그대로 확인합니다. 개인 훅·전역 지침·스킬·MCP·메모리가 함께 실행됩니다."}{" "}
             <button type="button" onClick={onSettings} className="rounded underline underline-offset-2 hover:text-foreground focus-ring">
               설정에서 바꾸기
             </button>
@@ -50,17 +52,26 @@ export function Onboarding({ api, onDone, onSettings }: { api: Backend; onDone: 
         </p>
 
         <div className="mt-10 flex items-center justify-end gap-2 border-t pt-5">
-          <button type="button" onClick={onDone} className={BUTTON_GHOST}>
-            나중에 할게요
-          </button>
-          <button type="button" onClick={onDone} disabled={!agents.ready} className={BUTTON_PRIMARY} aria-describedby={agents.ready ? undefined : "onboarding-start-hint"}>
-            시작하기
-            <ArrowRight className="size-3.5" aria-hidden="true" />
-          </button>
+          {reopened ? (
+            // Opened again from the account menu: there is nothing to start, only to go back.
+            <button type="button" onClick={onDone} className={BUTTON_PRIMARY}>
+              닫기
+            </button>
+          ) : (
+            <>
+              <button type="button" onClick={onDone} className={BUTTON_GHOST}>
+                나중에 할게요
+              </button>
+              <button type="button" onClick={onDone} disabled={!agents.ready} className={BUTTON_PRIMARY} aria-describedby={agents.ready ? undefined : "onboarding-start-hint"}>
+                시작하기
+                <ArrowRight className="size-3.5" aria-hidden="true" />
+              </button>
+            </>
+          )}
         </div>
-        {!agents.ready && (
+        {!reopened && !agents.ready && (
           <p id="onboarding-start-hint" className="mt-2 text-right text-2xs text-muted-foreground">
-            에이전트를 하나 이상 연결하면 시작할 수 있습니다.
+            총괄을 맡을 에이전트(Claude Code·Codex·Antigravity)를 하나 이상 연결하면 시작할 수 있습니다.
           </p>
         )}
       </div>

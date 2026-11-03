@@ -1,12 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
-import { leadItems, type LeadProvider, type LeadShow } from "../../../src/core/lead.ts";
+import { LEAD_VIEW, leadItems, leadView, type LeadModel, type LeadProvider } from "../../../src/core/lead.ts";
+import { createPoll } from "../../../src/core/poll.ts";
 import type { Backend, LeadDispatched } from "../platform/backend/index.ts";
 
 const POLL_MS = 2_000;
 
 export interface SendInput {
   provider: LeadProvider;
+  model?: string;
   effort?: string;
   text: string;
   attachments: string[];
@@ -16,57 +18,52 @@ export interface SendInput {
 /**
  * A project's lead thread (ADR-0008): `o lead show` polled while the window is visible,
  * so a turn sent from the CLI or another window shows up too, and the actions on it.
- * Answers that land after the project changed are dropped.
+ * Answers that land after the project changed, or after a newer answer, are dropped
+ * (`leadView`); the projects with a lead thread are kept apart from the thread, so a
+ * switch to one of them does not lose the list it was found in.
  */
 export function useLead(api: Backend, project: string | undefined, enabled: boolean) {
-  const [show, setShow] = useState<LeadShow>();
-  const [failed, setFailed] = useState<string>();
+  const [view, dispatchView] = useReducer(leadView, LEAD_VIEW);
   const [sending, setSending] = useState(false);
-  const wanted = useRef(project);
-  wanted.current = project;
-  const last = useRef("");
+  const seq = useRef(0);
+  const busyPoll = useRef(false);
+  const noteWrite = useRef<Promise<void> | null>(null);
 
   const refresh = useCallback(async () => {
     if (!enabled) return;
     const asked = project;
+    const mine = ++seq.current;
     try {
-      const next = await api.leadShow(asked);
-      if (wanted.current !== asked) return;
-      const text = JSON.stringify(next);
-      if (text !== last.current) {
-        last.current = text;
-        setShow(next);
-      }
-      setFailed(undefined);
+      dispatchView({ type: "answer", project: asked, seq: mine, show: await api.leadShow(asked) });
     } catch (e) {
-      if (wanted.current === asked) setFailed(e instanceof Error ? e.message : String(e));
+      dispatchView({ type: "failed", project: asked, seq: mine, error: e instanceof Error ? e.message : String(e) });
     }
   }, [api, project, enabled]);
 
   useEffect(() => {
     if (!enabled) return;
-    last.current = "";
-    setShow(undefined);
-    let timer: number | undefined;
-    let stopped = false;
-    const tick = async () => {
-      await refresh();
-      if (!stopped && !document.hidden) timer = window.setTimeout(tick, POLL_MS);
-    };
-    const onVisibility = () => {
-      window.clearTimeout(timer);
-      if (!document.hidden) void tick();
-    };
-    void tick();
+    dispatchView({ type: "project", project });
+    // One loop: a check still out when the window is shown again is not doubled.
+    const poll = createPoll({
+      run: refresh,
+      delay: POLL_MS,
+      hidden: () => document.hidden,
+      setTimer: (fn, ms) => window.setTimeout(fn, busyPoll.current ? 600 : ms),
+      clearTimer: (id) => window.clearTimeout(id),
+    });
+    const onVisibility = () => poll.wake();
+    poll.wake();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      stopped = true;
-      window.clearTimeout(timer);
+      poll.stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refresh, enabled]);
+  }, [refresh, enabled, project]);
 
+  const show = view.project === project ? view.show : undefined;
+  const failed = view.project === project ? view.failed : undefined;
   const thread = show?.thread && (!project || show.thread.project === project || sameFolder(show.thread.project, project)) ? show.thread : null;
+  busyPoll.current = sending || Boolean(thread?.busy);
   const items = useMemo(() => leadItems(thread?.events ?? []), [thread]);
 
   const send = useCallback(
@@ -76,6 +73,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
       // The message is on record before the lead starts: show it (and the busy lead) right away.
       const early = window.setTimeout(() => void refresh(), 400);
       try {
+        if (noteWrite.current) await noteWrite.current;
         await api.leadSend({ project, ...input });
       } finally {
         window.clearTimeout(early);
@@ -88,6 +86,12 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
 
   const stop = useCallback(async () => {
     await api.leadStop(project);
+    await refresh();
+  }, [api, project, refresh]);
+
+  const stopAll = useCallback(async () => {
+    if (!project) return;
+    await api.leadStopAll(project);
     await refresh();
   }, [api, project, refresh]);
 
@@ -113,15 +117,46 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     failed,
     thread,
     items,
-    /** Projects with a lead thread, newest first; they show in the sidebar even before any run. */
-    projects: show?.projects ?? [],
+    /** Projects with a lead thread, newest first; they show in the sidebar even before any run. Kept across project switches. */
+    projects: view.projects,
     busy: sending || Boolean(thread?.busy),
     sending,
+    /** Read the thread again now ("다시 시도"). */
+    refresh,
     send,
     stop,
+    stopAll,
     startNew,
     dispatch,
+    changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {
+      const write = api.leadNote(threadId, change);
+      noteWrite.current = write;
+      try { await write; } finally { if (noteWrite.current === write) noteWrite.current = null; }
+      await refresh();
+    },
   };
+}
+
+/**
+ * The models a lead of this agent may name (`o lead models`, cached by the shell). `failed`
+ * says why there is no list (the CLI could not list them); the pickers then offer typing an id.
+ */
+export function useLeadModels(api: Backend, provider: LeadProvider | undefined) {
+  const [state, setState] = useState<{ provider?: LeadProvider; models: LeadModel[]; failed?: string }>({ models: [] });
+  useEffect(() => {
+    if (!provider) return;
+    let current = true;
+    api.leadModels(provider).then(
+      (r) => current && setState({ provider, models: r.models }),
+      (e) => current && setState({ provider, models: [], failed: e instanceof Error ? e.message : String(e) }),
+    );
+    return () => {
+      current = false;
+    };
+  }, [api, provider]);
+  // Until this agent's answer arrives, the last agent's list does not show under it.
+  const ready = state.provider === provider;
+  return { loading: Boolean(provider) && !ready, models: ready ? state.models : [], failed: ready ? state.failed : undefined };
 }
 
 /** Folders compare as O compares them: any slash, no trailing one, any case on Windows. */

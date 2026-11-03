@@ -91,6 +91,18 @@ fn a_well_formed_plan_passes_and_keeps_card_order() {
 }
 
 #[test]
+fn dependencies_must_exist_be_unique_and_acyclic() {
+    let first = code_card();
+    let second = with(design_card(), "depends_on", json!(["code"]));
+    assert!(check_plan(&plan(vec![first.clone(), second.clone()]), &ctx()).plan.is_some());
+    for invalid in [json!(["missing"]), json!(["design"]), json!(["code", "code"]), json!("code")] {
+        assert!(has(&check_plan(&plan(vec![first.clone(), with(second.clone(), "depends_on", invalid)]), &ctx()), "plan-dependency"));
+    }
+    let cycle = plan(vec![with(first, "depends_on", json!(["design"])), second]);
+    assert!(has(&check_plan(&cycle, &ctx()), "plan-dependency"));
+}
+
+#[test]
 fn cards_cannot_name_a_binary_args_env_or_account() {
     for field in ["command", "args", "env", "bin", "account", "token"] {
         let checked = check_plan(&plan(vec![with(code_card(), field, json!("x"))]), &ctx());
@@ -99,10 +111,50 @@ fn cards_cannot_name_a_binary_args_env_or_account() {
     }
 }
 
+/// `lead` speaks for the supervisor and `all` is the broadcast address on the team channel:
+/// a card with either id would pass its words off as the lead's or everyone's.
+#[test]
+fn lead_and_all_are_reserved_card_ids() {
+    for reserved in ["lead", "all"] {
+        let checked = check_plan(&plan(vec![with(code_card(), "id", json!(reserved))]), &ctx());
+        assert!(checked.plan.is_none(), "{reserved}");
+        assert!(checked.violations.iter().any(|v| v.rule == "plan-shape" && v.message.contains("예약")), "{reserved}: {:?}", checked.violations);
+    }
+    for fine in ["leader", "all-tests", "lead-2"] {
+        assert!(check_plan(&plan(vec![with(code_card(), "id", json!(fine))]), &ctx()).plan.is_some(), "{fine}");
+    }
+}
+
+/// `o _run` checks the saved plan.json again: a hand-written one with a reserved id runs nothing.
+#[test]
+fn the_runner_refuses_a_saved_plan_with_a_reserved_card_id() {
+    let root = std::env::temp_dir().join(format!("o-policy-reserved-{}-{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap()));
+    let (home, project) = (root.join("home"), root.join("project"));
+    std::fs::create_dir_all(home.join("runs").join("r1")).unwrap();
+    std::fs::create_dir_all(&project).unwrap();
+    // Claude: a Codex card would make the runner ask Codex for a usage reading first.
+    let saved = json!({ "title": "t", "project": project.to_string_lossy(), "cards": [{ "id": "lead", "provider": "claude", "task": "x" }] });
+    std::fs::write(home.join("runs").join("r1").join("plan.json"), saved.to_string()).unwrap();
+    let error = o_core::run::runner::run_detached(&home, "r1").unwrap_err();
+    assert!(error.contains("정책 위반") && error.contains("예약"), "{error}");
+    std::fs::remove_dir_all(&root).ok();
+}
+
 #[test]
 fn unknown_providers_are_refused() {
     let checked = check_plan(&plan(vec![with(code_card(), "provider", json!("openclaw"))]), &ctx());
     assert!(has(&checked, "unknown-provider"));
+}
+
+#[test]
+fn antigravity_cannot_be_dispatched_with_either_profile() {
+    use o_core::policy::check_plan_for;
+    use o_core::run::mode::Profile;
+    for profile in [Profile::Own, Profile::ProjectO] {
+        let checked = check_plan_for(&plan(vec![code_card(), design_card()]), &ctx(), profile);
+        assert!(checked.plan.is_none());
+        assert!(checked.violations.iter().any(|v| v.rule == "provider-terms" && v.card_id.as_deref() == Some("design")));
+    }
 }
 
 #[test]
@@ -213,4 +265,35 @@ fn a_pr_review_leaves_out_policy_lines_instead_of_being_refused() {
     assert!(task.text.contains("+let ok = 1;") && !task.text.contains("api.anthropic.com") && !task.text.contains("auth.json"));
     let checked = check_plan(&build_plan(PROJECT, 3, &task.text, ProviderId::Claude, None, None), &ctx());
     assert!(checked.violations.is_empty(), "{:?}", checked.violations);
+}
+
+fn devin_card() -> Value {
+    json!({ "id": "fix", "provider": "devin", "task": "README 오타 고치기", "model": "swe-2-medium" })
+}
+
+#[test]
+fn devin_cards_are_refused_on_the_project_o_profile_and_run_on_the_persons_own() {
+    use o_core::policy::check_plan_for;
+    use o_core::run::mode::Profile;
+    let refused = check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::ProjectO);
+    assert!(refused.plan.is_none());
+    let v: Vec<_> = refused.violations.iter().filter(|v| v.rule == "profile-unsupported").collect();
+    assert_eq!(v.len(), 1);
+    assert_eq!(v[0].card_id.as_deref(), Some("fix"));
+    assert_eq!(v[0].message, "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요");
+    // Listed beside the plan's other problems, not only once the rest passes.
+    let both = check_plan_for(&plan(vec![with(devin_card(), "effort", json!("ultra"))]), &ctx(), Profile::ProjectO);
+    assert!(has(&both, "plan-shape") && has(&both, "profile-unsupported"));
+    assert!(check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::Own).plan.is_some());
+    assert!(check_plan_for(&plan(vec![code_card(), with(design_card(), "provider", json!("claude"))]), &ctx(), Profile::ProjectO).plan.is_some());
+    assert!(check_plan(&plan(vec![devin_card()]), &ctx()).plan.is_some());
+}
+
+#[test]
+fn devin_has_its_own_concurrency_cap() {
+    assert_eq!(LIMITS.max_active_per_provider(ProviderId::Devin), 2);
+    let mut full = ctx();
+    full.active_by_provider.insert(ProviderId::Devin, 2);
+    assert!(has(&check_plan(&plan(vec![devin_card()]), &full), "active-cap"));
+    assert!(check_plan(&plan(vec![code_card()]), &full).plan.is_some());
 }

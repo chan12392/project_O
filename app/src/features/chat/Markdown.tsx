@@ -1,70 +1,60 @@
-import type { ReactNode } from "react";
+import { Image as ImageIcon } from "lucide-react";
+import { memo, type MouseEvent } from "react";
+import ReactMarkdown, { type Components } from "react-markdown";
+
+import { backend } from "../../platform/backend/index.ts";
+import { CHAT_MARKDOWN } from "./markdown.ts";
+import { ImageGallery } from "./ImageGallery.tsx";
+
+/** In the desktop app a link opens in the person's browser (open_external); a browser tab opens it itself. */
+function openOutside(e: MouseEvent<HTMLAnchorElement>) {
+  if (!window.__TAURI_INTERNALS__) return;
+  e.preventDefault();
+  void backend().openExternal(e.currentTarget.href).catch(() => {});
+}
+
+const COMPONENTS: Components = {
+  // Hrefs reach here only through safeUrl; anything else is plain text.
+  a: ({ node, href, children }) => {
+    if (!href) return <span>{children}</span>;
+    const image = node?.properties.dataImage !== undefined;
+    return (
+      <a href={href} target="_blank" rel="noreferrer noopener" title={href} onClick={openOutside}>
+        {image && (
+          <>
+            <ImageIcon className="md-image-icon" aria-hidden="true" />
+            <span className="sr-only">이미지: </span>
+          </>
+        )}
+        {children}
+      </a>
+    );
+  },
+  // Wide tables and long lines scroll inside the bubble; focusable so the keyboard can scroll them too.
+  table: ({ children }) => (
+    <div className="md-scroll" tabIndex={0}>
+      <table>{children}</table>
+    </div>
+  ),
+  pre: ({ children }) => (
+    <pre className="md-scroll" tabIndex={0}>
+      {children}
+    </pre>
+  ),
+};
 
 /**
- * The little Markdown agents write in chat: paragraphs, nested "- " lists,
- * **bold** and `code`. Built as React elements, never as HTML, so agent text
- * cannot inject markup.
+ * Chat text as GitHub-flavoured Markdown: headings, lists, tables, code, quotes and
+ * links (markdown.ts decides what is allowed). `inverse` is for text on the primary
+ * colour, such as the lead's team-chat bubble.
  */
-export function Markdown({ text }: { text: string }) {
-  const blocks = text.trim().split(/\n{2,}/);
+export const Markdown = memo(function Markdown({ text, inverse = false }: { text: string; inverse?: boolean }) {
   return (
-    <div className="space-y-2">
-      {blocks.map((block, i) => (isList(block) ? <List key={i} lines={block.split("\n")} /> : <p key={i}>{inline(block)}</p>))}
+    <div className={inverse ? "chat-markdown chat-markdown--inverse" : "chat-markdown"}>
+      <ReactMarkdown {...CHAT_MARKDOWN} components={COMPONENTS}>
+        {text}
+      </ReactMarkdown>
+      <ImageGallery text={text} />
     </div>
   );
-}
-
-function isList(block: string): boolean {
-  return block.split("\n").every((line) => /^\s*- /.test(line));
-}
-
-interface Item {
-  text: string;
-  children: Item[];
-}
-
-function List({ lines }: { lines: string[] }) {
-  const root: Item[] = [];
-  const stack: { depth: number; items: Item[] }[] = [{ depth: -1, items: root }];
-  for (const line of lines) {
-    const depth = line.search(/\S/);
-    while (stack.length > 1 && stack[stack.length - 1].depth >= depth) stack.pop();
-    const item: Item = { text: line.replace(/^\s*- /, ""), children: [] };
-    stack[stack.length - 1].items.push(item);
-    stack.push({ depth, items: item.children });
-  }
-  return <Items items={root} />;
-}
-
-function Items({ items }: { items: Item[] }) {
-  return (
-    <ul className="list-disc space-y-1 pl-5 marker:text-chat-foreground-faint">
-      {items.map((item, i) => (
-        <li key={i}>
-          {inline(item.text)}
-          {item.children.length > 0 && <div className="mt-1">{<Items items={item.children} />}</div>}
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-function inline(text: string): ReactNode[] {
-  return text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).map((part, i) => {
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return (
-        <strong key={i} className="font-semibold text-chat-foreground-strong">
-          {part.slice(2, -2)}
-        </strong>
-      );
-    }
-    if (part.startsWith("`") && part.endsWith("`")) {
-      return (
-        <code key={i} className="rounded border border-chat-inline-code-border bg-chat-inline-code-surface px-1 font-mono text-chat-code">
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
-    return part;
-  });
-}
+});

@@ -1,4 +1,4 @@
-import type { CardStatus, OEvent } from "./events.ts";
+import type { CardStatus, OEvent, Violation } from "./events.ts";
 import { cardLabel, type ProviderId } from "./plan.ts";
 
 /**
@@ -70,6 +70,51 @@ export interface RunView {
   messages: TeamMessage[];
   /** Latest report per provider and window. */
   quotas: Quota[];
+  /** Why the runner refused to start the run (`run.blocked`); absent when it did not. */
+  blocked?: Violation[];
+}
+
+/** What a run that failed before its cards says when the runner left no reason (as crates/o-core/src/run/snapshot.rs). */
+export const BLOCKED_UNKNOWN = "카드를 만들기 전에 실행기가 멈췄습니다. 실행 폴더의 runner.err.log를 확인하세요";
+
+/**
+ * A run that ended failed before any card was made (refused by the runner's last check, or its
+ * runner failed): no card shows it, so screens count and show it as a run of its own.
+ */
+export function failedBeforeCards(run: Pick<RunView, "status" | "cards">): boolean {
+  return run.status === "failed" && run.cards.length === 0;
+}
+
+/** Why it never started, one line: the policy's reasons, or where to look when there are none. */
+export function blockedReason(run: Pick<RunView, "blocked">): string {
+  return run.blocked?.length ? run.blocked.map((v) => v.message).join(" / ") : BLOCKED_UNKNOWN;
+}
+
+export interface FoldedRun {
+  /** What the view was folded from: a run with the same key folds to the same view. */
+  key: string;
+  view: RunView;
+}
+
+/**
+ * Each answer's runs folded, in the answer's order (runs without a start left out). A run whose
+ * events are the same as last time keeps its view object, so a quiet poll re-renders nothing.
+ * The key is the events' content, not their count: a long Claude Code session keeps only its
+ * newest lines, so a later answer can carry as many events with newer content.
+ */
+export function foldRuns(runs: readonly { runId: string; events: OEvent[] }[], known: ReadonlyMap<string, FoldedRun>): Map<string, FoldedRun> {
+  const next = new Map<string, FoldedRun>();
+  for (const r of runs) {
+    const key = JSON.stringify(r.events);
+    const hit = known.get(r.runId);
+    if (hit && hit.key === key) {
+      next.set(r.runId, hit);
+      continue;
+    }
+    const view = snapshot(r.events);
+    if (view) next.set(r.runId, { key, view });
+  }
+  return next;
 }
 
 export function snapshot(events: OEvent[]): RunView | undefined {
@@ -78,7 +123,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
   for (const e of events) {
     if (e.t === "run.start") {
       run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [], messages: [], quotas: [] };
+      byId.clear();
       for (const c of e.cards) {
+        // A repeated card id is one card: the first keeps it (as run/snapshot.rs does).
+        if (byId.has(c.id)) continue;
         // Runs recorded before labels existed carry only a role.
         const card: CardView = { ...c, label: c.label ?? cardLabel(c), state: "waiting", activity: "", log: [], usage: { input: 0, cached: 0, output: 0 } };
         byId.set(c.id, card);
@@ -105,8 +153,13 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       run.quotas = [...run.quotas.filter((q) => q.provider !== e.provider || q.window !== e.window), { provider: e.provider, window: e.window, used: e.used, resetsAt: e.resetsAt, at: e.at }];
       continue;
     }
+    if (e.t === "run.blocked") {
+      run.blocked = e.violations;
+      continue;
+    }
     if (e.t === "review.posted") continue;
     if (e.t === "run.context") continue;
+    if (e.t === "run.mode") continue;
     const card = byId.get(e.cardId);
     if (!card) continue;
     switch (e.t) {

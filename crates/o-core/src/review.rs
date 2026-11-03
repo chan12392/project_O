@@ -24,6 +24,7 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 
 use crate::run::events::{CardStatus, OEvent};
+use crate::run::mode::{take_flags, Profile, RunMode};
 use crate::sys::js::{js_head, js_len, now_iso};
 use crate::run::plan::ProviderId;
 use crate::policy::LIMITS;
@@ -64,7 +65,8 @@ pub struct ReviewArgs {
     pub provider: Option<ProviderId>,
     pub model: Option<String>,
     pub effort: Option<String>,
-    pub clean: bool,
+    /// project_O 프로필 사용 (ADR-0013): the profile. The review card never gets shared context either way.
+    pub mode: RunMode,
     pub post: bool,
     /// Fetch and build the plan, print its size and provider, run nothing.
     pub dry_run: bool,
@@ -78,18 +80,18 @@ pub fn is_selector(value: &str) -> bool {
 }
 
 pub fn parse_args(args: &[String]) -> Result<ReviewArgs, String> {
-    let mut out = ReviewArgs::default();
+    let (mode, args) = take_flags(args)?;
+    let mut out = ReviewArgs { mode, ..ReviewArgs::default() };
     let mut items = args.iter();
     while let Some(arg) = items.next() {
         let mut value = |name: &str| items.next().cloned().filter(|v| !v.starts_with("--")).ok_or_else(|| format!("{name} 뒤에 값이 필요합니다"));
         match arg.as_str() {
             "--provider" => {
                 let v = value("--provider")?;
-                out.provider = Some(ProviderId::parse(&v).ok_or_else(|| format!("--provider는 claude, codex, agy 중 하나입니다: {v}"))?);
+                out.provider = Some(ProviderId::parse(&v).ok_or_else(|| format!("--provider는 {} 중 하나입니다: {v}", ProviderId::ALL.map(ProviderId::as_str).join(", ")))?);
             }
             "--model" => out.model = Some(value("--model")?),
             "--effort" => out.effort = Some(value("--effort")?),
-            "--clean" => out.clean = true,
             "--post" => out.post = true,
             "--dry-run" => out.dry_run = true,
             "--detach" => out.detach = true,
@@ -164,13 +166,43 @@ pub fn short_sha(sha: &str) -> &str {
     js_head(sha, 9)
 }
 
-/// The commit checked out in `cwd` (`git rev-parse HEAD`), if any.
-pub fn local_head(cwd: &Path) -> Option<String> {
+/// `git <args>` in `cwd`; its trimmed standard output when it succeeds.
+fn git_output(cwd: &Path, args: &[&str]) -> Option<String> {
     let cli = resolve_cli("git")?;
     let mut command = Command::new(&cli.command);
-    command.args(&cli.prefix).args(["rev-parse", "HEAD"]).current_dir(cwd).stdin(Stdio::null());
+    command.args(&cli.prefix).args(args).current_dir(cwd).stdin(Stdio::null()).stderr(Stdio::null());
     let out = proc::hide_window(&mut command).output().ok()?;
-    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string()).filter(|s| !s.is_empty())
+    out.status.success().then(|| String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// The commit checked out in `cwd` (`git rev-parse HEAD`), if any.
+pub fn local_head(cwd: &Path) -> Option<String> {
+    git_output(cwd, &["rev-parse", "HEAD"]).filter(|s| !s.is_empty())
+}
+
+/// How the project folder relates to the PR's head commit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LocalTree {
+    /// HEAD is the PR's head and nothing is staged, changed or untracked (ignored files aside):
+    /// the folder's files are the head commit's files.
+    Head,
+    /// HEAD is the PR's head but the work tree has staged, unstaged or untracked changes.
+    Dirty,
+    /// Another commit, not a git folder, or git could not tell.
+    Other,
+}
+
+/// Whether the folder's files may stand in for the PR head: the same commit and a clean work tree.
+/// Untracked (not ignored) files count as changes — a card could read them as if they were the PR's.
+pub fn local_tree(cwd: &Path, head_oid: &str) -> LocalTree {
+    if local_head(cwd).as_deref() != Some(head_oid) {
+        return LocalTree::Other;
+    }
+    match git_output(cwd, &["status", "--porcelain", "--untracked-files=normal"]) {
+        Some(status) if status.is_empty() => LocalTree::Head,
+        Some(_) => LocalTree::Dirty,
+        None => LocalTree::Other,
+    }
 }
 
 /// The only GitHub write `o review` makes: a comment. Never `gh pr review --approve`, never a merge.
@@ -359,7 +391,8 @@ fn neutralize(text: &str) -> String {
 }
 
 /// The review card's task. `local_is_head`: the project folder has the PR's head commit
-/// checked out, so its files may fill in what the diff leaves out; otherwise they may not.
+/// checked out with a clean work tree (`local_tree` is `Head`), so its files may fill in what
+/// the diff leaves out; otherwise they may not.
 pub fn build_task(pr: &PullRequest, diff: &str, nonce: &str, local_is_head: bool) -> ReviewTask {
     let rules: Vec<&Rule> = code_rules().collect();
     let (title, t_cut) = redact(js_head(&pr.title, TITLE_CAP), &rules);
@@ -371,7 +404,7 @@ pub fn build_task(pr: &PullRequest, diff: &str, nonce: &str, local_is_head: bool
     let local_files = if local_is_head {
         "- 필요하면 프로젝트 폴더의 파일을 읽어 맥락을 확인해도 됩니다(폴더가 이 PR의 head 커밋입니다)."
     } else {
-        "- 프로젝트 폴더는 이 PR의 head 커밋이 아닙니다. 로컬 파일로 diff를 보충하거나 판단하지 말고, diff에 없는 부분은 검토하지 못했다고 밝히세요."
+        "- 프로젝트 폴더는 이 PR의 head 커밋 그대로가 아닙니다(다른 커밋이거나 커밋하지 않은 변경이 있음). 로컬 파일로 diff를 보충하거나 판단하지 말고, diff에 없는 부분은 검토하지 못했다고 밝히세요."
     };
 
     let mut head = vec![
@@ -465,14 +498,11 @@ pub fn build_plan(project: &str, number: u64, task: &str, provider: ProviderId, 
 }
 
 /// Saves a checked review plan as a new run. The review card gets the PR and nothing else:
-/// no earlier work of the project goes into its prompt (shared context is off, ADR-0005).
-pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, clean: bool) -> std::io::Result<()> {
+/// no earlier work of the project goes into its prompt (shared context is off, ADR-0005),
+/// whatever the profile is (ADR-0013).
+pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, mode: RunMode) -> std::io::Result<()> {
     crate::run::store::create_run(home, run_id, plan)?;
-    crate::context::mark_off(home, run_id)?;
-    if clean {
-        crate::run::store::mark_clean(home, run_id)?;
-    }
-    Ok(())
+    crate::run::store::mark_mode(home, run_id, &RunMode { context: false, ..mode })
 }
 
 /// The comment text: who wrote it and that it decides nothing, then the review.
@@ -566,11 +596,7 @@ pub fn finish(home: &Path, run_id: &str, selector: &str, number: u64, head: Opti
 
 /// `o review <pr> --post --detach` in the project folder: what the app's
 /// "에이전트 검토 요청" runs.
-/// With `clean` (Settings → 깨끗한 에이전트) the review card runs on the clean profile.
-pub fn request_args(selector: &str, clean: bool) -> Vec<String> {
-    let mut args = strings(&["review", selector, "--post", "--detach"]);
-    if clean {
-        args.push("--clean".into());
-    }
-    args
+/// project_O 프로필 사용 (Settings, ADR-0013) goes along as `--profile project-o|own`.
+pub fn request_args(selector: &str, profile: Profile) -> Vec<String> {
+    strings(&["review", selector, "--post", "--detach", "--profile", profile.as_str()])
 }

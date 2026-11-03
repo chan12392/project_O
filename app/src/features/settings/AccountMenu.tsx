@@ -1,4 +1,4 @@
-import { ChevronsUpDown, CircleHelp, LogIn, Plug, RefreshCw, Settings as SettingsIcon, UserRound } from "lucide-react";
+import { ChevronsUpDown, CircleHelp, Plug, RefreshCw, Settings as SettingsIcon, UserRound } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { useDismiss } from "../../lib/dismiss.ts";
@@ -16,8 +16,8 @@ function Avatar({ size = "size-7" }: { size?: string }) {
 }
 
 /**
- * The sidebar footer, after Orca's: the local profile (sign-in comes later) with
- * a small menu above it, and a settings button.
+ * The sidebar footer, after Orca's: this PC's profile (the app has no sign-in, so
+ * none is offered) with a small menu above it, and a settings button.
  */
 export function AccountMenu({ onSettings, onAbout, onAgents, onRefreshUsage }: { onSettings: () => void; onAbout: () => void; onAgents: () => void; onRefreshUsage?: () => void }) {
   const [open, setOpen] = useState(false);
@@ -44,11 +44,11 @@ export function AccountMenu({ onSettings, onAbout, onAgents, onRefreshUsage }: {
         onClick={() => setOpen((o) => !o)}
         aria-expanded={open}
         aria-haspopup="true"
-        aria-label="계정 메뉴, 로그인하지 않음"
+        aria-label="계정 메뉴, 이 PC 프로필"
         className="flex min-w-0 flex-1 items-center gap-2.5 rounded-md px-1.5 py-1 text-left hover:bg-sidebar-accent aria-expanded:bg-sidebar-accent focus-ring"
       >
         <Avatar />
-        <span className="min-w-0 flex-1 truncate text-[13px] text-sidebar-foreground/90">로그인하지 않음</span>
+        <span className="min-w-0 flex-1 truncate text-[13px] text-sidebar-foreground/90">이 PC 프로필</span>
         <ChevronsUpDown className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
       </button>
       <button id={SETTINGS_BUTTON_ID} type="button" onClick={onSettings} aria-label="설정" title="설정" className={ICON_BUTTON}>
@@ -60,8 +60,8 @@ export function AccountMenu({ onSettings, onAbout, onAgents, onRefreshUsage }: {
           <div className="flex items-center gap-2.5 px-2 pt-1.5 pb-2">
             <Avatar size="size-8" />
             <div className="min-w-0">
-              <p className="truncate text-[13px] font-medium">로그인하지 않음</p>
-              <p className="truncate text-2xs text-muted-foreground">이 PC에만 있는 로컬 프로필</p>
+              <p className="truncate text-[13px] font-medium">이 PC 프로필</p>
+              <p className="truncate text-2xs text-muted-foreground">설정과 기록은 이 PC에만 있습니다</p>
             </div>
           </div>
           <div className="my-1 border-t" />
@@ -82,12 +82,6 @@ export function AccountMenu({ onSettings, onAbout, onAgents, onRefreshUsage }: {
           <button type="button" className={item} onClick={choose(onAbout)}>
             <CircleHelp className={icon} aria-hidden="true" />
             도움말·정보
-          </button>
-          <div className="my-1 border-t" />
-          <button type="button" className={item} disabled>
-            <LogIn className={icon} aria-hidden="true" />
-            <span className="min-w-0 flex-1">로그인</span>
-            <span className="text-2xs whitespace-nowrap text-muted-foreground">Google·카카오·Apple 준비 중</span>
           </button>
         </div>
       )}

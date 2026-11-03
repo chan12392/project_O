@@ -40,7 +40,7 @@
 5. 병합 후 각자 `main`(또는 `test_1`)을 개인 브랜치에 병합해 맞춘다.
 
 - 대표의 에이전트는 대표의 `gh` 로그인(`chan12392`)으로 돌기 때문에 대표와 같이 취급한다.
-- PR 교차 검토(ADR-0006): 에이전트가 올린 PR은 사람이 검토하고, 사람이 올린 PR은 `o review <PR> --post`로 에이전트가 검토한다. 검토하는 에이전트는 PR에 **댓글만** 단다. 승인(`gh pr review --approve`)·변경 요청 리뷰를 남기거나 검토 결과로 병합하지 않는다. 병합은 위 표의 규칙을 따르고, 검토 댓글은 사람의 판단 근거일 뿐이다.
+- PR 교차 검토(ADR-0006, ADR-0012): 필요할 때 사람이나 `o review <PR> --post`로 검토한다. 검토 자체는 병합의 필수 조건이 아니다. `o review`는 검토 댓글만 남기고 승인이나 병합은 하지 않는다. 병합은 위 표의 규칙을 따른다.
 - 병합 방식은 merge commit만 쓴다(squash·rebase 병합은 저장소에서 꺼 두었다). 브랜치 간 이력이 어긋나지 않게 하기 위해서다.
 - 비공개 무료 플랜이라 GitHub 브랜치 보호를 켤 수 없다. 그래서 아래 지점에서 막거나 알린다. 검사가 빨간색이면 병합하지 않는다.
   - 에이전트 훅(`o hook`): 보호 브랜치 커밋·push, 대표가 아닌 `gh` 로그인으로 `test_1`·`main`에 병합(`gh pr merge`, `gh api` 병합 호출)을 막는다. PR의 base나 로그인 계정을 확인하지 못하면 막는다.
@@ -62,7 +62,7 @@
 
 ## 설계 변경
 
-- 두 사람의 방향(관제 중심 / 데스크톱 통합 작업대)이 다르다. 공용 경계에 영향을 주는 결정은 `docs/decisions/`에 ADR로 남기고 두 사람이 승인한 뒤 구현한다.
+- 공용 경계에 영향을 주는 결정은 `docs/decisions/`에 ADR로 남긴다. 양쪽의 별도 승인 대기는 요구하지 않는다(ADR-0012).
   - 공용 경계: 기술 스택, 공용 데이터 모델(세션·계정·프로바이더), 프로바이더 연결 방식, 라우팅 단위, 화면 최상위 구조.
 - 자기 영역 안의 구현 결정은 ADR 없이 진행한다.
 - 현재 설계 초안과 미결정 목록은 `docs/DESIGN.md`에 있다.
@@ -77,8 +77,9 @@
 
 개인 하네스(사용자 훅·전역 지시·스킬·플러그인·MCP·메모리)가 없는 공식 CLI로 테스트할 때 쓴다. 평소 설정(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`)은 건드리지 않는다.
 
-- 프로필: `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy>/home` (`o agents path`). O 상태 폴더(`%LOCALAPPDATA%/project_O`, 보호 대상) 밖에 둔다. 로그인은 CLI마다 한 번 `o agents login <claude|codex>` (agy는 시스템 로그인을 그대로 씀).
-- 확인: `o agents doctor` — 로그인 상태와 프로필 오염 검사. 수동 테스트: `o agents shell <cli>`. 카드 실행: `o dispatch --clean plan.json`.
+- 프로필: `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy|opencode>/home` (`o agents path`). O 상태 폴더(`%LOCALAPPDATA%/project_O`, 보호 대상) 밖에 둔다. 로그인은 CLI마다 한 번 `o agents login <claude|codex|opencode>` (agy는 시스템 로그인을 그대로 씀). OpenCode는 카드만 지원하고 Claude 구독 로그인을 사용하지 않는다(ADR-0015).
+- Devin은 설정 폴더를 옮길 수 없어 project_O 프로필을 켠 계획에서 거부한다. 평소 프로필에서 카드만 지원하며 총괄은 아직 지원하지 않는다(ADR-0016).
+- 확인: `o agents doctor` — 로그인 상태와 프로필 오염 검사. 수동 테스트: `o agents shell <cli>`. 카드 실행: `o dispatch plan.json`(기본 `--profile project-o`, `--clean`과 같음). 평소 CLI 설정으로는 `--profile own`. 앱의 "project_O 프로필 사용"이 같은 선택이다(ADR-0013).
 - 테스트 프로젝트는 홈 폴더 밖에 둔다(Claude는 시작 폴더 위의 지시 파일을 읽는다. 홈 폴더의 것만 프로필이 뺀다).
 - Orca 터미널은 자체 훅을 더하므로 `o agents shell`이나 일반 터미널에서 쓴다.
 - O 코드는 로그인 파일을 만들거나 읽지 않는다. 로그인 상태는 각 CLI의 상태 명령으로만 본다.
@@ -93,6 +94,8 @@
 
 ## 프로바이더 정책 자동 차단
 
+Antigravity는 공급자 정책에 따라 총괄·카드·예약 실행과 자동 계정·모델·사용량 조회를 보류한다(ADR-0020). 아래의 Antigravity 실행 설명은 재개 전 역사적 기록이다.
+
 사람이 매번 약관을 확인하지 않도록 아래 지점에서 자동으로 막는다. 규칙 원문은 `crates/o-guard/src/rules.rs`, 근거는 `docs/DESIGN.md` §8.
 
 | 지점 | 무엇을 막나 |
@@ -100,13 +103,14 @@
 | 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `o hook`, `crates/o-guard`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / 보호 브랜치(test_1·test_2·main) 커밋·push / 대표 외 test_1·main 병합(`gh pr merge`·`gh api`) / 규칙 밖 브랜치 이름. 훅이나 gh 확인이 실패하면 막는다. `o`가 PATH에 없거나 훅이 오류로 끝나도 막는다: Claude는 `"onFailure": "block"`(Claude Code 2.1.295 이상, 시간 초과도 막음), Codex는 `o hook \|\| exit 2`(Codex는 시간 초과를 통과시킨다) |
 | git 훅 (`.githooks/` → `o scan`, `npm install` 시 자동 설정) | 같은 코드 규칙으로 커밋 검사, 보호 브랜치 커밋·push |
 | CI (`.github/workflows/guard.yml`, `branch-flow.yml`, `merge-guard.yml`) | 전체 파일 정책 검사 + 테스트 + 타입 검사, PR 방향 검사, 대표 외 test_1·main 병합 경보 (읽기 전용 토큰) |
-| O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002), 오늘 사용 예산을 다 쓴 서비스(`daily-budget`, 카드 시작 직전에도 확인 — ADR-0004) |
+| O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002), 오늘 사용 예산을 다 쓴 서비스(`daily-budget`, 하루 사용 예산이 켜져 있을 때만 — 기본 켜짐, `o budget --on\|--off`. 카드 시작 직전에도 확인 — ADR-0004, ADR-0013) |
 
-- 총괄 채팅(ADR-0008)의 총괄 CLI는 읽기 전용이다: Claude는 `--tools Read,Grep,Glob`(MCP 없음), Codex는 `-s read-only`. Antigravity는 총괄을 맡지 않는다. 총괄의 계획은 `o dispatch`와 같은 정책을 두 번(저장할 때·실행할 때) 거치고, 사람이 "실행"을 눌러야 한 번만 전달된다. 첨부는 O 상태 폴더 밖(`%LOCALAPPDATA%/project_O-lead`)에 새 파일로만 저장하고 링크·로그인 정보 위치는 받지 않는다. 총괄 CLI는 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`·`CODEX_API_KEY`)를 물려받지 않는다.
-- 카드 CLI에 열어 주는 권한은 팀 대화 명령(`o msg`)과 읽기 전용 컨텍스트 검색(`o context`, ADR-0005)뿐이다: Claude는 `--allowedTools "Bash(o msg *)" "Bash(o context *)"`, Codex는 실행 폴더 `--add-dir`(셸 명령은 샌드박스 안에서 그대로 실행), Antigravity는 정확히 `o msg read`·`o msg post` 두 명령(그 CLI의 허용 규칙은 전체 일치만 지원해 `o context`는 열지 않고, 프롬프트에 주입된 컨텍스트만 쓴다). 카드 안의 `o context`는 o.db를 읽기만 하고 `o context add`는 거부한다. 그 밖의 권한 확인은 그대로 둔다.
+- YOLO가 꺼진 기본 모드에서 총괄 CLI는 읽기 전용이다(ADR-0008): Claude는 `--tools Read,Grep,Glob`(MCP 없음), Codex는 `-s read-only`, Antigravity는 `--mode plan --sandbox`에 파일 쓰기·셸·MCP·URL 동작을 모두 거부하는 세션 설정(plan 모드만으로는 막히지 않아 거부 규칙이 필수, ADR-0008 개정 1). 계획 승인 전에 프로젝트 훅이 돌지 않게 Claude는 `--setting-sources user --settings {"disableAllHooks":true}`, Codex는 `--disable hooks`, agy는 프로젝트에 `.agents/hooks.json`이 있으면 총괄을 맡지 않는다(개정 2). 총괄 모델은 고르지 않으면 CLI 기본이고, 고르면 카드 `model`과 같은 형식 검사를 거친다. 총괄의 계획은 `o dispatch`와 같은 정책을 두 번(저장할 때·실행할 때) 거치고, 사람이 "실행"을 눌러야 한 번만 전달된다. 첨부는 O 상태 폴더 밖(`%LOCALAPPDATA%/project_O-lead`)에 새 파일로만 저장하고 링크·로그인 정보 위치는 받지 않는다. 총괄 CLI는 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`·`CODEX_API_KEY`)를 물려받지 않는다.
+- YOLO가 켜지면 총괄과 카드가 승인 없이 파일과 명령을 다룬다(ADR-0014). 하루 예산이 켜져 있고 제한에 맞는 계획은 자동 실행한다. O 표식·CLI 거부 규칙·가드로 에이전트의 직접 전달을 제한하지만, 같은 Windows 사용자 권한에서 표식 제거 또는 별도 프로세스를 이용한 우회는 막을 수 없다. Claude YOLO는 O 가드 훅을 주입하며 Codex·Antigravity에는 동일한 훅 적용이 확인되지 않았다.
+- 기본 모드의 카드 CLI에 열어 주는 권한은 팀 대화 명령(`o msg`)과 읽기 전용 컨텍스트 검색(`o context`, ADR-0005)뿐이다: Claude는 `--allowedTools "Bash(o msg *)" "Bash(o context *)"`, Codex는 실행 폴더 `--add-dir`(셸 명령은 샌드박스 안에서 그대로 실행), Antigravity는 정확히 `o msg read`·`o msg post` 두 명령(그 CLI의 허용 규칙은 전체 일치만 지원해 `o context`는 열지 않고, 프롬프트에 주입된 컨텍스트만 쓴다). 카드 안의 `o context`는 o.db를 읽기만 하고 `o context add`는 거부한다. 그 밖의 권한 확인은 그대로 둔다.
 
 - 차단되면 우회하지 않는다. 사유를 그대로 상대에게 공유하고, 규칙이 틀렸다면 ADR로 바꾼다.
-- `crates/o-guard/src/rules.rs`의 규칙·허용 경로, `crates/o-core/src/policy.rs`의 `LIMITS`(화면 표시용 사본 `src/core/limits.ts`)는 공용 경계다(ADR + 두 사람 승인). 설정·환경변수로 상한을 올리는 길은 일부러 두지 않았다.
+- `crates/o-guard/src/rules.rs`의 규칙·허용 경로, `crates/o-core/src/policy.rs`의 `LIMITS`(화면 표시용 사본 `src/core/limits.ts`)는 공용 경계다(ADR 기록). 설정·환경변수로 상한을 올리는 길은 일부러 두지 않았다.
 - Codex는 프로젝트 훅을 처음 쓸 때와 훅 명령이 바뀔 때 신뢰 승인을 요구할 수 있다. 훅이 안 돌아도 git 훅과 CI가 같은 검사를 한다.
 
 ## 커밋·PR

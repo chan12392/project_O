@@ -5,13 +5,16 @@
 //! ```text
 //! context_fts   FTS5: title · text · files | project · run_id · card_id · kind · at (unindexed)
 //!               kind: result (a done card's card.end result), message (team msg), note (o context add)
-//! context_seen  run_id PK · events      how many of the run's indexed events were read
+//! context_seen  run_id PK · events · bytes · prefix_hash   how many of the run's indexed events were read,
+//!               and the index's `ingested_bytes`·`prefix_hash` of the file they came from
 //! ```
 //!
 //! Both tables live in `o.db` beside the run index and are derived from it:
 //! `refresh` brings the index up to date (`index::ingest`), then reads only the
 //! events added since `context_seen`, under the write lock, so entries are never
-//! added twice. Notes are the one kind not derived from a run.
+//! added twice. A run whose file no longer starts with the bytes that were read
+//! (rewritten, even with the same number of events) is read again from the start,
+//! by the same fingerprint the index uses. Notes are the one kind not derived from a run.
 //!
 //! Search is bm25 over SQLite's `unicode61` tokens. Korean words carry their
 //! particles (`캐릭터를`), so each query word drops a common particle and
@@ -24,7 +27,7 @@ pub mod tokens;
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
-use std::io;
+use std::io::{self, Read};
 use std::path::Path;
 
 use chrono::Local;
@@ -54,7 +57,9 @@ pub const SECTION_HEADER: &str = "관련 컨텍스트 (이전 작업에서):";
 pub const CONTEXT_COMMAND: &str = "o context";
 
 const SCHEMA: &str = "
-CREATE TABLE IF NOT EXISTS context_seen (run_id TEXT PRIMARY KEY, events INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS context_seen (
+  run_id TEXT PRIMARY KEY, events INTEGER NOT NULL, bytes INTEGER NOT NULL DEFAULT 0, prefix_hash INTEGER NOT NULL DEFAULT 0
+);
 CREATE VIRTUAL TABLE IF NOT EXISTS context_fts USING fts5(
   title, text, files, project UNINDEXED, run_id UNINDEXED, card_id UNINDEXED, kind UNINDEXED, at UNINDEXED,
   tokenize = 'unicode61 remove_diacritics 2'
@@ -78,14 +83,34 @@ fn same_project(a: &str, b: &str) -> bool {
 }
 
 fn ensure(conn: &Connection) -> io::Result<()> {
-    conn.execute_batch(SCHEMA).map_err(sql)
+    conn.execute_batch(SCHEMA).map_err(sql)?;
+    // An older `context_seen` has no fingerprint; its rows (bytes 0) are read again once.
+    let has_hash = |conn: &Connection| -> rusqlite::Result<bool> {
+        conn.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('context_seen') WHERE name = 'prefix_hash')", [], |r| r.get(0))
+    };
+    if has_hash(conn).map_err(sql)? {
+        return Ok(());
+    }
+    // Checked again under the write lock: another process may be adding them right now.
+    conn.execute_batch("BEGIN IMMEDIATE").map_err(sql)?;
+    let added = has_hash(conn).and_then(|found| {
+        if found {
+            return Ok(());
+        }
+        conn.execute_batch(
+            "ALTER TABLE context_seen ADD COLUMN bytes INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE context_seen ADD COLUMN prefix_hash INTEGER NOT NULL DEFAULT 0;",
+        )
+    });
+    conn.execute_batch(if added.is_ok() { "COMMIT" } else { "ROLLBACK" }).map_err(sql)?;
+    added.map_err(sql)
 }
 
 /// Opens o.db, brings the run index and then the context up to date.
 pub fn refresh(home: &Path) -> io::Result<Connection> {
     let mut conn = index::open(home)?;
     index::ingest(&mut conn, home)?;
-    sync(&mut conn)?;
+    sync(&mut conn, home)?;
     Ok(conn)
 }
 
@@ -111,18 +136,19 @@ pub fn open_read_only(home: &Path) -> io::Result<Option<Connection>> {
 }
 
 /// Reads the indexed events no context entry was made from yet.
-pub fn sync(conn: &mut Connection) -> io::Result<()> {
+fn sync(conn: &mut Connection, home: &Path) -> io::Result<()> {
     ensure(conn)?;
-    let pairs = |conn: &Connection, query: &str| -> io::Result<HashMap<String, i64>> {
+    // The event count and the index's fingerprint: either changing means the run has something new to read.
+    let pairs = |conn: &Connection, query: &str| -> io::Result<HashMap<String, (i64, i64)>> {
         let mut stmt = conn.prepare(query).map_err(sql)?;
-        let rows = stmt.query_map([], |row| Ok((row.get(0)?, row.get(1)?))).map_err(sql)?;
+        let rows = stmt.query_map([], |row| Ok((row.get(0)?, (row.get(1)?, row.get(2)?)))).map_err(sql)?;
         rows.collect::<Result<_, _>>().map_err(sql)
     };
-    let runs = pairs(conn, "SELECT run_id, events FROM runs")?;
-    let seen = pairs(conn, "SELECT run_id, events FROM context_seen")?;
-    for (run_id, events) in &runs {
-        if seen.get(run_id) != Some(events) {
-            sync_run(conn, run_id)?;
+    let runs = pairs(conn, "SELECT run_id, events, prefix_hash FROM runs")?;
+    let seen = pairs(conn, "SELECT run_id, events, prefix_hash FROM context_seen")?;
+    for (run_id, state) in &runs {
+        if seen.get(run_id) != Some(state) {
+            sync_run(conn, home, run_id)?;
         }
     }
     let gone: Vec<&String> = seen.keys().filter(|id| !runs.contains_key(*id)).collect();
@@ -174,24 +200,44 @@ fn card_files(conn: &Connection, run_id: &str, card_id: &str) -> io::Result<Stri
     Ok(files.join(" "))
 }
 
-fn sync_run(conn: &mut Connection, run_id: &str) -> io::Result<()> {
+/// Whether the run's file still starts with the `bytes` that hashed to `hash` (the index's own check).
+fn still_starts_with(home: &Path, run_id: &str, bytes: i64, hash: i64) -> io::Result<bool> {
+    let Ok(len) = u64::try_from(bytes) else { return Ok(false) };
+    if len == 0 {
+        return Ok(false);
+    }
+    let mut head = Vec::new();
+    match fs::File::open(run_dir(home, run_id).join("events.jsonl")) {
+        Ok(file) => file.take(len).read_to_end(&mut head)?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    Ok(head.len() as u64 == len && index::fingerprint(&head) == hash)
+}
+
+fn sync_run(conn: &mut Connection, home: &Path, run_id: &str) -> io::Result<()> {
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
     // Read again under the lock: another process may have just done this run.
-    let Some((events, project, title)) = tx
-        .query_row("SELECT events, project, title FROM runs WHERE run_id = ?1", [run_id], |r| {
-            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?))
+    let Some((events, project, title, bytes, hash)) = tx
+        .query_row("SELECT events, project, title, ingested_bytes, prefix_hash FROM runs WHERE run_id = ?1", [run_id], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, i64>(3)?, r.get::<_, i64>(4)?))
         })
         .optional()
         .map_err(sql)?
     else {
         return Ok(());
     };
-    let mut from: i64 = tx.query_row("SELECT events FROM context_seen WHERE run_id = ?1", [run_id], |r| r.get(0)).optional().map_err(sql)?.unwrap_or(0);
-    if from == events {
+    let (mut from, seen_bytes, seen_hash): (i64, i64, i64) = tx
+        .query_row("SELECT events, bytes, prefix_hash FROM context_seen WHERE run_id = ?1", [run_id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .optional()
+        .map_err(sql)?
+        .unwrap_or((0, 0, 0));
+    if from == events && seen_hash == hash {
         return Ok(());
     }
-    if events < from {
-        // The index read the run again from the start.
+    // The entries made so far stand only if the file still starts with what they were read from:
+    // a rewrite, even to the same number of events (or more), is read again from the start.
+    if from > 0 && (events < from || !still_starts_with(home, run_id, seen_bytes, seen_hash)?) {
         tx.execute("DELETE FROM context_fts WHERE run_id = ?1 AND kind <> 'note'", [run_id]).map_err(sql)?;
         from = 0;
     }
@@ -249,7 +295,11 @@ fn sync_run(conn: &mut Connection, run_id: &str) -> io::Result<()> {
             }
         }
     }
-    tx.execute("INSERT OR REPLACE INTO context_seen (run_id, events) VALUES (?1, ?2)", params![run_id, events]).map_err(sql)?;
+    tx.execute(
+        "INSERT OR REPLACE INTO context_seen (run_id, events, bytes, prefix_hash) VALUES (?1, ?2, ?3, ?4)",
+        params![run_id, events, bytes, hash],
+    )
+    .map_err(sql)?;
     tx.commit().map_err(sql)
 }
 
@@ -442,6 +492,33 @@ fn cut(text: &str, chars: usize) -> String {
     out
 }
 
+/// At most `chars` characters of `text` around the part that matched (`excerpt`, the FTS
+/// snippet with its `…` ends), with `…` where text was left out on either side. Text that fits
+/// is passed whole; a snippet that cannot be found in the text is passed instead of the head.
+fn around(text: &str, excerpt: &str, chars: usize) -> String {
+    let total = text.chars().count();
+    if total <= chars {
+        return text.to_string();
+    }
+    let core = excerpt.trim_matches(|c: char| c == '…' || c.is_whitespace());
+    let Some(byte) = (!core.is_empty()).then(|| text.find(core)).flatten() else {
+        return if core.is_empty() { cut(text, chars) } else { cut(core, chars) };
+    };
+    let (at, len) = (text[..byte].chars().count(), core.chars().count());
+    // Room for the two ellipses, then centre the window on the match.
+    let window = chars.saturating_sub(2).max(1);
+    let start = (at + len / 2).saturating_sub(window / 2).min(total - window);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(text.chars().skip(start).take(window));
+    if start + window < total {
+        out.push('…');
+    }
+    out
+}
+
 /// The fenced block's first and last lines. Earlier cards wrote what is inside; it is
 /// reference data for the card, never instructions (ADR-0005).
 pub const CONTEXT_BEGIN: &str = "<<<O_CONTEXT_BEGIN>>>";
@@ -467,9 +544,10 @@ pub fn section(hits: &[Hit], provider: ProviderId) -> Option<String> {
         if room < MIN_ENTRY_CHARS {
             break;
         }
-        // An entry cannot close the fence early.
-        let text = squash_spaces(&hit.text).replace("<<<O_CONTEXT", "<<<O-CONTEXT");
-        let line = format!("{head}{}", cut(&text, room));
+        // The part that matched, not just the entry's head; an entry cannot close the fence early.
+        let defuse = |s: &str| s.replace("<<<O_CONTEXT", "<<<O-CONTEXT");
+        let text = around(&defuse(&squash_spaces(&hit.text)), &defuse(&hit.excerpt), room);
+        let line = format!("{head}{text}");
         used += line.chars().count() + 1;
         entries.push(line);
     }

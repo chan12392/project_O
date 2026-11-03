@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 
 import type { OEvent } from "../../../src/core/events.ts";
-import { snapshot, type RunView } from "../../../src/core/snapshot.ts";
+import { foldRuns, type FoldedRun, type RunView } from "../../../src/core/snapshot.ts";
 import { isSessionRun } from "../../../src/core/attention.ts";
 import type { UsageWindow } from "../../../src/core/usage.ts";
 import { sessionsShown, useSettings } from "./settings.ts";
@@ -23,6 +23,11 @@ interface UsageReading {
 }
 
 const POLL_MS = 2_000;
+/**
+ * While the window is hidden or minimised the runs are still read, more slowly, so a card
+ * that finishes meanwhile can be notified (Settings → 알림).
+ */
+const HIDDEN_POLL_MS = 15_000;
 /** As many runs as `o runs --json` lists by default. */
 const RUN_LIMIT = 50;
 
@@ -61,8 +66,8 @@ function requestedSource(): Source | undefined {
 }
 
 /**
- * Runs and usage from project_O.exe's Tauri commands or the dev server's /api (app/dev/liveRuns.ts), polled while
- * the page is visible. Lead chat threads come separately (`data/useLead.ts`), so run messages stay empty.
+ * Runs and usage from project_O.exe's Tauri commands or the dev server's /api (app/dev/liveRuns.ts), polled every
+ * 2 s while the page is visible and every 15 s while it is hidden. Lead chat threads come separately (`data/useLead.ts`), so run messages stay empty.
  * `runs` is undefined until the first answer; a failed first answer counts as no runs.
  */
 function useLiveRuns(enabled: boolean, sessions: boolean) {
@@ -79,12 +84,13 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
     // Unchanged answers keep the same objects, so a quiet poll re-renders nothing.
     let lastRuns = "";
     let lastUsage = "";
-    // Events are append-only: a run whose event count did not change keeps its RunView,
-    // so memoised readers and the components showing it skip the poll.
-    let known = new Map<string, { count: number; entry: RunEntry }>();
+    // A run whose events did not change keeps its RunView and entry, so memoised readers and the
+    // components showing it skip the poll. Content, not count: capped Claude Code sessions keep their length.
+    let known = new Map<string, FoldedRun>();
+    let entries = new Map<RunView, RunEntry>();
     const schedule = () => {
       window.clearTimeout(timer);
-      if (!stopped && !document.hidden) timer = window.setTimeout(poll, POLL_MS);
+      if (!stopped) timer = window.setTimeout(poll, document.hidden ? HIDDEN_POLL_MS : POLL_MS);
     };
     const poll = async () => {
       if (inflight) return;
@@ -95,21 +101,15 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
         if (runsText !== lastRuns) {
           lastRuns = runsText;
           const body = JSON.parse(runsText) as { runs: { runId: string; events: OEvent[] }[] };
-          const next = new Map<string, { count: number; entry: RunEntry }>();
-          const entries = body.runs.flatMap((r) => {
-            const hit = known.get(r.runId);
-            if (hit && hit.count === r.events.length) {
-              next.set(r.runId, hit);
-              return [hit.entry];
-            }
-            const view = snapshot(r.events);
-            if (!view) return [];
-            const entry = { view, messages: [] };
-            next.set(r.runId, { count: r.events.length, entry });
-            return [entry];
+          known = foldRuns(body.runs, known);
+          const nextEntries = new Map<RunView, RunEntry>();
+          const list = [...known.values()].map(({ view }) => {
+            const entry = entries.get(view) ?? { view, messages: [] };
+            nextEntries.set(view, entry);
+            return entry;
           });
-          known = next;
-          setRuns((prev) => (prev && prev.length === entries.length && prev.every((e, i) => e === entries[i]) ? prev : entries));
+          entries = nextEntries;
+          setRuns((prev) => (prev && prev.length === list.length && prev.every((e, i) => e === list[i]) ? prev : list));
         }
         if (usageText && usageText !== lastUsage) {
           lastUsage = usageText;
@@ -125,7 +125,8 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
         schedule();
       }
     };
-    const onVisibility = () => (document.hidden ? window.clearTimeout(timer) : void poll());
+    // Back in view: read now rather than at the slow pace. Going hidden keeps the next read and slows the one after.
+    const onVisibility = () => void (document.hidden || poll());
     void poll();
     document.addEventListener("visibilitychange", onVisibility);
     return () => {

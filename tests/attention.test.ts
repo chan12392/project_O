@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
-import { SILENT_MS, activity, fleetStats, nextUp, ticketCommand } from "../src/core/attention.ts";
+import { SILENT_MS, activity, fleetStats, isNote, needsAction, nextUp, recommend, ticketCommand } from "../src/core/attention.ts";
 import type { OEvent } from "../src/core/events.ts";
 import { snapshot, type RunView } from "../src/core/snapshot.ts";
 
@@ -29,6 +29,19 @@ test("failed and stopped cards land on the stopped list, a finished run asks to 
   assert.ok(todo.some((i) => i.kind === "check" && i.runId === "20261101-162328-9p0b"));
   // A failed run is not a finished one to check.
   assert.ok(!todo.some((i) => i.kind === "check" && i.runId === todoApp.runId));
+});
+
+test("a run blocked before any card appears in stopped work and the dashboard", () => {
+  const events: OEvent[] = [
+    { t: "run.start", at: "2026-11-02T10:00:00Z", runId: "blocked", title: "작업", project: "C:/p", cards: [] },
+    { t: "run.blocked", at: "2026-11-02T10:00:01Z", runId: "blocked", violations: [{ rule: "budget", message: "오늘 예산 소진" }] },
+    { t: "run.end", at: "2026-11-02T10:00:02Z", runId: "blocked", status: "failed" },
+  ];
+  const run = snapshot(events)!;
+  const now = new Date("2026-11-02T10:01:00Z");
+  assert.equal(nextUp([run], now).stopped[0].detail, "오늘 예산 소진");
+  assert.equal(fleetStats([run], now).stopped, 1);
+  assert.match(activity([run], 10)[0].detail, /오늘 예산 소진/);
 });
 
 test("a running card that goes quiet is flagged; a ticked item stays gone", () => {
@@ -60,6 +73,27 @@ test("the lead answering one card leaves the other card's question waiting", () 
   assert.deepEqual(nextUp([asked], after(team.endedAt!, 60_000)).todo.filter((i) => i.kind === "answer").map((i) => i.cardId), ["a"]);
 });
 
+test("badges count what waits on a person: not a note to read, not a Claude Code session's ticket", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const told: RunView = {
+    ...team,
+    messages: [
+      { at: at(1000), from: "a", to: "lead", text: "어느 쪽으로 할까요?" },
+      { at: at(2000), from: "b", to: "lead", text: "README 정리 끝냈습니다." },
+    ],
+  };
+  const { todo } = nextUp([told], after(team.endedAt!, 60_000));
+  const answers = todo.filter((i) => i.kind === "answer");
+  assert.deepEqual(answers.map((i) => [i.cardId, isNote(i)]), [["a", false], ["b", true]]);
+  assert.deepEqual(answers.filter(needsAction).map((i) => i.cardId), ["a"]);
+  // The same tickets from a Claude Code session are read-only records.
+  const session = { ...told, runId: "session-0f3c" };
+  assert.equal(nextUp([session], after(team.endedAt!, 60_000)).todo.filter(needsAction).length, 0);
+  // A note is no "답을 기다림" recommendation either.
+  assert.deepEqual(recommend([told], after(team.endedAt!, 60_000)).filter((p) => p.kind === "answer").map((p) => p.item?.cardId), ["a"]);
+});
+
 test("fleet stats and activity read the same runs", () => {
   const now = after(byId("20261101-162328-9p0b").endedAt!, 0);
   const stats = fleetStats(runs, now);
@@ -71,13 +105,16 @@ test("fleet stats and activity read the same runs", () => {
   assert.ok(feed.every((item, i) => i === 0 || feed[i - 1].at >= item.at));
 });
 
-test("stopped and silent tickets offer O commands for O runs, none for Claude Code sessions", () => {
-  for (const kind of ["failed", "stopped", "limit", "silent", "answer"] as const) {
+test("tickets offer a command only for what the app cannot do yet, and none for Claude Code sessions", () => {
+  for (const kind of ["silent", "answer"] as const) {
     const run = ticketCommand({ kind, runId: "20261101-162328-9p0b", cardId: "a" });
     assert.ok(run, kind);
     assert.ok(run.text.includes("20261101-162328-9p0b"), kind);
     assert.equal(ticketCommand({ kind, runId: "session-0f3c", cardId: "a" }), undefined, kind);
   }
   assert.equal(ticketCommand({ kind: "silent", runId: "20261101-162328-9p0b", cardId: "a" })?.text, "o stop 20261101-162328-9p0b");
-  assert.equal(ticketCommand({ kind: "failed", runId: "20261101-162328-9p0b", cardId: "a" })?.text, "o status 20261101-162328-9p0b");
+  // A status command would print what the record already shows.
+  for (const kind of ["failed", "stopped", "limit", "review", "check", "queued"] as const) {
+    assert.equal(ticketCommand({ kind, runId: "20261101-162328-9p0b", cardId: "a" }), undefined, kind);
+  }
 });

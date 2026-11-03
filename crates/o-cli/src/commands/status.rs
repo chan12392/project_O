@@ -31,6 +31,9 @@ fn status(home: &Path, run_id: Option<&str>) -> i32 {
     for id in ids {
         let Some(run) = snapshot(&store::read_events(home, &id)) else { continue };
         println!("{id}  {}  [{}]", run.title, run.status.as_str());
+        if run.failed_before_cards() {
+            println!("  막힘     카드를 시작하지 않음: {}", collapse_spaces(&run.blocked_reason()));
+        }
         for c in run.cards {
             let activity = collapse_spaces(&c.activity);
             println!("  {:<8} {} ({} · {}) {}", c.state.as_str(), c.id, c.provider, c.label, js_head(&activity, 100));

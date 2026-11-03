@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::policy::Violation;
 use crate::sys::js::ser_num;
+use crate::run::mode::Profile;
 use crate::run::plan::ProviderId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -130,6 +132,23 @@ pub enum OEvent {
     /// Cards whose prompt got a shared context section (`context`), and its characters in all.
     #[serde(rename = "run.context")]
     RunContext { at: String, run_id: String, cards: usize, chars: usize, card_ids: Vec<String> },
+    /// The runner's own check right before the start (`o _run`) refused the plan: no card
+    /// started. The violations are the ones `o check` would print (a cap, a cooldown, today's
+    /// budget read again since dispatch). `run.end failed` follows.
+    #[serde(rename = "run.blocked")]
+    RunBlocked { at: String, run_id: String, violations: Vec<Violation> },
+    /// How the run's cards are set up (project_O 프로필 사용, ADR-0013), right after `run.start`:
+    /// the profile (`project-o` is the clean one `o tokens` groups as clean) and whether the
+    /// shared context is on, and YOLO 모드 (ADR-0014; absent in runs from before it: off).
+    #[serde(rename = "run.mode")]
+    RunMode {
+        at: String,
+        run_id: String,
+        profile: Profile,
+        context: bool,
+        #[serde(default)]
+        yolo: bool,
+    },
 }
 
 impl OEvent {
@@ -151,6 +170,8 @@ impl OEvent {
             OEvent::ReviewPosted { .. } => "review.posted",
             OEvent::CardBudget { .. } => "card.budget",
             OEvent::RunContext { .. } => "run.context",
+            OEvent::RunBlocked { .. } => "run.blocked",
+            OEvent::RunMode { .. } => "run.mode",
         }
     }
 }

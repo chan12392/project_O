@@ -15,8 +15,9 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, short, short_value};
-use super::{opt, strings, LaunchSpec, LeadTurn, Official, Provider, ReadLine, TeamChannel};
+use super::{list_command, opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel};
 use crate::agents::clean::LoginState;
+use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
 use crate::sys::js::{coalesce, iso_from_secs, js_string, number_text};
@@ -29,8 +30,10 @@ pub struct Codex;
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
-        let mut args = strings(&["exec", "--json", "-s", "workspace-write", "-C", &plan.project, "--add-dir", team.run_dir]);
-        args.extend(opt("-m", card.model.as_deref()));
+        let spec = connection("codex").headless;
+        let mut args = strings(spec.fixed);
+        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir]));
+        args.extend(opt(spec.model_flag, card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
@@ -62,26 +65,33 @@ impl Provider for Codex {
     /// resumes the session with `exec resume <id>`. Images go first (`-i` takes several
     /// values, so a flag must follow them), the prompt is read from stdin (`-`).
     fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
-        let images: Vec<String> = turn.images.iter().flat_map(|path| ["-i".to_string(), path.clone()]).collect();
-        let effort = turn.effort.filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
-        let mut tail = vec!["--json".to_string()];
-        tail.extend(opt("-m", turn.model));
-        tail.extend(opt("-c", effort.as_deref()));
-        let mut args = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check"]);
-        match turn.session.filter(|s| !s.is_empty()) {
-            Some(session) => {
-                args.push("resume".into());
-                args.extend(images);
-                args.extend(tail);
-                args.push(session.to_string());
-            }
-            None => {
-                args.extend(images);
-                args.extend(tail);
-            }
-        }
+        // A trusted project's `.codex/` may add hooks; `--disable hooks` (`-c features.hooks=false`,
+        // `codex exec --help`) outranks every config layer, so none runs before a plan is approved.
+        let head = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
+        Some(self.lead_with(head, turn))
+    }
+
+    /// No approvals and no sandbox. Codex has no flag that adds a hook for one run, so hooks
+    /// are left on as they are for cards: a trusted project's own `.codex/hooks.json` (O's
+    /// repositories run `o hook` there) still blocks protected-branch pushes and merges.
+    fn yolo_lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let head = strings(&["exec", "--dangerously-bypass-approvals-and-sandbox", "-C", turn.project, "--skip-git-repo-check"]);
+        Some(self.lead_with(head, turn))
+    }
+
+    /// Without a sandbox there is nothing to open for `o msg`, so the run folder is not added.
+    fn yolo_launch(&self, card: &Card, plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
+        let mut args = strings(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", &plan.project]);
+        args.extend(opt("-m", card.model.as_deref()));
+        let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
+        args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// `codex debug models` (in `codex --help`) prints the CLI's model catalog as JSON.
+    fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
+        list_command("codex", connection("codex").models, ProviderId::Codex, &[]).map(|out| parse_codex_models(&out))
     }
 
     // https://github.com/openai/codex (npm, Homebrew, Windows installer)
@@ -138,6 +148,33 @@ impl Provider for Codex {
 
     fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
         Some(app_server_windows())
+    }
+}
+
+impl Codex {
+    /// A lead turn after `head` (`exec` and its sandbox flags): a later turn resumes the session
+    /// with `exec resume <id>`. Images go first (`-i` takes several values, so a flag must follow
+    /// them), the prompt is read from stdin (`-`).
+    fn lead_with(&self, mut args: Vec<String>, turn: &LeadTurn) -> LaunchSpec {
+        let images: Vec<String> = turn.images.iter().flat_map(|path| ["-i".to_string(), path.clone()]).collect();
+        let effort = turn.effort.filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
+        let mut tail = vec!["--json".to_string()];
+        tail.extend(opt("-m", turn.model));
+        tail.extend(opt("-c", effort.as_deref()));
+        match turn.session.filter(|s| !s.is_empty()) {
+            Some(session) => {
+                args.push("resume".into());
+                args.extend(images);
+                args.extend(tail);
+                args.push(session.to_string());
+            }
+            None => {
+                args.extend(images);
+                args.extend(tail);
+            }
+        }
+        args.push("-".into());
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) }
     }
 }
 
@@ -231,6 +268,24 @@ pub fn parse_codex_rate_limits(result: &Value) -> Vec<UsageWindow> {
             })
         })
         .collect()
+}
+
+/// The `codex debug models` catalog: the models it lists in its own picker
+/// (`visibility: "list"`), in its order (`priority`, lowest first).
+pub fn parse_codex_models(stdout: &str) -> Vec<ModelChoice> {
+    let Ok(data) = serde_json::from_str::<Value>(stdout) else { return Vec::new() };
+    let Some(models) = data.get("models").and_then(Value::as_array) else { return Vec::new() };
+    let mut listed: Vec<(f64, ModelChoice)> = models
+        .iter()
+        .filter(|m| m.get("visibility").and_then(Value::as_str) == Some("list"))
+        .filter_map(|m| {
+            let id = m.get("slug").and_then(Value::as_str)?.to_string();
+            let label = m.get("display_name").and_then(Value::as_str).filter(|l| !l.trim().is_empty()).unwrap_or(&id).trim().to_string();
+            Some((m.get("priority").and_then(Value::as_f64).unwrap_or(f64::MAX), ModelChoice { id, label, hint: None }))
+        })
+        .collect();
+    listed.sort_by(|a, b| a.0.total_cmp(&b.0));
+    listed.into_iter().map(|(_, m)| m).collect()
 }
 
 static PATH_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\/]+").unwrap());

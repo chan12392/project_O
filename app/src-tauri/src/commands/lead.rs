@@ -2,12 +2,17 @@
 //! A turn runs the lead CLI read-only through o-core on a blocking thread; a plan is
 //! dispatched by `o _run` in the background, as `o dispatch` does.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
 
 use o_core::agents::clean;
 use o_core::lead::{self, files, DispatchError, SendRequest};
+use o_core::providers::{self, ModelChoice};
 use o_core::run::plan::ProviderId;
+use o_core::run::mode::{Profile, RunMode};
 use o_core::run::runner::official_command;
 use o_core::run::store;
 use o_core::sys::proc;
@@ -82,11 +87,17 @@ pub async fn lead_attach(request: tauri::ipc::Request<'_>) -> Result<Value, Stri
     .await?
 }
 
+#[tauri::command]
+pub async fn lead_note(thread_id: String, change: o_core::lead::notes::Change) -> Result<(), String> {
+    blocking(move || o_core::lead::notes::change(&store::default_home(), &thread_id, change).map(|_| ()).map_err(|e| e.to_string())).await?
+}
+
 /// One message to the lead (`o lead send`); returns when the lead has answered.
 #[tauri::command]
 pub async fn lead_send(
     project: String,
     provider: String,
+    model: Option<String>,
     effort: Option<String>,
     text: String,
     attachments: Vec<String>,
@@ -101,12 +112,13 @@ pub async fn lead_send(
         let req = SendRequest {
             project: &project,
             provider,
-            model: None,
+            model: model.as_deref(),
             effort: effort.as_deref(),
             text: &text,
             attach: &attach,
             fresh: false,
             clean: root.as_deref(),
+            yolo: o_core::run::yolo::read_enabled(&home),
         };
         let events = lead::send(&home, &req, &official_command)?;
         Ok(json!({ "threadId": lead::current_thread(&home, &project), "events": events }))
@@ -120,8 +132,13 @@ pub async fn lead_send(
 pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String> {
     blocking(move || {
         let o = o_binary().ok_or("o CLI를 찾지 못했습니다 (cargo install --path crates/o-cli)")?;
+        let output = proc::hide_window(Command::new(&o).args(["about", "--json"])).output().map_err(|e| format!("O CLI를 확인하지 못했습니다: {e}"))?;
+        let compatible = output.status.success() && graph_capable(&output.stdout);
+        if !compatible { return Err("O CLI가 작업 그래프와 워크트리 격리를 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하거나 설치하세요".into()); }
         let start = |run_id: &str| proc::spawn_detached(Command::new(&o).args(["_run", run_id])).map(|_| ());
-        match lead::dispatch(&store::default_home(), &plan_id, clean, &start) {
+        let home = store::default_home();
+        let mode = RunMode { yolo: o_core::run::yolo::read_enabled(&home), ..RunMode::of(Profile::of_clean(clean)) };
+        match lead::dispatch(&home, &plan_id, mode, &start) {
             Ok(done) => Ok(json!(done)),
             Err(DispatchError::Blocked(violations)) => {
                 let lines: Vec<String> = violations.iter().map(|v| format!("[{}] {}", v.rule, v.message)).collect();
@@ -133,10 +150,40 @@ pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String
     .await?
 }
 
+fn graph_capable(output: &[u8]) -> bool {
+    serde_json::from_slice::<Value>(output).ok().and_then(|info| info.get("capabilities").and_then(Value::as_array).cloned())
+        .is_some_and(|caps| ["work-graph-v1", "lead-worktrees-v1", "lead-copy-workspaces-v1"].iter().all(|required| caps.iter().any(|cap| cap.as_str() == Some(required))))
+}
+
+/// How long a lead model list is reused before the CLI is asked again.
+const MODELS_TTL: Duration = Duration::from_secs(10 * 60);
+
+static MODELS: Mutex<BTreeMap<ProviderId, (Instant, Vec<ModelChoice>)>> = Mutex::new(BTreeMap::new());
+
+/// The models a lead of this agent may name (`o lead models`), from the CLI's own list,
+/// kept for a few minutes. A failed listing is not kept, so the next open asks again.
+#[tauri::command]
+pub async fn lead_models(provider: String) -> Result<Value, String> {
+    let provider = ProviderId::parse(&provider).ok_or_else(|| format!("알 수 없는 에이전트: {provider}"))?;
+    if let Some((at, models)) = MODELS.lock().map_err(|e| e.to_string())?.get(&provider) {
+        if at.elapsed() < MODELS_TTL {
+            return Ok(json!({ "provider": provider, "models": models }));
+        }
+    }
+    let models = blocking(move || providers::lead_models(provider)).await??;
+    MODELS.lock().map_err(|e| e.to_string())?.insert(provider, (Instant::now(), models.clone()));
+    Ok(json!({ "provider": provider, "models": models }))
+}
+
 /// Stops the project's lead while it answers (`o lead stop`).
 #[tauri::command]
 pub async fn lead_stop(project: Option<String>) -> Result<Value, String> {
     blocking(move || json!({ "stopped": lead::stop(&store::default_home(), project.as_deref()) })).await
+}
+
+#[tauri::command]
+pub async fn lead_stop_all(project: String) -> Result<Value, String> {
+    blocking(move || lead::stop_all(&store::default_home(), &project).map(|stopped| json!({ "stopped": stopped }))).await?
 }
 
 #[cfg(test)]
@@ -159,5 +206,14 @@ mod tests {
         assert!(project_arg(&dir.to_string_lossy()).is_ok());
         assert!(project_arg("relative/dir").is_err());
         assert!(project_arg(&dir.join("missing").to_string_lossy()).is_err());
+    }
+
+    #[test]
+    fn old_or_malformed_runner_never_claims_graph_support() {
+        assert!(!graph_capable(br#"{"version":"0.3.0"}"#));
+        assert!(!graph_capable(b"invalid"));
+        assert!(!graph_capable(br#"{"capabilities":["work-graph-v1"]}"#));
+        assert!(!graph_capable(br#"{"capabilities":["work-graph-v1","lead-worktrees-v1"]}"#));
+        assert!(graph_capable(br#"{"capabilities":["work-graph-v1","lead-worktrees-v1","lead-copy-workspaces-v1"]}"#));
     }
 }

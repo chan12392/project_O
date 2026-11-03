@@ -1,12 +1,19 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { Backend } from "../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, SettingsRow } from "../../ui/controls.tsx";
-import { UNINSTALL_KEEP, UNINSTALL_PURGE, UPDATE_EVENT } from "../../platform/updates.ts";
+import { UNINSTALL_KEEP, UNINSTALL_PURGE, UPDATE_EVENT, updateStatusLine, type UpdateStatus } from "../../platform/updates.ts";
 
 export function UpdateSettings({ api }: { api: Backend }) {
   const [busy, setBusy] = useState(false);
   const [note, setNote] = useState("");
   const [error, setError] = useState(false);
+  const [status, setStatus] = useState<UpdateStatus>();
+  useEffect(() => {
+    if (api.kind !== "tauri") return;
+    let live = true;
+    void api.updateStatus().then((s) => live && setStatus(s), () => {});
+    return () => { live = false; };
+  }, [api]);
   const check = async () => {
     setBusy(true); setNote(""); setError(false);
     try {
@@ -18,7 +25,8 @@ export function UpdateSettings({ api }: { api: Backend }) {
   };
   return <div className="divide-y">
     <SettingsRow label="앱 업데이트" description={<>
-      데스크톱 앱은 시작 후와 6시간마다 새 테스트 릴리스를 확인합니다.
+      데스크톱 앱은 시작 후와 6시간마다 새 테스트 릴리스를 확인합니다. 확인과 내려받기에는 GitHub CLI(gh) 설치와 로그인이 필요합니다.
+      {status && <span className={`mt-2 block break-words ${status.gh === false || status.lastCheck?.error ? "text-foreground" : ""}`}>{updateStatusLine(status)}</span>}
       {note && <span role={error ? "alert" : "status"} className={`mt-2 block whitespace-pre-wrap break-words ${error ? "text-destructive" : ""}`}>{note}</span>}
     </>} control={<button type="button" onClick={() => void check()} disabled={busy} className={BUTTON_SECONDARY}>{busy ? "확인하는 중…" : "업데이트 확인"}</button>} />
     <UninstallCommand label="앱만 제거" command={UNINSTALL_KEEP} description="PowerShell에서 실행합니다. 실행 중인 앱을 닫고 제거하며, 기록·로그인·설정은 남깁니다." />

@@ -12,5 +12,5 @@ const perProvider = (variant: string) => Number(new RegExp(`ProviderId::${varian
 test("the screen's caps match the O CLI's", () => {
   assert.equal(LIMITS.maxActiveTotal, constant("max_active_total"));
   assert.equal(LIMITS.maxCardsPerDay, constant("max_cards_per_day"));
-  assert.deepEqual(LIMITS.maxActivePerProvider, { claude: perProvider("Claude"), codex: perProvider("Codex"), agy: perProvider("Agy") });
+  assert.deepEqual(LIMITS.maxActivePerProvider, { claude: perProvider("Claude"), codex: perProvider("Codex"), agy: perProvider("Agy"), opencode: perProvider("OpenCode"), devin: perProvider("Devin") });
 });

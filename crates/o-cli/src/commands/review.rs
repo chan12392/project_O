@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command as Process;
 
 use chrono::Utc;
-use o_core::policy::check_plan;
+use o_core::policy::check_plan_for;
 use o_core::review;
 use o_core::run::runner;
 use o_core::run::store::{self, run_dir};
@@ -15,7 +15,7 @@ use super::{fail, help, print_violations, run_id_arg, Command};
 
 pub const REVIEW: Command = Command {
     name: "review",
-    usage: "  o review <PR 번호|주소> [--provider claude|codex|agy] [--model M] [--effort E] [--clean] [--post] [--dry-run] [--detach]
+    usage: "  o review <PR 번호|주소> [--provider claude|codex|agy|devin] [--model M] [--effort E] [--profile project-o|own] [--post] [--dry-run] [--detach]
                              지금 폴더 저장소의 PR을 gh로 읽어 에이전트 카드 하나로 검토 (파일 변경 없음)
                              --post: 끝나면 검토문을 PR 댓글로 게시 (승인·병합은 하지 않음)
                              --dry-run: 실행 없이 프롬프트 크기·고른 에이전트·정책 결과만 출력
@@ -45,8 +45,9 @@ fn review(home: &Path, args: &[String]) -> i32 {
     };
     let author = review::authorship(home, &pr);
     let provider = args.provider.unwrap_or_else(|| review::choose_provider(author.provider));
-    // Local files may fill in a cut diff only when this folder is the PR's head commit.
-    let local_is_head = review::local_head(&project).is_some_and(|local| local == pr.head_ref_oid);
+    // Local files may fill in a cut diff only when this folder is the PR's head commit, unchanged.
+    let local = review::local_tree(&project, &pr.head_ref_oid);
+    let local_is_head = local == review::LocalTree::Head;
     let task = review::build_task(&pr, &diff, &review::new_nonce(), local_is_head);
     let project_text = project.to_string_lossy().into_owned();
     let input = review::build_plan(&project_text, pr.number, &task.text, provider, args.model.as_deref(), args.effort.as_deref());
@@ -56,7 +57,7 @@ fn review(home: &Path, args: &[String]) -> i32 {
         Ok(ctx) => ctx,
         Err(error) => return fail(&error.to_string()),
     };
-    let checked = check_plan(&input, &ctx);
+    let checked = check_plan_for(&input, &ctx, args.mode.profile);
     let summary = || {
         let cut = if task.cut_files.is_empty() { String::new() } else { format!(", 잘린 파일 {}개", task.cut_files.len()) };
         let redacted = if task.redacted_lines > 0 { format!(", 정책 규칙으로 뺀 줄 {}개", task.redacted_lines) } else { String::new() };
@@ -65,7 +66,11 @@ fn review(home: &Path, args: &[String]) -> i32 {
             "검토할 커밋: head {} (base {}){}",
             review::short_sha(&pr.head_ref_oid),
             review::short_sha(&pr.base_ref_oid),
-            if local_is_head { " · 이 폴더와 같음" } else { " · 이 폴더는 다른 커밋이라 로컬 파일로 보충하지 않음" }
+            match local {
+                review::LocalTree::Head => " · 이 폴더와 같음",
+                review::LocalTree::Dirty => " · 이 폴더에 커밋하지 않은 변경이 있어 로컬 파일로 보충하지 않음",
+                review::LocalTree::Other => " · 이 폴더는 다른 커밋이라 로컬 파일로 보충하지 않음",
+            }
         );
         eprintln!("작성: {} → 검토: {provider}{}", author.describe(), if args.provider.is_some() { " (지정)" } else { "" });
         eprintln!("프롬프트 {}자 (상한 {}) · diff {}자 중 {}자 포함{cut}{redacted}", o_core::sys::js::js_len(&task.text), o_core::policy::LIMITS.max_task_chars, task.diff_chars, task.diff_included);
@@ -88,7 +93,7 @@ fn review(home: &Path, args: &[String]) -> i32 {
     }
 
     let run_id = store::new_run_id(now);
-    if let Err(error) = review::create_run(home, &run_id, &plan, args.clean) {
+    if let Err(error) = review::create_run(home, &run_id, &plan, args.mode) {
         return fail(&error.to_string());
     }
     let events = run_dir(home, &run_id).join("events.jsonl");
@@ -106,13 +111,13 @@ fn review(home: &Path, args: &[String]) -> i32 {
         let message = format!(
             "PR #{} 검토를 시작했습니다 · {provider}{} · 커밋 {}{}",
             pr.number,
-            if args.clean { " (깨끗한 에이전트)" } else { "" },
+            if args.mode.clean() { " (project_O 프로필)" } else { " (내 설정)" },
             review::short_sha(&pr.head_ref_oid),
             if args.post { " · 끝나면 PR 댓글로 게시 (그사이 새 커밋이 오면 게시하지 않음)" } else { "" }
         );
         println!(
             "{}",
-            json!({ "ok": true, "message": message, "runId": run_id, "pr": pr.number, "head": pr.head_ref_oid, "provider": provider, "post": args.post, "clean": args.clean, "events": events.to_string_lossy() })
+            json!({ "ok": true, "message": message, "runId": run_id, "pr": pr.number, "head": pr.head_ref_oid, "provider": provider, "post": args.post, "profile": args.mode.profile, "clean": args.mode.clean(), "events": events.to_string_lossy() })
         );
         return 0;
     }

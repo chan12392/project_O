@@ -8,8 +8,9 @@ use std::path::Path;
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, tool_summary};
-use super::{opt, strings, LaunchSpec, LeadTurn, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
+use super::{opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
+use crate::agents::catalog::connection;
 use crate::context::CONTEXT_COMMAND;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan};
@@ -21,12 +22,55 @@ pub struct Claude;
 /// The lead's whole tool set: reading files and searching them.
 const LEAD_TOOLS: &str = "Read,Grep,Glob";
 
+/// The lead run's own settings: no hook runs (project settings could turn them back on,
+/// which `--setting-sources user` keeps them from doing).
+const LEAD_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+
+/// The tools O's guard hook (`o hook`) looks at: the same list as this repository's
+/// `.claude/settings.json`.
+const GUARD_MATCHER: &str = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob";
+
+/// YOLO mode's own settings (ADR-0014): O's guard hook, which Claude runs before every tool
+/// call in `bypassPermissions` too (PreToolUse runs before the permission check, and exit 2
+/// stops the call). It blocks when `o` is missing or fails (`onFailure`). A clean profile and
+/// `--setting-sources user` would otherwise bring no hook at all.
+fn guard_settings() -> String {
+    json!({ "hooks": { "PreToolUse": [{ "matcher": GUARD_MATCHER, "hooks": [{ "type": "command", "command": "o hook", "timeout": 10, "onFailure": "block" }] }] } })
+        .to_string()
+}
+
+/// Deny rules for the commands no agent may run; they hold in every permission mode.
+fn denied_commands() -> Vec<String> {
+    AGENT_ONLY_COMMANDS.iter().map(|c| format!("Bash({c}*)")).collect()
+}
+
+/// The start of a YOLO launch: print mode, no permission prompts, the denied commands.
+fn yolo_head() -> Vec<String> {
+    let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools"]);
+    args.extend(denied_commands());
+    args
+}
+
+/// The model aliases `claude --model` documents, with the version each stands for now:
+/// (alias, family, version, model id). Claude Code prints no alias→model mapping
+/// (`claude --help` and `claude --version` name the aliases only, there is no models
+/// command), so this table is kept by hand. **Update it when Claude Code's aliases move to
+/// a new model** (code.claude.com/docs/en/model-config). `--model` still gets the alias, so
+/// a stale version here only mislabels the menu; it never picks another model.
+const LEAD_MODELS: [(&str, &str, &str, &str); 4] = [
+    ("fable", "Fable", "5.1", "claude-fable-5-1"),
+    ("opus", "Opus", "5.5", "claude-opus-5-5"),
+    ("sonnet", "Sonnet", "5.5", "claude-sonnet-5-5"),
+    ("haiku", "Haiku", "5.5", "claude-haiku-5-5"),
+];
+
 impl Provider for Claude {
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
-        let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools"]);
+        let spec = connection("claude").headless;
+        let mut args = strings(spec.fixed);
         args.push(format!("Bash({TEAM_COMMAND} *)"));
         args.push(format!("Bash({CONTEXT_COMMAND} *)"));
-        args.extend(opt("--model", card.model.as_deref()));
+        args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
     }
@@ -56,14 +100,52 @@ impl Provider for Claude {
     /// Only the read tools exist (`--tools`), they are the only ones allowed without a prompt,
     /// the permission mode is the default one (a headless run denies anything else), and no
     /// MCP server is loaded. The attachment folder is added for reading.
+    /// `claude -p` never asks to trust a folder, yet runs the hooks in its settings files
+    /// (code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder), so the
+    /// project's settings are not read (`--setting-sources user`; the clean profile's
+    /// settings are the user ones) and hooks are off for the run, first turn or resumed.
     fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
         let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default"]);
         args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
+        args.extend(strings(&["--setting-sources", "user", "--settings", LEAD_SETTINGS]));
         args.extend(opt("--resume", turn.session));
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));
         args.extend(opt("--add-dir", turn.files_dir));
         Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// Every tool, no permission prompt (`bypassPermissions`, the same as Claude's
+    /// skip-permissions flag); allow rules have no effect there, so `--allowedTools` goes.
+    /// Deny rules still hold, and O's guard hook comes with the run's settings.
+    fn yolo_launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
+        let mut args = yolo_head();
+        args.extend(strings(&["--settings", &guard_settings()]));
+        args.extend(opt("--model", card.model.as_deref()));
+        args.extend(opt("--effort", card.effort.as_deref()));
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// The lead with every tool and no prompts. The project's settings stay unread (as in
+    /// `lead`); instead of turning hooks off, the run's settings bring O's guard hook.
+    fn yolo_lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let mut args = yolo_head();
+        args.push("--strict-mcp-config".into());
+        args.extend(strings(&["--setting-sources", "user", "--settings", &guard_settings()]));
+        args.extend(opt("--resume", turn.session));
+        args.extend(opt("--model", turn.model));
+        args.extend(opt("--effort", turn.effort));
+        args.extend(opt("--add-dir", turn.files_dir));
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// Claude Code has no model list command; `--model` takes these aliases for the latest
+    /// model of each family (`claude --help`, code.claude.com/docs/en/model-config).
+    fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
+        Ok(LEAD_MODELS
+            .iter()
+            .map(|(alias, family, version, model)| ModelChoice { id: alias.to_string(), label: format!("{family} {version}"), hint: Some(model.to_string()) })
+            .collect())
     }
 
     // https://code.claude.com/docs/en/setup (native installer, WinGet, npm)

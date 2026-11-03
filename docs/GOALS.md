@@ -1,5 +1,7 @@
 # 제품 목표와 현재 상태
 
+> 2026-11-03: Antigravity 실행과 자동 조회는 공급자 정책에 따라 보류했다([ADR-0020](decisions/0020-antigravity-policy.md)). 아래 Antigravity 관련 실행 현황은 이전 기준의 기록이다.
+
 기준: 2026-11-02, `younchan-goals`의 문서 작성 전 HEAD `77a69aa`.
 현재 상태는 이 기준 소스를 읽어 확인한 구현이며, 실사용 검증 완료를 뜻하지 않는다.
 병렬 작업은 담당 범위만 전달받았으므로 아래의 구현 현황과 구분한다.
@@ -36,7 +38,7 @@
 
 - `crates/o-core/src/run/plan.rs`, `providers/`: Claude·Codex·Antigravity 카드를 같은 계획에 담거나 한 프로바이더만 사용할 수 있다.
 - `app/src/features/office/Office.tsx`: 선택한 실행의 총괄과 카드들을 캐릭터로 표시하고, 상태에 따라 책상·대기·휴식 위치를 바꾼다.
-- `app/src/features/work/AgentBoard.tsx`: 프로젝트 카드들을 대기·작업 중·PR 검토·완료·막힘으로 묶는다.
+- `app/src/features/work/WorkDashboard.tsx`: 프로젝트별 또는 전체 작업 흐름과 활동을 표시한다.
 - `app/src/features/chat/CardTranscript.tsx`, `TeamChat.tsx`: 카드 기록과 같은 실행 안의 팀 대화를 표시한다.
 - `app/src/data/useLiveRuns.ts`: Tauri/API에서 최근 실행 50개를 읽고 보이는 동안 2초 간격으로 갱신한다.
 - 같은 파일에서 브라우저 미리보기는 소스를 지정하지 않았고 실제 실행이 없으면 데모 기록으로 전환한다. 데스크톱 앱은 전환하지 않는다(ADR-0008). 데모 화면은 실제 작업의 증거가 아니다.
@@ -83,7 +85,7 @@
 현재 있는 것:
 
 - `src/core/attention.ts`의 `prOf`는 카드 결과·로그에서 첫 GitHub PR URL을 찾고, 완료 카드에 검토 티켓을 만든다.
-- `app/src/features/work/AgentBoard.tsx`, `NextUp.tsx`는 그 링크와 PR 검토 상태를 표시한다.
+- `app/src/features/chat/CardTranscript.tsx`, `AllNextUp.tsx`는 그 링크와 PR 검토 상태를 표시한다.
 - `crates/o-core/src/run/team.rs`, `crates/o-core/src/policy.rs`: 같은 실행의 카드와 총괄이 `o msg`로 대화하고 발신자·수신자·내용을 검사한다.
 - `crates/o-guard/src/hook.rs`, `scan.rs`: 보호 브랜치 직접 변경과 규칙 밖 병합을 해당 훅 경로에서 막는다.
 - `.github/workflows/branch-flow.yml`, `merge-guard.yml`: PR 방향 검사와 대표 외 보호 브랜치 병합·push 경보가 있다.
@@ -160,12 +162,12 @@ SQLite 색인은 현재 실행 목록/이벤트 조회용이며 의미 검색·�
 - `crates/o-core/src/policy.rs`, `run/runner.rs`: 총괄이 만든 계획을 검사하고 각 카드를 독립된 공식 CLI 프로세스로 실행한다.
 - O 카드는 특정 CLI의 내장 서브에이전트 호출이 아니다. 별도 CLI 세션이 같은 프로젝트 폴더에서 일하며 실행별 팀 채널로 연락한다.
 - `app/src/features/settings/Onboarding.tsx`, `Settings.tsx`, `AgentSetup.tsx`: 공식 CLI 상태 확인·설치·로그인과 깨끗한 프로필 선택이 있다.
-- `app/src/data/settings.ts`의 clean 기본값은 true지만, 현재 연결 대상은 상태 확인·로그인이다. CLI dispatch는 명시적인 `--clean`이 필요하다.
+- `app/src/data/settings.ts`의 clean(설정 "project_O 프로필 사용") 기본값은 true이고, 상태 확인·로그인과 카드·총괄 실행에 전달된다. CLI도 기본이 `--profile project-o`다(ADR-0013).
 
 총괄 채팅(`younchan-lead`, [ADR-0008](decisions/0008-lead-chat.md)) — 남은 순서 1–3 중 1·2와 3의 일부를 구현했다:
 
 - `crates/o-core/src/lead/`: 프로젝트별 총괄 스레드(`leads/<id>/events.jsonl`, "새 대화"), Claude·Codex 총괄의 읽기 전용 한 턴과 세션 재개(`Provider::lead`), 계획 블록(` ```o-plan `)을 읽어 프로젝트를 고정하고 `o dispatch`와 같은 정책으로 검사해 저장, 사람이 누른 "실행"만 다시 검사해 한 번 dispatch, 첨부(이미지·문서, O 상태 폴더 밖), 총괄 토큰을 `o tokens`의 부대 비용으로.
-- `o lead send|show|new|attach|dispatch|stop`, Tauri `lead_*`, 개발 서버 `/api/lead/*`. 앱 입력창(에이전트·노력 선택, 첨부, 중지)과 계획 카드, 설정 → 총괄. 설정의 깨끗한 에이전트 선택이 총괄 실행과 계획 dispatch(`--clean`)에 실제로 전달된다.
+- `o lead send|show|new|attach|dispatch|stop`, Tauri `lead_*`, 개발 서버 `/api/lead/*`. 앱 입력창(에이전트·노력 선택, 첨부, 중지)과 계획 카드, 설정 → 총괄. 설정의 "project_O 프로필 사용"이 총괄 실행과 계획 dispatch(`--profile project-o|own`)에 실제로 전달된다.
 - Antigravity는 읽기 전용 모드를 보장하지 못해 총괄에서 뺐다(카드로는 그대로 쓴다). 카드의 provider·model·effort는 총괄이 고른다.
 - 실제 확인(2026-11-02): 로그인된 Claude CLI로 홈 밖 임시 프로젝트에 `o lead send --effort low`를 보내 카드 1장 계획이 저장되고 정책을 통과했다(실행은 하지 않음). 총괄 한 턴 입력 4,234 · 캐시 3,223 · 출력 567 토큰.
 - 데스크톱 앱은 실제 데이터만 보인다. 녹화된 데모는 브라우저 미리보기(`?source=demo`, 개발 서버)에만 있다.

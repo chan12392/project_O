@@ -5,19 +5,16 @@
 use std::collections::BTreeMap;
 use std::io;
 use std::path::Path;
-use std::process::Command;
-use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
 use super::stream::{limit_from_text, num, short, tool_summary};
-use super::{opt, outbox_path, strings, LaunchSpec, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
+use super::{opt, outbox_path, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
+use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
 use crate::sys::js::{coalesce, js_string};
-use crate::sys::proc;
-use crate::sys::resolve::resolve_cli;
 use crate::usage::UsageWindow;
 
 pub struct Agy;
@@ -28,14 +25,20 @@ const NO_UPDATE: (&str, &str) = ("AGY_CLI_DISABLE_AUTO_UPDATE", "true");
 /// agy's quota report in print mode: no model turn (agy 1.1.11 and later).
 const USAGE: [&str; 6] = ["-p", "/usage", "--output-format", "json", "--print-timeout", "20s"];
 
+/// A lead session's deny rules (agy `--settings`): every kind of action that changes
+/// something — file writes (edits included), shell commands, MCP tools — and URL actions.
+const LEAD_DENY: [&str; 5] = ["write_file(*)", "command(*)", "mcp(*)", "read_url(*)", "execute_url(*)"];
+
 impl Provider for Agy {
     fn launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         // agy allow-rules match whole commands only, so it gets two fixed ones and
         // writes what it sends to its outbox file first (see `o msg post`).
         let settings = json!({ "permissions": { "allow": [format!("command({TEAM_COMMAND} read)"), format!("command({TEAM_COMMAND} post)")] } });
-        let mut args = strings(&["--output-format", "stream-json", "--mode", "accept-edits", "--add-dir", team.run_dir, "--settings"]);
+        let spec = connection("agy").headless;
+        let mut args = strings(spec.fixed);
+        args.extend(strings(&["--add-dir", team.run_dir, "--settings"]));
         args.push(settings.to_string());
-        args.extend(opt("--model", card.model.as_deref()));
+        args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         args.push("-p".into());
         args.push(prompt);
@@ -68,9 +71,63 @@ impl Provider for Agy {
         false
     }
 
-    // No lead (`lead_efforts` stays empty): agy 1.4 can resume (`--conversation`), but none
-    // of its modes (accept-edits, auto, plan) is documented as read-only, so O cannot promise
-    // a lead that never edits. See ADR-0008.
+    fn lead_efforts(&self) -> &'static [&'static str] {
+        &["low", "medium", "high", "xhigh", "max"]
+    }
+
+    /// Plan mode alone only asks the model not to edit (agy 1.4.12 still tried `edit_file`
+    /// in it), so the session's own deny rules are what keep the lead read-only: agy's
+    /// permission check refuses every file write, shell command, MCP tool and URL action,
+    /// and `--sandbox` restricts the terminal on top. Reading stays open. The turn resumes
+    /// with `--conversation <id>` (the stream's `init` event names it). agy takes no image
+    /// input, so attachments are named in the prompt and their folder is added for reading.
+    fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let settings = json!({ "permissions": { "deny": LEAD_DENY } });
+        let mut args = strings(&["--output-format", "stream-json", "--mode", "plan", "--sandbox", "--settings"]);
+        args.push(settings.to_string());
+        args.extend(opt("--conversation", turn.session));
+        args.extend(opt("--add-dir", turn.files_dir));
+        args.extend(opt("--model", turn.model));
+        args.extend(opt("--effort", turn.effort));
+        args.push("-p".into());
+        args.push(turn.prompt.clone());
+        let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// Every tool call approved without asking (agy's skip-permissions flag, which outranks the
+    /// mode). The team commands need no allow rule then; the run folder stays added for the
+    /// outbox. The session's deny rules keep the commands that send work closed (whether agy
+    /// holds deny rules under this flag is not documented; `o` refuses them itself too).
+    fn yolo_launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
+        let mut args = strings(&["--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", team.run_dir, "--settings"]);
+        args.push(yolo_settings());
+        args.extend(opt("--model", card.model.as_deref()));
+        args.extend(opt("--effort", card.effort.as_deref()));
+        args.push("-p".into());
+        args.push(prompt);
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// The lead with every tool approved: no plan mode, no sandbox, and of the read-only deny
+    /// rules only the block on the commands that send work.
+    fn yolo_lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+        let mut args = strings(&["--output-format", "stream-json", "--dangerously-skip-permissions", "--settings"]);
+        args.push(yolo_settings());
+        args.extend(opt("--conversation", turn.session));
+        args.extend(opt("--add-dir", turn.files_dir));
+        args.extend(opt("--model", turn.model));
+        args.extend(opt("--effort", turn.effort));
+        args.push("-p".into());
+        args.push(turn.prompt.clone());
+        let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+    }
+
+    /// `agy models` lists the models this sign-in may use, one `id<TAB>name` per line.
+    fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
+        Err(crate::policy::AGY_UNAVAILABLE.into())
+    }
 
     fn stream_reader(&self) -> ReadLine {
         let mut text = String::new();
@@ -131,21 +188,14 @@ impl Provider for Agy {
     }
 
     fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
-        Some(usage_report())
+        Some(Err(crate::policy::AGY_UNAVAILABLE.into()))
     }
 }
 
-/// Print-mode /usage, within agy's own print timeout and a margin.
-fn usage_report() -> Result<Vec<UsageWindow>, String> {
-    let cli = resolve_cli("agy").ok_or("agy CLI를 찾지 못했습니다")?;
-    let mut command = Command::new(&cli.command);
-    command.args(&cli.prefix).args(USAGE).env(NO_UPDATE.0, NO_UPDATE.1);
-    let (status, out, _) = proc::capture(&mut command, Duration::from_secs(20 + 10)).map_err(|e| format!("agy /usage {e}"))?;
-    if !status.success() {
-        let code = proc::exit_code(status).map(|c| c.to_string()).unwrap_or_else(|| "시간 초과".into());
-        return Err(format!("agy /usage 실패 ({code})"));
-    }
-    Ok(parse_agy_usage(&out))
+/// YOLO mode's session settings: deny the commands no agent may run (`AGENT_ONLY_COMMANDS`).
+fn yolo_settings() -> String {
+    let deny: Vec<String> = AGENT_ONLY_COMMANDS.iter().map(|c| format!("command({c}*)")).collect();
+    json!({ "permissions": { "deny": deny } }).to_string()
 }
 
 /// The `agy -p /usage` JSON envelope: groups of buckets with a remaining fraction each.
@@ -178,6 +228,18 @@ pub fn parse_agy_usage(stdout: &str) -> Vec<UsageWindow> {
         }
     }
     out
+}
+
+/// `agy models` output: `id<TAB>name` lines after a "Fetching…" line, which has no tab.
+pub fn parse_agy_models(stdout: &str) -> Vec<ModelChoice> {
+    stdout
+        .lines()
+        .filter_map(|line| {
+            let (id, label) = line.split_once('\t')?;
+            let id = id.trim();
+            (!id.is_empty()).then(|| ModelChoice { id: id.to_string(), label: Some(label.trim()).filter(|l| !l.is_empty()).unwrap_or(id).to_string(), hint: None })
+        })
+        .collect()
 }
 
 /// agy streams its answer in deltas; `text` collects them until the step is done.

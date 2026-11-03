@@ -36,8 +36,11 @@ fn budget_json_lists_every_provider_with_the_setting_and_today_s_numbers() {
     assert_eq!(empty["usageAt"], "");
     let providers = empty["providers"].as_array().unwrap();
     let ids: Vec<&str> = providers.iter().map(|p| p["provider"].as_str().unwrap()).collect();
-    assert_eq!(ids, ["claude", "codex", "agy"]);
-    assert!(providers.iter().all(|p| p["state"] == "unknown" && p["spent"].is_null() && p["stepsDown"] == 0));
+    assert_eq!(ids, ["claude", "codex", "agy", "opencode", "devin"]);
+    assert!(providers[..3].iter().all(|p| p["state"] == "unknown" && p["spent"].is_null() && p["stepsDown"] == 0));
+    // ADR-0015: no usage probe, so the budget never applies to OpenCode.
+    assert_eq!((providers[3]["state"].as_str(), providers[3]["stepsDown"].as_u64()), (Some("notApplied"), Some(0)));
+    assert_eq!(providers[4]["state"], "notApplied");
 
     let now = Utc::now();
     let weekly = |used: f64| UsageWindow { provider: ProviderId::Codex, window: "seven_day".into(), group: None, used, resets_at: iso(now + Duration::days(3)) };
@@ -61,4 +64,26 @@ fn budget_json_lists_every_provider_with_the_setting_and_today_s_numbers() {
     assert_eq!(json(&base, &["budget", "--json", "--cached"])["percent"], 12);
     let text = o(&base, &["budget", "--cached"]);
     assert!(String::from_utf8_lossy(&text.stdout).contains("주간 한도의 12%"));
+}
+
+#[test]
+fn budget_on_and_off_are_saved_and_shown() {
+    let (base, home) = setup("switch");
+    assert_eq!(json(&base, &["budget", "--json", "--cached"])["enabled"], true);
+    let off = json(&base, &["budget", "--json", "--cached", "--off"]);
+    assert_eq!(off["enabled"], false);
+    let states: Vec<&str> = off["providers"].as_array().unwrap().iter().map(|p| p["state"].as_str().unwrap()).collect();
+    assert_eq!(states, ["off", "off", "off", "notApplied", "notApplied"]);
+    let settings: Value = serde_json::from_str(&fs::read_to_string(home.join("settings.json")).unwrap()).unwrap();
+    assert_eq!(settings["dailyBudgetEnabled"], false);
+    let text = String::from_utf8_lossy(&o(&base, &["budget", "--cached"]).stdout).into_owned();
+    assert!(text.contains("하루 사용 예산: 꺼짐"), "{text}");
+    assert_eq!(json(&base, &["budget", "--json", "--cached", "--on"])["enabled"], true);
+}
+
+#[test]
+fn about_prints_the_same_version_as_the_app() {
+    let (base, _) = setup("about");
+    let app: Value = serde_json::from_str(&fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/../../app/package.json")).unwrap()).unwrap();
+    assert_eq!(json(&base, &["about", "--json"])["version"], app["version"]);
 }

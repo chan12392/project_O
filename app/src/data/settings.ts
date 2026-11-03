@@ -1,12 +1,18 @@
 import { useSyncExternalStore } from "react";
 
-import { effortFor, isLeadProvider, type LeadProvider } from "../../../src/core/lead.ts";
+import { MODEL_ID, effortFor, isLeadProvider, type LeadProvider } from "../../../src/core/lead.ts";
 import { readStored, writeStored } from "../lib/storage.ts";
 
 /** A saved lead agent and effort, kept only while the agent can lead and takes that effort. */
 function leadChoice(agent: unknown, effort: unknown): { leadAgent: LeadProvider; leadEffort: string } {
   const leadAgent = typeof agent === "string" && isLeadProvider(agent) ? agent : DEFAULTS.leadAgent;
   return { leadAgent, leadEffort: effortFor(leadAgent, typeof effort === "string" ? effort : DEFAULTS.leadEffort) };
+}
+
+/** Saved default models, kept only for agents that can lead and ids `o lead send --model` takes. */
+function leadModels(saved: unknown): Partial<Record<LeadProvider, string>> {
+  if (!saved || typeof saved !== "object") return {};
+  return Object.fromEntries(Object.entries(saved).filter(([agent, id]) => isLeadProvider(agent) && typeof id === "string" && MODEL_ID.test(id)));
 }
 
 /**
@@ -19,13 +25,19 @@ export type Theme = "system" | "light" | "dark";
 export type FontSize = "small" | "normal" | "large";
 export type Motion = "system" | "reduce" | "full";
 export type StartScreen = "last" | "onboarding";
+export type CloseAction = "ask" | "tray" | "quit";
 
 export interface Settings {
   theme: Theme;
   fontSize: FontSize;
   motion: Motion;
   start: StartScreen;
-  /** Agents run with Project O's clean test profiles, without the owner's personal harness. */
+  closeAction: CloseAction;
+  /**
+   * project_O 프로필 사용 (ADR-0013): cards and the lead run with Project O's clean agent profiles
+   * (true), or with the person's own CLI setup (false). The key is the one Settings → 깨끗한
+   *에이전트 and the token switch saved before, so each person's choice carries over unchanged.
+   */
   clean: boolean;
   /** A desktop notification when a watched card finishes while the window is in the background. */
   notify: boolean;
@@ -34,6 +46,8 @@ export interface Settings {
   /** Settings → 총괄: the agent and effort a new message starts with (the composer may pick others). */
   leadAgent: LeadProvider;
   leadEffort: string;
+  /** Settings → 총괄: each agent's default model id; none means the CLI's own default (no `--model`). */
+  leadModels: Partial<Record<LeadProvider, string>>;
   skippedUpdate?: string;
 }
 
@@ -47,10 +61,12 @@ export const DEFAULTS: Settings = {
   fontSize: "normal",
   motion: "system",
   start: "last",
+  closeAction: "ask",
   clean: true,
   notify: false,
   leadAgent: "claude",
   leadEffort: "medium",
+  leadModels: {},
 };
 
 const FONT_SCALE: Record<FontSize, string> = { small: "0.9375", normal: "1", large: "1.125" };
@@ -68,10 +84,12 @@ function load(): Settings {
       fontSize: pick(s.fontSize, ["small", "normal", "large"], DEFAULTS.fontSize),
       motion: pick(s.motion, ["system", "reduce", "full"], DEFAULTS.motion),
       start: pick(s.start, ["last", "onboarding"], DEFAULTS.start),
+      closeAction: pick(s.closeAction, ["ask", "tray", "quit"], DEFAULTS.closeAction),
       clean: typeof s.clean === "boolean" ? s.clean : DEFAULTS.clean,
       notify: typeof s.notify === "boolean" ? s.notify : DEFAULTS.notify,
       sessions: typeof s.sessions === "boolean" ? s.sessions : undefined,
       ...leadChoice(s.leadAgent, s.leadEffort),
+      leadModels: leadModels(s.leadModels),
       skippedUpdate: typeof s.skippedUpdate === "string" ? s.skippedUpdate : undefined,
     };
   });

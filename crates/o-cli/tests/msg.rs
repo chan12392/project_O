@@ -20,7 +20,7 @@ fn o(base: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
 fn setup(name: &str) -> (PathBuf, PathBuf) {
     let base = std::env::temp_dir().join(format!("o-msg-{name}-{}", std::process::id()));
     let home = base.join("project_O");
-    let card = |id: &str, provider, task: &str| Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None };
+    let card = |id: &str, provider, task: &str| Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] };
     let plan = Plan {
         title: "t".into(),
         project: std::env::temp_dir().to_string_lossy().into_owned(),

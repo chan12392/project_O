@@ -1,7 +1,7 @@
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, OctagonX } from "lucide-react";
 import { useEffect, useLayoutEffect, useRef } from "react";
 
-import type { RunView } from "../../../../src/core/snapshot.ts";
+import { blockedReason, failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, STATE_WORD, clip, modelLine, names, timeOf } from "../../lib/format.ts";
 import type { Message, ScreenState } from "../../data/useRun.ts";
 import { AgentStateDot } from "../../ui/AgentStateDot.tsx";
@@ -64,7 +64,7 @@ export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }:
                 <p className="mb-1 text-xs text-chat-foreground-faint">
                   {name(m.from)} → {name(m.to)} <time dateTime={m.at}>{timeOf(m.at)}</time>
                 </p>
-                <p className="whitespace-pre-wrap">{m.text}</p>
+                <Markdown text={m.text} />
               </article>
             ))}
       </div>
@@ -73,18 +73,48 @@ export function Thread({ state, messages, run, onOpenCard, onRetry, onCompose }:
 }
 
 const RUN_WORD: Record<RunView["status"], string> = { running: "진행 중", done: "모두 완료", failed: "실패한 카드 있음", stopped: "중지됨" };
+const BLOCKED_WORD = "시작 전에 막힘";
+
+/** Why a run ended before any card started: the runner's policy reasons (`run.blocked`), each with its rule. */
+function BlockedReason({ run }: { run: RunView }) {
+  return (
+    <div role="note" aria-label="실행이 막힌 이유" className="border-b px-4 py-3 text-xs">
+      <p className="flex items-center gap-1.5 font-medium text-destructive">
+        <OctagonX className="size-3.5 shrink-0" aria-hidden="true" />
+        카드를 하나도 시작하지 않았습니다.{run.blocked?.length ? " 실행 직전 정책 검사에서 막혔습니다." : ""}
+      </p>
+      {run.blocked?.length ? (
+        <ul className="mt-1.5 space-y-1">
+          {run.blocked.map((v, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="shrink-0 font-mono text-destructive">[{v.rule}]</span>
+              <span className="min-w-0 [overflow-wrap:anywhere]">
+                {v.cardId && <span className="font-mono">{v.cardId}: </span>}
+                {v.message}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="mt-1.5 text-muted-foreground">{blockedReason(run)}</p>
+      )}
+    </div>
+  );
+}
 
 export function RunCard({ run, onOpenCard }: { run: RunView; onOpenCard: (id: string) => void }) {
+  const blocked = failedBeforeCards(run);
   return (
     <section className="overflow-hidden rounded-xl border bg-card text-card-foreground" aria-labelledby="run-title">
       <header className="flex items-center justify-between gap-3 border-b px-4 py-3">
         <h2 id="run-title" className="truncate text-sm font-medium">
           {run.title}
         </h2>
-        <span role="status" className="shrink-0 rounded-full border px-2 py-0.5 text-2xs text-muted-foreground">
-          {RUN_WORD[run.status]}
+        <span role="status" className={`shrink-0 rounded-full border px-2 py-0.5 text-2xs ${blocked ? "border-destructive/40 text-destructive" : "text-muted-foreground"}`}>
+          {blocked ? BLOCKED_WORD : RUN_WORD[run.status]}
         </span>
       </header>
+      {blocked && <BlockedReason run={run} />}
       <ul>
         {run.cards.map((card) => (
           <li key={card.id} className="border-b last:border-b-0">
@@ -140,7 +170,10 @@ export function useFollowBottom(deps: unknown[]) {
       follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
-    return () => el.removeEventListener("scroll", onScroll);
+    const content = el.firstElementChild;
+    const resize = new ResizeObserver(() => { if (follow.current) el.scrollTop = el.scrollHeight; });
+    if (content) resize.observe(content);
+    return () => { el.removeEventListener("scroll", onScroll); resize.disconnect(); };
   }, []);
   useLayoutEffect(() => {
     const el = ref.current;

@@ -2,9 +2,11 @@ import { RefreshCw, RotateCcw } from "lucide-react";
 
 import { LIMITS } from "../../../src/core/limits.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
-import { PROVIDER_NAME, timeOf } from "../lib/format.ts";
+import { timeOf } from "../lib/format.ts";
 import type { LiveStatus } from "../data/useLiveRuns.ts";
 import type { ScreenState } from "../data/useRun.ts";
+import { useBudget } from "../data/useBudget.ts";
+import { serviceLimits } from "./serviceLimits.ts";
 
 const BUTTON = "flex h-5 items-center gap-1 rounded px-1.5 whitespace-nowrap hover:bg-accent hover:text-foreground focus-ring";
 
@@ -24,7 +26,8 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
   const now = new Date();
   const started = cards.filter((c) => c.startedAt && (!live || sameDay(c.startedAt, now))).length;
   const active = cards.filter((c) => c.state === "running").length;
-  const limited = [...new Set(cards.flatMap((c) => c.log.filter((l) => l.kind === "limit").map(() => PROVIDER_NAME[c.provider])))];
+  const budget = useBudget();
+  const limits = serviceLimits(cards, budget?.providers);
   const n = (value: number) => (known ? value : "?");
   const usageAt = live?.usage?.at;
   const unavailable = live?.usage?.unavailable.map((u) => `${u.provider}: ${u.reason}`).join("\n");
@@ -37,7 +40,7 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
       <span>
         실행 중 <span className="text-foreground tabular-nums">{n(active)}</span> / {LIMITS.maxActiveTotal}
       </span>
-      <span className="max-sm:hidden">{!known ? "한도 확인 전" : limited.length > 0 ? `한도 걸림: ${limited.join(", ")}` : "한도 걸린 서비스 없음"}</span>
+      <span className="max-sm:hidden" title={limits.title}>{!known ? "한도 확인 전" : limits.text}</span>
       {live ? (
         <>
           <span className="ml-auto max-md:hidden">{live.failed ? "이 PC의 O 실행 기록 · 연결 끊김, 다시 시도하는 중" : "이 PC의 O 실행 기록 · 실시간"}</span>

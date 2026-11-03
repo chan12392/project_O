@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use regex::Regex;
 use serde::Serialize;
 
+use crate::policy::Violation;
 use crate::run::events::{CardStatus, OEvent};
 use crate::sys::js::ser_num;
 use crate::run::plan::{card_label, ProviderId};
@@ -173,7 +174,29 @@ pub struct RunView {
     pub messages: Vec<TeamMessage>,
     /// Latest report per provider and window.
     pub quotas: Vec<Quota>,
+    /// Why the runner refused to start the run (`run.blocked`); empty when it did not.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub blocked: Vec<Violation>,
 }
+
+impl RunView {
+    /// A run that ended failed before any card was made (refused by the runner's last check,
+    /// or its runner failed): no card shows it, so it is counted as a run of its own.
+    pub fn failed_before_cards(&self) -> bool {
+        self.status == RunStatus::Failed && self.cards.is_empty()
+    }
+
+    /// Why it never started, one line: the policy's reasons, or where to look when there are none.
+    pub fn blocked_reason(&self) -> String {
+        if self.blocked.is_empty() {
+            return BLOCKED_UNKNOWN.to_string();
+        }
+        self.blocked.iter().map(|v| v.message.as_str()).collect::<Vec<_>>().join(" / ")
+    }
+}
+
+/// What a run that failed before its cards says when the runner left no reason (as src/core/snapshot.ts).
+pub const BLOCKED_UNKNOWN: &str = "카드를 만들기 전에 실행기가 멈췄습니다. 실행 폴더의 runner.err.log를 확인하세요";
 
 pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
     let mut run: Option<RunView> = None;
@@ -187,9 +210,12 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 ended_at: None,
                 status: RunStatus::Running,
                 // Runs recorded before labels existed carry only a role.
+                // A repeated card id is one card: the first keeps it (as src/core/snapshot.ts does).
                 cards: cards
                     .iter()
-                    .map(|c| CardView {
+                    .enumerate()
+                    .filter(|(i, c)| !cards[..*i].iter().any(|earlier| earlier.id == c.id))
+                    .map(|(_, c)| CardView {
                         id: c.id.clone(),
                         provider: c.provider,
                         label: c.label.clone().unwrap_or_else(|| card_label(&c.id, c.role.as_deref())),
@@ -207,6 +233,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                     .collect(),
                 messages: Vec::new(),
                 quotas: Vec::new(),
+                blocked: Vec::new(),
             });
             continue;
         }
@@ -239,6 +266,10 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
             OEvent::Quota { at, provider, window, used, resets_at } => {
                 run.quotas.retain(|q| q.provider != *provider || q.window != *window);
                 run.quotas.push(Quota { provider: *provider, window: window.clone(), used: *used, resets_at: resets_at.clone(), at: at.clone() });
+                continue;
+            }
+            OEvent::RunBlocked { violations, .. } => {
+                run.blocked = violations.clone();
                 continue;
             }
             _ => {}

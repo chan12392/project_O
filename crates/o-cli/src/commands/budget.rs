@@ -1,4 +1,4 @@
-//! `o budget [--json] [--cached] [--percent N]`: today's usage budget per provider (ADR-0004).
+//! `o budget [--json] [--cached] [--percent N] [--on|--off]`: today's usage budget per provider (ADR-0004, ADR-0013).
 
 use std::path::Path;
 
@@ -10,10 +10,12 @@ use super::{fail, help, Command};
 
 pub const BUDGET: Command = Command {
     name: "budget",
-    usage: "  o budget [--json] [--cached] [--percent 12|13|14]
+    usage: "  o budget [--json] [--cached] [--percent 12|13|14] [--on|--off]
                              에이전트별 오늘 사용 예산(주간 한도의 12~14%)·속도·effort 조절
                              (기록이 10분보다 오래되면 먼저 조회, --cached: 조회 안 함,
-                             --percent: settings.json의 하루 예산 비율 저장)",
+                             --percent: settings.json의 하루 예산 비율 저장,
+                             --on/--off: 하루 사용 예산 켜기·끄기. 끄면 예산으로 막거나 effort를
+                             낮추지 않음. 구독 한도·쿨다운·LIMITS는 그대로)",
     run: report,
 };
 
@@ -24,6 +26,11 @@ fn report(home: &Path, args: &[String]) -> i32 {
         match arg.as_str() {
             "--json" => as_json = true,
             "--cached" => cached = true,
+            "--on" | "--off" => {
+                if let Err(error) = budget::write_enabled(home, arg == "--on") {
+                    return fail(&error);
+                }
+            }
             "--percent" => {
                 let value = items.next().and_then(|v| v.parse::<f64>().ok()).map_or(Value::Null, |n| json!(n));
                 if let Err(error) = budget::write_percent(home, &value) {
@@ -44,7 +51,11 @@ fn report(home: &Path, args: &[String]) -> i32 {
         println!("{}", serde_json::to_string_pretty(&report).unwrap_or_default());
         return 0;
     }
-    println!("하루 사용 예산: 주간 한도의 {}% (settings.json {})", report.percent, budget::PERCENT_KEY);
+    if report.enabled {
+        println!("하루 사용 예산: 주간 한도의 {}% (settings.json {})", report.percent, budget::PERCENT_KEY);
+    } else {
+        println!("하루 사용 예산: 꺼짐 — 예산으로 막거나 effort를 낮추지 않음 (settings.json {}, 켜기: o budget --on)", budget::ENABLED_KEY);
+    }
     for b in &report.providers {
         let Some(spent) = b.spent else {
             println!("{:<6} 주간 기록 없음 — 조절하지 않음", b.provider.as_str());
@@ -55,6 +66,7 @@ fn report(home: &Path, args: &[String]) -> i32 {
         let efforts: Vec<String> = b.efforts.iter().map(|c| format!("{}→{}", c.from.as_deref().unwrap_or("미지정"), c.to)).collect();
         let adjust = match b.state {
             budget::Pace::Over => format!("새 카드 거부 ({})", b.message),
+            budget::Pace::Off => "예산 꺼짐".to_string(),
             _ if efforts.is_empty() => "effort 그대로".to_string(),
             _ => format!("effort {}단계 낮춤: {}", b.steps_down, efforts.join(", ")),
         };

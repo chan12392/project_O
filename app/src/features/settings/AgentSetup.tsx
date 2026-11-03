@@ -1,6 +1,8 @@
 import { Check, CircleAlert, CircleDashed, Download, ExternalLink, LogIn, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 
+import { canLead } from "../../../../src/core/lead.ts";
+import { useAgentCheck } from "../../data/agents.ts";
 import type { ActionResult, AgentId, AgentStatus, Backend } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 
@@ -16,44 +18,20 @@ function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-/** Installed and not known to be signed out: Project O can hand it cards. */
-export function usable(agent: AgentStatus): boolean {
-  return agent.installed && agent.loggedIn !== false;
-}
+/** Can lead now (installed, a lead agent, not known to be signed out): the composer's rule too. */
+export const usable = (agent: AgentStatus): boolean => canLead(agent);
 
 /**
- * The agent CLIs' install and sign-in state, through `backend()`: checked on
- * mount and whenever the clean-profile choice changes, again after every action.
+ * The agent CLIs' install and sign-in state, through `backend()`: the check every screen
+ * shares (once per profile, until "다시 확인"), run again after every action.
  */
 export function useAgents(api: Backend, clean: boolean) {
-  const [agents, setAgents] = useState<AgentStatus[]>();
-  const [error, setError] = useState<string>();
-  const [checking, setChecking] = useState(true);
+  // The check itself is shared with the other screens (data/agents.ts): opening this one does not run it again.
+  const { agents, error, checking, recheck } = useAgentCheck(api, clean);
   const [busy, setBusy] = useState<Partial<Record<AgentId, Busy>>>({});
   const [notes, setNotes] = useState<Partial<Record<AgentId, Note>>>({});
-  // Only the newest check may land; an older answer (other profile) is dropped.
-  const latest = useRef(0);
 
-  const recheck = useCallback(async () => {
-    const ticket = ++latest.current;
-    setChecking(true);
-    try {
-      const next = await api.agents(clean);
-      if (ticket !== latest.current) return;
-      setAgents(next);
-      setError(undefined);
-    } catch (e) {
-      if (ticket === latest.current) setError(errorText(e));
-    } finally {
-      if (ticket === latest.current) setChecking(false);
-    }
-  }, [api, clean]);
-
-  useEffect(() => {
-    setAgents(undefined);
-    setNotes({});
-    void recheck();
-  }, [recheck]);
+  useEffect(() => setNotes({}), [clean]);
 
   const act = async (id: AgentId, kind: Busy) => {
     setBusy((b) => ({ ...b, [id]: kind }));
@@ -79,7 +57,7 @@ export function useAgents(api: Backend, clean: boolean) {
     install: (id: AgentId) => act(id, "install"),
     login: (id: AgentId) => act(id, "login"),
     openExternal: (url: string) => void api.openExternal(url).catch(() => window.open(url, "_blank", "noopener")),
-    /** At least one agent can take cards. */
+    /** At least one agent can lead (the composer can send). */
     ready: Boolean(agents?.some(usable)),
   };
 }
@@ -140,14 +118,16 @@ export function AgentList({ state }: { state: AgentsState }) {
 }
 
 function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState }) {
-  const connected = agent.installed && agent.loggedIn === true;
-  const unknown = agent.installed && agent.loggedIn === null;
-  const needsLogin = agent.installed && agent.loggedIn === false;
+  const connected = agent.installed && !agent.profileUnsupported && agent.loggedIn === true;
+  const unknown = agent.installed && !agent.profileUnsupported && agent.loggedIn === null;
+  const needsLogin = agent.installed && !agent.profileUnsupported && agent.loggedIn === false;
   const version = agent.version ? ` · ${agent.version}` : "";
   const status = busy === "install"
     ? "설치하는 중입니다. 몇 분 걸릴 수 있습니다."
     : busy === "login"
       ? "로그인 창을 여는 중입니다."
+      : agent.installed && agent.profileUnsupported
+        ? agent.profileUnsupported
       : connected
         ? `연결됨${version}`
         : unknown
@@ -203,7 +183,7 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
       )}
       {!busy && !agent.installed && !agent.canInstall && agent.installHint && (
         <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">
-          Project O가 직접 설치하지 않습니다. 공식 안내대로 설치한 뒤 다시 확인을 눌러 주세요. <span className="text-foreground/85">{agent.installHint}</span>
+          Project O가 직접 설치하지 않습니다. 공식 안내대로 설치한 뒤 다시 확인을 눌러 주세요. 앱은 켜질 때의 PATH만 읽으므로, 방금 설치한 Node.js나 CLI가 그래도 보이지 않으면 앱을 다시 시작해 주세요. <span className="text-foreground/85">{agent.installHint}</span>
         </p>
       )}
       {!busy && needsLogin && (

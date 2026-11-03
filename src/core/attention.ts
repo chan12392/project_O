@@ -1,6 +1,6 @@
 import type { ProviderId } from "./plan.ts";
 import type { CardStatus } from "./events.ts";
-import { endWord, type CardView, type RunView } from "./snapshot.ts";
+import { blockedReason, endWord, failedBeforeCards, type CardView, type RunView } from "./snapshot.ts";
 
 /**
  * What needs a person next, read from runs alone (pure, like snapshot.ts).
@@ -36,16 +36,33 @@ export function isSessionRun(run: Pick<RunView, "runId">): boolean {
   return run.runId.startsWith(SESSION_PREFIX);
 }
 
+/** How a message to the lead asks for something: a question mark, "~할까요", "~주세요", "알려 ~". */
+const ASKS = /[?？]|까요|할지|주세요|부탁|알려/;
+
+/** A message to the lead that asks nothing: it only needs reading, not an answer. */
+export function isNote(item: Pick<NextItem, "kind" | "detail">): boolean {
+  return item.kind === "answer" && !ASKS.test(item.detail ?? "");
+}
+
 /**
- * The O command that acts on a ticket, for a person to paste into a terminal. A Claude Code
- * session is no O run (no plan, events or process of O's), so its tickets get none: they
- * are read-only records.
+ * Whether a ticket waits on a person: not a note that only needs reading, and not from a
+ * Claude Code session (a read-only record O cannot act on). Badges count only these.
+ */
+export function needsAction(item: Pick<NextItem, "kind" | "detail" | "runId">): boolean {
+  return !isNote(item) && !isSessionRun(item);
+}
+
+/**
+ * The O command for what the app cannot do yet (answer a card, stop a run), for a person
+ * to paste into a terminal; a secondary step beside opening the record. What a status
+ * command would print, the record already shows, so failed or stopped work gets none. A
+ * Claude Code session is no O run (no plan, events or process of O's), so its tickets get
+ * none either: they are read-only records.
  */
 export function ticketCommand(item: Pick<NextItem, "kind" | "runId" | "cardId">): { label: string; text: string } | undefined {
   if (isSessionRun(item)) return undefined;
-  if (item.kind === "answer") return { label: "답장 명령", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId} "답장 내용"` };
-  if (item.kind === "silent") return { label: "중지 명령", text: `o stop ${item.runId}` };
-  if (item.kind === "failed" || item.kind === "limit" || item.kind === "stopped") return { label: "상태 명령", text: `o status ${item.runId}` };
+  if (item.kind === "answer") return { label: "답장 명령 복사", text: `o msg send --run ${item.runId} --as lead --to ${item.cardId} "답장 내용"` };
+  if (item.kind === "silent") return { label: "중지 명령 복사", text: `o stop ${item.runId}` };
   return undefined;
 }
 
@@ -92,6 +109,9 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
   for (const run of runs) {
     const base = { runId: run.runId, runTitle: run.title };
     const cardOf = new Map(run.cards.map((c) => [c.id, c]));
+    if (failedBeforeCards(run)) {
+      keep(stopped, { ...base, key: `failed:${run.runId}`, kind: "failed", title: run.title, detail: blockedReason(run), since: run.endedAt ?? run.startedAt });
+    }
 
     // An agent wrote to the lead and the lead has not written back to it (or to everyone) since.
     const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
@@ -146,6 +166,8 @@ export interface Suggestion {
   since: string;
   /** The Next up ticket behind it; absent for an idle project. */
   item?: NextItem;
+  /** Other cards' review tickets for the same PR, folded into this pick so one PR takes one slot. */
+  samePr?: NextItem[];
 }
 
 /** A project with nothing new for this many days, and cards still unfinished, is worth picking back up. */
@@ -195,7 +217,7 @@ function lastActivity(run: RunView): string {
 /**
  * What to pick up next across every project, without asking a model: stopped or
  * failed work oldest first, then questions waiting for an answer, then PRs waiting
- * for review, then projects left idle for `idleDays` with cards still unfinished.
+ * for review (one pick per PR, however many cards reported it), then projects left idle for `idleDays` with cards still unfinished.
  * Each comes with a one-line reason ("3일째 멈춤 · 실패", "2시간째 답을 기다림").
  */
 export function recommend(runs: RunView[], now: Date, handled: ReadonlySet<string> = new Set(), { idleDays = IDLE_DAYS, limit = 5 } = {}): Suggestion[] {
@@ -205,7 +227,14 @@ export function recommend(runs: RunView[], now: Date, handled: ReadonlySet<strin
   for (const item of [...stopped, ...todo]) {
     const reason = reasonOf(item, now);
     const project = projectOf.get(item.runId);
-    if (reason && project !== undefined) out.push({ key: item.key, kind: item.kind as SuggestionKind, project, title: item.title, reason, since: item.since, item });
+    // A note waits for no answer, so it is no "답을 기다림" pick.
+    if (!reason || project === undefined || isNote(item)) continue;
+    // Cards reporting the same PR are one review: the oldest ticket leads, the rest ride along.
+    const same = item.kind === "review" ? out.find((s) => s.kind === "review" && s.item?.pr === item.pr) : undefined;
+    if (same) {
+      same.samePr = [...(same.samePr ?? []), item];
+      same.reason = `${reasonOf(same.item!, now)} · 카드 ${same.samePr.length + 1}장`;
+    } else out.push({ key: item.key, kind: item.kind as SuggestionKind, project, title: item.title, reason, since: item.since, item });
   }
 
   // Projects nobody has touched for days, with cards that never finished and no ticket already pointing at them.
@@ -271,7 +300,7 @@ export function fleetStats(runs: RunView[], now: Date): FleetStats {
   const todays = runs.filter((r) => Date.parse(r.startedAt) >= today.getTime()).flatMap((r) => r.cards);
   return {
     running: cards.filter((c) => c.state === "running").length,
-    stopped: cards.filter((c) => c.state === "failed" || c.state === "stopped").length,
+    stopped: cards.filter((c) => c.state === "failed" || c.state === "stopped").length + runs.filter(failedBeforeCards).length,
     prs: cards.filter((c) => prOf(c)).length,
     cardsToday: todays.length,
     tokensToday: todays.reduce((sum, c) => sum + tokensOf(c), 0),
@@ -292,7 +321,7 @@ export interface ActivityItem {
 export function activity(runs: RunView[], limit: number): ActivityItem[] {
   const items: ActivityItem[] = [];
   for (const run of runs) {
-    items.push({ at: run.startedAt, kind: "run", runId: run.runId, text: run.title, detail: `작업 시작 · 카드 ${run.cards.length}장` });
+    items.push({ at: run.startedAt, kind: "run", runId: run.runId, text: run.title, detail: failedBeforeCards(run) ? `카드 시작 전 실패 · ${blockedReason(run)}` : `작업 시작 · 카드 ${run.cards.length}장` });
     for (const card of run.cards) {
       const who = { runId: run.runId, cardId: card.id, provider: card.provider };
       if (card.startedAt) items.push({ ...who, at: card.startedAt, kind: "start", text: card.label, detail: `시작 · ${run.title}` });
