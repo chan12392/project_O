@@ -147,7 +147,7 @@ pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String
 
 fn graph_capable(output: &[u8]) -> bool {
     serde_json::from_slice::<Value>(output).ok().and_then(|info| info.get("capabilities").and_then(Value::as_array).cloned())
-        .is_some_and(|caps| ["work-graph-v1", "lead-worktrees-v1"].iter().all(|required| caps.iter().any(|cap| cap.as_str() == Some(required))))
+        .is_some_and(|caps| ["work-graph-v1", "lead-worktrees-v1", "lead-copy-workspaces-v1"].iter().all(|required| caps.iter().any(|cap| cap.as_str() == Some(required))))
 }
 
 /// How long a lead model list is reused before the CLI is asked again.
@@ -208,6 +208,7 @@ mod tests {
         assert!(!graph_capable(br#"{"version":"0.3.0"}"#));
         assert!(!graph_capable(b"invalid"));
         assert!(!graph_capable(br#"{"capabilities":["work-graph-v1"]}"#));
-        assert!(graph_capable(br#"{"capabilities":["work-graph-v1","lead-worktrees-v1"]}"#));
+        assert!(!graph_capable(br#"{"capabilities":["work-graph-v1","lead-worktrees-v1"]}"#));
+        assert!(graph_capable(br#"{"capabilities":["work-graph-v1","lead-worktrees-v1","lead-copy-workspaces-v1"]}"#));
     }
 }

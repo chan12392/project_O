@@ -47,7 +47,8 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 27] = [
+    let tests: [(&str, fn()); 28] = [
+        ("a plan for a non-Git project can be dispatched", dispatch_non_git),
         ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
         ("design snapshots persist and malformed ones do not dispatch", design_snapshots),
         ("only the latest plan in the current thread can dispatch", stale_plan_refused),
@@ -439,6 +440,16 @@ fn dispatch_once() {
     let (spawner, seen) = fake(claude_answer("s", "확인했습니다"));
     lead::send(&home, &request(&project, "어떻게 됐어?"), spawner.as_ref()).unwrap();
     assert!(seen.lock().unwrap()[0].stdin.as_deref().unwrap().contains(&done.run_id));
+}
+
+fn dispatch_non_git() {
+    let (home, project) = setup("dispatch-non-git");
+    let (spawner, _) = fake(claude_answer("s", &plan_answer(good_plan())));
+    let events = lead::send(&home, &request(&project, "해 줘"), spawner.as_ref()).unwrap();
+    let plan_id = plans(&events).remove(0).0;
+    let done = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &|_| Ok(())).ok().expect("non-Git plan dispatch");
+    assert!(home.join("runs").join(done.run_id).join("isolated-worktrees").exists());
+    assert!(!Path::new(&project).join(".git").exists());
 }
 
 fn threads() {

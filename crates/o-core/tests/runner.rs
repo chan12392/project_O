@@ -50,7 +50,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 21] = [
+    let tests: [(&str, fn()); 22] = [
+        ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
         ("dependencies wait for success and never start after failure", dependency_order),
         ("devin transcript and answer become card events", devin_transcript),
@@ -83,6 +84,44 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn isolated_copies() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(project.join("src")).unwrap();
+    std::fs::write(project.join("src").join("game.py"), "original\n").unwrap();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "first"), card("b", ProviderId::Claude, "second")]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "copies", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "copies").join("isolated-worktrees"), "").unwrap();
+    let paths = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
+    let observed = Arc::clone(&paths);
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+        let id = spec.env["O_CARD_ID"].clone();
+        let cwd = PathBuf::from(cwd);
+        assert_eq!(std::fs::read_to_string(cwd.join("src/game.py")).unwrap(), "original\n");
+        assert!(cwd.join(".git").is_dir());
+        std::fs::write(cwd.join("src/game.py"), &id).unwrap();
+        observed.lock().unwrap().insert(id, cwd.to_string_lossy().into_owned());
+        inner(spec, &cwd.to_string_lossy())
+    });
+    assert_eq!(run_plan(&home, "copies", &p, None, spawner).unwrap(), CardStatus::Done);
+    let paths = paths.lock().unwrap();
+    assert_ne!(paths["a"], paths["b"]);
+    assert_eq!(std::fs::read_to_string(project.join("src/game.py")).unwrap(), "original\n");
+    assert!(!project.join(".git").exists());
+    assert_eq!(std::fs::read_to_string(PathBuf::from(&paths["a"]).join("src/game.py")).unwrap(), "a");
+    drop(paths);
+
+    std::fs::create_dir(project.join("src/.git")).unwrap();
+    create_run(&home, "nested", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "nested").join("isolated-worktrees"), "").unwrap();
+    let never: Arc<Spawner> = Arc::new(|_, _| panic!("nested repository must not start"));
+    assert_eq!(run_plan(&home, "nested", &p, None, never).unwrap(), CardStatus::Failed);
+    assert!(read_events(&home, "nested").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("중첩 Git"))));
 }
 
 fn isolated_worktrees() {

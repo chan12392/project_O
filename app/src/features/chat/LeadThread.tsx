@@ -289,7 +289,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
           )
         ) : plan.ok ? (
           <>
-            <p role="note" className="w-full text-xs text-status-warning-text">Git의 미커밋 변경을 정리한 뒤 분배하세요. 결과는 작업별 폴더에 남으며 자동으로 합쳐지지 않습니다.</p>
+            <p role="note" className="w-full text-xs text-status-warning-text">Git 프로젝트는 미커밋 변경을 정리한 뒤 분배하세요. 결과는 작업별 폴더에 남으며 자동으로 합쳐지지 않습니다.</p>
             <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
               <Play className="size-3.5" aria-hidden="true" />
               {state.busy ? "분배하는 중…" : "작업 분배"}
