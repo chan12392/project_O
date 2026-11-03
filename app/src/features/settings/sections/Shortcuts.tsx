@@ -4,8 +4,6 @@ import { Section, type SettingsSectionDef } from "../Section.tsx";
 
 export const SHORTCUTS_SECTION = { id: "shortcuts", title: "단축키", icon: Keyboard, render: () => <ShortcutsSection /> } as const satisfies SettingsSectionDef;
 
-const MAC = typeof navigator !== "undefined" && navigator.userAgent.includes("Mac");
-
 const MENUS = "실행 프로필 메뉴, 총괄 에이전트·모델 메뉴";
 
 /**
@@ -16,7 +14,8 @@ const MENUS = "실행 프로필 메뉴, 총괄 에이전트·모델 메뉴";
  * ProjectForms (group name, new project, folder path). There are no global shortcuts.
  */
 const SHORTCUTS: { keys: string[][]; what: string; where: string }[] = [
-  { keys: [[MAC ? "⌘" : "Ctrl", "Enter"]], what: "총괄에게 요청 보내기 (Enter만 누르면 줄바꿈)", where: "요청 입력창" },
+  { keys: [["Enter"]], what: "총괄에게 요청 보내기", where: "요청 입력창" },
+  { keys: [["Ctrl", "Enter"], ["Shift", "Enter"]], what: "줄바꿈", where: "요청 입력창" },
   { keys: [["Esc"]], what: "설정을 닫고 앱으로 돌아가기", where: "설정 화면 (입력칸에 있거나 메뉴가 열려 있으면 그쪽이 먼저)" },
   { keys: [["Esc"]], what: "메뉴 닫기, 열었던 버튼으로 돌아가기", where: `계정 메뉴, 프로젝트 ⋯ 메뉴, 일하는 사람 목록, ${MENUS}` },
   { keys: [["Esc"]], what: "업데이트 안내를 나중에 보기로 닫기", where: "새 버전 안내 창 (데스크톱 앱)" },
