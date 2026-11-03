@@ -184,6 +184,36 @@ fn answers_reference_only_a_question_addressed_to_the_sender_and_retries_are_ide
 }
 
 #[test]
+fn approval_answer_from_stdin_preserves_text_and_refuses_agents() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let (base, home) = setup("approval-stdin");
+    let card = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--approval", "--id", "p", "확인해 주세요"], &card).status.success());
+    let args = ["msg", "answer-approval", "--run", "r1", "--id", "k1-a-p", "-"];
+    assert_eq!(o(&base, &args, &[("O_AGENT_ROLE", "lead")]).status.code(), Some(1));
+    let answer = "--조건\n검사 후 진행하세요";
+    let send = |id: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_o"))
+            .args(["msg", "answer-approval", "--run", "r1", "--id", id, "-"])
+            .env("LOCALAPPDATA", &base).env("O_RUN_ID", "").env("O_CARD_ID", "").env("O_AGENT_ROLE", "")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(answer.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let first = send("k1-a-p");
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    assert!(send("k1-a-p").status.success());
+    assert!(!send("missing").status.success());
+    let events = read_events(&home, "r1");
+    let replies: Vec<_> = events.iter().filter(|event| matches!(event, OEvent::Msg { reply_to: Some(id), .. } if id == "k1-a-p")).collect();
+    assert_eq!(replies.len(), 1);
+    assert!(matches!(replies[0], OEvent::Msg { text, to, .. } if text == answer && to == "a"));
+    let delivered = o(&base, &["msg", "read"], &card);
+    assert!(String::from_utf8_lossy(&delivered.stdout).contains("검사 후 진행하세요"));
+}
+
+#[test]
 fn approval_requests_only_accept_a_persons_direct_answer() {
     let (base, home) = setup("approval");
     let card = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
