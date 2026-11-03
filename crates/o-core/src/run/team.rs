@@ -98,6 +98,10 @@ pub fn send_reply(home: &Path, speaker: &Speaker, to: &str, text: &str, question
             if states_for(home, &speaker.run_id, &content, &speaker.me)?.get(question_id).is_some_and(|s| s == "cancelled") {
                 return Err(io::Error::other("취소된 질문에는 답할 수 없습니다"));
             }
+            if let Some(answer) = events.iter().find(|m| m.from == speaker.me && m.reply_to.as_deref() == Some(question_id)) {
+                if answer.to == to && answer.text == text { return Ok(answer.id.clone()); }
+                return Err(io::Error::other("이미 답한 질문입니다. 기존 답변을 확인해 주세요"));
+            }
         }
         let mut event = json!({"t":"msg", "at":now_iso(), "id":id, "kind":kind, "from":speaker.me, "to":to, "text":text});
         if let Some(question_id) = reply_to { event["replyTo"] = json!(question_id); }
