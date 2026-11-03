@@ -313,6 +313,7 @@ export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }
                   <td className="px-2 py-2.5 pr-4">
                     <CardTask task={card.task} />
                     {Boolean(card.depends_on?.length) && <p className="mt-1 text-2xs text-muted-foreground">선행: {card.depends_on?.join(", ")}</p>}
+                    <p className="mt-1 text-2xs text-muted-foreground break-all">자원: {card.resources?.length ? card.resources.map((r) => `${r.kind === "project-path" ? "파일" : "외부"} ${r.key} (${r.mode === "read" ? "읽기" : "쓰기"})`).join(", ") : "미선언 · 독점 실행"}</p>
                   </td>
                 </tr>
               ))}

@@ -379,6 +379,21 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
             fail(found, "plan-dependency".into(), "depends_on은 선행 작업 id의 배열이어야 합니다".into());
         }
     }
+    let resources = match raw.get("resources") {
+        None => Vec::new(),
+        Some(value) => match serde_json::from_value::<Vec<crate::run::plan::Resource>>(value.clone()) {
+            Ok(items) if items.len() <= 64 && items.iter().all(|r| {
+                if r.key.trim().is_empty() || r.key.len() > 1024 || r.key.chars().any(char::is_control) { return false; }
+                if r.kind != crate::run::plan::ResourceKind::ProjectPath { return true; }
+                let key = r.key.replace('\\', "/");
+                std::path::Path::new(&key).components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
+            }) => items,
+            _ => {
+                fail(found, "plan-resource".into(), "resources는 유효한 kind·key·mode 객체의 배열이어야 합니다".into());
+                Vec::new()
+            }
+        },
+    };
     if let Some(task) = task {
         for hit in find_hits(task, code_rules()) {
             fail(found, format!("task-{}", hit.rule), hit.reason.to_string());
@@ -396,6 +411,7 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
         model: text("model"),
         effort: text("effort"),
         depends_on: raw.get("depends_on").and_then(Value::as_array).map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+        resources,
     })
 }
 

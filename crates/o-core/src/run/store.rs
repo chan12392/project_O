@@ -317,13 +317,31 @@ pub fn held_by_provider(home: &Path) -> io::Result<HashMap<ProviderId, usize>> {
 /// Takes a slot and one of today's starts for a card in one write lock, so runners of
 /// separate dispatches never both see the last free slot or the day's last start.
 /// The start counts from here; `release_slot` gives it back if the CLI never starts.
-pub fn reserve_slot(home: &Path, run_id: &str, card_id: &str, provider: ProviderId, now: DateTime<Utc>) -> io::Result<Reserved> {
+pub fn reserve_slot(home: &Path, run_id: &str, card: &crate::run::plan::Card, project: &str, now: DateTime<Utc>) -> io::Result<Reserved> {
+    let card_id = &card.id;
+    let provider = card.provider;
+    let resources = super::resources::normalize(project, &card.resources)?;
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
     if started_in(&tx, now)? >= LIMITS.max_cards_per_day {
         return Ok(Reserved::DayFull);
     }
     let held = held_slots(home, &tx)?;
+    {
+        let mut stmt = tx.prepare("SELECT resources FROM resource_leases").map_err(sql)?;
+        let rows = stmt.query_map([], |row| row.get::<_, String>(0)).map_err(sql)?;
+        for row in rows {
+            let raw = row.map_err(sql)?;
+            let existing: Vec<super::resources::Key> = serde_json::from_str(&raw).map_err(io::Error::other)?;
+            if super::resources::conflicts(&resources, &existing) {
+                return Ok(Reserved::Busy("공용 자원 사용 중 또는 종료 확인 불가로 대기".into()));
+            }
+        }
+    }
+    let legacy: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM slots WHERE id NOT IN (SELECT slot_id FROM resource_leases))", [], |r| r.get(0)).map_err(sql)?;
+    if legacy || active_markers(home).iter().any(|m| !tx.query_row("SELECT EXISTS(SELECT 1 FROM resource_leases WHERE run_id=?1 AND card_id=?2)", params![m.run_id, m.card_id], |r| r.get::<_, bool>(0)).unwrap_or(false)) {
+        return Ok(Reserved::Busy("기존 실행의 자원 범위를 확인할 수 없어 대기".into()));
+    }
     if held.len() >= LIMITS.max_active_total {
         tx.commit().map_err(sql)?;
         return Ok(Reserved::Busy(format!("전체 동시 실행 {}개가 차서 대기", LIMITS.max_active_total)));
@@ -339,6 +357,7 @@ pub fn reserve_slot(home: &Path, run_id: &str, card_id: &str, provider: Provider
     )
     .map_err(sql)?;
     let slot_row = tx.last_insert_rowid();
+    tx.execute("INSERT INTO resource_leases (slot_id, run_id, card_id, resources) VALUES (?1, ?2, ?3, ?4)", params![slot_row, run_id, card_id, serde_json::to_string(&resources).map_err(io::Error::other)?]).map_err(sql)?;
     tx.execute("INSERT INTO starts (run_id, card_id, provider, at) VALUES (?1, ?2, ?3, ?4)", params![run_id, card_id, provider.as_str(), iso(now)])
         .map_err(sql)?;
     let start_row = tx.last_insert_rowid();
@@ -356,11 +375,17 @@ pub fn link_slot(home: &Path, reservation: &Reservation, pid: u32) -> io::Result
 pub fn release_slot(home: &Path, reservation: &Reservation, started: bool) -> io::Result<()> {
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    tx.execute("DELETE FROM resource_leases WHERE slot_id = ?1", [reservation.slot_row]).map_err(sql)?;
     tx.execute("DELETE FROM slots WHERE rowid = ?1", [reservation.slot_row]).map_err(sql)?;
     if !started {
         tx.execute("DELETE FROM starts WHERE rowid = ?1", [reservation.start_row]).map_err(sql)?;
     }
     tx.commit().map_err(sql)
+}
+
+/// A surviving lease prevents resuming the same session, including after a runner crash.
+pub fn resource_held(home: &Path, run_id: &str, card_id: &str) -> io::Result<bool> {
+    index::open(home)?.query_row("SELECT EXISTS(SELECT 1 FROM resource_leases WHERE run_id=?1 AND card_id=?2)", params![run_id, card_id], |row| row.get(0)).map_err(sql)
 }
 
 /// Provider → ISO time it is blocked until.

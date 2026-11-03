@@ -51,6 +51,7 @@ export interface PlanCard {
   effort?: string;
   task: string;
   depends_on?: string[];
+  resources?: { kind: "project-path" | "external"; key: string; mode: "read" | "write" }[];
 }
 
 export type LeadEvent =
@@ -221,6 +222,10 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     if (card.depends_on !== undefined) {
       if (!Array.isArray(card.depends_on) || card.depends_on.some((id: unknown) => typeof id !== "string")) problems.push(`작업 ${id}의 선행 작업이 올바르지 않습니다`);
       else kept.depends_on = card.depends_on;
+    }
+    if (card.resources !== undefined) {
+      if (!Array.isArray(card.resources) || card.resources.length > 64 || card.resources.some((r: unknown) => !isObject(r) || (r.kind !== "project-path" && r.kind !== "external") || typeof r.key !== "string" || !r.key.trim() || new TextEncoder().encode(r.key).length > 1024 || /[\u0000-\u001f\u007f-\u009f]/u.test(r.key) || (r.mode !== "read" && r.mode !== "write") || Object.keys(r).some((k) => !["kind", "key", "mode"].includes(k)))) problems.push(`작업 ${id}의 자원 선언이 올바르지 않습니다`);
+      else kept.resources = card.resources;
     }
     cards.push(kept);
   });

@@ -16,7 +16,7 @@ use regex::Regex;
 use serde_json::{json, Value};
 
 fn card(id: &str, provider: ProviderId, role: Option<&str>, task: &str, model: Option<&str>, effort: Option<&str>) -> Card {
-    Card { id: id.into(), provider, role: role.map(Into::into), task: task.into(), model: model.map(Into::into), effort: effort.map(Into::into), depends_on: vec![] }
+    Card { id: id.into(), provider, role: role.map(Into::into), task: task.into(), model: model.map(Into::into), effort: effort.map(Into::into), depends_on: vec![], resources: vec![] }
 }
 
 fn plan() -> Plan {

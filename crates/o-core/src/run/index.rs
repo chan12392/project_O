@@ -37,7 +37,7 @@ use crate::run::store::RunRecord;
 
 /// 2: `runs.prefix_hash` and `runs.modified`, so a rewritten file is told from an appended one.
 /// 3: `slots`, the card slots runners hold from before a CLI starts until it ends.
-const SCHEMA_VERSION: i64 = 3;
+const SCHEMA_VERSION: i64 = 4;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
@@ -52,6 +52,7 @@ CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, j
 CREATE TABLE IF NOT EXISTS starts (run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS starts_by_at ON starts (at);
 CREATE TABLE IF NOT EXISTS slots (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, owner INTEGER NOT NULL, pid INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS resource_leases (slot_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, card_id TEXT NOT NULL, resources TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blocked (at TEXT NOT NULL, title TEXT, violations TEXT NOT NULL);
 ";
@@ -68,7 +69,7 @@ pub fn open(home: &Path) -> io::Result<Connection> {
     // Sticks to the file; a no-op once set. Losing the race to another opener only means trying again next time.
     let _ = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0));
     // In WAL mode a crash can lose the last commits but never corrupts the file.
-    conn.pragma_update(None, "synchronous", "NORMAL").map_err(sql)?;
+    conn.pragma_update(None, "synchronous", "FULL").map_err(sql)?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(sql)?;
     if version < SCHEMA_VERSION {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
