@@ -82,9 +82,45 @@ pub fn refresh_paths() {
 pub fn resolve_cli(bin: &str) -> Option<CliCommand> {
     let found = which(bin)?;
     if !is_script_shim(&found) {
-        return Some(CliCommand { command: found, prefix: Vec::new() });
+        if cfg!(windows) {
+            return Some(CliCommand { command: found, prefix: Vec::new() });
+        }
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        let on_path = find_in(bin, std::env::split_paths(&path)).as_ref() == Some(&found);
+        let node_on_path = find_in("node", std::env::split_paths(&path)).is_some();
+        return node_script(found, on_path, node_on_path);
     }
     shim_target(&found)
+}
+
+/// A `#!/usr/bin/env node` script found only in a fallback folder (nvm's `bin`) would look for
+/// node on the unchanged PATH: it starts with the node beside it instead, so the version it was
+/// installed with runs and PATH stays as it is. One found on PATH, or not a node script, starts as
+/// it is; one with no node beside it or on PATH cannot start and is `None`.
+fn node_script(found: PathBuf, on_path: bool, node_on_path: bool) -> Option<CliCommand> {
+    if on_path || !wants_node(&found) {
+        return Some(CliCommand { command: found, prefix: Vec::new() });
+    }
+    let node = found.parent()?.join(if cfg!(windows) { "node.exe" } else { "node" });
+    if node.is_file() {
+        return Some(CliCommand { command: node, prefix: vec![found.to_string_lossy().into_owned()] });
+    }
+    node_on_path.then(|| CliCommand { command: found, prefix: Vec::new() })
+}
+
+/// The script's first line names node as its interpreter (`#!/usr/bin/env node`, `#!/path/node`).
+fn wants_node(script: &std::path::Path) -> bool {
+    use std::io::Read;
+    let mut head = [0u8; 256];
+    let Ok(read) = fs::File::open(script).and_then(|mut f| f.read(&mut head)) else { return false };
+    let text = String::from_utf8_lossy(&head[..read]);
+    let Some(line) = text.lines().next().and_then(|l| l.strip_prefix("#!")) else { return false };
+    let mut words = line.split_whitespace();
+    let mut interpreter = words.next().unwrap_or_default();
+    if interpreter.rsplit('/').next() == Some("env") {
+        interpreter = words.find(|w| !w.starts_with('-')).unwrap_or_default();
+    }
+    interpreter.rsplit('/').next() == Some("node")
 }
 
 /// What an npm `.cmd` shim runs: a script started with node, or a native program the
@@ -107,6 +143,22 @@ pub fn shim_target(shim: &std::path::Path) -> Option<CliCommand> {
 
 fn is_script_shim(path: &std::path::Path) -> bool {
     path.extension().and_then(|e| e.to_str()).is_some_and(|e| e.eq_ignore_ascii_case("cmd") || e.eq_ignore_ascii_case("bat"))
+}
+
+/// Puts the running exe's folder first on this process's PATH (never the saved PATH), so every
+/// child (agent CLIs, `o _run`, cards running `o msg`/`o context`) finds the `o` beside it, even
+/// when `o` was never `cargo install`ed nor its folder added to PATH. Other entries stay in order
+/// behind it. Called first in `main` (the app and `o`), before any thread exists.
+pub fn own_folder_first_on_path() {
+    let Some(dir) = std::env::current_exe().ok().filter(|exe| exe.is_file()).and_then(|exe| exe.parent().map(|d| d.to_path_buf())) else { return };
+    if let Some(path) = first_on_path(&dir, std::env::var_os("PATH").as_deref()) {
+        std::env::set_var("PATH", path);
+    }
+}
+
+fn first_on_path(dir: &std::path::Path, path: Option<&std::ffi::OsStr>) -> Option<std::ffi::OsString> {
+    let rest: Vec<PathBuf> = path.map(|p| std::env::split_paths(p).filter(|p| p != dir).collect()).unwrap_or_default();
+    std::env::join_paths(std::iter::once(dir.to_path_buf()).chain(rest)).ok()
 }
 
 /// The first `bin` (.exe, .cmd or .bat on Windows) in a PATH folder.
@@ -148,5 +200,47 @@ mod tests {
         assert_eq!(find_in("fake-agent", [first.clone(), second.clone()]), Some(second.join(name)));
         fs::write(first.join(name), "").unwrap();
         assert_eq!(find_in("fake-agent", [first.clone(), second]), Some(first.join(name)));
+    }
+
+    /// #36: an nvm-style `bin` outside PATH, node not on PATH. The script starts with the node
+    /// beside it (each version its own), one found on PATH still goes through PATH, and one with
+    /// no node anywhere is refused rather than reported as runnable.
+    #[test]
+    fn fallback_node_script_starts_with_the_node_beside_it() {
+        let root = std::env::temp_dir().join(format!("o-resolve-nvm-{}", std::process::id()));
+        let node = if cfg!(windows) { "node.exe" } else { "node" };
+        let script = |version: &str, shebang: &str| {
+            let bin = root.join(".nvm/versions/node").join(version).join("bin");
+            fs::create_dir_all(&bin).unwrap();
+            fs::write(bin.join("fake-agent"), format!("{shebang}\nrequire('x')\n")).unwrap();
+            bin
+        };
+        let v20 = script("v20.0.0", "#!/usr/bin/env node");
+        let v22 = script("v22.0.0", "#!/usr/bin/env -S node --no-warnings");
+        fs::write(v20.join(node), "").unwrap();
+        fs::write(v22.join(node), "").unwrap();
+        for bin in [&v20, &v22] {
+            let found = bin.join("fake-agent");
+            assert_eq!(node_script(found.clone(), false, false), Some(CliCommand { command: bin.join(node), prefix: vec![found.to_string_lossy().into_owned()] }));
+            assert_eq!(node_script(found.clone(), true, false), Some(CliCommand { command: found, prefix: Vec::new() }));
+        }
+        let bare = script("v18.0.0", "#!/usr/bin/env node").join("fake-agent");
+        assert_eq!(node_script(bare.clone(), false, false), None);
+        assert_eq!(node_script(bare.clone(), false, true), Some(CliCommand { command: bare, prefix: Vec::new() }));
+        let shell = script("v16.0.0", "#!/bin/sh").join("fake-agent");
+        assert_eq!(node_script(shell.clone(), false, false), Some(CliCommand { command: shell, prefix: Vec::new() }));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// #46: the exe's folder goes first, once, with every other PATH entry kept in order.
+    #[test]
+    fn own_folder_goes_first_and_keeps_path() {
+        let root = std::env::temp_dir();
+        let (dir, a, b) = (root.join("o-install"), root.join("a"), root.join("b"));
+        let path = std::env::join_paths([a.clone(), dir.clone(), b.clone()]).unwrap();
+        let joined = first_on_path(&dir, Some(&path)).unwrap();
+        assert_eq!(std::env::split_paths(&joined).collect::<Vec<_>>(), [dir.clone(), a, b]);
+        let alone = first_on_path(&dir, None).unwrap();
+        assert_eq!(std::env::split_paths(&alone).collect::<Vec<_>>(), [dir]);
     }
 }
