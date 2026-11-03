@@ -139,6 +139,22 @@ fn runner_wakes_lead_while_card_waits() {
     cleanup(&home);
 }
 
+#[test]
+fn explicit_approval_request_does_not_wake_the_lead() {
+    let (home, project, card) = fixture();
+    let id = team::send_approval(&home, &card, "대표님 승인이 필요합니다", Some("approval")).ok().unwrap();
+    let spawner: Arc<Spawner> = Arc::new(|_, _| panic!("승인 요청에서 총괄을 실행하면 안 됩니다"));
+    assert!(lead::wake_card(&home, &project, "run-1", &card.cards, spawner.as_ref()).unwrap_err().contains("승인 요청"));
+    let recipient = Speaker { run_id: "run-1".into(), me: "lead".into(), cards: card.cards.clone() };
+    let messages = team::read(&home, &recipient, false).unwrap();
+    assert_eq!((&messages[0].id, messages[0].state.as_str()), (&id, "stored"));
+    team::claim(&home, &recipient).unwrap().unwrap();
+    team::send_reply(&home, &recipient, "a", "대표님 확인", false, Some("manual"), Some(&id)).ok().unwrap();
+    assert!(lead::wake_card(&home, &project, "run-1", &card.cards, spawner.as_ref()).unwrap());
+    assert!(team::read(&home, &recipient, false).unwrap().is_empty());
+    cleanup(&home);
+}
+
 fn cleanup(home: &std::path::Path) {
     let root = home.parent().unwrap().canonicalize().unwrap();
     let temp = std::env::temp_dir().canonicalize().unwrap();

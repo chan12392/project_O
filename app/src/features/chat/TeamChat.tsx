@@ -65,10 +65,11 @@ export function TeamChat({ run }: { run: RunView }) {
               >
                 <Markdown text={m.text} inverse={mine} />
               </div>
-              {(m.kind === "question" || m.replyTo || m.recipients) && <p className="mt-1 break-all px-1 text-xs text-chat-foreground-faint">
+              {(m.kind === "question" || m.kind === "approval" || m.replyTo || m.recipients) && <p className="mt-1 break-all px-1 text-xs text-chat-foreground-faint">
                 {m.kind === "question" && `질문${m.id ? ` (${m.id})` : ""}`}
+                {m.kind === "approval" && `대표님 승인 요청${m.id ? ` (${m.id})` : ""} · 직접 확인 필요`}
                 {m.replyTo && `질문 ${m.replyTo}에 대한 답변`}
-                {(m.kind === "question" || m.replyTo) && m.recipients && " · "}
+                {(m.kind === "question" || m.kind === "approval" || m.replyTo) && m.recipients && " · "}
                 {m.recipients && Object.entries(m.recipients).map(([recipient, state]) => `${name(recipient)}: ${deliveryWords[state] ?? state}`).join(" · ")}
               </p>}
               {m.id && (m.recipients?.lead === "unknown" || m.recipients?.lead === "delivered") && <div className="mt-1 text-xs text-chat-foreground-faint"><p>이전 답변을 확인한 후 복구해 주세요. 재전송은 총괄을 다시 실행할 수 있습니다.</p><button type="button" disabled={busy} onClick={() => void retry(m.id!)} className="mt-1 rounded border px-2 py-1 focus-ring disabled:opacity-50">메시지 상태 복구</button></div>}

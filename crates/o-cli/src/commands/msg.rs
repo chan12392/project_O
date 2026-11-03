@@ -13,6 +13,7 @@ pub const MSG: Command = Command {
   o msg read [--all]         첫 메시지 인수 (--all: 상태 변경 없는 전체 대화)
   o msg wait                 새 메시지를 최대 30초 기다린 뒤 첫 메시지 인수
   o msg send --question --id <재시도키> ...  질문 구분과 중복 방지 키
+  o msg send --approval --id <재시도키> ...  사람의 승인 요청 (총괄 자동 응답 없음)
   o msg send --to <질문자> --reply-to <질문ID> ...  질문에 답하기
   o msg ack|delivered|unknown|retry|cancel --id <메시지ID>  처리 상태 기록
   o msg post                 카드의 outbox 파일(첫 줄 \"to: <상대>\")을 팀 대화로 보내기
@@ -29,7 +30,7 @@ fn message(home: &Path, args: &[String]) -> i32 {
     let mut words: Vec<&str> = Vec::new();
     let mut items = rest.iter();
     while let Some(arg) = items.next() {
-        if arg == "--all" || arg == "--question" {
+        if arg == "--all" || arg == "--question" || arg == "--approval" {
             flags.insert(arg[2..].into(), "1".into());
         } else if let Some(name) = arg.strip_prefix("--") {
             flags.insert(name.into(), items.next().cloned().unwrap_or_default());
@@ -42,8 +43,31 @@ fn message(home: &Path, args: &[String]) -> i32 {
         Err(message) => return fail(&message),
     };
     if verb == "wait" && flags.contains_key("all") { return fail("wait에는 --all을 사용할 수 없습니다"); }
-    let send = |to: &str, text: &str| match team::send_reply(home, &speaker, to, text, flags.contains_key("question"), flags.get("id").map(String::as_str), flags.get("reply-to").map(String::as_str)) {
+    if flags.contains_key("approval") && (verb != "send" || flags.contains_key("question") || flags.contains_key("reply-to") || flags.get("to").is_some_and(|to| to != "lead")) {
+        return fail("승인 요청은 --approval만 사용해 lead에 보내세요");
+    }
+    let send = |to: &str, text: &str| {
+        let approval = if let Some(id) = flags.get("reply-to") {
+            match team::read(home, &speaker, true) {
+                Ok(messages) => messages.iter().any(|m| m.id == *id && m.kind == "approval"),
+                Err(error) => return fail(&error.to_string()),
+            }
+        } else { false };
+        if approval && (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) {
+            return fail("승인 요청에는 사용자가 직접 답해야 합니다");
+        }
+        let result = if flags.contains_key("approval") {
+            team::send_approval(home, &speaker, text, flags.get("id").map(String::as_str))
+        } else {
+            team::send_reply(home, &speaker, to, text, flags.contains_key("question"), flags.get("id").map(String::as_str), flags.get("reply-to").map(String::as_str))
+        };
+        match result {
         Ok(id) => {
+            if approval {
+                if let Err(error) = team::transition(home, &speaker, flags.get("reply-to").unwrap(), "acknowledged") {
+                    return fail(&format!("답변은 저장됐지만 승인 요청의 상태를 확인하지 못했습니다: {error}"));
+                }
+            }
             println!("저장됨: {} → {to} (id: {id})", speaker.me);
             0
         }
@@ -52,9 +76,9 @@ fn message(home: &Path, args: &[String]) -> i32 {
             2
         }
         Err(Refused::Io(error)) => fail(&format!("접수 결과가 불명일 수 있습니다. 같은 --id로 다시 확인해 주세요: {error}")),
-    };
+    }};
     match verb {
-        "send" => send(flags.get("to").map_or("all", String::as_str), &words.join(" ")),
+        "send" => send(flags.get("to").map_or(if flags.contains_key("approval") { "lead" } else { "all" }, String::as_str), &words.join(" ")),
         "post" => {
             match team::post(home, &speaker) {
                 Ok((to, id)) => { println!("저장됨: {} → {to} (id: {id})", speaker.me); 0 }

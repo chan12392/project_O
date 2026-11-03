@@ -59,7 +59,7 @@ pub trait Provider: Sync {
     fn tool_note(&self) -> Option<String>;
     /// How a card of this CLI sends and reads team messages.
     fn team_how_to(&self, _card: &Card, _team: &TeamChannel) -> Vec<String> {
-        vec![format!("보내기: {TEAM_COMMAND} send --to <카드 id|lead|all> \"내용\"   받기: {TEAM_COMMAND} read"), format!("질문은 {TEAM_COMMAND} send --to lead --question --id <재시도키> \"내용\", 답을 기다릴 때는 {TEAM_COMMAND} wait를 사용하세요."), format!("받은 메시지는 처리한 뒤 {TEAM_COMMAND} ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.")]
+        vec![format!("보내기: {TEAM_COMMAND} send --to <카드 id|lead|all> \"내용\"   받기: {TEAM_COMMAND} read"), format!("일반 질문은 {TEAM_COMMAND} send --to lead --question --id <재시도키> \"내용\". 사람의 승인이나 권한 결정은 --question 대신 --approval로 요청하세요. 승인 요청에는 총괄이 자동으로 답하지 않습니다. 답을 기다릴 때는 {TEAM_COMMAND} wait를 사용하세요."), format!("받은 메시지는 처리한 뒤 {TEAM_COMMAND} ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.")]
     }
     /// Whether a card may run `o context` itself (ADR-0005); otherwise it only gets the injected section.
     fn searches_context(&self) -> bool;
