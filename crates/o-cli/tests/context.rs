@@ -47,6 +47,47 @@ fn a_card_reads_only_its_verified_predecessor_in_complete_utf8_chunks() {
 }
 
 #[test]
+fn a_card_reads_its_long_lead_reply_through_the_cli() {
+    use o_core::run::{result, team::{self, Speaker}};
+    let base = std::env::temp_dir().join(format!("o-long-lead-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+    let home = if cfg!(windows) { base.join("project_O") } else { base.join(".local/state/project_O") };
+    let dir = home.join("runs/r1");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("plan.json"), json!({"cards":[{"id":"a"},{"id":"b"}]}).to_string()).unwrap();
+    fs::write(dir.join("events.jsonl"), "").unwrap();
+    let card = Speaker { run_id: "r1".into(), me: "a".into(), cards: vec!["a".into(), "b".into()] };
+    let lead = Speaker { run_id: "r1".into(), me: "lead".into(), cards: card.cards.clone() };
+    let id = team::send_tracked(&home, &card, "lead", "질문", true, Some("q")).ok().unwrap();
+    let text = "한글 끝".repeat(1500);
+    let hash = result::store_lead(&home, "r1", &text).unwrap();
+    let read = |card: &str, hash: &str, offset: usize| {
+        Command::new(env!("CARGO_BIN_EXE_o")).current_dir(&base)
+            .env(if cfg!(windows) { "LOCALAPPDATA" } else { "HOME" }, &base)
+            .env("O_RUN_ID", "r1").env("O_CARD_ID", card)
+            .args(["context", "--lead-result", &id, hash, &offset.to_string()]).output().unwrap()
+    };
+    assert!(!read("a", &hash, 0).status.success());
+    team::send_reply(&home, &lead, "a", &result::lead_reference(&id, &hash), false, Some("answer"), Some(&id)).ok().unwrap();
+    let mut combined = String::new();
+    let mut offset = 0;
+    loop {
+        let page = ok_json(read("a", &hash, offset));
+        combined.push_str(page["text"].as_str().unwrap());
+        match page["nextOffset"].as_u64() { Some(next) => offset = next as usize, None => break }
+    }
+    assert_eq!(combined, text);
+    assert!(!read("b", &hash, 0).status.success());
+    assert!(!read("", &hash, 0).status.success());
+    assert!(!read("a", &hash, 1).status.success());
+    fs::write(dir.join("lead-results").join(&hash), "tampered").unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    let target = base.canonicalize().unwrap();
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    assert!(target.starts_with(&temp) && target != temp && target.file_name().unwrap().to_string_lossy().starts_with("o-long-lead-"));
+    fs::remove_dir_all(target).unwrap();
+}
+
+#[test]
 fn token_report_counts_lead_requests_without_usage() {
     let (base, home, project) = setup("lead-coverage");
     let dir = home.join("leads/thread-1");

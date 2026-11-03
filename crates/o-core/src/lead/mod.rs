@@ -934,7 +934,21 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         }
         if w.message.kind == "question" {
             let key = crate::run::result::digest(&format!("{}\0{}", w.speaker.run_id, w.message.id));
-            if team::send_reply(home, w.speaker, &w.message.from, &answer, false, Some(&key), Some(&w.message.id)).is_err() {
+            let text = if js_len(&answer) > LIMITS.max_message_chars {
+                let violations = crate::policy::check_message(&answer, &crate::policy::Parties { from: "lead", to: &w.message.from, known: &w.speaker.cards });
+                let supports = store::read_plan(home, &w.speaker.run_id).ok().and_then(|v| serde_json::from_value::<crate::run::plan::Plan>(v).ok())
+                    .and_then(|plan| plan.cards.into_iter().find(|card| card.id == w.message.from))
+                    .is_some_and(|card| providers::get(card.provider).searches_context());
+                if !supports || violations.iter().any(|v| v.rule != "msg-size") {
+                    emit(LeadEvent::Error { at: now_iso(), text: "긴 답변의 원문 전달을 지원하지 않거나 정책 검사에 걸렸습니다. 대화에서 원문을 확인하세요".into() })?;
+                    return Ok(added);
+                }
+                match crate::run::result::store_lead(home, &w.speaker.run_id, &answer) {
+                    Ok(hash) => crate::run::result::lead_reference(&w.message.id, &hash),
+                    Err(error) => { emit(LeadEvent::Error { at: now_iso(), text: format!("긴 답변을 저장하지 못했습니다: {error}") })?; return Ok(added); }
+                }
+            } else { answer.clone() };
+            if team::send_reply(home, w.speaker, &w.message.from, &text, false, Some(&key), Some(&w.message.id)).is_err() {
                 emit(LeadEvent::Error { at: now_iso(), text: "카드에 답을 보내지 못했습니다. 답변과 메시지 상태를 확인하세요".into() })?;
                 return Ok(added);
             }
