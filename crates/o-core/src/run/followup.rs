@@ -37,7 +37,9 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
         OEvent::CardEnd { card_id, status, .. } if card_id == &card.id => Some(*status),
         _ => None,
     });
-    if ended.is_none() { return Err(if run_is_live(home, run) { "작업이 아직 실행 중입니다" } else { "이전 작업이 정상적으로 종료되지 않았습니다" }.into()); }
+    if ended.is_none() && (run_is_live(home, run) || !dir.join("followup.json").exists() || store::active_markers(home).iter().any(|m| m.run_id == run)) {
+        return Err("이전 작업이 아직 실행 중이거나 정상적으로 종료되지 않았습니다".into());
+    }
     let mut session = events.iter().rev().find_map(|event| match event {
         OEvent::CardSession { card_id, session_id, .. } if card_id == &card.id => Some(session_id.clone()),
         _ => None,
@@ -102,10 +104,17 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
     store::create_run(home, &id, &plan).map_err(|e| e.to_string())?;
     store::mark_mode(home, &id, &RunMode { profile, context: true, yolo: false }).map_err(|e| e.to_string())?;
     fs::write(run_dir(home, &id).join("followup.json"), serde_json::to_vec(&(run, card)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let item = &plan.cards[0];
+    let at = crate::sys::js::now_iso();
+    for event in [
+        OEvent::RunStart { at: at.clone(), run_id: id.clone(), title: plan.title.clone(), project: plan.project.clone(), cards: vec![CardInfo { id: item.id.clone(), provider: item.provider, label: Some(item.label()), role: item.role.clone(), model: item.model.clone(), effort: item.effort.clone() }] },
+        OEvent::RunFollowup { at: at.clone(), source_run_id: run.into(), card_id: card.into() },
+        OEvent::RunMode { at: at.clone(), run_id: id.clone(), profile, context: true, yolo: false },
+        OEvent::CardInput { at, card_id: card.into(), text: item.task.clone() },
+    ] { store::append_event(home, &id, &event).map_err(|e| e.to_string())?; }
     if let Err(error) = spawn(&id) {
         let card = &plan.cards[0];
         let at = crate::sys::js::now_iso();
-        let _ = store::append_event(home, &id, &OEvent::RunStart { at: at.clone(), run_id: id.clone(), title: plan.title.clone(), project: plan.project.clone(), cards: vec![CardInfo { id: card.id.clone(), provider: card.provider, label: Some(card.label()), role: card.role.clone(), model: card.model.clone(), effort: card.effort.clone() }] });
         let _ = store::append_event(home, &id, &OEvent::CardEnd { at: at.clone(), card_id: card.id.clone(), status: CardStatus::Failed, result: Some(format!("실행기를 시작하지 못했습니다: {error}")), exit_code: None });
         let _ = store::append_event(home, &id, &OEvent::RunEnd { at, run_id: id.clone(), status: CardStatus::Failed });
         return Err(format!("후속 실행을 시작하지 못했습니다: {error}"));

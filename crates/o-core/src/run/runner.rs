@@ -714,10 +714,12 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
     let lock = OpenOptions::new().create(true).truncate(false).write(true).open(locks.join(format!("{root}-{card}.lock"))).map_err(|e| e.to_string())?;
     let c = &plan.cards[0];
     let emit = |event| append_event(home, run_id, &event).map_err(|e| e.to_string());
-    emit(OEvent::RunStart { at: now_iso(), run_id: run_id.into(), title: plan.title.clone(), project: plan.project.clone(), cards: vec![CardInfo { id: c.id.clone(), provider: c.provider, label: Some(c.label()), role: c.role.clone(), model: c.model.clone(), effort: c.effort.clone() }] })?;
-    emit(OEvent::RunFollowup { at: now_iso(), source_run_id: source.clone(), card_id: card.clone() })?;
-    emit(OEvent::RunMode { at: now_iso(), run_id: run_id.into(), profile: Profile::of_clean(is_clean(home, run_id)), context: crate::context::enabled(home, run_id), yolo: is_yolo(home, run_id) })?;
-    emit(OEvent::CardInput { at: now_iso(), card_id: card.clone(), text: c.task.clone() })?;
+    if !read_events(home, run_id).iter().any(|e| matches!(e, OEvent::RunStart { .. })) {
+        emit(OEvent::RunStart { at: now_iso(), run_id: run_id.into(), title: plan.title.clone(), project: plan.project.clone(), cards: vec![CardInfo { id: c.id.clone(), provider: c.provider, label: Some(c.label()), role: c.role.clone(), model: c.model.clone(), effort: c.effort.clone() }] })?;
+        emit(OEvent::RunFollowup { at: now_iso(), source_run_id: source.clone(), card_id: card.clone() })?;
+        emit(OEvent::RunMode { at: now_iso(), run_id: run_id.into(), profile: Profile::of_clean(is_clean(home, run_id)), context: crate::context::enabled(home, run_id), yolo: is_yolo(home, run_id) })?;
+        emit(OEvent::CardInput { at: now_iso(), card_id: card.clone(), text: c.task.clone() })?;
+    }
     emit(OEvent::CardQueued { at: now_iso(), card_id: card.clone(), reason: "이전 작업이 끝나기를 기다립니다".into() })?;
     lock.try_lock().map_err(|_| "이 에이전트의 후속 작업이 이미 대기 또는 실행 중입니다".to_string())?;
     loop {
