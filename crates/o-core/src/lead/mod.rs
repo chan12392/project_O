@@ -21,6 +21,7 @@
 pub mod files;
 pub mod notes;
 pub mod prompt;
+mod status_file;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -427,17 +428,43 @@ pub fn start(home: &Path, project: &str) -> Result<String, String> {
 }
 
 /// How each run the thread dispatched is doing, oldest first.
-fn dispatched_runs(home: &Path, events: &[LeadEvent]) -> Vec<String> {
-    events
-        .iter()
-        .filter_map(|e| match e {
-            LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if is_run_id(run_id) => Some(match snapshot(&read_events(home, run_id)) {
-                Some(view) => prompt::run_status(&view),
-                None => format!("- 실행 {run_id}: 아직 기록 없음(시작 전이거나 시작하지 못함)"),
-            }),
-            _ => None,
-        })
-        .collect()
+fn dispatched_runs(home: &Path, events: &[LeadEvent]) -> Result<(Vec<String>, Vec<Value>), String> {
+    let mut seen = BTreeSet::new();
+    let mut summaries = Vec::new();
+    let mut originals = Vec::new();
+    for event in events {
+        let run_id = match event {
+            LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => run_id,
+            _ => continue,
+        };
+        if !is_run_id(run_id) { return Err("실행 기록의 ID가 올바르지 않아 결과를 확인할 수 없습니다".into()); }
+        if !seen.insert(run_id) { continue; }
+        let text = match status_file::read_events(home, run_id) {
+            Ok(Some(text)) => text,
+            Ok(None) => {
+                summaries.push(format!("- 실행 {run_id}: 기록 없음(시작 전이거나 시작하지 못함)"));
+                originals.push(json!({"runId": run_id, "error": "실행 기록이 없음"}));
+                continue;
+            }
+            Err(e) => return Err(format!("실행 {run_id}의 결과 기록을 읽지 못했습니다: {e}")),
+        };
+        if !text.is_empty() && !text.ends_with('\n') { return Err(format!("실행 {run_id}의 기록이 완전하지 않습니다. 다시 확인하세요")); }
+        let mut typed = Vec::new();
+        let mut result_events = Vec::new();
+        for line in text.lines().filter(|s| !s.trim().is_empty()) {
+            let value: Value = serde_json::from_str(line).map_err(|e| format!("실행 {run_id}의 기록을 읽지 못했습니다: {e}"))?;
+            let parsed = serde_json::from_value(value.clone()).map_err(|e| format!("실행 {run_id}의 기록을 해석하지 못했습니다: {e}"))?;
+            if matches!(value.get("t").and_then(Value::as_str), Some("run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end")) { result_events.push(value); }
+            typed.push(parsed);
+        }
+        summaries.push(match snapshot(&typed) {
+            Some(view) => prompt::run_status(&view),
+            None if typed.is_empty() => format!("- 실행 {run_id}: 아직 기록 없음(시작 전이거나 시작하지 못함)"),
+            None => format!("- 실행 {run_id}: 시작 상태 불명, 기록된 차단·종료 여부는 원문을 확인"),
+        });
+        originals.push(json!({"runId": run_id, "resultEvents": result_events}));
+    }
+    Ok((summaries, originals))
 }
 
 /// The messages a resumed session has not seen: those of every turn after the last one it
@@ -560,7 +587,12 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         })
         .collect();
     let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
-    let runs = dispatched_runs(home, &before);
+    let (runs, originals) = dispatched_runs(home, &before)?;
+    let status_file = if originals.is_empty() { None } else {
+        let bytes = serde_json::to_vec_pretty(&json!({"runs": originals})).map_err(|e| format!("실행 결과를 만들지 못했습니다: {e}"))?;
+        Some(status_file::save(home, &thread_id, &bytes).map_err(|e| format!("실행 결과 원문을 안전하게 저장하지 못했습니다: {e}"))?)
+    };
+    let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
     let text = prompt::build(&prompt::PromptInput {
@@ -569,13 +601,14 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         attachments: &attachments,
         budget: &budget,
         runs: &runs,
+        runs_file: status_path.as_deref(),
         resumed: session.is_some(),
         history: &history,
         missed: &missed,
         design: design.as_deref(),
         yolo: req.yolo,
     });
-    let files_dir = files::thread_files(home, &thread_id);
+    let files_dir = status_file.as_ref().and_then(|f| f.path.parent()).map(Path::to_path_buf).unwrap_or_else(|| files::thread_files(home, &thread_id));
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
     let images: Vec<String> = attachments.iter().filter(|a| a.image).map(|a| a.path.clone()).collect();
     // The read-only Codex lead runs on app-server when the CLI has it, else on `codex exec`
