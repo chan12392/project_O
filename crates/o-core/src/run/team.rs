@@ -139,6 +139,7 @@ pub struct Received {
     pub to: String,
     pub text: String,
     pub state: String,
+    legacy: bool,
 }
 
 impl Received {
@@ -152,7 +153,7 @@ impl Received {
 pub fn read(home: &Path, speaker: &Speaker, all: bool) -> io::Result<Vec<Received>> {
     with_events(home, &speaker.run_id, |file| {
         let content = event_text(file)?;
-        let states = states(&content, &speaker.me);
+        let states = states_for(home, &speaker.run_id, &content, &speaker.me)?;
         let messages = records(&content).into_iter().filter_map(|mut m| {
             m.state = states.get(&m.id).cloned().unwrap_or_else(|| "stored".into());
             (all || (m.from != speaker.me && (m.to == speaker.me || m.to == "all") && m.state != "acknowledged" && m.state != "cancelled")).then_some(m)
@@ -165,7 +166,7 @@ pub fn read(home: &Path, speaker: &Speaker, all: bool) -> io::Result<Vec<Receive
 pub fn claim(home: &Path, speaker: &Speaker) -> io::Result<Option<Received>> {
     with_events(home, &speaker.run_id, |file| {
         let content = event_text(file)?;
-        let current = states(&content, &speaker.me);
+        let current = states_for(home, &speaker.run_id, &content, &speaker.me)?;
         let msg = records(&content).into_iter().find(|m| {
             m.from != speaker.me && (m.to == speaker.me || m.to == "all") && !matches!(current.get(&m.id).map(String::as_str), Some("acknowledged" | "cancelled"))
         });
@@ -187,7 +188,7 @@ fn records(content: &str) -> Vec<Received> {
         if !line.ends_with('\n') { return None; }
         let v: Value = serde_json::from_str(line).ok()?;
         if v["t"] != "msg" { return None; }
-        Some(Received { id: v["id"].as_str().map_or_else(|| format!("m{start}"), str::to_string), kind: v["kind"].as_str().unwrap_or("message").into(), from: v["from"].as_str()?.into(), to: v["to"].as_str()?.into(), text: v["text"].as_str()?.into(), state: "stored".into() })
+        Some(Received { id: v["id"].as_str().map_or_else(|| format!("m{start}"), str::to_string), kind: v["kind"].as_str().unwrap_or("message").into(), from: v["from"].as_str()?.into(), to: v["to"].as_str()?.into(), text: v["text"].as_str()?.into(), state: "stored".into(), legacy: v["id"].as_str().is_none() })
     }).collect()
 }
 
@@ -203,6 +204,21 @@ fn states(content: &str, recipient: &str) -> std::collections::HashMap<String, S
     result
 }
 
+fn states_for(home: &Path, run_id: &str, content: &str, recipient: &str) -> io::Result<std::collections::HashMap<String, String>> {
+    let mut result = states(content, recipient);
+    let cursor = run_dir(home, run_id).join(format!("read.{recipient}"));
+    let seen = match fs::read_to_string(cursor) {
+        Ok(value) => value.trim().parse::<usize>().map_err(|_| io::Error::other("이전 메시지 읽기 기록이 손상되었습니다"))?,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => 0,
+        Err(error) => return Err(error),
+    };
+    // The old cursor proves a read was attempted, not that the receiver processed it.
+    for msg in records(content).into_iter().filter(|m| m.legacy && m.from != recipient && (m.to == recipient || m.to == "all")).take(seen) {
+        result.entry(msg.id).or_insert_with(|| "unknown".into());
+    }
+    Ok(result)
+}
+
 /// A recipient explicitly confirms processing; a sender may cancel an unprocessed message.
 pub fn transition(home: &Path, speaker: &Speaker, id: &str, state: &str) -> io::Result<()> {
     with_events(home, &speaker.run_id, |file| {
@@ -214,7 +230,7 @@ pub fn transition(home: &Path, speaker: &Speaker, id: &str, state: &str) -> io::
             "cancelled" if msg.from == speaker.me => &msg.to,
             _ => return Err(io::Error::other("메시지 상태를 바꿀 권한이 없습니다")),
         };
-        let current = states(&content, recipient);
+        let current = states_for(home, &speaker.run_id, &content, recipient)?;
         if current.get(id).is_some_and(|s| s == state) { return Ok(()); }
         if state == "cancelled" && msg.to == "all" && content.lines().filter_map(|line| serde_json::from_str::<Value>(line).ok()).any(|v| v["t"] == "msg.state" && v["id"] == id && v["state"] != "cancelled") {
             return Err(io::Error::other("이미 전달을 시작한 메시지는 취소할 수 없습니다"));

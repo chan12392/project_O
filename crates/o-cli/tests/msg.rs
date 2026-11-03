@@ -206,8 +206,10 @@ fn legacy_cursor_and_interrupted_tail_do_not_lose_new_messages() {
     std::fs::write(dir.join("read.a"), "99").unwrap();
     assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "new"], &[]).status.success());
     let read = o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]);
-    let text = String::from_utf8_lossy(&read.stdout);
-    assert!(text.contains("old") && !text.contains("new"));
+    assert!(!read.status.success());
+    assert!(String::from_utf8_lossy(&read.stderr).contains("m0"));
+    let history = o(&base, &["msg", "read", "--run", "r1", "--as", "a", "--all"], &[]);
+    assert!(String::from_utf8_lossy(&history.stdout).contains("old (id: m0, message, unknown)"));
     assert!(o(&base, &["msg", "ack", "--run", "r1", "--as", "a", "--id", "m0"], &[]).status.success());
     assert!(String::from_utf8_lossy(&o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]).stdout).contains("new"));
 }
