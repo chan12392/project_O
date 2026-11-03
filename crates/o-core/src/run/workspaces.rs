@@ -37,6 +37,12 @@ fn base(project: &str) -> io::Result<Option<(PathBuf, PathBuf, String)>> {
     if !status.is_empty() {
         return Err(io::Error::other("프로젝트에 커밋하지 않은 변경이 있어 분리하지 않았습니다. 변경을 보존한 뒤 다시 시도하세요"));
     }
+    // `git worktree add` does not check out submodules, so a worker would start without their files.
+    let index = git(&root, &["ls-files", "--stage"])?;
+    if let Some(entry) = index.lines().find(|line| line.starts_with("160000 ")) {
+        let path = entry.split_once('\t').map_or(entry, |(_, path)| path);
+        return Err(io::Error::other(format!("Git 서브모듈이 있는 저장소는 작업 폴더 분리를 아직 지원하지 않습니다: {path}")));
+    }
     let base = git(&root, &["rev-parse", "--verify", "HEAD^{commit}"])?;
     Ok(Some((root, relative.to_path_buf(), base)))
 }
