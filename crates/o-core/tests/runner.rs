@@ -50,9 +50,10 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 22] = [
+    let tests: [(&str, fn()); 23] = [
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
+        ("a repository with a submodule entry is refused before any worker starts", isolated_worktrees_refuse_submodules),
         ("dependencies wait for success and never start after failure", dependency_order),
         ("devin transcript and answer become card events", devin_transcript),
         ("a rejected plan records its reason before the run ends", rejected_plan_records_reason),
@@ -177,6 +178,42 @@ fn isolated_worktrees() {
     assert!(!launched.load(Ordering::SeqCst));
     assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "user change\n");
     assert!(read_events(&home, "dirty").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("커밋하지 않은"))));
+}
+
+fn isolated_worktrees_refuse_submodules() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(project.join("vendor")).unwrap();
+    let git = |args: &[&str]| {
+        let mut command = Command::new("git");
+        command.current_dir(&project).args(args);
+        let out = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    git(&["init"]);
+    std::fs::write(project.join("shared.txt"), "base
+").unwrap();
+    git(&["add", "shared.txt"]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+    // A gitlink (mode 160000) is what a submodule leaves in the index; the empty folder is its uninitialized checkout.
+    let commit = git(&["rev-parse", "HEAD"]);
+    git(&["update-index", "--add", "--cacheinfo", &format!("160000,{commit},vendor/lib")]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "submodule"]);
+    std::fs::create_dir_all(project.join("vendor/lib")).unwrap();
+    assert_eq!(git(&["status", "--porcelain=v1", "--untracked-files=all"]), "");
+    let mut p = plan(vec![card("a", ProviderId::Claude, "first")]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "submodule", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "submodule").join("isolated-worktrees"), "").unwrap();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let never: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("must not start")) });
+    assert_eq!(run_plan(&home, "submodule", &p, None, never).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert!(read_events(&home, "submodule").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("서브모듈") && reason.contains("vendor/lib"))));
+    assert!(!home.with_file_name("state-worktrees").join("submodule").join("1").exists());
 }
 
 fn dependency_order() {
