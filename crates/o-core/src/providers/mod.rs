@@ -19,6 +19,7 @@
 pub mod agy;
 pub mod claude;
 pub mod codex;
+pub mod codex_app_server;
 pub mod opencode;
 pub mod devin;
 mod stream;

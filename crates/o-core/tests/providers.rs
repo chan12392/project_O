@@ -130,6 +130,11 @@ fn codex_stream_config_warnings_are_not_failures() {
         r.read(r#"{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"C:\\Users\\someone\\projects\\todo-app\\index.html","kind":"update"},{"path":"C:/Users/someone/projects/todo-app/app.js","kind":"add"}]}}"#),
         [StreamSignal::Tool { name: "edit".into(), summary: r#"[{"path":"index.html","kind":"update"},{"path":"app.js","kind":"add"}]"#.into() }]
     );
+    // app-server (v2) names the kind in an object; the summary shows the same word.
+    assert_eq!(
+        r.read(r#"{"type":"item.completed","item":{"type":"file_change","changes":[{"path":"C:/p/a.txt","kind":{"type":"add"}},{"path":"b.txt","kind":{"type":"update","move_path":null}}]}}"#),
+        [StreamSignal::Tool { name: "edit".into(), summary: r#"[{"path":"a.txt","kind":"add"},{"path":"b.txt","kind":"update"}]"#.into() }]
+    );
     assert_eq!(
         r.read(r#"{"type":"turn.completed","usage":{"input_tokens":127105,"cached_input_tokens":112384,"output_tokens":519}}"#),
         [StreamSignal::Usage { input: 14721.0, cached: 112384.0, output: 519.0 }, StreamSignal::Final { ok: true, text: String::new() }]
@@ -280,20 +285,13 @@ fn the_claude_lead_reads_only_and_resumes_its_session() {
 }
 
 #[test]
-fn the_codex_lead_runs_in_a_read_only_sandbox_and_resumes_with_exec_resume() {
+fn the_codex_lead_starts_app_server_with_hooks_disabled() {
     let images = vec!["C:/o-lead/t1/01-a.png".to_string()];
     let first = lead_spec(ProviderId::Codex, None, Some("high"), &images).unwrap();
-    let expected = [
-        "exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "--disable", "hooks", "-i", "C:/o-lead/t1/01-a.png", "--json", "-c",
-        "model_reasoning_effort=high", "-",
-    ];
-    assert_eq!(first.args, expected);
+    assert_eq!(first.args, ["app-server", "--disable", "hooks"]);
     let next = lead_spec(ProviderId::Codex, Some("th-9"), None, &images).unwrap();
-    let expected = [
-        "exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "--disable", "hooks", "resume", "-i", "C:/o-lead/t1/01-a.png", "--json", "th-9", "-",
-    ];
-    assert_eq!(next.args, expected);
-    assert_eq!(next.stdin.as_deref(), Some("계획해 줘"));
+    assert_eq!(next.args, first.args);
+    assert!(next.stdin.is_none());
 }
 
 #[test]
@@ -319,7 +317,7 @@ fn the_agy_lead_plans_with_every_change_denied_and_resumes_its_conversation() {
 
 #[test]
 fn every_lead_takes_the_model_it_is_given() {
-    for (provider, flag) in [(ProviderId::Claude, "--model"), (ProviderId::Codex, "-m"), (ProviderId::Agy, "--model")] {
+    for (provider, flag) in [(ProviderId::Claude, "--model"), (ProviderId::Agy, "--model")] {
         for session in [None, Some("s")] {
             let turn = LeadTurn { project: "C:/work/demo", prompt: "p".into(), session, model: Some("m-1"), effort: None, files_dir: None, images: &[] };
             let spec = o_core::providers::get(provider).lead(&turn).unwrap();

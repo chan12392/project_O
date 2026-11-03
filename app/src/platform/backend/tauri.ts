@@ -25,6 +25,7 @@ export function tauriBackend(invoke: Invoke): Backend {
   agentsCatalog: (refresh = false) => invoke("agents_catalog", { refresh }) as ReturnType<Backend["agentsCatalog"]>,
     install: (id) => invoke("agent_install", { id }) as Promise<ActionResult>,
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
+    openTerminal: () => invoke("agent_terminal") as Promise<ActionResult>,
     // A refused link (http, or the browser failed) says why on screen even where the caller stays quiet.
     openExternal: (url) =>
       (invoke("open_external", { url }) as Promise<void>).catch((error: unknown) => {

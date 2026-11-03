@@ -26,7 +26,7 @@ interface Props {
 
 /** The real lead chat (ADR-0008): messages, the lead's answers, its plans and what they started. */
 export function LeadThread({ project, lead, onCompose, onStartProject }: Props) {
-  const scroller = useFollowBottom([lead.items, lead.busy]);
+  const scroller = useFollowBottom([lead.items, lead.busy, lead.thread?.partial]);
   const [stopError, setStopError] = useState("");
   const seen = useRef<{ thread: string; replies: Set<string> } | undefined>(undefined);
   const threadId = lead.thread?.threadId;
@@ -64,6 +64,7 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
         {lead.items.map((item, i) => (
           <Item key={`${threadId}-${item.kind}-${item.at}-${i}`} item={item} animate={Boolean(item.kind === "reply" && threadId && known && known.thread === threadId && !known.replies.has(`${item.at}-${i}`))} />
         ))}
+        {answering && lead.thread?.partial && <div aria-label="작성 중인 답변"><Markdown text={lead.thread.partial} /></div>}
         {project && lead.failed && lead.loaded && (
           // Read once, then a check failed: what shows may be old. One line, not the whole notice.
           <p role="status" className="flex items-center gap-2 text-xs text-status-warning-text">

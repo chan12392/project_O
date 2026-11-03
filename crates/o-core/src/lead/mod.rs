@@ -451,6 +451,24 @@ fn budget_lines(home: &Path) -> Vec<String> {
     budget::report_now(home).map(|r| r.providers.into_iter().map(|p| p.message).filter(|m| !m.is_empty()).collect()).unwrap_or_default()
 }
 
+// shortcut: hide all code fences until completion, including ordinary code; upgrade when previews parse streamed Markdown.
+fn partial_prose(text: &str) -> &str {
+    text.find("```").map_or_else(|| text.trim_end_matches('`'), |at| &text[..at])
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::partial_prose;
+
+    #[test]
+    fn partial_fences_never_expose_their_contents() {
+        for text in ["답변\n`", "답변\n``", "답변\n```o-plan\n비공개"] {
+            assert_eq!(partial_prose(text), "답변\n");
+        }
+        assert_eq!(partial_prose("아직 답변 중"), "아직 답변 중");
+    }
+}
+
 /// Sends one message: saves it and its attachments, runs the lead CLI read-only in the
 /// project (resuming its session), and records the reply, the plan with its policy
 /// result, the tokens and any error. Returns the events this turn added.
@@ -606,11 +624,14 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
             }
         })
     };
-    if let Some(mut stdin) = child.stdin.take() {
-        let text = spec.stdin.clone().unwrap_or_default();
-        thread::spawn(move || {
-            let _ = stdin.write_all(text.as_bytes());
-        });
+    let app_server = req.provider == ProviderId::Codex && !req.yolo;
+    if !app_server {
+        if let Some(mut stdin) = child.stdin.take() {
+            let text = spec.stdin.clone().unwrap_or_default();
+            thread::spawn(move || {
+                let _ = stdin.write_all(text.as_bytes());
+            });
+        }
     }
     let stderr = child.stderr.take().map(|mut stderr| {
         thread::spawn(move || {
@@ -629,7 +650,7 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
 
     let mut reader = StreamReader::new(req.provider);
     // The session this turn ran in: the resumed one, or the one the stream names.
-    let mut used_session = session.clone();
+    let mut used_session = if app_server { None } else { session.clone() };
     let (mut input, mut cached, mut output) = (0.0, 0.0, 0.0);
     let mut used = false;
     let mut last_message = String::new();
@@ -637,21 +658,37 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
     let mut limited = false;
     let mut progress = Vec::<Value>::new();
     let mut counts = [0u64; 4];
+    let mut partial = String::new();
+    let mut partial_written = None::<Instant>;
     let mut reported_files = BTreeSet::new();
+    // An error that ends the turn after cleanup, and whether app-server finished the turn successfully.
+    let mut fatal = None::<String>;
+    let mut finished = false;
     if let Some(stdout) = child.stdout.take() {
-        let mut lines = BufReader::new(stdout);
-        let mut buf = Vec::new();
         let mut raw = OpenOptions::new().create(true).append(true).open(dir.join("turn.raw.jsonl")).ok();
-        loop {
-            buf.clear();
-            match lines.read_until(b'\n', &mut buf) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-            let text = String::from_utf8_lossy(&buf);
-            let line = text.trim_end_matches(['\r', '\n']);
+        let mut process_line = |line: &str| -> Result<(), String> {
             if let Ok(value) = serde_json::from_str::<Value>(line) {
-                if req.provider == ProviderId::Codex && value["type"] == "item.completed" && value["item"]["type"] == "file_change" && value["item"]["status"] != "failed" {
+                if value["type"] == "o.delta" {
+                    if let Some(delta) = value["delta"].as_str() {
+                        // shortcut: previews stop at 64 KiB; upgrade if longer live previews are needed.
+                        for ch in delta.chars() {
+                            if partial.len() + ch.len_utf8() > 65_536 { break; }
+                            partial.push(ch);
+                        }
+                        if partial_written.is_none_or(|at| at.elapsed() >= Duration::from_millis(100)) {
+                            let shown = partial_prose(&partial);
+                            let state = json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] }, "partial": shown });
+                            if let Ok(text) = serde_json::to_string(&state) { let _ = fs::write(&progress_path, text); }
+                            partial_written = Some(Instant::now());
+                        }
+                    }
+                    return Ok(());
+                }
+                if value["type"] == "item.completed" && value["item"]["type"] == "agent_message" {
+                    partial.clear();
+                    partial_written = None;
+                }
+                if req.provider == ProviderId::Codex && value["type"] == "item.completed" && value["item"]["type"] == "file_change" && value["item"]["status"] != "failed" && value["item"]["status"] != "declined" {
                     if let Some(changes) = value["item"]["changes"].as_array() {
                         for path in changes.iter().filter_map(|change| change["path"].as_str()).take(100) {
                             if reported_files.len() < 100 && !path.is_empty() { reported_files.insert(path.chars().take(1024).collect::<String>()); }
@@ -694,19 +731,75 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
                         }
                         progress.push(json!({ "name": name, "summary": summary }));
                         if progress.len() > 3 { progress.remove(0); }
-                        let state = json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] } });
+                        let shown = partial_prose(&partial);
+                        let state = json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] }, "partial": shown });
                         if let Ok(text) = serde_json::to_string(&state) { let _ = fs::write(&progress_path, text); }
                     }
                 }
             }
+            Ok(())
+        };
+        let mut protocol_error = None;
+        if app_server {
+            match child.stdin.take() {
+                None => fatal = Some("Codex app-server 입력을 열지 못했습니다".into()),
+                Some(stdin) => {
+                    let result = providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, |event| {
+                        if fatal.is_none() {
+                            finished |= matches!(event, providers::codex_app_server::Event::Finished { ok: true, .. });
+                            if let Some(line) = providers::codex_app_server::stream_line(event) {
+                                fatal = process_line(&line).err();
+                            }
+                        }
+                    });
+                    protocol_error = result.err();
+                }
+            }
+        } else {
+            let mut lines = BufReader::new(stdout);
+            let mut buf = Vec::new();
+            loop {
+                buf.clear();
+                match lines.read_until(b'\n', &mut buf) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                let text = String::from_utf8_lossy(&buf);
+                if let Err(error) = process_line(text.trim_end_matches(['\r', '\n'])) {
+                    fatal = Some(error);
+                    break;
+                }
+            }
         }
+        if let Some(error) = protocol_error { last = Some((false, error)); }
     }
     let _ = fs::write(&progress_path, "[]");
+    // The turn ends with an error below; the CLI must not outlive it.
+    if fatal.is_some() && matches!(child.try_wait(), Ok(None)) {
+        proc::kill_tree(child.id());
+    }
+    // app-server is a long-lived process; do not let a stuck shutdown keep the turn open forever.
+    // A turn it already finished keeps its result: only the process is ended.
+    if app_server && fatal.is_none() {
+        let deadline = Instant::now() + Duration::from_secs(3);
+        loop {
+            if !matches!(child.try_wait(), Ok(None)) { break; }
+            if Instant::now() >= deadline {
+                proc::kill_tree(child.id());
+                if !finished {
+                    last = Some((false, "Codex app-server가 종료되지 않았습니다. 대화 상태를 확인하세요.".into()));
+                }
+                break;
+            }
+            thread::sleep(Duration::from_millis(25));
+        }
+    }
     // The watcher is done before the child is reaped, so it never ends a pid reused since.
     drop(done);
     let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
+    if let Some(error) = fatal { return Err(error); }
     // The CLI got this turn's message: its session has seen the thread through it.
     let session_seen = used_session.is_some();
     if let Some(session_id) = used_session {
@@ -728,7 +821,8 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         emit(LeadEvent::Error { at: now_iso(), text: format!("총괄이 제한 시간({minutes}분) 안에 답하지 않아 멈췄습니다. 요청을 나눠 다시 보내세요") })?;
         return Ok(added);
     }
-    let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && exit == Some(0);
+    // A turn app-server finished needs no clean exit: a slow shutdown was ended above.
+    let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && (exit == Some(0) || finished);
     let answer = last.map(|(_, text)| text).filter(|t| !t.trim().is_empty()).unwrap_or(last_message);
     if !ok {
         let why = if limited {
@@ -1117,6 +1211,8 @@ pub struct ThreadView {
     /// Recent tools from this turn; never part of conversation history.
     pub progress: Vec<Value>,
     pub progress_counts: Value,
+    /// Incomplete prose for display during a turn; never conversation history.
+    pub partial: String,
     pub notes: Vec<notes::Note>,
     pub notes_error: Option<String>,
     /// Every event as written (screens ignore kinds they do not know).
@@ -1151,11 +1247,13 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
             .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
         let progress = state.get("steps").or_else(|| state.is_array().then_some(&state)).and_then(Value::as_array).cloned().unwrap_or_default();
         let progress_counts = state.get("counts").cloned().unwrap_or(Value::Null);
+        let partial = state.get("partial").and_then(Value::as_str).unwrap_or_default().to_string();
         ThreadView {
             project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
             busy,
             progress,
             progress_counts,
+            partial,
             notes,
             notes_error,
             events: event_values(home, &id),

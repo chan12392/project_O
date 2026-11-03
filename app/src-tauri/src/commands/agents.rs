@@ -32,6 +32,11 @@ pub async fn agent_login(id: String, clean: bool) -> Result<ActionResult, String
 }
 
 #[tauri::command]
+pub async fn agent_terminal() -> Result<ActionResult, String> {
+    blocking(agents::open_terminal).await
+}
+
+#[tauri::command]
 pub async fn open_external(url: String) -> Result<(), String> {
     blocking(move || agents::open_external(&url)).await?
 }
