@@ -47,7 +47,8 @@ fn main() {
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
-    let tests: [(&str, fn()); 30] = [
+    let tests: [(&str, fn()); 31] = [
+        ("follow-ups only target cards dispatched by this thread", followup_routing),
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
         ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
         ("design snapshots persist and malformed ones do not dispatch", design_snapshots),
@@ -89,6 +90,42 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn followup_routing() {
+    let (home, project) = setup("followup-routing");
+    let started = Mutex::new(Vec::new());
+    let resume = |id: &str| { started.lock().unwrap().push(id.to_string()); Ok(()) };
+    // Nothing dispatched in this thread yet: a follow-up is not a way around "실행".
+    let early = "```o-followup\n[{\"run\":\"20260101-000000-abcd\",\"card\":\"docs\",\"task\":\"수정\"}]\n```";
+    let (spawner, _) = fake(claude_answer("s", early));
+    let refused = lead::send_with_followups(&home, &request(&project, "수정해줘"), spawner.as_ref(), &resume).unwrap();
+    assert!(refused.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("이 대화"))));
+    assert!(started.lock().unwrap().is_empty());
+    let (spawner, _) = fake(claude_answer("s", &plan_answer(good_plan())));
+    let events = lead::send(&home, &request(&project, "설계"), spawner.as_ref()).unwrap();
+    let plan_id = plans(&events).remove(0).0;
+    let dispatched = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &|_| Ok(())).ok().unwrap();
+    let answer = format!("수정 요청을 전달합니다.\n```o-followup\n[{{\"run\":\"{}\",\"card\":\"docs\",\"task\":\"제목 수정\"}}]\n```", dispatched.run_id);
+    let (spawner, _) = fake(claude_answer("s", &answer));
+    let result = lead::send_with_followups(&home, &request(&project, "제목 수정해줘"), spawner.as_ref(), &resume).unwrap();
+    assert!(result.iter().any(|e| matches!(e, LeadEvent::Followup { source_run_id, card_id, .. } if source_run_id == &dispatched.run_id && card_id == "docs")));
+    assert_eq!(started.lock().unwrap().len(), 1);
+    let (bad, _) = fake(claude_answer("s", "```o-followup\n[{\"run\":\"foreign\",\"card\":\"docs\",\"task\":\"수정\"}]\n```"));
+    let refused = lead::send_with_followups(&home, &request(&project, "수정해줘"), bad.as_ref(), &resume).unwrap();
+    assert!(refused.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("이 대화"))));
+    assert_eq!(started.lock().unwrap().len(), 1);
+    let followup_run = started.lock().unwrap()[0].clone();
+    assert_eq!(lead::stop_all(&home, &project).unwrap(), 2);
+    assert!(o_core::run::store::stop_requested(&home, &followup_run));
+    // A new design is a new thread: work dispatched by the old one is not continued from it.
+    lead::new_thread(&home, &project).unwrap();
+    let (spawner, _) = fake(claude_answer("s2", &answer));
+    let refused = lead::send_with_followups(&home, &request(&project, "제목 수정해줘"), spawner.as_ref(), &resume).unwrap();
+    assert!(refused.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("이 대화"))));
+    assert_eq!(started.lock().unwrap().len(), 1);
+    let example = "````markdown\n```o-followup\n[]\n```\n````";
+    assert!(o_core::lead::prompt::split_followups(example).1.unwrap().is_none());
 }
 
 fn design_snapshots() {

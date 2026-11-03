@@ -2,6 +2,7 @@ import { MessageSquarePlus, PanelRightOpen, SquareArrowOutUpRight, X } from "luc
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { isSessionRun, nextUp, type NextItem } from "../../../src/core/attention.ts";
+import { agentPanes } from "../../../src/core/followup.ts";
 import { listedRuns, ownerOf, sameFolder } from "../../../src/core/projects.ts";
 import {
   changeProjects,
@@ -21,6 +22,7 @@ import { readParams, writeParam, type PanelView, type ScreenState } from "../dat
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadThread } from "../features/chat/LeadThread.tsx";
+import { CardTranscript } from "../features/chat/CardTranscript.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
@@ -36,7 +38,7 @@ import { Automation } from "../features/work/Automation.tsx";
 import { UpdatePrompt } from "../features/updates/UpdatePrompt.tsx";
 import { actionCount, useHandled } from "../features/work/NextUp.tsx";
 import { useNow } from "../features/work/WorkTab.tsx";
-import { ICON_BUTTON } from "../lib/format.ts";
+import { ICON_BUTTON, names } from "../lib/format.ts";
 import { backend } from "../platform/backend/index.ts";
 import { demoBackend } from "../platform/backend/demo.ts";
 import { useAnnouncer } from "./announcer.ts";
@@ -123,6 +125,7 @@ function useProjects(runs: Run[], threads: { project: string; threadId: string }
 
 /** Orca's window: run sidebar, then the lead chat and a chosen view side by side, status bar below. */
 function MainWindow() {
+  const [agentRun, setAgentRun] = useState<string>();
   const [chosenState, setState] = useState<ScreenState>(initial.state);
   const data = useRunSource(initial.run, initial.start);
   const { runs, replayingId, restart } = data;
@@ -145,6 +148,14 @@ function MainWindow() {
   const resolved = useMemo(() => resolve(runs, projects, selection), [runs, projects, selection]);
   const { project } = resolved;
   const lead = useLead(api, project?.path, live);
+  const lastLeadThread = useRef<{ project: string; thread?: string } | undefined>(undefined);
+  useEffect(() => {
+    if (!project?.path || !lead.loaded) return;
+    const previous = lastLeadThread.current;
+    const thread = lead.thread?.threadId;
+    if (previous && sameFolder(previous.project, project.path) && previous.thread !== thread) setAgentRun(undefined);
+    lastLeadThread.current = { project: project.path, thread };
+  }, [project?.path, lead.loaded, lead.thread?.threadId]);
   const leadKey = JSON.stringify(lead.projects);
   useEffect(() => setThreads(JSON.parse(leadKey) as { project: string; threadId: string }[]), [leadKey]);
   const leads = useLeads(projects);
@@ -207,6 +218,7 @@ function MainWindow() {
   const compose = () => requestAnimationFrame(() => askRef.current?.focus());
   const openProject = (path: string) => {
     setScreen("app");
+    setAgentRun(undefined);
     select({ project: path, run: undefined, card: undefined });
     compose();
   };
@@ -285,14 +297,17 @@ function MainWindow() {
           // Picking something in the sidebar leaves onboarding for the chat (onboarding stays unfinished).
           onProject={(path) => {
             setScreen("app");
+            setAgentRun(undefined);
             select({ project: path, run: undefined, card: undefined });
           }}
           onWake={(path) => {
             setScreen("app");
+            setAgentRun(undefined);
             wake(path);
           }}
           onRun={(path, run) => {
             setScreen("app");
+            setAgentRun(run);
             select({ project: path, run, card: undefined });
             leads.wake(path);
           }}
@@ -339,6 +354,17 @@ function MainWindow() {
       )}
       {screen === "new" && <NewRequest projects={projects} current={project?.path} onPick={openProject} />}
       <main ref={layout.container} hidden={screen !== "app"} className="flex min-h-0 min-w-0 max-lg:flex-col">
+        {agentRun && current?.view.runId === agentRun ? (
+          <section aria-label="에이전트 작업" className="flex min-h-0 min-w-0 flex-1 flex-col bg-chat-canvas">
+            <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs font-medium">
+              <span className="truncate">{current.view.title}</span>
+              <button type="button" onClick={() => setAgentRun(undefined)} className="ml-auto rounded px-2 py-1 text-muted-foreground hover:bg-accent focus-ring">총괄 대화</button>
+            </header>
+              {current.view.cards.length ? <div className="grid min-h-0 flex-1 auto-rows-fr grid-cols-[repeat(auto-fit,minmax(min(100%,22rem),1fr))] overflow-auto">
+                {agentPanes(runs.map((entry) => entry.view), current.view.runId).map(({ card, run }) => <div key={card.id} className="flex min-h-64 min-w-0 flex-col border-r border-b"><CardTranscript card={card} run={run} names={names(run)} api={api} onFollowup={() => {}} /></div>)}
+            </div> : <p className="p-4 text-sm text-muted-foreground">아직 표시할 에이전트가 없습니다.</p>}
+          </section>
+        ) : (
         <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
           <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs">
             <span className="min-w-0 truncate font-medium text-tab-active-foreground" title={project?.path}>
@@ -425,6 +451,7 @@ function MainWindow() {
           )}
           <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
         </section>
+        )}
         {showPanel && (
           <>
             <div

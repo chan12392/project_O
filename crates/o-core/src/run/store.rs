@@ -28,7 +28,7 @@ use serde::{Deserialize, Serialize};
 use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde_json::Value;
 
-use crate::run::events::OEvent;
+use crate::run::events::{CardStatus, OEvent};
 use crate::run::index::{self, sql, title_text, RunQuery};
 use crate::run::mode::RunMode;
 use crate::sys::js::{iso, local_day, parse_time};
@@ -159,7 +159,21 @@ pub fn newest_first(runs: Vec<RunRecord>) -> Vec<RunRecord> {
 pub fn read_runs(home: &Path, query: &RunQuery) -> io::Result<Vec<RunRecord>> {
     let mut conn = index::open(home)?;
     index::ingest(&mut conn, home)?;
-    index::runs(&conn, query)
+    let mut runs = index::runs(&conn, query)?;
+    let active = active_markers(home);
+    for run in &mut runs {
+        let card = run.events.iter().find(|event| event["t"] == "run.followup").and_then(|event| event["cardId"].as_str());
+        if let Some(card) = card.filter(|_| !run.events.iter().any(|event| event["t"] == "run.end")) {
+            if !run_is_live(home, &run.run_id) && !active.iter().any(|marker| marker.run_id == run.run_id) {
+                let at = crate::sys::js::now_iso();
+                if !run.events.iter().any(|event| event["t"] == "card.end" && event["cardId"] == card) {
+                    run.events.push(serde_json::to_value(OEvent::CardEnd { at: at.clone(), card_id: card.into(), status: CardStatus::Failed, result: Some("후속 실행이 중단됐습니다. 다시 보내 주세요".into()), exit_code: None }).map_err(io::Error::other)?);
+                }
+                run.events.push(serde_json::to_value(OEvent::RunEnd { at, run_id: run.run_id.clone(), status: CardStatus::Failed }).map_err(io::Error::other)?);
+            }
+        }
+    }
+    Ok(runs)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

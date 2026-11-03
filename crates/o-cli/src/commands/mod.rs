@@ -13,6 +13,7 @@ mod budget;
 mod context;
 mod dispatch;
 mod events;
+mod followup;
 mod guard;
 mod images;
 mod lead;
@@ -40,6 +41,7 @@ pub struct Command {
 pub const COMMANDS: &[Command] = &[
     dispatch::CHECK,
     dispatch::DISPATCH,
+    followup::FOLLOWUP,
     status::STATUS,
     events::EVENTS,
     stop::STOP,
@@ -62,6 +64,7 @@ pub const COMMANDS: &[Command] = &[
     agents::AGENTS,
     about::ABOUT,
     dispatch::RUN,
+    followup::RUN_FOLLOWUP,
     review::REVIEW_BACKGROUND,
 ];
 

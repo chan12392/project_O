@@ -49,6 +49,8 @@ pub struct CardInfo {
 pub enum OEvent {
     #[serde(rename = "run.start")]
     RunStart { at: String, run_id: String, title: String, project: String, cards: Vec<CardInfo> },
+    #[serde(rename = "run.followup")]
+    RunFollowup { at: String, source_run_id: String, card_id: String },
     #[serde(rename = "card.queued")]
     CardQueued { at: String, card_id: String, reason: String },
     #[serde(rename = "card.start")]
@@ -62,6 +64,8 @@ pub enum OEvent {
     CardSession { at: String, card_id: String, session_id: String },
     #[serde(rename = "card.message")]
     CardMessage { at: String, card_id: String, text: String },
+    #[serde(rename = "card.input")]
+    CardInput { at: String, card_id: String, text: String },
     #[serde(rename = "card.tool")]
     CardTool { at: String, card_id: String, name: String, summary: String },
     #[serde(rename = "card.limit")]
@@ -156,10 +160,12 @@ impl OEvent {
     pub fn kind(&self) -> &'static str {
         match self {
             OEvent::RunStart { .. } => "run.start",
+            OEvent::RunFollowup { .. } => "run.followup",
             OEvent::CardQueued { .. } => "card.queued",
             OEvent::CardStart { .. } => "card.start",
             OEvent::CardSession { .. } => "card.session",
             OEvent::CardMessage { .. } => "card.message",
+            OEvent::CardInput { .. } => "card.input",
             OEvent::CardTool { .. } => "card.tool",
             OEvent::CardLimit { .. } => "card.limit",
             OEvent::CardEnd { .. } => "card.end",

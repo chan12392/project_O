@@ -10,7 +10,7 @@ export type CardState = "waiting" | "queued" | "running" | CardStatus;
 export interface CardLogEntry {
   at: string;
   /** "budget": the runner lowered the card's effort for the daily usage budget. */
-  kind: "queued" | "tool" | "message" | "limit" | "end" | "team" | "budget";
+  kind: "queued" | "tool" | "message" | "input" | "limit" | "end" | "team" | "budget";
   text: string;
   /** For tool entries: the act in words and the raw detail the CLI reported. */
   tool?: { word: string; detail: string };
@@ -65,6 +65,7 @@ export interface RunView {
   startedAt: string;
   endedAt?: string;
   status: "running" | "done" | "failed" | "stopped";
+  followup?: { sourceRunId: string; cardId: string };
   cards: CardView[];
   /** The run's team channel, in order. */
   messages: TeamMessage[];
@@ -149,6 +150,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       run.endedAt = e.at;
       continue;
     }
+    if (e.t === "run.followup") {
+      run.followup = { sourceRunId: e.sourceRunId, cardId: e.cardId };
+      continue;
+    }
     if (e.t === "quota") {
       run.quotas = [...run.quotas.filter((q) => q.provider !== e.provider || q.window !== e.window), { provider: e.provider, window: e.window, used: e.used, resetsAt: e.resetsAt, at: e.at }];
       continue;
@@ -179,6 +184,9 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       case "card.message":
         card.activity = firstLine(e.text);
         card.log.push({ at: e.at, kind: "message", text: e.text });
+        break;
+      case "card.input":
+        card.log.push({ at: e.at, kind: "input", text: e.text });
         break;
       case "card.limit":
         card.activity = `사용량 한도: ${e.until}까지 차단`;

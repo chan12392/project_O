@@ -26,6 +26,7 @@ use serde_json::{json, Map, Value};
 use super::stream::{is_limit_text, num, short, tool_summary};
 use super::{list_command, strings, LaunchSpec, ModelChoice, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
+use crate::agents::clean;
 use crate::agents::catalog::connection;
 use crate::context::CONTEXT_COMMAND;
 use crate::run::events::StreamSignal;
@@ -34,6 +35,52 @@ use crate::run::store::to_pretty;
 use crate::sys::{proc, resolve::resolve_cli};
 
 pub struct OpenCode;
+
+pub fn check_workspace(cwd: &Path) -> Result<(), String> {
+    for dir in cwd.ancestors() {
+        for name in ["opencode.json", "opencode.jsonc", ".opencode"] {
+            let path = dir.join(name);
+            match fs::symlink_metadata(&path) {
+                Ok(_) if install_folder_only(&path) => {},
+                Ok(_) => return Err("OpenCode는 작업 폴더나 상위 폴더에 프로젝트 설정·플러그인이 있으면 일반 모드로 실행할 수 없습니다".into()),
+                Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+                Err(_) => return Err("OpenCode 프로젝트 설정을 확인하지 못했습니다".into()),
+            }
+        }
+    }
+    Ok(())
+}
+
+/// OpenCode's install script puts its binary in `~/.opencode/bin`: a `.opencode` holding only
+/// that is not project config. Anything else in it, or a folder that can't be read, still counts.
+fn install_folder_only(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".opencode")
+        && fs::read_dir(path).is_ok_and(|entries| entries.into_iter().all(|entry| entry.is_ok_and(|e| e.file_name() == "bin")))
+}
+
+/// `run --session` can create a missing id, so require the official list to contain it first.
+pub fn check_session(root: Option<&Path>, cwd: &Path, session: &str) -> Result<(), String> {
+    crate::sys::resolve::ensure_paths();
+    let cli = resolve_cli("opencode").ok_or("OpenCode CLI를 찾지 못했습니다")?;
+    let mut command = Command::new(cli.command);
+    command.args(cli.prefix).args(["session", "list", "--format", "json", "--max-count", "10000", STANDALONE]).current_dir(cwd);
+    if let Some(root) = root {
+        command.env_clear().envs(clean::environment(root, ProviderId::OpenCode).map_err(|e| e.to_string())?);
+    } else {
+        command.env_clear().envs(clean::own_profile_environment());
+    }
+    let (status, output, _) = proc::capture(&mut command, Duration::from_secs(30)).map_err(|_| "OpenCode 세션 목록을 확인하지 못했습니다")?;
+    if !status.success() || !session_in_list(&output, cwd, session) { return Err("기존 OpenCode 세션을 확인하지 못해 새 세션을 만들지 않았습니다".into()); }
+    Ok(())
+}
+
+fn session_in_list(output: &str, cwd: &Path, session: &str) -> bool {
+    let Some(folder) = cwd.canonicalize().ok() else { return false };
+    serde_json::from_str::<Value>(output).ok().and_then(|v| v.as_array().cloned()).is_some_and(|entries| entries.iter().any(|item| {
+        item.get("id").and_then(Value::as_str) == Some(session)
+            && item.get("directory").and_then(Value::as_str).and_then(|path| Path::new(path).canonicalize().ok()).as_ref() == Some(&folder)
+    }))
+}
 
 /// 공식 상태 명령의 연결 종류만 확인하며 출력은 저장하지 않는다.
 pub fn check_auth(root: Option<&Path>) -> Result<(), String> {
@@ -316,4 +363,42 @@ fn read_stream(session: &mut bool, answer: &mut String, data: &Map<String, Value
         _ => {}
     }
     out
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_existing_session_in_the_workspace_passes() {
+        let cwd = std::env::temp_dir().canonicalize().unwrap();
+        let list = json!([{ "id": "ses_123", "directory": cwd }]).to_string();
+        assert!(session_in_list(&list, &cwd, "ses_123"));
+        assert!(!session_in_list(&list, &cwd, "ses_missing"));
+        assert!(!session_in_list("{}", &cwd, "ses_123"));
+    }
+
+    #[test]
+    fn project_config_is_refused_before_the_cli_starts() {
+        let root = std::env::temp_dir().join(format!("o-opencode-config-{}", std::process::id()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(root.join("opencode.json"), "{}").unwrap();
+        assert!(check_workspace(&project).is_err());
+        fs::remove_file(root.join("opencode.json")).unwrap();
+        fs::remove_dir(project).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn the_install_folder_is_not_project_config() {
+        let root = std::env::temp_dir().join(format!("o-opencode-install-{}", std::process::id()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(root.join(".opencode").join("bin")).unwrap();
+        assert!(check_workspace(&project).is_ok());
+        fs::create_dir_all(root.join(".opencode").join("plugin")).unwrap();
+        assert!(check_workspace(&project).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
 }

@@ -57,13 +57,13 @@ pub const RUN: Command = Command {
     name: "_run",
     usage: "",
     run: |home, args| {
-        run_id_arg(args.first().map(String::as_str)).map_or(1, |id| match runner::run_detached(home, id) {
+        run_id_arg(args.first().map(String::as_str)).map_or(1, |id| if store::run_dir(home, id).join("followup.json").exists() { fail("후속 작업은 전용 실행기로 시작해야 합니다") } else { match runner::run_detached(home, id) {
             Ok(()) => 0,
             Err(message) => {
                 eprintln!("{message}");
                 1
             }
-        })
+        }})
     },
 };
 

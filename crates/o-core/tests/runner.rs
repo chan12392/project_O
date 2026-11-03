@@ -50,7 +50,10 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 22] = [
+    let tests: [(&str, fn()); 25] = [
+        ("queued follow-ups stop safely and never run in parallel for one session", followup_queue_and_stop),
+        ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
+        ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
         ("dependencies wait for success and never start after failure", dependency_order),
@@ -84,6 +87,104 @@ fn main() {
     if failed > 0 {
         std::process::exit(1);
     }
+}
+
+fn followup_queue_and_stop() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
+    initial.project = project.to_string_lossy().into_owned();
+    create_run(&home, "original", &initial).unwrap();
+    let first = o_core::run::followup::start(&home, "original", "a", "수정 1", &|_| Ok(())).unwrap();
+    let second = o_core::run::followup::start(&home, "original", "a", "수정 2", &|_| Ok(())).unwrap();
+    let worker_home = home.clone();
+    let worker_id = first.clone();
+    let worker = std::thread::spawn(move || run_detached(&worker_home, &worker_id));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !read_events(&home, &first).iter().any(|e| matches!(e, OEvent::CardQueued { .. })) {
+        assert!(std::time::Instant::now() < deadline, "후속 대기 상태가 나타나지 않았습니다");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(run_detached(&home, &second).is_err());
+    assert!(read_events(&home, &second).iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Failed, result: Some(text), .. } if text.contains("이미"))));
+    request_stop(&home, &first).unwrap();
+    assert!(worker.join().unwrap().is_err());
+    assert!(read_events(&home, &first).iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Stopped, .. })));
+    assert!(active_markers(&home).is_empty());
+}
+
+fn followup_cancelled_with_source() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
+    initial.project = project.to_string_lossy().into_owned();
+    create_run(&home, "original", &initial).unwrap();
+    let queued = o_core::run::followup::start(&home, "original", "a", "수정", &|_| Ok(())).unwrap();
+    let worker_home = home.clone();
+    let worker_id = queued.clone();
+    let worker = std::thread::spawn(move || run_detached(&worker_home, &worker_id));
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    while !read_events(&home, &queued).iter().any(|e| matches!(e, OEvent::CardQueued { .. })) {
+        assert!(std::time::Instant::now() < deadline, "후속 대기 상태가 나타나지 않았습니다");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert!(o_core::run::runner::stop_run(&home, "original").unwrap());
+    assert!(worker.join().unwrap().is_err());
+    let events = read_events(&home, &queued);
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Stopped, result: Some(text), .. } if text.contains("취소"))), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Stopped, .. })));
+    assert!(active_markers(&home).is_empty());
+}
+
+fn followup_resumes_workspace() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::write(project.join("file.txt"), "before").unwrap();
+    let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
+    initial.project = project.to_string_lossy().into_owned();
+    create_run(&home, "original", &initial).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "original").join("isolated-worktrees"), "").unwrap();
+    let original: Arc<Spawner> = Arc::new(|spec, cwd| {
+        std::fs::write(PathBuf::from(cwd).join("file.txt"), "changed").unwrap();
+        fake_cli(|_| vec![r#"{"type":"system","subtype":"init","session_id":"s1"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])(spec, cwd)
+    });
+    assert_eq!(run_plan(&home, "original", &initial, None, original).unwrap(), CardStatus::Done);
+    let id = o_core::run::followup::start(&home, "original", "a", "다시 확인해 주세요", &|_| Ok(())).unwrap();
+    let follow: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
+    let resume: Arc<Spawner> = Arc::new(|spec, cwd| {
+        // The resumed cwd is the plain path the first run used, never the extended `\\?\` form.
+        #[cfg(windows)]
+        assert!(!cwd.starts_with(r"\\?\"), "{cwd}");
+        assert_eq!(std::fs::read_to_string(PathBuf::from(cwd).join("file.txt")).unwrap(), "changed");
+        assert!(spec.args.windows(2).any(|pair| pair == ["--resume", "s1"]));
+        assert!(spec.stdin.as_ref().unwrap().contains("다시 확인해 주세요"));
+        quiet()(spec, cwd)
+    });
+    let result = run_plan(&home, &id, &follow, None, resume).unwrap();
+    assert_eq!(result, CardStatus::Done, "{:?}", read_events(&home, &id));
+    assert_eq!(std::fs::read_to_string(project.join("file.txt")).unwrap(), "before");
+    assert!(o_core::run::followup::start(&home, "original", "a", "다시", &|_| Err(std::io::Error::other("no runner"))).is_err());
+    let failed = std::fs::read_dir(home.join("runs")).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).find(|run| run != "original" && run != &id).unwrap();
+    assert!(!o_core::run::store::run_is_live(&home, &failed));
+    assert!(read_events(&home, &failed).iter().any(|event| matches!(event, OEvent::RunEnd { status: CardStatus::Failed, .. })));
+    let retry = o_core::run::followup::target(&home, &failed, "a").unwrap();
+    assert_eq!(retry.session, "s1");
+    #[cfg(windows)]
+    assert!(!retry.workspace.to_string_lossy().starts_with(r"\\?\"), "{}", retry.workspace.display());
+    assert_eq!(std::fs::read_to_string(retry.workspace.join("file.txt")).unwrap(), "changed");
+    let interrupted = o_core::run::followup::start(&home, "original", "a", "중단 테스트", &|_| Ok(())).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, &interrupted).join("runner.json"), r#"{"pid":2147483647}"#).unwrap();
+    let runs = o_core::run::store::read_runs(&home, &o_core::run::index::RunQuery { limit: 50, project: None }).unwrap();
+    let record = runs.iter().find(|run| run.run_id == interrupted).unwrap();
+    assert!(record.events.iter().any(|event| event["t"] == "card.end" && event["status"] == "failed"));
+    assert!(record.events.iter().any(|event| event["t"] == "run.end" && event["status"] == "failed"));
+    assert_eq!(o_core::run::followup::target(&home, &interrupted, "a").unwrap().session, "s1");
 }
 
 fn isolated_copies() {

@@ -128,6 +128,7 @@ export interface TokenReport {
 
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
+  followup(run: string, card: string, text: string): Promise<{ runId: string }>;
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;
   agentsCatalog(refresh?: boolean): Promise<AgentCatalogEntry[]>;
