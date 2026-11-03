@@ -124,6 +124,14 @@ export interface TokenGroup {
 export interface TokenReport {
   groups: TokenGroup[];
   compare: { baseline: TokenGroup | null; shared: TokenGroup | null };
+  /** Missing in older O versions; reported totals may omit provider usage. */
+  summary?: {
+    reported: TokenCounts;
+    reportedCards: number;
+    unreportedCards: number;
+    incompleteCards: number;
+    cachePercent: number | null;
+  };
 }
 
 export interface Backend {

@@ -75,6 +75,7 @@ fn print_report(report: &Report) {
     if lead.turns > 0 {
         println!("총괄 대화(계획 부대 비용) {}회  {} / {} / {} = {}\n", lead.turns, n(lead.input), n(lead.cached), n(lead.output), n(lead.total));
     }
+    print_coverage(report);
     if report.runs.is_empty() {
         println!("토큰 기록이 있는 실행이 없습니다.");
         return;
@@ -101,7 +102,21 @@ fn print_report(report: &Report) {
             let shared = if c.context { " +컨텍스트" } else { "" };
             println!("    {:<12} {:<6} {} / {} / {} = {}{shared}", c.card_id, c.provider, n(t.input), n(t.cached), n(t.output), n(t.total));
         }
+        if !run.unreported_cards.is_empty() {
+            println!("    사용량 미보고: {}", run.unreported_cards.join(", "));
+        }
+        if !run.incomplete_cards.is_empty() {
+            println!("    사용량 일부 누락: {}", run.incomplete_cards.join(", "));
+        }
     }
+}
+
+fn print_coverage(report: &Report) {
+    let s = &report.summary;
+    let cache = s.cache_percent.map_or_else(|| "미측정".to_string(), |p| format!("{p:.1}%"));
+    println!("총괄·카드가 보고한 합계 {}  입력 캐시 비율 {cache}", n(s.reported.total));
+    println!("사용량 보고 카드 {} · 미보고 {} · 일부 누락 {}", s.reported_cards, s.unreported_cards, s.incomplete_cards);
+    println!("미보고에는 대기 중 카드가 포함됩니다. 총괄의 미보고 사용량은 확인되지 않습니다.\n");
 }
 
 fn change(a: u64, b: u64) -> String {
@@ -156,4 +171,6 @@ fn print_compare(report: &Report) {
     if !others.is_empty() {
         println!("비교에서 뺀 기록: {}", others.join(", "));
     }
+    println!("\n실행 방식의 기술 통계이며 같은 작업·모델·캐시 조건을 보장하지 않습니다. 총괄과 미보고 사용량은 표의 카드 평균에 포함되지 않습니다.");
+    print_coverage(report);
 }

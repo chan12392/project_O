@@ -4,7 +4,7 @@
 //!
 //! A card's group is its run's mode (`o dispatch` or `o dispatch --clean`, the
 //! run folder's `clean` marker) and whether the card got a context section
-//! (`run.context` names it). Cards that never reported usage are left out.
+//! (`run.context` names it). Missing or partial usage remains visible separately.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -63,6 +63,10 @@ pub struct RunTokens {
     pub context: bool,
     pub cards: Vec<CardTokens>,
     pub tokens: Tokens,
+    /// Planned cards for which no usage event has arrived (including waiting cards).
+    pub unreported_cards: Vec<String>,
+    /// Cards for which at least one usage event omitted or invalidated a field.
+    pub incomplete_cards: Vec<String>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -104,6 +108,19 @@ pub struct Report {
     pub runs: Vec<RunTokens>,
     /// What lead chat turns spent planning (ADR-0008): overhead, not in any card or group.
     pub lead: crate::lead::LeadTokens,
+    /// Only values the providers reported; absent lead usage is not inferred as zero.
+    pub summary: Summary,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Summary {
+    pub reported: Tokens,
+    pub reported_cards: usize,
+    pub unreported_cards: usize,
+    pub incomplete_cards: usize,
+    /// Cached input as a percentage of reported fresh + cached input.
+    pub cache_percent: Option<f64>,
 }
 
 #[derive(Default)]
@@ -122,6 +139,10 @@ const GROUPS: [(bool, bool, &str, &str); 4] = [
 
 fn number(value: Option<&Value>) -> u64 {
     value.and_then(Value::as_f64).filter(|n| n.is_finite() && *n > 0.0).map_or(0, |n| n.round() as u64)
+}
+
+fn valid_number(value: Option<&Value>) -> bool {
+    value.and_then(Value::as_f64).is_some_and(|n| n.is_finite() && n >= 0.0)
 }
 
 /// Reads the index (brought up to date first) and adds it up.
@@ -147,12 +168,19 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
         .map_err(sql)?;
     let mut runs: Vec<RunTokens> = Vec::new();
     // Per run, in card order: provider and tokens so far.
-    let mut cards: Vec<(String, String, bool, Tokens, bool)> = Vec::new();
-    let finish = |run: &mut RunTokens, cards: &mut Vec<(String, String, bool, Tokens, bool)>| {
-        run.cards = cards.drain(..).filter(|c| c.4).map(|(card_id, provider, context, tokens, _)| CardTokens { card_id, provider, context, tokens }).collect();
-        run.context = run.cards.iter().any(|c| c.context);
-        for c in &run.cards {
-            run.tokens.add(&c.tokens);
+    let mut cards: Vec<(String, String, bool, Tokens, bool, bool)> = Vec::new();
+    let finish = |run: &mut RunTokens, cards: &mut Vec<(String, String, bool, Tokens, bool, bool)>| {
+        for (card_id, provider, context, tokens, reported, complete) in cards.drain(..) {
+            run.context |= context;
+            if !reported {
+                run.unreported_cards.push(card_id);
+                continue;
+            }
+            if !complete {
+                run.incomplete_cards.push(card_id.clone());
+            }
+            run.tokens.add(&tokens);
+            run.cards.push(CardTokens { card_id, provider, context, tokens });
         }
     };
     for row in rows {
@@ -171,6 +199,8 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
                 context: false,
                 cards: Vec::new(),
                 tokens: Tokens::default(),
+                unreported_cards: Vec::new(),
+                incomplete_cards: Vec::new(),
             });
         }
         let text = |key: &str| event.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
@@ -184,7 +214,7 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
                         list.iter()
                             .map(|c| {
                                 let field = |key: &str| c.get(key).and_then(Value::as_str).unwrap_or_default().to_string();
-                                (field("id"), field("provider"), false, Tokens::default(), false)
+                                (field("id"), field("provider"), false, Tokens::default(), false, true)
                             })
                             .collect()
                     })
@@ -203,6 +233,7 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
                     let (input, cached, output) = (number(event.get("input")), number(event.get("cached")), number(event.get("output")));
                     card.3.add(&Tokens { input, cached, output, total: input + cached + output });
                     card.4 = true;
+                    card.5 &= ["input", "cached", "output"].iter().all(|key| valid_number(event.get(*key)));
                 }
             }
             _ => {}
@@ -211,12 +242,24 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
     if let Some(last) = runs.last_mut() {
         finish(last, &mut cards);
     }
-    runs.retain(|r| !r.cards.is_empty());
+    runs.retain(|r| !r.cards.is_empty() || !r.unreported_cards.is_empty());
     let groups: Vec<Group> = GROUPS.iter().filter_map(|&(clean, context, key, label)| group(&runs, clean, context, key, label)).collect();
     let pick = |key: &str| groups.iter().find(|g| g.key == key).cloned();
     let compare = Compare { baseline: pick("normal"), shared: pick("clean+context") };
     let lead = crate::lead::tokens(home, query.project, query.since);
-    Ok(Report { groups, compare, runs, lead })
+    let mut summary = Summary::default();
+    for run in &runs {
+        summary.reported.add(&run.tokens);
+        summary.reported_cards += run.cards.len();
+        summary.unreported_cards += run.unreported_cards.len();
+        summary.incomplete_cards += run.incomplete_cards.len();
+    }
+    summary.reported.add(&Tokens { input: lead.input, cached: lead.cached, output: lead.output, total: lead.total });
+    let input = summary.reported.input.saturating_add(summary.reported.cached);
+    if input > 0 {
+        summary.cache_percent = Some(summary.reported.cached as f64 * 100.0 / input as f64);
+    }
+    Ok(Report { groups, compare, runs, lead, summary })
 }
 
 fn group(runs: &[RunTokens], clean: bool, context: bool, key: &str, label: &str) -> Option<Group> {

@@ -137,7 +137,7 @@ fn tokens_report_and_compare() {
     let (base, _home, project) = setup("tokens");
     let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
     let keys: Vec<&str> = report.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["groups", "compare", "runs", "lead"]);
+    assert_eq!(keys, ["groups", "compare", "runs", "lead", "summary"]);
     assert_eq!(report["lead"], json!({ "turns": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
     assert_eq!(report["groups"].as_array().unwrap().iter().map(|g| g["key"].as_str().unwrap()).collect::<Vec<_>>(), ["normal", "clean+context"]);
     let group_keys: Vec<&str> = report["groups"][0].as_object().unwrap().keys().map(String::as_str).collect();
@@ -145,7 +145,7 @@ fn tokens_report_and_compare() {
     assert_eq!(report["compare"]["baseline"]["perCard"], json!({ "input": 100, "cached": 50, "output": 10, "total": 160 }));
     assert_eq!(report["compare"]["shared"]["perCard"]["total"], 55);
     let run_keys: Vec<&str> = report["runs"][0].as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(run_keys, ["runId", "title", "project", "startedAt", "clean", "context", "cards", "tokens"]);
+    assert_eq!(run_keys, ["runId", "title", "project", "startedAt", "clean", "context", "cards", "tokens", "unreportedCards", "incompleteCards"]);
     assert_eq!(report["runs"][0]["cards"][0], json!({ "cardId": "ui", "provider": "codex", "context": true, "tokens": { "input": 40, "cached": 10, "output": 5, "total": 55 } }));
 
     let since = ok_json(o_in(&base, &base, "", &["tokens", "--json", "--since", "2026-11-02"]));
@@ -162,4 +162,36 @@ fn tokens_report_and_compare() {
     assert!(text.contains("기본 하네스") && text.contains("깨끗+세션 공유"), "{text}");
     assert!(text.contains("카드당 합계") && text.contains("160") && text.contains("-66%"), "{text}");
     assert_eq!(o_in(&base, &base, "", &["tokens", "--since", "어제"]).status.code(), Some(1));
+}
+
+#[test]
+fn tokens_distinguish_unreported_incomplete_and_zero_usage() {
+    let (base, home, project) = setup("coverage");
+    let dir = home.join("runs").join("r3");
+    fs::create_dir_all(&dir).unwrap();
+    let events = [
+        json!({ "t": "run.start", "at": "2026-11-03T10:00:00.000Z", "runId": "r3", "title": "coverage", "project": project, "cards": [
+            { "id": "waiting", "provider": "codex" },
+            { "id": "partial", "provider": "codex" },
+            { "id": "zero", "provider": "claude" }
+        ] }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:01.000Z", "cardId": "partial", "input": 12, "output": 5 }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:02.000Z", "cardId": "zero", "input": 0, "cached": 0, "output": 0 }),
+    ];
+    fs::write(dir.join("events.jsonl"), events.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+
+    let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
+    let run = report["runs"].as_array().unwrap().iter().find(|r| r["runId"] == "r3").unwrap();
+    assert_eq!(run["unreportedCards"], json!(["waiting"]));
+    assert_eq!(run["incompleteCards"], json!(["partial"]));
+    assert_eq!(run["cards"].as_array().unwrap().len(), 2, "explicit zeros are reported usage");
+    assert_eq!(report["summary"]["reportedCards"], 4);
+    assert_eq!(report["summary"]["unreportedCards"], 1);
+    assert_eq!(report["summary"]["incompleteCards"], 1);
+    assert_eq!(report["summary"]["reported"]["total"], 232);
+    assert!((report["summary"]["cachePercent"].as_f64().unwrap() - 60.0 / 212.0 * 100.0).abs() < 1e-8);
+    let text = o_in(&base, &base, "", &["tokens"]);
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("사용량 미보고: waiting") && text.contains("사용량 일부 누락: partial"), "{text}");
 }
