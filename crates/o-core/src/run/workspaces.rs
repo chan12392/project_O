@@ -50,6 +50,26 @@ fn base(project: &str) -> io::Result<Option<(PathBuf, PathBuf, String)>> {
 }
 
 type Entries = BTreeMap<PathBuf, (bool, u64, SystemTime)>;
+type Snapshot = BTreeMap<PathBuf, Option<(Vec<u8>, fs::Permissions)>>;
+
+fn snapshot(root: &Path, skip_git: bool) -> io::Result<Snapshot> {
+    if PathBuf::from(resolved_path(&root.to_string_lossy())) != root {
+        return Err(io::Error::other("복사본 경로가 변경되었습니다"));
+    }
+    if skip_git && !root.join(".git").is_dir() { return Err(io::Error::other("복사본 Git 폴더가 없습니다")); }
+    let entries = inventory_copy(root, skip_git)?;
+    let mut result = Snapshot::new();
+    for (path, (dir, _, _)) in &entries {
+        result.insert(path.clone(), if *dir { None } else {
+            let file = root.join(path);
+            Some((fs::read(&file)?, fs::metadata(file)?.permissions()))
+        });
+    }
+    if entries != inventory_copy(root, skip_git)? {
+        return Err(io::Error::other("복사본을 읽는 중 변경되었습니다"));
+    }
+    Ok(result)
+}
 
 /// Do not follow links or copy nested repositories into an agent's independent folder.
 fn inventory(root: &Path) -> io::Result<Entries> {
@@ -65,6 +85,11 @@ fn inventory_copy(root: &Path, skip_git: bool) -> io::Result<Entries> {
             let relative = dir.join(entry.file_name());
             let meta = fs::symlink_metadata(entry.path())?;
             let real = PathBuf::from(resolved_path(&entry.path().to_string_lossy()));
+            #[cfg(windows)]
+            {
+                use std::os::windows::fs::MetadataExt;
+                if meta.file_attributes() & 0x400 != 0 { return Err(io::Error::other("연결 지점은 복사할 수 없습니다")); }
+            }
             if skip_git && dir.as_os_str().is_empty() && entry.file_name().to_string_lossy().eq_ignore_ascii_case(".git") {
                 if !meta.is_dir() || meta.file_type().is_symlink() || !real.starts_with(root) {
                     return Err(io::Error::other("복사본 Git 폴더가 변경되었습니다"));
@@ -105,6 +130,8 @@ pub(super) struct Workspaces {
     paths: HashMap<String, String>,
     project: String,
     git_base: Option<(PathBuf, PathBuf, String)>,
+    copy_base: Option<Snapshot>,
+    copy_git: HashMap<String, Snapshot>,
 }
 
 impl Workspaces {
@@ -115,23 +142,70 @@ impl Workspaces {
         let Some((root, relative, base_commit)) = self.git_base.as_ref() else {
             let target = Path::new(self.paths.get(&card.id).ok_or_else(|| io::Error::other("후속 작업 폴더가 없습니다"))?);
             let base = target.parent().ok_or_else(|| io::Error::other("복사본 기준 폴더가 없습니다"))?.join("base");
-            let original = inventory(&base)?;
-            let unchanged = |path: &Path, skip_git: bool| -> io::Result<bool> {
-                if PathBuf::from(resolved_path(&path.to_string_lossy())) != path { return Ok(false); }
-                if skip_git && !path.join(".git").is_dir() { return Ok(false); }
-                let entries = inventory_copy(path, skip_git)?;
-                if entries.len() != original.len() { return Ok(false); }
-                for (name, (is_dir, _, _)) in &original {
-                    if entries.get(name).is_none_or(|(other_dir, _, _)| is_dir != other_dir) { return Ok(false); }
-                    if !is_dir && fs::read(base.join(name))? != fs::read(path.join(name))? { return Ok(false); }
+            let original = self.copy_base.as_ref().ok_or_else(|| io::Error::other("복사본 기준이 없습니다"))?;
+            let target_git = self.copy_git.get(&card.id).ok_or_else(|| io::Error::other("복사본 Git 기준이 없습니다"))?;
+            let unchanged = || -> io::Result<()> {
+                if snapshot(Path::new(&self.project), false)? != *original || snapshot(&base, false)? != *original {
+                    return Err(io::Error::other("원본 프로젝트 또는 복사본 기준이 변경되었습니다"));
                 }
-                Ok(entries == inventory_copy(path, skip_git)?)
+                if snapshot(target, true)? != *original || snapshot(&target.join(".git"), false)? != *target_git {
+                    return Err(io::Error::other("후속 복사본에 변경이 있습니다"));
+                }
+                Ok(())
             };
-            if !unchanged(Path::new(&self.project), false)? { return Err(io::Error::other("원본 프로젝트가 변경되었습니다")); }
-            if !unchanged(target, true)? { return Err(io::Error::other("후속 복사본에 변경이 있습니다")); }
+            unchanged()?;
+            let mut changes: BTreeMap<PathBuf, Option<Option<(Vec<u8>, fs::Permissions)>>> = BTreeMap::new();
             for id in &card.depends_on {
                 let path = Path::new(self.paths.get(id).ok_or_else(|| io::Error::other("선행 작업 폴더가 없습니다"))?);
-                if !unchanged(path, true)? { return Err(io::Error::other("비 Git 프로젝트의 선행 변경은 아직 인계할 수 없습니다")); }
+                let git_base = self.copy_git.get(id).ok_or_else(|| io::Error::other("복사본 Git 기준이 없습니다"))?;
+                if snapshot(&path.join(".git"), false)? != *git_base {
+                    return Err(io::Error::other("비 Git 복사본의 Git 기록이 변경되어 인계할 수 없습니다"));
+                }
+                let source = snapshot(path, true)?;
+                if source != snapshot(path, true)? || snapshot(&path.join(".git"), false)? != *git_base {
+                    return Err(io::Error::other("선행 복사본이 변경되었습니다"));
+                }
+                let names: HashSet<_> = original.keys().chain(source.keys()).collect();
+                for name in names {
+                    if original.get(name) == source.get(name) { continue; }
+                    if changes.keys().any(|other| other == name || other.starts_with(name) || name.starts_with(other)) {
+                        return Err(io::Error::other(format!("선행 변경 충돌: {}", name.display())));
+                    }
+                }
+                for name in original.keys().chain(source.keys()) {
+                    if original.get(name) != source.get(name) { changes.insert(name.clone(), source.get(name).cloned()); }
+                }
+            }
+            unchanged()?;
+            let card_index = plan.cards.iter().position(|item| item.id == card.id).ok_or_else(|| io::Error::other("후속 작업을 찾지 못했습니다"))?;
+            let backup = target.parent().unwrap().join(format!("handoff-{}", card_index + 1));
+            fs::create_dir(&backup)?;
+            // Move old files aside so even a concurrent user edit is preserved for review.
+            for (name, _) in changes.iter().rev() {
+                if let Some(old) = original.get(name) {
+                    if old.is_none() {
+                        fs::remove_dir(target.join(name))?;
+                    } else {
+                        let saved = backup.join(name);
+                        fs::create_dir_all(saved.parent().unwrap())?;
+                        fs::rename(target.join(name), &saved)?;
+                        let meta = fs::symlink_metadata(&saved)?;
+                        if !meta.is_file() || meta.file_type().is_symlink() || (fs::read(&saved)?, meta.permissions()) != *old.as_ref().unwrap() {
+                            return Err(io::Error::other("인계 중 후속 파일이 변경되어 보존했습니다"));
+                        }
+                    }
+                }
+            }
+            for (name, value) in &changes {
+                match value {
+                    Some(None) => fs::create_dir(target.join(name))?,
+                    Some(Some((bytes, permissions))) => {
+                        let mut file = fs::OpenOptions::new().write(true).create_new(true).open(target.join(name))?;
+                        file.write_all(bytes)?;
+                        file.set_permissions(permissions.clone())?;
+                    }
+                    None => (),
+                }
             }
             return Ok(());
         };
@@ -356,7 +430,7 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
     }
     let run = parent.join(run_id);
     fs::create_dir(&run)?;
-    let snapshot = if git_base.is_none() {
+    let copy_snapshot = if git_base.is_none() {
         let entries = inventory(&root)?;
         let source = run.join("base");
         copy_entries(&root, &source, &entries)?;
@@ -364,6 +438,7 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
         Some((source, entries))
     } else { None };
     let mut result = HashMap::new();
+    let mut copy_git = HashMap::new();
     for (i, card) in plan.cards.iter().enumerate() {
         // Numeric folder names are independent of model-generated card IDs.
         let path = run.join((i + 1).to_string());
@@ -373,9 +448,10 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
                 .map_err(|e| io::Error::other(format!("워크트리를 만들지 못했습니다: {e}. 만든 작업 폴더는 {}에 보존했습니다", run.display())))?;
             path.join(relative)
         } else {
-            let (source, entries) = snapshot.as_ref().expect("non-Git snapshot");
+            let (source, entries) = copy_snapshot.as_ref().expect("non-Git snapshot");
             copy_entries(source, &path, entries)?;
             git(&path, &["init", "--quiet"])?;
+            copy_git.insert(card.id.clone(), snapshot(&path.join(".git"), false)?);
             path.clone()
         };
         if !cwd.is_dir() { return Err(io::Error::other(format!("작업 폴더가 없습니다: {}", cwd.display()))); }
@@ -388,8 +464,20 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
     }
     let current_base = base(project)
         .map_err(|e| io::Error::other(format!("워크트리 준비 중 프로젝트가 바뀌었습니다: {e}. 만든 폴더는 {}에 보존했습니다", run.display())))?;
-    if current_base != git_base || snapshot.as_ref().is_some_and(|(_, entries)| inventory(&root).map_or(true, |current| current != *entries)) {
+    if current_base != git_base || copy_snapshot.as_ref().is_some_and(|(_, entries)| inventory(&root).map_or(true, |current| current != *entries)) {
         return Err(io::Error::other(format!("워크트리 준비 중 프로젝트가 바뀌었습니다. 만든 폴더는 {}에 보존했습니다", run.display())));
     }
-    Ok(Workspaces { paths: result, project: project.to_string(), git_base })
+    let copy_base = if let Some((source, _)) = &copy_snapshot {
+        let original = snapshot_copy_base(&root, source)?;
+        Some(original)
+    } else { None };
+    Ok(Workspaces { paths: result, project: project.to_string(), git_base, copy_base, copy_git })
+}
+
+fn snapshot_copy_base(root: &Path, source: &Path) -> io::Result<Snapshot> {
+    let original = snapshot(root, false)?;
+    if original != snapshot(source, false)? || original != snapshot(root, false)? {
+        return Err(io::Error::other("복사본 기준이 변경되었습니다"));
+    }
+    Ok(original)
 }
