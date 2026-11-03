@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::review::Gh;
-use crate::run::store::{is_run_id, plan_card_ids, read_plan};
+use crate::run::{events::{CardStatus, OEvent}, store::{is_run_id, plan_card_ids, read_events, read_plan}};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -22,6 +22,16 @@ pub struct Finding {
     pub evidence: Vec<String>,
     pub classification: String,
     pub issue: Option<IssueRef>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolution: Option<Resolution>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct Resolution {
+    pub run_id: String,
+    pub card_id: String,
+    pub evidence: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -99,12 +109,39 @@ fn validate(home: &Path, gh: &dyn Gh, cwd: &Path, finding: &Finding) -> Result<(
 }
 
 pub fn record(home: &Path, gh: &dyn Gh, cwd: &Path, finding: &Finding) -> Result<i64, String> {
+    if finding.resolution.is_some() { return Err("발견은 미종결 상태로 기록하세요".into()); }
     validate(home, gh, cwd, finding)?;
     let data = serde_json::to_string(finding).map_err(|e| e.to_string())?;
     let db = open(home)?;
     db.execute("INSERT INTO findings(repo,run_id,card_id,sha,summary,data) VALUES (?1,?2,?3,?4,?5,?6)", params![finding.repo.to_ascii_lowercase(), finding.run_id, finding.card_id, finding.sha.to_ascii_lowercase(), finding.summary, data])
         .map_err(|e| format!("발견을 저장하지 못했습니다 (중복 또는 저장소 오류): {e}"))?;
     Ok(db.last_insert_rowid())
+}
+
+/// Record a person's verification; successful card completion is not proof of a fix.
+pub fn resolve(home: &Path, id: i64, resolution: Option<Resolution>) -> Result<(), String> {
+    let db = open(home)?;
+    let old: String = db.query_row("SELECT data FROM findings WHERE id = ?1", [id], |row| row.get(0)).map_err(|e| e.to_string())?;
+    let mut finding: Finding = serde_json::from_str(&old).map_err(|e| e.to_string())?;
+    if let Some(r) = &resolution {
+        if !is_run_id(&r.run_id) || r.evidence.trim().is_empty() || r.evidence.len() > 4000 {
+            return Err("검증 실행, 카드와 증거가 필요합니다".into());
+        }
+        let cards = plan_card_ids(&read_plan(home, &r.run_id).map_err(|e| format!("검증 실행을 읽지 못했습니다: {e}"))?).map_err(|e| e.to_string())?;
+        let status = read_events(home, &r.run_id).iter().rev().find_map(|e| match e {
+            OEvent::CardEnd { card_id, status, .. } if card_id == &r.card_id => Some(*status),
+            _ => None,
+        });
+        if !cards.contains(&r.card_id) || status != Some(CardStatus::Done) {
+            return Err("성공한 검증 카드의 종료 기록이 필요합니다".into());
+        }
+    }
+    finding.resolution = resolution;
+    let data = serde_json::to_string(&finding).map_err(|e| e.to_string())?;
+    if db.execute("UPDATE findings SET data = ?1 WHERE id = ?2 AND data = ?3", params![data, id, old]).map_err(|e| e.to_string())? != 1 {
+        return Err("다른 작업이 발견을 변경했습니다. 다시 확인하세요".into());
+    }
+    Ok(())
 }
 
 /// Optimistic update: a simultaneous classification cannot silently overwrite this one.

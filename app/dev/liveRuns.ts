@@ -401,6 +401,16 @@ export function liveRuns(): Plugin {
         if (req.method === "GET" && path === "/issues/search") return void o(["issues", "search", query.get("repo") ?? "", query.get("query") ?? ""]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/issues/list") return void o(["issues", "list", query.get("repo") ?? ""]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/issues/record") return void body(req, 1_048_576).then((input) => oWithInput(["issues", "record", "-"], input, 60_000)).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/issues/resolve") {
+          return void body(req, 65_536).then((input) => {
+            const data: unknown = JSON.parse(input.toString("utf8"));
+            if (!data || typeof data !== "object" || !("id" in data) || !Number.isSafeInteger(data.id) || !("resolution" in data)) throw new Error("발견 ID와 검증 결과가 필요합니다");
+            const resolution = data.resolution;
+            if (resolution === null) return o(["issues", "reopen", String(data.id)]);
+            if (!resolution || typeof resolution !== "object" || !("runId" in resolution) || !("cardId" in resolution) || !("evidence" in resolution) || typeof resolution.runId !== "string" || typeof resolution.cardId !== "string" || typeof resolution.evidence !== "string") throw new Error("검증 결과가 올바르지 않습니다");
+            return o(["issues", "resolve", String(data.id), resolution.runId, resolution.cardId, resolution.evidence]);
+          }).then((out) => send(res, 200, out), error(res));
+        }
         if (req.method === "POST" && path === "/issues/classify") {
           return void body(req, 65_536).then((input) => {
             const data: unknown = JSON.parse(input.toString("utf8"));

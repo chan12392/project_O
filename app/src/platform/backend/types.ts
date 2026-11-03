@@ -9,9 +9,11 @@ export type AgentId = "claude" | "codex" | "agy" | "opencode" | "devin";
 
 export interface IssueRef { number: number; updatedAt: string }
 export interface Issue extends IssueRef { title: string; state: string; url: string }
+export interface Resolution { runId: string; cardId: string; evidence: string }
 export interface Finding {
   repo: string; runId: string; cardId: string; sha: string; summary: string;
   reproduction: string; evidence: string[]; classification: string; issue: IssueRef | null;
+  resolution?: Resolution;
 }
 export interface FindingRow { id: number; finding: Finding }
 
@@ -180,6 +182,7 @@ export interface Backend {
   issuesList(repo: string): Promise<FindingRow[]>;
   issuesRecord(finding: Finding): Promise<{ id: number }>;
   issuesClassify(id: number, classification: string, issue: IssueRef | null): Promise<{ id: number }>;
+  issuesResolve(id: number, resolution: Resolution | null): Promise<{ id: number }>;
   /** Today's usage budget per provider from saved readings (`o budget --json --cached`). */
   budget(): Promise<BudgetReport>;
   /** Settings → 에이전트: saves the day's allowance (the machine refuses anything but 12–14). */

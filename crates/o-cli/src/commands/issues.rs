@@ -1,10 +1,10 @@
 use std::{fs, io::Read, path::Path};
-use o_core::{issues::{self, Finding, IssueRef}, review::OfficialGh};
+use o_core::{issues::{self, Finding, IssueRef, Resolution}, review::OfficialGh};
 use super::{fail, Command};
 
 pub const ISSUES: Command = Command {
     name: "issues",
-    usage: "  o issues search <owner/repo> <검색어> | record <finding.json> | list <owner/repo>\n  o issues classify <id> <분류> [<이슈번호> <updatedAt>]\n                             GitHub 이슈 조회와 로컬 발견 기록 (외부 쓰기 없음; ADR-0027)",
+    usage: "  o issues search <owner/repo> <검색어> | record <finding.json> | list <owner/repo>\n  o issues classify <id> <분류> [<이슈번호> <updatedAt>]\n  o issues resolve <id> <검증실행> <카드> <증거> | reopen <id>\n                             GitHub 이슈 조회와 로컬 발견 기록 (외부 쓰기 없음; ADR-0027)",
     run,
 };
 
@@ -15,9 +15,17 @@ fn run(home: &Path, args: &[String]) -> i32 {
         [cmd, repo] if cmd == "list" => issues::list(home, repo).map(|v| serde_json::json!(v)),
         [cmd, id, classification] if cmd == "classify" => classify(home, id, classification, None),
         [cmd, id, classification, number, updated_at] if cmd == "classify" => number.parse::<u64>().map_err(|_| "이슈 번호가 올바르지 않습니다".to_string()).and_then(|number| classify(home, id, classification, Some(IssueRef { number, updated_at: updated_at.clone() }))),
+        [cmd, id, run_id, card_id, evidence] if cmd == "resolve" => resolve(home, id, Some(Resolution { run_id: run_id.clone(), card_id: card_id.clone(), evidence: evidence.clone() })),
+        [cmd, id] if cmd == "reopen" => resolve(home, id, None),
         _ => Err("사용법: o issues search <owner/repo> <검색어> | record <finding.json> | list <owner/repo>".into()),
     };
     match result { Ok(value) => { println!("{value}"); 0 }, Err(error) => fail(&error) }
+}
+
+fn resolve(home: &Path, id: &str, resolution: Option<Resolution>) -> Result<serde_json::Value, String> {
+    let id = id.parse::<i64>().map_err(|_| "발견 ID가 올바르지 않습니다".to_string())?;
+    issues::resolve(home, id, resolution)?;
+    Ok(serde_json::json!({"id": id}))
 }
 
 fn read_finding(path: &str) -> Result<String, String> {

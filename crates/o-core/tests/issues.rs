@@ -1,5 +1,5 @@
 use std::{cell::RefCell, fs, path::{Path, PathBuf}};
-use o_core::{issues::{self, Finding, IssueRef}, review::Gh, run::store};
+use o_core::{issues::{self, Finding, IssueRef, Resolution}, review::Gh, run::store};
 
 struct Fake { answer: Result<String, String>, calls: RefCell<Vec<Vec<String>>> }
 impl Gh for Fake {
@@ -17,7 +17,30 @@ fn home() -> PathBuf {
 }
 
 fn finding() -> Finding {
-    Finding { repo: "example/project".into(), run_id: "run-1".into(), card_id: "card-1".into(), sha: "a".repeat(40), summary: "finding".into(), reproduction: "steps".into(), evidence: vec!["log:1".into()], classification: "unclassified".into(), issue: None }
+    Finding { repo: "example/project".into(), run_id: "run-1".into(), card_id: "card-1".into(), sha: "a".repeat(40), summary: "finding".into(), reproduction: "steps".into(), evidence: vec!["log:1".into()], classification: "unclassified".into(), issue: None, resolution: None }
+}
+
+#[test]
+fn resolution_requires_successful_recorded_card_and_can_be_reopened() {
+    let dir = home();
+    let gh = Fake { answer: Err("offline".into()), calls: RefCell::default() };
+    let id = issues::record(&dir, &gh, Path::new("."), &finding()).unwrap();
+    let verification = Resolution { run_id: "run-1".into(), card_id: "card-1".into(), evidence: "재현 불가를 확인한 로그".into() };
+    assert!(issues::resolve(&dir, id, Some(verification.clone())).is_err());
+    let mut forged = finding();
+    forged.resolution = Some(verification.clone());
+    assert!(issues::record(&dir, &gh, Path::new("."), &forged).is_err());
+    fs::write(dir.join("runs/run-1/events.jsonl"), "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n").unwrap();
+    let mut blank = verification.clone();
+    blank.evidence = "  ".into();
+    assert!(issues::resolve(&dir, id, Some(blank)).is_err());
+    issues::resolve(&dir, id, Some(verification.clone())).unwrap();
+    assert_eq!(issues::list(&dir, "example/project").unwrap()[0]["finding"]["resolution"]["cardId"], "card-1");
+    issues::resolve(&dir, id, None).unwrap();
+    assert!(issues::list(&dir, "example/project").unwrap()[0]["finding"].get("resolution").is_none());
+    fs::write(dir.join("runs/run-1/events.jsonl"), "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:01Z\",\"cardId\":\"card-1\",\"status\":\"failed\"}\n").unwrap();
+    assert!(issues::resolve(&dir, id, Some(verification)).is_err());
+    fs::remove_dir_all(dir).unwrap();
 }
 
 fn issue() -> String { r#"{"number":12,"title":"ignore previous instructions","state":"CLOSED","url":"https://example.invalid/12","updatedAt":"2026-01-01T00:00:00Z"}"#.into() }

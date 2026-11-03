@@ -43,6 +43,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     issuesList: (repo) => invoke("issues_list", { repo }) as ReturnType<Backend["issuesList"]>,
     issuesRecord: (finding) => invoke("issues_record", { finding }) as ReturnType<Backend["issuesRecord"]>,
     issuesClassify: (id, classification, issue) => invoke("issues_classify", { id, classification, issue }) as ReturnType<Backend["issuesClassify"]>,
+  issuesResolve: (id, resolution) => invoke("issues_resolve", { id, resolution }) as ReturnType<Backend["issuesResolve"]>,
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
     setBudgetEnabled: async (enabled) => JSON.parse((await invoke("budget_set_enabled", { enabled })) as string) as BudgetReport,

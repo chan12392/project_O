@@ -16,6 +16,14 @@ fn records_and_lists_findings_through_cli() {
     let values: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
     assert_eq!(values[0]["finding"]["runId"], "run-1");
     assert_eq!(values[0]["finding"]["evidence"][0], "log:1");
+    let id = values[0]["id"].to_string();
+    assert!(!command().args(["issues", "resolve", &id, "run-1", "card-1", "checked"]).output().unwrap().status.success());
+    fs::write(home.join("runs/run-1/events.jsonl"), "{\"t\":\"card.end\",\"at\":\"2026-01-01T00:00:00Z\",\"cardId\":\"card-1\",\"status\":\"done\"}\n").unwrap();
+    assert!(command().args(["issues", "resolve", &id, "run-1", "card-1", "checked"]).output().unwrap().status.success());
+    let resolved = command().args(["issues", "list", "fixture/project"]).output().unwrap();
+    let resolved: serde_json::Value = serde_json::from_slice(&resolved.stdout).unwrap();
+    assert_eq!(resolved[0]["finding"]["resolution"]["evidence"], "checked");
+    assert!(command().args(["issues", "reopen", &id]).output().unwrap().status.success());
     let input = fs::read_to_string(&file).unwrap().replace("finding", "stdin finding");
     let mut child = command().args(["issues", "record", "-"]).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(input.as_bytes()).unwrap();

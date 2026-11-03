@@ -132,6 +132,7 @@ export const demoBackend: Backend = {
   issuesList: async () => [],
   issuesRecord: async () => { throw new Error("미리보기에서는 발견을 저장할 수 없습니다"); },
   issuesClassify: async () => { throw new Error("미리보기에서는 분류를 저장할 수 없습니다"); },
+  issuesResolve: async () => { throw new Error("미리보기에서는 검증 결과를 저장할 수 없습니다"); },
   budget: async () => demoBudget(demoPercent, demoEnabled),
   setBudgetPercent: async (percent) => demoBudget((demoPercent = percent), demoEnabled),
   setBudgetEnabled: async (enabled) => demoBudget(demoPercent, (demoEnabled = enabled)),

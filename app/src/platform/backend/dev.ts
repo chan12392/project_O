@@ -48,6 +48,7 @@ export const devBackend: Backend = {
   issuesList: (repo) => fetch(`/api/issues/list?${new URLSearchParams({ repo })}`).then((r) => json<Awaited<ReturnType<Backend["issuesList"]>>>(r)),
   issuesRecord: (finding) => fetch("/api/issues/record", { method: "POST", body: JSON.stringify(finding) }).then((r) => json<Awaited<ReturnType<Backend["issuesRecord"]>>>(r)),
   issuesClassify: (id, classification, issue) => fetch("/api/issues/classify", { method: "POST", body: JSON.stringify({ id, classification, issue }) }).then((r) => json<Awaited<ReturnType<Backend["issuesClassify"]>>>(r)),
+  issuesResolve: (id, resolution) => fetch("/api/issues/resolve", { method: "POST", body: JSON.stringify({ id, resolution }) }).then((r) => json<Awaited<ReturnType<Backend["issuesResolve"]>>>(r)),
   budget: () => fetch("/api/budget").then((r) => json<BudgetReport>(r)),
   setBudgetPercent: (percent) => fetch(`/api/budget/percent?value=${percent}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
   setBudgetEnabled: (enabled) => fetch(`/api/budget/enabled?value=${enabled ? "on" : "off"}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),

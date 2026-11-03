@@ -44,6 +44,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         issues::issues_list,
         issues::issues_record,
         issues::issues_classify,
+        issues::issues_resolve,
         tokens::tokens,
         lead::lead_show,
         lead::lead_note,
