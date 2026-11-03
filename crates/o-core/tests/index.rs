@@ -202,7 +202,7 @@ fn readers_ingesting_at_once_never_insert_a_line_twice() {
         })
         .collect();
     for i in 0..200 {
-        let event = OEvent::Msg { at: iso(Utc::now()), from: "lead".into(), to: "all".into(), text: format!("m{i}") };
+        let event = OEvent::Msg { at: iso(Utc::now()), from: "lead".into(), to: "all".into(), text: format!("m{i}"), id: None, kind: None };
         append_event(&home, "r1", &event).unwrap();
     }
     for reader in readers {

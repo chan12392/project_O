@@ -20,6 +20,8 @@ export interface CardLogEntry {
 
 interface TeamMessage {
   at: string;
+  id?: string;
+  kind?: "message" | "question";
   from: string;
   to: string;
   text: string;
@@ -137,7 +139,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (!run) continue;
     if (e.t === "msg") {
-      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text });
+      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text, ...(e.id ? { id: e.id } : {}), ...(e.kind ? { kind: e.kind } : {}) });
       // An external session's "lead to all" lines are its main thread talking, not words sent to
       // each subagent: they stay in the team chat instead of repeating in every card's transcript.
       const monologue = run.runId.startsWith("session-") && e.from === "lead" && e.to === "all";
@@ -165,6 +167,7 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       run.blocked = e.violations;
       continue;
     }
+    if (e.t === "msg.state") continue;
     if (e.t === "review.posted") continue;
     if (e.t === "run.context") continue;
     if (e.t === "run.mode") continue;

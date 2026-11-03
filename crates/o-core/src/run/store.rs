@@ -18,7 +18,7 @@ use std::collections::hash_map::RandomState;
 use std::collections::{HashMap, HashSet};
 use std::fs::{self, OpenOptions};
 use std::hash::{BuildHasher, Hasher};
-use std::io::{self, Write};
+use std::io::{self, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex};
 
@@ -91,17 +91,40 @@ pub fn plan_card_ids(plan: &Value) -> io::Result<Vec<String>> {
     Ok(cards.iter().map(|c| c.get("id").and_then(Value::as_str).unwrap_or_default().to_string()).collect())
 }
 
-/// One writer at a time in this process, one `write` call per line.
+/// Serializes threads as well as cooperating processes using this run's lock file.
 static APPEND: Mutex<()> = Mutex::new(());
 
-fn append_line(path: &Path, line: &str) -> io::Result<()> {
+pub(crate) fn with_events<T>(home: &Path, run_id: &str, f: impl FnOnce(&mut std::fs::File) -> io::Result<T>) -> io::Result<T> {
     let _guard = APPEND.lock().unwrap_or_else(|e| e.into_inner());
-    let mut file = OpenOptions::new().create(true).append(true).open(path)?;
-    file.write_all(format!("{line}\n").as_bytes())
+    let dir = run_dir(home, run_id);
+    let lock = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("events.lock"))?;
+    lock.lock()?;
+    let mut file = OpenOptions::new().create(true).read(true).append(true).open(dir.join("events.jsonl"))?;
+    // Preserve an interrupted record as an invalid line; never join it to the next event.
+    if file.metadata()?.len() > 0 {
+        file.seek(SeekFrom::End(-1))?;
+        let mut last = [0];
+        file.read_exact(&mut last)?;
+        if last[0] != b'\n' { file.write_all(b"\n")?; file.sync_data()?; }
+    }
+    f(&mut file)
+}
+
+pub(crate) fn event_text(file: &mut std::fs::File) -> io::Result<String> {
+    file.seek(SeekFrom::Start(0))?;
+    let mut bytes = Vec::new();
+    file.read_to_end(&mut bytes)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+pub(crate) fn append_value(file: &mut std::fs::File, event: &Value) -> io::Result<()> {
+    file.write_all(format!("{}\n", serde_json::to_string(event).map_err(io::Error::other)?).as_bytes())?;
+    file.sync_data()
 }
 
 pub fn append_event(home: &Path, run_id: &str, event: &OEvent) -> io::Result<()> {
-    append_line(&run_dir(home, run_id).join("events.jsonl"), &serde_json::to_string(event).map_err(io::Error::other)?)
+    let value = serde_json::to_value(event).map_err(io::Error::other)?;
+    with_events(home, run_id, |file| append_value(file, &value))
 }
 
 fn events_text(home: &Path, run_id: &str) -> String {

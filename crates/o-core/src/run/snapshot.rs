@@ -123,6 +123,10 @@ pub struct CardView {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TeamMessage {
     pub at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
     pub from: String,
     pub to: String,
     pub text: String,
@@ -240,8 +244,8 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
         }
         let Some(run) = run.as_mut() else { continue };
         match e {
-            OEvent::Msg { at, from, to, text } => {
-                run.messages.push(TeamMessage { at: at.clone(), from: from.clone(), to: to.clone(), text: text.clone() });
+            OEvent::Msg { at, from, to, text, id, kind } => {
+                run.messages.push(TeamMessage { at: at.clone(), from: from.clone(), to: to.clone(), text: text.clone(), id: id.clone(), kind: kind.clone() });
                 for card in &mut run.cards {
                     if card.id == *from || card.id == *to || (to == "all" && card.id != *from) {
                         card.log.push(CardLogEntry {
