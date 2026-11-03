@@ -1,5 +1,4 @@
-//! Codex: `codex exec --json` in a workspace-write sandbox, the prompt on stdin;
-//! usage from a short-lived read-only `codex app-server`.
+//! Codex: app-server for the read-only lead, exec for cards and the YOLO lead.
 
 use std::collections::BTreeMap;
 use std::fs;
@@ -61,14 +60,12 @@ impl Provider for Codex {
         &["minimal", "low", "medium", "high", "xhigh"]
     }
 
-    /// A read-only sandbox in the project (it reads anywhere, writes nowhere); a later turn
-    /// resumes the session with `exec resume <id>`. Images go first (`-i` takes several
-    /// values, so a flag must follow them), the prompt is read from stdin (`-`).
-    fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
+    /// The lead drives app-server over stdio; turn settings are sent through its protocol.
+    fn lead(&self, _turn: &LeadTurn) -> Option<LaunchSpec> {
         // A trusted project's `.codex/` may add hooks; `--disable hooks` (`-c features.hooks=false`,
-        // `codex exec --help`) outranks every config layer, so none runs before a plan is approved.
-        let head = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
-        Some(self.lead_with(head, turn))
+        // `codex app-server --help`) outranks every config layer, so none runs before a plan is approved.
+        Some(LaunchSpec { bin: "codex".into(), args: strings(&["app-server", "--disable", "hooks"]),
+            stdin: None, env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
     }
 
     /// No approvals and no sandbox. Codex has no flag that adds a hook for one run, so hooks
@@ -292,6 +289,9 @@ static PATH_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\/]+").unwr
 
 fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
+    if kind == Some("o.approval_denied") {
+        return vec![StreamSignal::Tool { name: "권한".into(), summary: "총괄 모드에서 승인 요청을 거절했습니다".into() }];
+    }
     if kind == Some("thread.started") {
         if let Some(id) = data.get("thread_id").and_then(Value::as_str) {
             return vec![StreamSignal::Session { session_id: id.to_string() }];
@@ -307,10 +307,16 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                 }
             }
             Some("command_execution") => {
+                if item.get("status").and_then(Value::as_str) == Some("declined") {
+                    return tool("권한", "명령 실행 요청이 거절됐습니다".into());
+                }
                 let command = coalesce([item.get("command")]).map(js_string).unwrap_or_default();
                 return tool("shell", short(&unwrap_shell(&command)));
             }
             Some("file_change") => {
+                if item.get("status").and_then(Value::as_str) == Some("declined") {
+                    return tool("권한", "파일 변경 요청이 거절됐습니다".into());
+                }
                 // File names only: full Windows paths of two files already overflow the summary's length.
                 let changes: Vec<Value> = item
                     .get("changes")
@@ -339,6 +345,12 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
             _ => {}
         }
         return Vec::new();
+    }
+    if kind == Some("turn.usage") {
+        if let Some(u) = data.get("usage").and_then(Value::as_object) {
+            let cached = num(u.get("cached_input_tokens"));
+            return vec![StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")) }];
+        }
     }
     if kind == Some("turn.completed") {
         let mut out = Vec::new();

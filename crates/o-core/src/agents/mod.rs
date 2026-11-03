@@ -221,6 +221,22 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
     }
 }
 
+/// Opens an independent shell; the user starts any agent themselves.
+pub fn open_terminal() -> ActionResult {
+    #[cfg(windows)]
+    {
+        let system = std::env::var_os("SystemRoot").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+        let shell = system.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        match proc::spawn_console(&shell, &[], None, None) {
+            Ok(()) => ActionResult::new(true, "터미널을 열었습니다. 사용할 폴더로 이동한 뒤 agy를 직접 입력하세요."),
+            Err(error) => ActionResult::new(false, format!("터미널을 열지 못했습니다: {error}")),
+        }
+    }
+    #[cfg(not(windows))]
+    ActionResult::new(false, "터미널 열기는 Windows에서 지원합니다. 직접 터미널을 열어 agy를 입력하세요.")
+}
+
 /// Only an https address with a host goes to the browser.
 pub fn is_https_url(url: &str) -> bool {
     let Some(rest) = url.strip_prefix("https://") else { return false };

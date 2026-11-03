@@ -387,6 +387,7 @@ export function liveRuns(): Plugin {
         const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/agents/catalog") return void o(["agents", "list", "--all", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/agents/terminal") return void o(["agents", "terminal", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/about") return void o(["about", "--json"]).then((out) => send(res, 200, JSON.stringify({ ...JSON.parse(out), commit: "", builtAt: "" })), error(res));
         if (req.method === "GET" && path === "/updates") return send(res, 200, JSON.stringify({ release: null, message: DESKTOP_UPDATES_ONLY }));
         if (req.method === "POST" && path === "/review") {

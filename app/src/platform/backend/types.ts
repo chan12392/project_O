@@ -135,6 +135,7 @@ export interface Backend {
   install(id: AgentId): Promise<ActionResult>;
   /** Opens the official sign-in for one CLI (a console window and/or the browser). */
   login(id: AgentId, clean: boolean): Promise<ActionResult>;
+  openTerminal(): Promise<ActionResult>;
   /** Opens a web page in the person's browser. */
   openExternal(url: string): Promise<void>;
   imageRead(project: string, path: string, run?: string, card?: string): Promise<{ mime: string; bytes: number[] }>;

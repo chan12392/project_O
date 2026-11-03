@@ -21,6 +21,7 @@ pub const AGENTS: Command = Command {
   o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
   o agents install <claude|codex|agy|opencode|devin> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
   o agents open-login <claude|codex|agy|opencode|devin> [--clean] [--json]   새 콘솔 창에서 공식 로그인
+  o agents terminal [--json]   독립 터미널 열기
   o agents list [--all] [--json]   다른 에이전트 CLI 목록과 이 PC 감지(--version만 실행). --all 없이는 연결된 것만
   o agents models <opencode> [--json]   그 CLI의 모델 목록 (작업카드 model 값)",
     run: |_, args| run(args),
@@ -106,6 +107,7 @@ fn run(args: &[String]) -> i32 {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
             action(agents::open_login(&root, provider, rest.iter().any(|a| a == "--clean")), rest)
         }
+        "terminal" => action(agents::open_terminal(), rest),
         "list" => {
             let all = rest.iter().any(|a| a == "--all");
             let list: Vec<_> = catalog::list().into_iter().filter(|e| all || e.status == "connected").collect();

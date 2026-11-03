@@ -34,6 +34,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         agents::agents_catalog,
         agents::agent_install,
         agents::agent_login,
+        agents::agent_terminal,
         agents::open_external,
         about::about,
         review::review,

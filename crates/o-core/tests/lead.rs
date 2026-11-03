@@ -4,6 +4,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{Arc, Mutex};
+use std::io::{BufRead, Write};
 
 use chrono::Utc;
 use o_core::lead::files::{self, MAX_BYTES};
@@ -16,6 +17,7 @@ use o_core::run::runner::Spawner;
 use serde_json::{json, Value};
 
 const FAKE: &str = "O_FAKE_LEAD_LINES";
+const FAKE_APP_SERVER: &str = "O_FAKE_LEAD_APP_SERVER";
 const FAKE_SLEEP: &str = "O_FAKE_LEAD_SLEEP_MS";
 const FAKE_PAUSE: &str = "O_FAKE_LEAD_PAUSE_EACH_MS";
 /// Set for a fake CLI: the file it makes when it runs at all.
@@ -26,6 +28,7 @@ const OWNER: &str = "O_FAKE_LEAD_OWNER";
 fn main() {
     if let Ok(lines) = std::env::var(FAKE) {
         let lines: Vec<String> = serde_json::from_str(&lines).expect("fake lines");
+        if std::env::var_os(FAKE_APP_SERVER).is_some() { return fake_app_server(lines); }
         if let Ok(ran) = std::env::var(FAKE_RAN) {
             std::fs::write(ran, "ran").unwrap();
         }
@@ -79,13 +82,19 @@ fn main() {
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
+    let extra: [(&str, fn()); 3] = [
+        ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
+        ("Codex declines read-only approval requests and continues", codex_approval),
+        ("Codex shows partial prose while keeping the plan hidden", codex_partial),
+    ];
+    let total = tests.len() + extra.len();
     let mut failed = 0;
-    for (name, test) in tests {
+    for (name, test) in tests.into_iter().chain(extra) {
         let ok = std::panic::catch_unwind(test).is_ok();
         println!("test {name} ... {}", if ok { "ok" } else { "FAILED" });
         failed += usize::from(!ok);
     }
-    println!("\nlead: {} passed; {failed} failed", tests.len() - failed);
+    println!("\nlead: {} passed; {failed} failed", total - failed);
     if failed > 0 {
         std::process::exit(1);
     }
@@ -163,6 +172,61 @@ fn fake(lines: Vec<String>) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
     fake_slow(lines, 0)
 }
 
+/// Responds to the real stdio handshake; input lines are existing Codex turn fixtures.
+fn fake_app_server(lines: Vec<String>) {
+    let watched = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY"];
+    let keys: Vec<String> = std::env::vars().map(|(k, _)| k).filter(|k| watched.iter().any(|n| n.eq_ignore_ascii_case(k))).collect();
+    let events: Vec<Value> = lines.iter().filter_map(|line| serde_json::from_str(&line.replace("{keys}", &keys.join(","))).ok()).collect();
+    let mut input = std::io::stdin().lock().lines();
+    let read = |input: &mut std::io::Lines<std::io::StdinLock<'_>>| -> Value {
+        serde_json::from_str(&input.next().unwrap().unwrap()).unwrap()
+    };
+    let send = |value: Value| { println!("{value}"); std::io::stdout().flush().unwrap(); };
+    assert_eq!(read(&mut input)["method"], "initialize");
+    send(json!({"id":1,"result":{}}));
+    assert_eq!(read(&mut input)["method"], "initialized");
+    let thread = read(&mut input);
+    let id = thread["params"]["threadId"].as_str().or_else(|| events.iter().find_map(|e| e["thread_id"].as_str())).unwrap_or("fake-codex").to_string();
+    send(json!({"id":2,"result":{"thread":{"id":id}}}));
+    let turn = read(&mut input);
+    assert_eq!(turn["method"], "turn/start");
+    if let Some(path) = std::env::var_os("O_FAKE_LEAD_INPUT_FILE") {
+        std::fs::write(path, json!({"thread":thread,"turn":turn}).to_string()).unwrap();
+    }
+    send(json!({"id":3,"result":{"turn":{"id":"fake-turn"}}}));
+    for event in events {
+        match event["type"].as_str().unwrap_or("") {
+            "o.delta" => send(json!({"method":"item/agentMessage/delta","params":{"threadId":id,"turnId":"fake-turn","delta":event["delta"]}})),
+            "o.approval" => {
+                send(json!({"id":42,"method":"item/commandExecution/requestApproval","params":{"threadId":id,"turnId":"fake-turn"}}));
+                assert_eq!(read(&mut input), json!({"id":42,"result":{"decision":"decline"}}));
+            }
+            "item.completed" => {
+                let mut item = event["item"].clone();
+                let kind = match item["type"].as_str().unwrap_or("") {
+                    "agent_message" => "agentMessage", "file_change" => "fileChange",
+                    "command_execution" => "commandExecution", "web_search" => "webSearch", _ => continue,
+                };
+                item["type"] = json!(kind);
+                send(json!({"method":"item/completed","params":{"threadId":id,"turnId":"fake-turn","item":item}}));
+            }
+            "o.interrupted" => send(json!({"method":"turn/completed","params":{"threadId":id,"turn":{"id":"fake-turn","status":"interrupted"}}})),
+            "turn.completed" => {
+                let u = &event["usage"];
+                let usage = json!({"inputTokens":u["input_tokens"].as_u64().unwrap_or(0),
+                    "cachedInputTokens":u["cached_input_tokens"].as_u64().unwrap_or(0),
+                    "outputTokens":u["output_tokens"].as_u64().unwrap_or(0)});
+                send(json!({"method":"thread/tokenUsage/updated","params":{"threadId":id,"turnId":"fake-turn","tokenUsage":{"last":usage,"total":usage}}}));
+                send(json!({"method":"turn/completed","params":{"threadId":id,"turn":{"id":"fake-turn","status":"completed"}}}));
+            }
+            _ => {}
+        }
+        if let Some(ms) = std::env::var(FAKE_PAUSE).ok().and_then(|v| v.parse().ok()) {
+            std::thread::sleep(std::time::Duration::from_millis(ms));
+        }
+    }
+}
+
 /// A fake lead CLI that waits `ms` before printing `lines`.
 fn fake_slow(lines: Vec<String>, ms: u64) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
     let seen = Arc::new(Mutex::new(Vec::new()));
@@ -171,6 +235,9 @@ fn fake_slow(lines: Vec<String>, ms: u64) -> (Arc<Spawner>, Arc<Mutex<Vec<Launch
         keep.lock().unwrap().push(spec.clone());
         let mut command = Command::new(std::env::current_exe()?);
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_SLEEP, ms.to_string());
+        if spec.bin == "codex" && spec.args.first().is_some_and(|arg| arg == "app-server") {
+            command.env(FAKE_APP_SERVER, "1").env("O_FAKE_LEAD_INPUT_FILE", Path::new(cwd).join("fake-codex-input.json"));
+        }
         Ok(command)
     });
     (spawner, seen)
@@ -250,6 +317,84 @@ fn live_tool_progress() {
     assert_eq!(view["thread"]["progress"], json!([]));
     assert!(view["thread"]["progressCounts"].is_null());
     assert!(view["thread"]["events"].as_array().unwrap().iter().all(|event| event["t"] != "lead.tool"));
+}
+
+fn codex_interrupted() {
+    let (home, project) = setup("codex-interrupted");
+    let (spawner, _) = fake(vec![
+        json!({"type":"item.completed","item":{"type":"agent_message","text":"unfinished answer"}}).to_string(),
+        json!({"type":"o.interrupted"}).to_string(),
+    ]);
+    let req = SendRequest { provider: ProviderId::Codex, ..request(&project, "확인") };
+    let events = lead::send(&home, &req, spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains("Codex 응답이 중단됐습니다"))));
+    assert!(!events.iter().any(|event| matches!(event, LeadEvent::Reply { .. })));
+}
+
+fn codex_approval() {
+    let (home, project) = setup("codex-approval");
+    let lines = vec![json!({"type":"o.approval"}).to_string(),
+        json!({"type":"item.completed","item":{"type":"file_change","status":"declined","changes":[{"path":"should-not-change.txt","kind":"update"}]}}).to_string(),
+        json!({"type":"item.completed","item":{"type":"agent_message","text":"승인이 필요한 작업은 하지 않았습니다."}}).to_string(),
+        json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string()];
+    let (worker_home, worker_project) = (home.clone(), project.clone());
+    let worker = std::thread::spawn(move || {
+        let spawner = move |_: &LaunchSpec, cwd: &str| {
+            let mut command = Command::new(std::env::current_exe()?);
+            command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
+                .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
+            Ok(command)
+        };
+        let req = SendRequest { provider: ProviderId::Codex, ..request(&worker_project, "확인") };
+        lead::send(&worker_home, &req, &spawner).unwrap()
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        let view = lead::show(&home, Some(&project));
+        if view["thread"]["progress"].as_array().is_some_and(|steps| steps.iter().any(|step| step["name"] == "권한" && step["summary"].as_str().is_some_and(|text| text.contains("거절")))) { break; }
+        assert!(std::time::Instant::now() < deadline, "approval refusal was not visible: {view}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let events = worker.join().unwrap();
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, reported_files, .. } if text.contains("하지 않았습니다") && reported_files.is_empty())));
+    assert!(!events.iter().any(|event| matches!(event, LeadEvent::Error { .. })));
+}
+
+fn codex_partial() {
+    let (home, project) = setup("codex-partial");
+    let answer = plan_answer(good_plan());
+    let lines = vec![
+        json!({"type":"o.delta","delta":answer}).to_string(),
+        json!({"type":"item.completed","item":{"type":"agent_message","text":answer}}).to_string(),
+        json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string(),
+    ];
+    let (worker_home, worker_project) = (home.clone(), project.clone());
+    let worker = std::thread::spawn(move || {
+        let spawner = move |_: &LaunchSpec, cwd: &str| {
+            let mut command = Command::new(std::env::current_exe()?);
+            command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
+                .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
+            Ok(command)
+        };
+        let req = SendRequest { provider: ProviderId::Codex, ..request(&worker_project, "계획") };
+        lead::send(&worker_home, &req, &spawner).unwrap()
+    });
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
+    loop {
+        let view = lead::show(&home, Some(&project));
+        if let Some(partial) = view["thread"]["partial"].as_str().filter(|text| !text.is_empty()) {
+            assert!(partial.contains("카드 한 장"));
+            assert!(!partial.contains("o-plan") && !partial.contains("README"));
+            assert!(view["thread"]["events"].as_array().unwrap().iter().all(|event| event["t"] != "lead.reply"));
+            break;
+        }
+        assert!(std::time::Instant::now() < deadline, "Codex partial never became visible: {view}");
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    let events = worker.join().unwrap();
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text.contains("카드 한 장"))));
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Plan { .. })));
+    assert_eq!(lead::show(&home, Some(&project))["thread"]["partial"], "");
 }
 
 fn autorun() {
@@ -471,8 +616,10 @@ fn resumes_session() {
     let req = SendRequest { provider: ProviderId::Codex, effort: Some("low"), ..request(&project, "codex로") };
     let events = lead::send(&home, &req, codex.as_ref()).unwrap();
     let spec = &seen.lock().unwrap()[0];
-    assert!(!spec.args.contains(&"resume".to_string()));
-    assert!(spec.stdin.as_deref().unwrap().contains("어느 파일인가요?"));
+    assert_eq!(spec.args[0], "app-server");
+    let sent: Value = serde_json::from_slice(&std::fs::read(Path::new(&project).join("fake-codex-input.json")).unwrap()).unwrap();
+    assert_eq!(sent["thread"]["method"], "thread/start");
+    assert!(sent["turn"]["params"]["input"][0]["text"].as_str().unwrap().contains("어느 파일인가요?"));
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "네")));
 }
 
@@ -829,12 +976,12 @@ fn project_hooks_off() {
     lead::send(&home, &req, codex.as_ref()).unwrap();
     lead::send(&home, &SendRequest { text: "codex 이어서", ..req }, codex.as_ref()).unwrap();
     let specs = seen.lock().unwrap().clone();
-    assert!(specs[1].args.contains(&"resume".to_string()), "{:?}", specs[1].args);
+    let sent: Value = serde_json::from_slice(&std::fs::read(Path::new(&project).join("fake-codex-input.json")).unwrap()).unwrap();
+    assert_eq!(sent["thread"]["method"], "thread/resume");
+    assert_eq!(sent["thread"]["params"]["threadId"], "th-h");
     for spec in &specs {
-        // Before `resume`: an option of `codex exec`, which `-c features.hooks=false` spells out.
         let at = spec.args.iter().position(|a| a == "--disable").expect("--disable");
         assert_eq!(spec.args[at + 1], "hooks");
-        assert!(spec.args.iter().position(|a| a == "resume").is_none_or(|r| at < r));
     }
 
     let hooks = PathBuf::from(&project).join(".agents");
