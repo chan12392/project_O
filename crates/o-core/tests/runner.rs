@@ -148,7 +148,7 @@ fn followup_resumes_workspace() {
     assert_eq!(retry.session, "s1");
     assert_eq!(std::fs::read_to_string(retry.workspace.join("file.txt")).unwrap(), "changed");
     let interrupted = o_core::run::followup::start(&home, "original", "a", "중단 테스트", &|_| Ok(())).unwrap();
-    std::fs::write(o_core::run::store::run_dir(&home, &interrupted).join("runner.json"), r#"{"pid":0}"#).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, &interrupted).join("runner.json"), r#"{"pid":2147483647}"#).unwrap();
     let runs = o_core::run::store::read_runs(&home, &o_core::run::index::RunQuery { limit: 50, project: None }).unwrap();
     let record = runs.iter().find(|run| run.run_id == interrupted).unwrap();
     assert!(record.events.iter().any(|event| event["t"] == "card.end" && event["status"] == "failed"));
