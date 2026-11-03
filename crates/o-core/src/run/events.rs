@@ -88,6 +88,8 @@ pub enum OEvent {
         id: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
     },
     #[serde(rename = "msg.state")]
     MsgState { at: String, id: String, recipient: String, state: String },

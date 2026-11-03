@@ -162,6 +162,27 @@ fn retries_questions_order_and_independent_broadcast_receipts() {
 }
 
 #[test]
+fn answers_reference_only_a_question_addressed_to_the_sender_and_retries_are_idempotent() {
+    let (base, home) = setup("reply-reference");
+    let question = ["msg", "send", "--run", "r1", "--as", "a", "--to", "lead", "--question", "--id", "q", "which file?"];
+    assert!(o(&base, &question, &[]).status.success());
+    let answer = ["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-q", "--id", "answer", "app.rs"];
+    assert!(o(&base, &answer, &[]).status.success());
+    assert!(o(&base, &answer, &[]).status.success());
+    let forged = ["msg", "send", "--run", "r1", "--as", "b", "--to", "a", "--reply-to", "k1-a-q", "not mine"];
+    assert!(!o(&base, &forged, &[]).status.success());
+    let changed = ["msg", "send", "--run", "r1", "--to", "a", "--id", "answer", "app.rs"];
+    assert!(!o(&base, &changed, &[]).status.success());
+    let wrong_target = ["msg", "send", "--run", "r1", "--to", "b", "--reply-to", "k1-a-q", "wrong person"];
+    assert!(!o(&base, &wrong_target, &[]).status.success());
+    let events = read_events(&home, "r1");
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[1], OEvent::Msg { reply_to: Some(id), .. } if id == "k1-a-q"));
+    let read = o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]);
+    assert!(String::from_utf8_lossy(&read.stdout).contains("답변 대상: k1-a-q"));
+}
+
+#[test]
 fn concurrent_claims_return_one_message_and_require_explicit_retry() {
     let (base, _) = setup("claim");
     assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "one"], &[]).status.success());

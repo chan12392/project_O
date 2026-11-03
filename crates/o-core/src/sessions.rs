@@ -774,7 +774,7 @@ impl Session {
         let project = self.main.cwd.as_deref().map(project_of).unwrap_or_else(|| "(폴더 모름)".into());
         let mut body: Vec<OEvent> = Vec::new();
         for line in &self.main.lead {
-            body.push(OEvent::Msg { at: line.at.clone(), from: "lead".into(), to: "all".into(), text: line.text.clone(), id: None, kind: None });
+            body.push(OEvent::Msg { at: line.at.clone(), from: "lead".into(), to: "all".into(), text: line.text.clone(), id: None, kind: None, reply_to: None });
         }
         let mut failed = false;
         for card in &cards {

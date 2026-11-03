@@ -109,11 +109,13 @@ test("message identity and question survive state events in the snapshot", () =>
     fixture.events[0],
     { t: "msg", at: "1", id: "m1", kind: "question", from: "code", to: "lead", text: "help?" },
     { t: "msg.state", at: "2", id: "m1", recipient: "lead", state: "unknown" },
+    { t: "msg", at: "3", id: "m2", from: "lead", to: "code", text: "yes", replyTo: "m1" },
   ]);
   assert.equal(run?.messages[0].id, "m1");
   assert.equal(run?.messages[0].kind, "question");
+  assert.equal(run?.messages[1].replyTo, "m1");
   assert.deepEqual(run?.messages[0].recipients, { lead: "unknown" });
-  assert.equal(run?.messages.length, 1);
+  assert.equal(run?.messages.length, 2);
 });
 
 test("a budget adjustment shows the effort the card ran with in its activity and log", () => {
