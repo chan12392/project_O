@@ -72,7 +72,27 @@ fn refusal(method: &str) -> Option<Value> {
 /// A transport that never finishes `initialize` reports the Codex version it needs.
 pub fn run(turn: &LeadTurn<'_>, input: impl BufRead, output: impl Write, emit: impl FnMut(Event)) -> Result<(), String> {
     let mut phase = 1;
-    drive(turn, input, output, emit, &mut phase).map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
+    drive(turn, input, output, emit, &mut phase, None).map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
+}
+
+/// Arguments supplied to the caller, which must authorize the run and card for this lead session.
+#[derive(Debug, serde::Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CardResultRequest {
+    pub run_id: String,
+    pub card_id: String,
+    pub line: Option<u64>,
+    pub offset: Option<u64>,
+}
+
+/// Drive a turn with scoped card-result access. Existing threads retain their original tool configuration.
+pub fn run_with_card_results(
+    turn: &LeadTurn<'_>, input: impl BufRead, output: impl Write, emit: impl FnMut(Event),
+    mut read: impl FnMut(CardResultRequest) -> Result<String, String>,
+) -> Result<(), String> {
+    let mut phase = 1;
+    drive(turn, input, output, emit, &mut phase, Some(&mut read))
+        .map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
 }
 
 fn drive(
@@ -81,14 +101,16 @@ fn drive(
     mut output: impl Write,
     mut emit: impl FnMut(Event),
     phase: &mut u8,
+    mut read: Option<&mut dyn FnMut(CardResultRequest) -> Result<String, String>>,
 ) -> Result<(), String> {
-    send(&mut output, &json!({"id":1,"method":"initialize","params":{
+    let mut init = json!({"id":1,"method":"initialize","params":{
         "clientInfo":{"name":"project_o","title":"Project O","version":env!("CARGO_PKG_VERSION")}
-    }}))?;
+    }});
+    if read.is_some() { init["params"]["capabilities"] = json!({"experimentalApi":true}); }
+    send(&mut output, &init)?;
 
     let mut thread_id = String::new();
     let mut turn_id = String::new();
-    let mut usage_base: Option<Value> = None;
     let mut usage_total: Option<Value> = None;
     let mut pending = VecDeque::new();
     let mut lines = input.lines();
@@ -102,6 +124,35 @@ fn drive(
         };
         if let Some(method) = message.get("method").and_then(Value::as_str) {
             if let Some(id) = message.get("id") {
+                if method == "item/tool/call" && read.is_some() {
+                    if !(id.is_string() || id.is_i64() || id.is_u64()) { return Err("Codex 요청 ID가 올바르지 않습니다: item/tool/call".into()); }
+                    if *phase == 3 {
+                        if pending.len() >= 10_000 { return Err("Codex 응답 대기열이 너무 큽니다".into()); }
+                        pending.push_back(message);
+                        continue;
+                    }
+                    let params = &message["params"];
+                    let valid = *phase == 4 && params["threadId"].as_str() == Some(thread_id.as_str())
+                        && params["turnId"].as_str() == Some(turn_id.as_str())
+                        && params["callId"].as_str().is_some_and(|id| !id.is_empty())
+                        && params.get("namespace").is_some_and(Value::is_null) && params["tool"] == "o_read_card_result";
+                    let args = serde_json::from_value::<CardResultRequest>(params["arguments"].clone())
+                        .ok().filter(|args| !args.run_id.is_empty() && args.run_id.len() <= 256 && !args.card_id.is_empty() && args.card_id.len() <= 256
+                            && ["line", "offset"].iter().all(|key| params["arguments"].get(key).is_none_or(Value::is_u64)));
+                    let result = if valid {
+                        args.map(|args| read.as_mut().unwrap()(args)).unwrap_or_else(|| Err("Invalid tool arguments".into()))
+                    } else { Err("Invalid tool call or turn scope".into()) };
+                    let (success, text) = match result {
+                        Ok(text) if text.len() <= 16_384 => (true, text),
+                        Ok(_) => (false, "Result too large; request a smaller page".into()),
+                        Err(error) => (false, error),
+                    };
+                    // Limit returned content without cutting a UTF-8 character.
+                    let end = text.char_indices().map(|(i, _)| i).take_while(|i| *i <= 16_384).last().unwrap_or(0);
+                    let text = if text.len() > 16_384 { &text[..end] } else { &text };
+                    send(&mut output, &json!({"id":id,"result":{"contentItems":[{"type":"inputText","text":text}],"success":success}}))?;
+                    continue;
+                }
                 if matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval") {
                     let same_thread = message.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id.as_str());
                     let request_turn = message.pointer("/params/turnId").and_then(Value::as_str).filter(|id| !id.is_empty());
@@ -142,27 +193,21 @@ fn drive(
                 }
                 "thread/tokenUsage/updated" => {
                     let usage = &message["params"]["tokenUsage"];
-                    if usage["total"].is_object() && usage["last"].is_object() {
-                        if usage_base.is_none() {
-                            let mut base = json!({});
-                            for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
-                                let total = usage["total"][key].as_u64().unwrap_or(0);
-                                let last = usage["last"][key].as_u64().unwrap_or(0);
-                                base[key] = json!(total.saturating_sub(last));
-                            }
-                            usage_base = Some(base);
-                        }
-                        usage_total = Some(usage["total"].clone());
+                    let mut total = json!({});
+                    let mut delta = json!({});
+                    for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
+                        let current = usage["total"][key].as_u64();
+                        let change = match &usage_total {
+                            Some(previous) => current.zip(previous[key].as_u64()).and_then(|(new, old)| new.checked_sub(old)),
+                            None => current.zip(usage["last"][key].as_u64()).and_then(|(total, last)| total.checked_sub(last).map(|_| last)),
+                        };
+                        delta[key] = json!(change);
+                        total[key] = json!(change.and(current));
                     }
+                    usage_total = Some(total);
+                    emit(Event::Usage(delta));
                 }
                 "turn/completed" => {
-                    if let (Some(base), Some(total)) = (&usage_base, &usage_total) {
-                        let mut usage = json!({});
-                        for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
-                            usage[key] = json!(total[key].as_u64().unwrap_or(0).saturating_sub(base[key].as_u64().unwrap_or(0)));
-                        }
-                        emit(Event::Usage(usage));
-                    }
                     let turn = &message["params"]["turn"];
                     let status = turn["status"].as_str().unwrap_or("");
                     let ok = status == "completed";
@@ -194,6 +239,15 @@ fn drive(
                     params["threadId"] = json!(session);
                     "thread/resume"
                 } else {
+                    if read.is_some() {
+                        params["dynamicTools"] = json!([{"type":"function","name":"o_read_card_result",
+                            "description":"Read an authorized card result page for the current lead session.",
+                            "inputSchema":{"type":"object","properties":{
+                                "runId":{"type":"string","minLength":1,"maxLength":256},
+                                "cardId":{"type":"string","minLength":1,"maxLength":256},
+                                "line":{"type":"integer","minimum":0},"offset":{"type":"integer","minimum":0}
+                            },"required":["runId","cardId"],"additionalProperties":false}}]);
+                    }
                     "thread/start"
                 };
                 if let Some(model) = turn.model { params["model"] = json!(model); }
@@ -233,6 +287,81 @@ fn drive(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn scoped_tool_registers_and_checks_each_request() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), ..Default::default() };
+        let call = |id, thread, turn, tool, arguments| json!({"id":id,"method":"item/tool/call","params":{
+            "threadId":thread,"turnId":turn,"callId":"call-1","namespace":null,"tool":tool,"arguments":arguments}});
+        let args = json!({"runId":"run-1","cardId":"card-1","line":3,"offset":4});
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            call(10, "s", "t", "o_read_card_result", args.clone()),
+            call(18, "s", "wrong", "o_read_card_result", args.clone()),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            call(11, "other", "t", "o_read_card_result", args.clone()),
+            call(12, "s", "other", "o_read_card_result", args.clone()),
+            call(13, "s", "t", "other", args.clone()),
+            call(14, "s", "t", "o_read_card_result", json!({"runId":"r","cardId":"c","path":"/secret"})),
+            call(15, "s", "t", "o_read_card_result", json!({"runId":"r","cardId":"c","line":null})),
+            call(16, "s", "t", "o_read_card_result", json!({"runId":"denied","cardId":"c"})),
+            json!({"id":17,"method":"item/commandExecution/requestApproval","params":{"threadId":"s","turnId":"t"}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":10,"cachedInputTokens":4,"outputTokens":3},
+                "total":{"inputTokens":110,"cachedInputTokens":54,"outputTokens":13}}}}),
+            json!({"method":"turn/completed","params":{"threadId":"s","turn":{"id":"t","status":"completed"}}})]
+            .into_iter().map(|v| format!("{v}\n")).collect::<String>();
+        let mut output = Vec::new();
+        let mut events = Vec::new();
+        let mut calls = Vec::new();
+        run_with_card_results(&turn, Cursor::new(input), &mut output, |e| events.push(e), |request| {
+            let denied = request.run_id == "denied";
+            calls.push(request);
+            if denied { Err("not authorized".into()) } else { Ok("result page".into()) }
+        }).unwrap();
+        let sent: Vec<Value> = String::from_utf8(output).unwrap().lines().map(|s| serde_json::from_str(s).unwrap()).collect();
+        assert_eq!(sent[0]["params"]["capabilities"]["experimentalApi"], true);
+        let spec = &sent[2]["params"]["dynamicTools"];
+        assert_eq!(spec.as_array().unwrap().len(), 1);
+        assert_eq!(spec[0]["name"], "o_read_card_result");
+        assert_eq!(spec[0]["inputSchema"]["required"], json!(["runId", "cardId"]));
+        assert_eq!(spec[0]["inputSchema"]["additionalProperties"], false);
+        assert_eq!(sent[2]["params"]["sandbox"], "read-only");
+        assert_eq!(sent[3]["params"]["sandboxPolicy"]["type"], "readOnly");
+        assert_eq!(calls, [CardResultRequest { run_id:"run-1".into(), card_id:"card-1".into(), line:Some(3), offset:Some(4) },
+            CardResultRequest { run_id:"denied".into(), card_id:"c".into(), line:None, offset:None }]);
+        let reply = |id| sent.iter().find(|m| m["id"] == id).unwrap();
+        assert_eq!(reply(10)["result"], json!({"success":true,"contentItems":[{"type":"inputText","text":"result page"}]}));
+        for id in 11..=16 { assert_eq!(reply(id)["result"]["success"], false); }
+        assert_eq!(reply(18)["result"]["success"], false);
+        assert_eq!(reply(17)["result"]["decision"], "decline");
+        assert!(events.contains(&Event::Usage(json!({"inputTokens":10,"cachedInputTokens":4,"outputTokens":3}))));
+        assert_eq!(events.last(), Some(&Event::Finished { ok:true, error:String::new() }));
+    }
+
+    #[test]
+    fn scoped_tool_rejects_out_of_turn_and_limits_output() {
+        let turn = LeadTurn { project:"/project", prompt:"hello".into(), session:Some("s"), ..Default::default() };
+        let call = |id| json!({"id":id,"method":"item/tool/call","params":{"threadId":"s","turnId":"t",
+            "callId":"c","namespace":null,"tool":"o_read_card_result","arguments":{"runId":"r","cardId":"c"}}});
+        let input = [call(json!(8)), json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}), call(json!(9)),
+            json!({"method":"turn/completed","params":{"threadId":"s","turn":{"id":"t","status":"completed"}}})]
+            .into_iter().map(|v| format!("{v}\n")).collect::<String>();
+        let mut output = Vec::new();
+        let mut count = 0;
+        run_with_card_results(&turn, Cursor::new(input), &mut output, |_| {}, |_| { count += 1; Ok("x".repeat(16_385)) }).unwrap();
+        let sent: Vec<Value> = String::from_utf8(output).unwrap().lines().map(|s| serde_json::from_str(s).unwrap()).collect();
+        assert_eq!(count, 1);
+        assert!(sent.iter().any(|v| v["id"] == 8 && v["result"]["success"] == false));
+        assert!(sent.iter().any(|v| v["id"] == 9 && v["result"]["success"] == false));
+        let resume = sent.iter().find(|v| v["method"] == "thread/resume").unwrap();
+        assert!(resume["params"].get("dynamicTools").is_none());
+
+        let invalid = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}), call(json!({"bad":1}))]
+            .into_iter().map(|v| format!("{v}\n")).collect::<String>();
+        assert!(run_with_card_results(&turn, Cursor::new(invalid), Vec::new(), |_| {}, |_| panic!("invalid id invoked callback")).is_err());
+    }
 
     #[test]
     fn resume_sends_read_only_turn_and_delivers_stream() {
@@ -398,7 +527,54 @@ mod tests {
         let mut events = Vec::new();
         run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).unwrap();
         let usage: Vec<_> = events.into_iter().filter_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).collect();
-        assert_eq!(usage, [json!({"inputTokens":300,"cachedInputTokens":120,"outputTokens":30})]);
+        assert_eq!(usage, [json!({"inputTokens":100,"cachedInputTokens":40,"outputTokens":10}),
+            json!({"inputTokens":200,"cachedInputTokens":80,"outputTokens":20})]);
+    }
+
+    #[test]
+    fn invalid_usage_fields_remain_unknown_through_the_stream() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), session: Some("s"), ..Default::default() };
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":10,"outputTokens":3},"total":{"inputTokens":100,"cachedInputTokens":50,"outputTokens":10}}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":20,"cachedInputTokens":10,"outputTokens":1},"total":{"inputTokens":120,"cachedInputTokens":60,"outputTokens":9}}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":30,"cachedInputTokens":10,"outputTokens":3},"total":{"inputTokens":150,"cachedInputTokens":70,"outputTokens":12}}}}),
+            json!({"method":"turn/completed","params":{"threadId":"s","turn":{"id":"t","status":"completed"}}})]
+            .into_iter().map(|v| format!("{v}\n")).collect::<String>();
+        let mut events = Vec::new();
+        run(&turn, Cursor::new(&input), Vec::new(), |e| events.push(e)).unwrap();
+        let usage: Vec<_> = events.into_iter().filter_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).collect();
+        assert_eq!(usage, [json!({"inputTokens":10,"cachedInputTokens":null,"outputTokens":3}),
+            json!({"inputTokens":20,"cachedInputTokens":null,"outputTokens":null}),
+            json!({"inputTokens":30,"cachedInputTokens":null,"outputTokens":null})]);
+        let line = stream_line(Event::Usage(usage[0].clone())).unwrap();
+        let mapped: Value = serde_json::from_str(&line).unwrap();
+        assert!(mapped["usage"]["cached_input_tokens"].is_null());
+
+        let mut messages: Vec<Value> = input.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        messages[3]["params"]["tokenUsage"]["last"]["inputTokens"] = json!(101);
+        let input: String = messages.iter().map(|message| format!("{message}\n")).collect();
+        let mut events = Vec::new();
+        run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).unwrap();
+        let usage = events.into_iter().find_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).unwrap();
+        assert!(usage["inputTokens"].is_null(), "a last value above the total has no valid baseline");
+    }
+
+    #[test]
+    fn usage_is_delivered_even_if_the_server_disconnects_before_completion() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), session: Some("s"), ..Default::default() };
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":10,"cachedInputTokens":4,"outputTokens":3},
+                "total":{"inputTokens":110,"cachedInputTokens":54,"outputTokens":13}}}})]
+            .into_iter().map(|v| format!("{v}\n")).collect::<String>();
+        let mut events = Vec::new();
+        assert!(run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).is_err());
+        assert!(events.contains(&Event::Usage(json!({"inputTokens":10,"cachedInputTokens":4,"outputTokens":3}))));
     }
 
     #[test]
