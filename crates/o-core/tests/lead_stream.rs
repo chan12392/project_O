@@ -76,3 +76,28 @@ fn lead_can_read_the_end_of_a_long_result_on_repeated_turns() {
         assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text == "읽었습니다")));
     }
 }
+
+#[test]
+#[ignore = "실제 Codex 구독과 실행 한도를 사용하는 수동 통합 검사"]
+fn official_codex_reads_the_last_part_of_a_result() {
+    use o_core::{agents::clean, run::runner::official_command};
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::path::PathBuf::from(r"C:\tmp").join(format!("o-live-stream-{}-{stamp}", std::process::id()));
+    let home = base.join("state");
+    let project_dir = base.join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+    let project = project_dir.to_str().unwrap();
+    let thread = lead::thread_for(&home, project, false).unwrap();
+    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Codex, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![] }] };
+    create_run(&home, "run", &plan).unwrap();
+    append_event(&home, "run", &OEvent::RunStart { at: "now".into(), run_id: "run".into(), title: "test".into(), project: project.into(), cards: vec![CardInfo { id: "card".into(), provider: ProviderId::Codex, label: None, role: None, model: None, effort: None }] }).unwrap();
+    let marker = format!("RESULT-{stamp}");
+    append_event(&home, "run", &OEvent::CardEnd { at: "now".into(), card_id: "card".into(), status: CardStatus::Done, result: Some(format!("{}\n{marker}", "padding ".repeat(900))), exit_code: Some(0) }).unwrap();
+    append_event(&home, "run", &OEvent::RunEnd { at: "now".into(), run_id: "run".into(), status: CardStatus::Done }).unwrap();
+    writeln!(fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap(), "{}", json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"run","clean":false})).unwrap();
+    let root = clean::default_root();
+    let request = SendRequest { project, provider: ProviderId::Codex, model: None, effort: Some("low"), text: "run의 card 결과 원문을 끝까지 확인하고 마지막 줄의 RESULT-로 시작하는 식별자만 답하세요. 모르면 모른다고 답하세요.", attach: &[], fresh: false, clean: Some(&root), yolo: false };
+    let events = lead::send(&home, &request, &official_command).unwrap();
+    let answer = events.iter().find_map(|event| match event { LeadEvent::Reply { text, .. } => Some(text.as_str()), _ => None });
+    assert!(answer.is_some_and(|text| text.contains(&marker)), "실제 응답이 결과 끝을 확인하지 못했습니다: {events:?}");
+}
