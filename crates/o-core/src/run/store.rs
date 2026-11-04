@@ -119,11 +119,16 @@ pub(crate) fn event_text(file: &mut std::fs::File) -> io::Result<String> {
 
 /// Read a stable event log without changing a partially written record.
 pub(crate) fn locked_event_text(home: &Path, run_id: &str) -> io::Result<String> {
+    with_locked_event_text(home, run_id, |text| text)
+}
+
+/// Keep the event snapshot stable until its dependent operation finishes.
+pub(crate) fn with_locked_event_text<T>(home: &Path, run_id: &str, f: impl FnOnce(String) -> T) -> io::Result<T> {
     let _guard = APPEND.lock().unwrap_or_else(|e| e.into_inner());
     let dir = run_dir(home, run_id);
     let lock = OpenOptions::new().create(true).truncate(false).write(true).open(dir.join("events.lock"))?;
     lock.lock()?;
-    fs::read_to_string(dir.join("events.jsonl"))
+    Ok(f(fs::read_to_string(dir.join("events.jsonl"))?))
 }
 
 pub(crate) fn append_value(file: &mut std::fs::File, event: &Value) -> io::Result<()> {
