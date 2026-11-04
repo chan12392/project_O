@@ -11,7 +11,8 @@ import { prOf } from "../../../../src/core/attention.ts";
 import { ExternalAnchor } from "../../ui/ExternalAnchor.tsx";
 import { ReviewButton, isReviewCard } from "../work/ReviewRequest.tsx";
 import { useFollowBottom } from "./Thread.tsx";
-import { useState, type KeyboardEvent, type ReactNode } from "react";
+import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
+import { useAutoGrow } from "../../lib/autoGrow.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 
 const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTerminal, "파일 읽기": FileText, "파일 수정": FilePen, "웹 검색": Globe };
@@ -19,6 +20,8 @@ const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTermin
 /** One work card's session, read back as Orca shows an agent transcript. */
 export function CardTranscript({ card, run, names, api, onFollowup }: { card: CardView; run: RunView; names: (party: string) => string; api?: Backend; onFollowup?: (runId: string) => void }) {
   const [draft, setDraft] = useState("");
+  const draftRef = useRef<HTMLTextAreaElement>(null);
+  useAutoGrow(draftRef, draft);
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
@@ -87,7 +90,7 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
         <form className="shrink-0 border-t p-3" onSubmit={(event) => { event.preventDefault(); void send(); }}>
           <label className="sr-only" htmlFor={`followup-${run.runId}-${card.id}`}>{card.label}에게 후속 지시</label>
           <div className="flex items-end gap-2">
-            <textarea id={`followup-${run.runId}-${card.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKey} disabled={sending} placeholder={card.state === "running" || card.state === "queued" || card.state === "waiting" ? "현재 작업이 끝나면 전달합니다. 이미 보낸 지시가 대기·실행 중이면 그 지시가 끝난 뒤 보내세요" : "후속 지시를 입력하세요"} className="min-w-0 flex-1 resize-y rounded-md border bg-background px-3 py-2 text-sm focus-ring disabled:opacity-50" rows={2} />
+            <textarea ref={draftRef} id={`followup-${run.runId}-${card.id}`} value={draft} onChange={(event) => setDraft(event.target.value)} onKeyDown={onKey} disabled={sending} placeholder={card.state === "running" || card.state === "queued" || card.state === "waiting" ? "현재 작업이 끝나면 전달합니다. 이미 보낸 지시가 대기·실행 중이면 그 지시가 끝난 뒤 보내세요" : "후속 지시를 입력하세요"} className="scrollbar-sleek max-h-48 min-w-0 flex-1 resize-none overflow-y-auto rounded-md border bg-background px-3 py-2 text-sm focus-ring disabled:opacity-50" rows={2} />
             <button type="submit" disabled={sending || !draft.trim()} className="shrink-0 rounded-md border px-2 py-1 text-xs text-muted-foreground hover:bg-accent focus-ring disabled:opacity-50">{sending ? "보내는 중…" : "보내기"}</button>
           </div>
           {error && <p role="alert" className="mt-1 text-xs text-destructive">{error}</p>}

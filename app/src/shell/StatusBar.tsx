@@ -1,14 +1,28 @@
 import { RefreshCw, RotateCcw } from "lucide-react";
+import { useCallback, useId, useRef, useState } from "react";
 
 import { LIMITS } from "../../../src/core/limits.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { timeOf } from "../lib/format.ts";
+import { useDismiss } from "../lib/dismiss.ts";
 import type { LiveStatus } from "../data/useLiveRuns.ts";
 import type { ScreenState } from "../data/useRun.ts";
 import { useBudget } from "../data/useBudget.ts";
 import { serviceLimits } from "./serviceLimits.ts";
+import { backend, type ResourceLease } from "../platform/backend/index.ts";
 
 const BUTTON = "flex h-5 items-center gap-1 rounded px-1.5 whitespace-nowrap hover:bg-accent hover:text-foreground focus-ring";
+
+function resourceNames(resources: unknown): string {
+  if (!Array.isArray(resources)) return "자원 범위를 확인할 수 없습니다";
+  if (resources.length === 0) return "범위 확인 불가 · 독점 예약";
+  return resources.map((value: unknown) => {
+    if (!value || typeof value !== "object") return "자원 정보 불명";
+    const { kind, key, mode } = value as Record<string, unknown>;
+    if ((kind !== "project-path" && kind !== "external") || typeof key !== "string" || (mode !== "read" && mode !== "write")) return "자원 정보 불명";
+    return `${kind === "project-path" ? "파일" : "외부"} ${key} (${mode === "read" ? "읽기" : "쓰기"})`;
+  }).join(", ");
+}
 
 function sameDay(at: string, now: Date): boolean {
   const day = new Date(at);
@@ -20,6 +34,41 @@ function sameDay(at: string, now: Date): boolean {
  * and which source the screen shows: this machine's O runs (`live`) or the recorded demo.
  */
 export function StatusBar({ state, runs, live, replaying, onReplay }: { state: ScreenState; runs: RunView[]; live?: LiveStatus; replaying: boolean; onReplay: () => void }) {
+  const [leases, setLeases] = useState<ResourceLease[] | null>(null);
+  const [leaseError, setLeaseError] = useState("");
+  const [leaseOpen, setLeaseOpen] = useState(false);
+  const [recovering, setRecovering] = useState<string | null>(null);
+  const [loadingLeases, setLoadingLeases] = useState(false);
+  const pending = useRef(false);
+  const leasePanel = useRef<HTMLElement>(null);
+  const leaseButton = useRef<HTMLButtonElement>(null);
+  const leasePanelId = useId();
+  const closeLeases = useCallback(() => setLeaseOpen(false), []);
+  useDismiss(leasePanel, leaseOpen, closeLeases, leaseButton);
+  const inspect = async () => {
+    setLeaseOpen(true);
+    if (pending.current) return;
+    pending.current = true;
+    setLoadingLeases(true);
+    setLeaseError("");
+    try { setLeases(await backend().resources()); }
+    catch (error) { setLeases(null); setLeaseError(String(error)); }
+    finally { pending.current = false; setLoadingLeases(false); }
+  };
+  const recover = async (id: string) => {
+    if (pending.current) return;
+    pending.current = true;
+    setRecovering(id);
+    setLeaseError("");
+    try {
+      await backend().recoverResource(id);
+      setLeases(null);
+      setLoadingLeases(true);
+      setLeases(await backend().resources());
+    }
+    catch (error) { setLeaseError(String(error)); }
+    finally { pending.current = false; setLoadingLeases(false); setRecovering(null); }
+  };
   const known = state === "full" || state === "empty";
   const cards = runs.flatMap((r) => r.cards);
   // Live runs span many days; only today's starts count against the daily cap.
@@ -43,6 +92,16 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
       <span className="max-sm:hidden" title={limits.title}>{!known ? "한도 확인 전" : limits.text}</span>
       {live ? (
         <>
+          <div className="relative">
+            <button ref={leaseButton} type="button" className={BUTTON} onClick={() => leaseOpen ? closeLeases() : void inspect()} aria-expanded={leaseOpen} aria-controls={leasePanelId}>자원 예약 점검</button>
+            {leaseOpen && <section ref={leasePanel} id={leasePanelId} aria-label="자원 예약 점검" aria-busy={loadingLeases || recovering !== null} className="absolute bottom-full right-0 z-50 mb-2 max-h-64 w-80 max-w-[80vw] overflow-auto rounded-lg border bg-popover p-3 text-popover-foreground shadow-lg">
+              <p className="mb-2">시작 전 또는 작업 종료가 기록된 예약은 소유자 종료 확인 후 복구할 수 있습니다.</p>
+              {leaseError && <p role="alert">{leaseError}</p>}
+              {loadingLeases && <p role="status">예약을 읽는 중입니다.</p>}
+              {!loadingLeases && leases !== null && (leases.length === 0 ? <p>남아 있는 예약이 없습니다.</p> : <ul className="space-y-2">{leases.map((lease) => <li key={lease.id} className="break-words border-b pb-2 last:border-0"><p>{lease.runId} / {lease.cardId} · {lease.state === "recoverable" ? "복구 가능" : "실행 중이거나 종료 확인 필요"}</p><p className="break-all">{resourceNames(lease.resources)}</p><p>실행기 PID {lease.ownerPid ?? "불명"} · 작업 PID {lease.workerPid ?? "불명"}</p>{lease.state === "recoverable" && <button type="button" disabled={loadingLeases || recovering !== null} aria-label={`${lease.runId} ${lease.cardId} 예약 복구`} onClick={() => void recover(lease.id)} className={`disabled:opacity-60 ${BUTTON}`}>{recovering === lease.id ? "복구 중" : "예약 복구"}</button>}</li>)}</ul>)}
+              <button type="button" disabled={loadingLeases || recovering !== null} onClick={() => void inspect()} className={`mt-2 disabled:opacity-60 ${BUTTON}`}>다시 확인</button>
+            </section>}
+          </div>
           <span className="ml-auto max-md:hidden">{live.failed ? "이 PC의 O 실행 기록 · 연결 끊김, 다시 시도하는 중" : "이 PC의 O 실행 기록 · 실시간"}</span>
           <button
             type="button"

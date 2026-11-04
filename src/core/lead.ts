@@ -16,6 +16,44 @@ export interface LeadAttachment {
 export type LeadViolation = Violation;
 
 export interface LeadProgressCounts { reads: number; searches: number; edits: number; commands: number }
+
+/** One step of a turn (crates/o-core/src/lead/steps.rs `Step`): live in `thread.steps`, finished ones as `lead.step`. */
+export interface LeadStep {
+  id: string;
+  /** read · search · run · edit · web · other (an unknown kind shows as other). */
+  kind: string;
+  label: string;
+  file?: string;
+  added?: number;
+  removed?: number;
+  /** running · done · failed · denied · incomplete. */
+  status: string;
+}
+
+export interface LeadApprovalFile { path: string; added?: number; removed?: number; diff?: string }
+
+/**
+ * An action a normal-mode lead waits on (crates/o-core/src/lead/approvals.rs): what it asks,
+ * as the CLI sent it (`detail`, data), until `expires`. Only the person's 허용/거부 decides it.
+ */
+export interface LeadApproval {
+  id: string;
+  at: string;
+  expires: string;
+  provider: ProviderId;
+  kind: "command" | "file" | "web" | "other";
+  tool: string;
+  summary: string;
+  detail?: string;
+  cwd?: string | null;
+  reason?: string | null;
+  files?: LeadApprovalFile[];
+}
+
+/** One line of a turn's work list: a step, or an approval and what became of it. */
+export type LeadWorkEntry =
+  | { type: "step"; step: LeadStep }
+  | { type: "approval"; id: string; kind: LeadApproval["kind"]; summary: string; files: LeadApprovalFile[]; decision?: string; by?: string; reason?: string };
 export interface DesignNote { id: string; quote: string; anchor?: string; occurrence?: number; tag: string; text: string; sent: boolean }
 export type DesignNoteChange = { op: "add" | "update"; note: DesignNote } | { op: "delete"; id: string };
 
@@ -51,26 +89,42 @@ export interface PlanCard {
   effort?: string;
   task: string;
   depends_on?: string[];
+  resources?: { kind: "project-path" | "external"; key: string; mode: "read" | "write" }[];
+}
+
+/** One question the lead asks (crates/o-core/src/lead/prompt.rs `AskQuestion`). */
+export interface AskQuestion {
+  header?: string;
+  question: string;
+  options: { label: string; description?: string }[];
+  multi?: boolean;
 }
 
 export type LeadEvent =
   | { t: "lead.start"; at: string; threadId: string; project: string }
   | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  | { t: "lead.worker"; at: string; runId: string; cardId: string; messageId: string; text: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
   | { t: "lead.reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
+  /** Questions in place of an answer (an `o-ask` block); the next lead.user carries the picks. */
+  | { t: "lead.ask"; at: string; askId: string; provider: ProviderId; intro?: string; questions: AskQuestion[] }
   | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
   | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
-  | { t: "lead.error"; at: string; text: string }
+  | { t: "lead.warning" | "lead.error"; at: string; text: string }
   /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
-  | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number };
+  | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number }
+  | ({ t: "lead.approval" } & LeadApproval)
+  /** allow · deny · timeout · stopped, by user · guard · timeout · stop · o. */
+  | { t: "lead.decision"; at: string; id: string; decision: string; by: string; reason?: string }
+  | ({ t: "lead.step"; at: string } & LeadStep);
 
-/** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
+/** What `o lead show --json` prints. `unknown` means a previous turn's exit is unconfirmed. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | "unknown" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; steps?: LeadStep[]; approvals?: LeadApproval[]; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
 }
 
@@ -112,8 +166,13 @@ export function leadView(state: LeadView, action: LeadViewAction): LeadView {
 /** One thing the chat draws, in order. */
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  | { kind: "worker"; at: string; runId: string; cardId: string; text: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { kind: "followup"; at: string; cardId: string; runId: string }
+  /** A turn's steps and approvals, kept above its answer ("작업 n단계"). */
+  | { kind: "work"; at: string; entries: LeadWorkEntry[] }
+  /** `answered`: a message followed it (the picks, or something the person wrote instead). */
+  | { kind: "ask"; at: string; askId: string; provider: ProviderId; intro: string; questions: AskQuestion[]; answered: boolean }
   | {
       kind: "plan";
       at: string;
@@ -127,20 +186,54 @@ export type LeadItem =
       runId?: string;
       autoRunReason?: string;
     }
-  | { kind: "error"; at: string; text: string };
+  | { kind: "warning" | "error"; at: string; text: string };
 
 /** Folds a thread's events into chat items; a dispatch marks its plan with the run it started. */
 export function leadItems(events: readonly { t: string }[]): LeadItem[] {
   const items: LeadItem[] = [];
+  // The turn's work list: one per turn, made by its first step or approval.
+  let work: Extract<LeadItem, { kind: "work" }> | undefined;
+  const workOf = (at: string) => {
+    if (!work) { work = { kind: "work", at, entries: [] }; items.push(work); }
+    return work;
+  };
   for (const raw of events) {
     const e = raw as LeadEvent;
     switch (e.t) {
+      case "lead.step":
+        if (typeof e.id === "string" && typeof e.label === "string") {
+          workOf(e.at).entries.push({ type: "step", step: { id: e.id, kind: String(e.kind), label: e.label, file: e.file, added: e.added, removed: e.removed, status: String(e.status) } });
+        }
+        break;
+      case "lead.approval":
+        if (typeof e.id === "string") workOf(e.at).entries.push({ type: "approval", id: e.id, kind: e.kind, summary: String(e.summary ?? ""), files: Array.isArray(e.files) ? e.files : [] });
+        break;
+      case "lead.decision":
+        for (const item of items) {
+          if (item.kind !== "work") continue;
+          for (const entry of item.entries) if (entry.type === "approval" && entry.id === e.id) Object.assign(entry, { decision: e.decision, by: e.by, reason: e.reason });
+        }
+        break;
       case "lead.user":
+        work = undefined;
+        for (const item of items) if (item.kind === "ask") item.answered = true;
         items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
+        break;
+      case "lead.worker":
+        work = undefined;
+        items.push({ kind: "worker", at: e.at, runId: e.runId, cardId: e.cardId, text: e.text });
         break;
       case "lead.reply":
         items.push({ kind: "reply", at: e.at, provider: e.provider, text: e.text, reportedFiles: e.reportedFiles });
         break;
+      case "lead.ask": {
+        // A stored ask is data: questions without text or with too few options are left out.
+        const questions = (Array.isArray(e.questions) ? e.questions : []).filter(
+          (q): q is AskQuestion => isObject(q) && typeof q.question === "string" && Array.isArray(q.options) && q.options.length >= 2 && q.options.every((o: unknown) => isObject(o) && typeof o.label === "string"),
+        );
+        if (questions.length > 0) items.push({ kind: "ask", at: e.at, askId: e.askId, provider: e.provider, intro: typeof e.intro === "string" ? e.intro : "", questions, answered: false });
+        break;
+      }
       case "lead.plan":
         items.push(planItem(raw as Record<string, unknown>, items.length));
         break;
@@ -155,6 +248,9 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         break;
       case "lead.error":
         items.push({ kind: "error", at: e.at, text: e.text });
+        break;
+      case "lead.warning":
+        items.push({ kind: "warning", at: e.at, text: e.text });
         break;
       default:
         // lead.start, lead.session, lead.usage, lead.seen and kinds this build does not know draw nothing.
@@ -221,6 +317,10 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     if (card.depends_on !== undefined) {
       if (!Array.isArray(card.depends_on) || card.depends_on.some((id: unknown) => typeof id !== "string")) problems.push(`작업 ${id}의 선행 작업이 올바르지 않습니다`);
       else kept.depends_on = card.depends_on;
+    }
+    if (card.resources !== undefined) {
+      if (!Array.isArray(card.resources) || card.resources.length > 64 || card.resources.some((r: unknown) => !isObject(r) || (r.kind !== "project-path" && r.kind !== "external") || typeof r.key !== "string" || !r.key.trim() || new TextEncoder().encode(r.key).length > 1024 || /[\u0000-\u001f\u007f-\u009f]/u.test(r.key) || (r.mode !== "read" && r.mode !== "write") || Object.keys(r).some((k) => !["kind", "key", "mode"].includes(k)))) problems.push(`작업 ${id}의 자원 선언이 올바르지 않습니다`);
+      else kept.resources = card.resources;
     }
     cards.push(kept);
   });

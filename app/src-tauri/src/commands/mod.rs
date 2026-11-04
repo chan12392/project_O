@@ -10,6 +10,7 @@ mod about;
 mod agents;
 mod lead;
 mod images;
+mod issues;
 mod projects;
 mod review;
 mod runs;
@@ -23,8 +24,12 @@ pub(crate) mod window;
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         runs::runs,
+        runs::run_changes,
         runs::run_followup,
+        runs::run_reply,
         usage::usage,
+        usage::resource_leases,
+        usage::resource_recover,
         usage::usage_refresh,
         usage::budget,
         usage::budget_set_percent,
@@ -39,6 +44,11 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         agents::open_external,
         about::about,
         review::review,
+        issues::issues_search,
+        issues::issues_list,
+        issues::issues_record,
+        issues::issues_classify,
+        issues::issues_resolve,
         tokens::tokens,
         lead::lead_show,
         lead::lead_note,
@@ -47,6 +57,10 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_send,
         lead::lead_dispatch,
         lead::lead_stop,
+        lead::lead_decide,
+        lead::lead_wake,
+        lead::lead_retry,
+        lead::lead_answer_approval,
         lead::lead_stop_all,
         lead::lead_models,
         images::image_read,
@@ -71,6 +85,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         window::popout_open,
         window::popout_close,
         window::hide_main,
+        window::attention,
         window::quit_activity,
         window::quit_app,
     ]

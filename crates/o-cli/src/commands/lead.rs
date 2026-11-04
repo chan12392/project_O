@@ -11,6 +11,39 @@ use o_core::lead::{self, DispatchError, SendRequest};
 use o_core::run::mode::{take_flags, RunMode};
 use o_core::run::plan::ProviderId;
 use o_core::run::runner::{official_command, Spawner};
+
+pub const WATCH: super::Command = super::Command {
+    name: "_lead-watch",
+    usage: "",
+    run: |home, _| {
+        let (keep, stop) = std::sync::mpsc::channel();
+        std::thread::spawn(move || {
+            let _ = std::io::copy(&mut std::io::stdin().lock(), &mut std::io::sink());
+            drop(keep);
+        });
+        o_core::lead::recovery::watch_until(home.to_path_buf(), Arc::new(official_command), stop, std::time::Duration::from_secs(2));
+        0
+    },
+};
+/// `o _lead-approve <home> <threadId> <token> <project>`: one normal-mode Claude lead turn's
+/// approval server (ADR-0008 개정 3), started by Claude Code as its only MCP server. It asks the
+/// person and waits; it never decides anything itself.
+pub const APPROVE: super::Command = super::Command {
+    name: o_core::lead::approvals::COMMAND,
+    usage: "",
+    run: |_, args| {
+        let [home, thread_id, token, project] = args else { return fail("o _lead-approve <home> <threadId> <token> <project>") };
+        let server = o_core::lead::approvals::Server {
+            home: PathBuf::from(home),
+            thread_id: thread_id.clone(),
+            token: token.clone(),
+            project: project.clone(),
+            wait: o_core::lead::approvals::WAIT,
+        };
+        o_core::lead::approvals::serve(server, std::io::stdin().lock(), std::io::stdout());
+        0
+    },
+};
 use o_core::run::yolo;
 use o_core::sys::proc;
 use serde_json::json;
@@ -25,11 +58,16 @@ pub const LEAD: Command = Command {
                              --mode yolo면 총괄이 파일을 고치고 명령을 실행 (주지 않으면 o yolo 설정, ADR-0014)
   o lead models --provider claude|codex|agy  총괄이 쓸 수 있는 모델 목록 JSON (CLI의 공식 목록·별칭)
   o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
+  o lead log-page --project <폴더> <runId> <SHA-256|-> <바이트 위치>  완료된 실행의 원본 로그 읽기(사람 전용)
+                             처음은 - 0, 다음에는 응답의 sha256과 nextOffset을 사용
   o lead note <threadId> -                  설계 주석 추가·삭제 (stdin JSON)
   o lead new --project <폴더>               새 대화 시작
+  o lead wake <runId>                      대기 중인 카드 메시지를 현재 총괄에 전달
+  o lead retry <runId> <messageId>          불명 메시지를 확인 후 복구
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
   o lead dispatch <planId> [--profile project-o|own] [--no-context] [--mode yolo|normal]
                              제안된 계획을 정책 검사 후 한 번 실행, runId 출력 (--profile은 o dispatch와 같음)
+  o lead decide <승인 id> allow|deny         총괄이 기다리는 작업 하나를 허용하거나 거부 (사람 전용)
   o lead stop [--project <폴더>]             답하는 중인 총괄 중지
   o lead stop-all --project <폴더>           이 대화의 총괄과 실행을 모두 중지",
     run: lead_main,
@@ -40,14 +78,47 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("send") => send(home, rest),
         Some("show") => show(home, rest),
+        Some("log-page") => log_page(home, rest),
         Some("note") => note(home, rest),
         Some("new") => new(home, rest),
+        Some("wake") => wake(home, rest),
+        Some("retry") => retry(home, rest),
         Some("attach") => attach(home, rest),
         Some("dispatch") => dispatch(home, rest),
+        Some("decide") => decide(home, rest),
         Some("stop") => stop(home, rest),
         Some("stop-all") => stop_all(home, rest),
         Some("models") => models(rest),
         _ => fail(LEAD.usage),
+    }
+}
+
+fn wake(home: &Path, args: &[String]) -> i32 {
+    let [run_id] = args else { return fail("o lead wake <runId>가 필요합니다") };
+    match lead::wake_run(home, run_id, &official_command) {
+        Ok(processed) => { println!("{}", json!({"processed": processed})); 0 }
+        Err(error) => fail(&error),
+    }
+}
+
+fn retry(home: &Path, args: &[String]) -> i32 {
+    let [run_id, message_id] = args else { return fail("o lead retry <runId> <messageId>가 필요합니다") };
+    match lead::retry_card(home, run_id, message_id) {
+        Ok(state) => { println!("{}", json!({"state": state})); 0 }
+        Err(error) => fail(&error),
+    }
+}
+
+fn log_page(home: &Path, args: &[String]) -> i32 {
+    if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+        return fail("원본 로그는 사람만 읽을 수 있습니다");
+    }
+    let [flag, project, run, hash, offset] = args else { return fail("o lead log-page --project <폴더> <runId> <SHA-256|-> <바이트 위치>가 필요합니다") };
+    if flag != "--project" { return fail("--project가 필요합니다"); }
+    let Ok(offset) = offset.parse() else { return fail("바이트 위치가 올바르지 않습니다") };
+    match lead::log_page::read(home, project, run, hash, offset) {
+        Ok(page) => { println!("{}", json!(page)); 0 },
+        Err(error) => fail(&error),
     }
 }
 
@@ -201,12 +272,14 @@ fn show(home: &Path, args: &[String]) -> i32 {
                 if event["ok"] == true { "정책 통과" } else { "정책 차단" }
             ),
             "lead.dispatch" => println!("[실행] {} → {}", text("planId"), text("runId")),
+            "lead.warning" => println!("\n[주의] {}", text("text")),
             "lead.error" => println!("\n[오류] {}", text("text")),
             _ => {}
         }
     }
     if let Some(busy) = thread["busy"].as_str() {
-        println!("\n({busy} 총괄이 답하는 중)");
+        if busy == "unknown" { println!("\n(이전 총괄의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다)"); }
+        else { println!("\n({busy} 총괄이 답하는 중)"); }
     }
     0
 }
@@ -278,6 +351,21 @@ fn dispatch(home: &Path, args: &[String]) -> i32 {
             2
         }
         Err(DispatchError::Other(message)) => fail(&message),
+    }
+}
+
+/// The person's answer to one waiting request. Agents never run this: `main` refuses it in
+/// an agent's environment, and a lead's shell is denied `o lead` altogether.
+fn decide(home: &Path, args: &[String]) -> i32 {
+    let [id, answer] = args else { return fail("o lead decide <승인 id> allow|deny가 필요합니다") };
+    let allow = match answer.as_str() {
+        "allow" => true,
+        "deny" => false,
+        _ => return fail("allow나 deny를 적으세요"),
+    };
+    match lead::decide(home, id, allow) {
+        Ok(()) => { println!("{}", json!({ "id": id, "decision": answer })); 0 }
+        Err(error) => fail(&error),
     }
 }
 

@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play, Wrench } from "lucide-react";
+import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, MessageCircleQuestion, OctagonX, Play, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
@@ -11,6 +11,8 @@ import { BUTTON_PRIMARY } from "../../ui/controls.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ImageScope } from "./ImageGallery.tsx";
 import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
+import { openQuestions } from "./QuestionDialog.tsx";
+import { LiveWork, WorkList } from "./LeadWork.tsx";
 
 /** Thread events may name an agent this build does not know; it shows as its id. */
 const LEAD_NAME: Record<string, string> = NAMES;
@@ -36,8 +38,8 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
     seen.current = { thread: threadId, replies };
   }, [threadId, lead.items]);
   const known = seen.current;
-  const lastUser = lead.items.findLastIndex((item) => item.kind === "user");
-  const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "error");
+  const lastUser = lead.items.findLastIndex((item) => item.kind === "user" || item.kind === "worker");
+  const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "ask" || item.kind === "error");
   const progressSummary = leadProgressSummary(lead.thread?.progressCounts);
   return (
     <ImageScope.Provider value={project ? { project } : undefined}><div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
@@ -62,6 +64,8 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
           </Notice>
         )}
         {lead.items.map((item, i) => (
+          // The running turn's work shows live below; once answered it folds above the answer.
+          item.kind === "work" && answering && i > lastUser ? null :
           <Item key={`${threadId}-${item.kind}-${item.at}-${i}`} item={item} animate={Boolean(item.kind === "reply" && threadId && known && known.thread === threadId && !known.replies.has(`${item.at}-${i}`))} />
         ))}
         {answering && lead.thread?.partial && <div aria-label="작성 중인 답변"><Markdown text={lead.thread.partial} /></div>}
@@ -80,10 +84,12 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
         {answering && (
           <div role="status" className="space-y-1 text-xs text-chat-foreground-faint">
             {progressSummary && <p className="flex items-center gap-1.5"><Wrench className="size-3 shrink-0" aria-hidden="true" /><span>{progressSummary}</span></p>}
-            {(lead.thread?.progress ?? []).map((step, i) => (
-              <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
-            ))}
-            <p>총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…</p>
+            {(lead.thread?.steps?.length ?? 0) > 0 || (lead.thread?.approvals?.length ?? 0) > 0
+              ? <LiveWork steps={lead.thread?.steps ?? []} waiting={lead.thread?.approvals?.length ?? 0} />
+              : (lead.thread?.progress ?? []).map((step, i) => (
+                <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
+              ))}
+            <p>{lead.thread?.busy === "unknown" ? "총괄 종료 확인 필요" : lead.thread?.busy === "starting" ? "총괄 시작 중…" : `총괄 ${LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…`}</p>
           </div>
         )}
       </div>
@@ -93,6 +99,8 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
 
 function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
   switch (item.kind) {
+    case "worker":
+      return <article aria-label="작업 카드 메시지" className="rounded-lg border px-3.5 py-2.5"><p className="mb-1 text-xs text-chat-foreground-faint">카드 {item.cardId} · {item.runId} · <time dateTime={item.at}>{timeOf(item.at)}</time></p><p className="whitespace-pre-wrap break-words">{item.text}</p></article>;
     case "user":
       return (
         <div className="ml-auto max-w-[85%] rounded-lg border border-chat-user-border bg-chat-user-surface px-3.5 py-2.5">
@@ -132,6 +140,36 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           <span className="min-w-0 whitespace-pre-wrap">{item.text}</span>
         </p>
       );
+    case "warning":
+      return (
+        <p role="status" className="flex items-start gap-2 rounded-lg border px-3.5 py-2.5 text-sm text-status-warning-text">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 whitespace-pre-wrap break-words">{item.text}</span>
+        </p>
+      );
+    case "ask":
+      return (
+        <article aria-label="총괄의 질문" className="rounded-lg border px-3.5 py-2.5">
+          <p className="mb-1.5 flex items-center gap-1.5 text-xs text-chat-foreground-faint">
+            <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden="true" />
+            총괄 {LEAD_NAME[item.provider] ?? item.provider}의 질문 {item.questions.length}개 · <time dateTime={item.at}>{timeOf(item.at)}</time>
+          </p>
+          {item.intro && <Markdown text={item.intro} />}
+          <ol className="mt-1.5 list-decimal space-y-0.5 pl-5 text-sm">
+            {item.questions.map((q, i) => <li key={i}>{q.question}</li>)}
+          </ol>
+          {item.answered ? (
+            <p className="mt-2 text-xs text-chat-foreground-faint">답을 보냈습니다.</p>
+          ) : (
+            <div className="mt-2 flex items-center gap-2">
+              <button type="button" onClick={() => openQuestions(`lead:${item.askId}`)} className={BUTTON_PRIMARY}>답하기</button>
+              <span className="text-xs text-chat-foreground-faint">답을 모두 고르면 총괄이 이어서 답합니다.</span>
+            </div>
+          )}
+        </article>
+      );
+    case "work":
+      return <WorkList entries={item.entries} />;
     case "followup":
       return <p role="status" className="text-xs text-chat-foreground-faint">{item.cardId} 에이전트의 후속 지시를 접수했습니다 · {item.runId}</p>;
     case "plan":
@@ -313,6 +351,7 @@ export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }
                   <td className="px-2 py-2.5 pr-4">
                     <CardTask task={card.task} />
                     {Boolean(card.depends_on?.length) && <p className="mt-1 text-2xs text-muted-foreground">선행: {card.depends_on?.join(", ")}</p>}
+                    <p className="mt-1 text-2xs text-muted-foreground break-all">자원: {card.resources?.length ? card.resources.map((r) => `${r.kind === "project-path" ? "파일" : "외부"} ${r.key} (${r.mode === "read" ? "읽기" : "쓰기"})`).join(", ") : "미선언 · 독점 실행"}</p>
                   </td>
                 </tr>
               ))}

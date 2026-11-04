@@ -12,6 +12,7 @@ use super::{opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider,
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
 use crate::agents::catalog::connection;
 use crate::context::CONTEXT_COMMAND;
+use crate::lead::approvals;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan};
 use crate::run::store::to_pretty;
@@ -24,7 +25,10 @@ const LEAD_TOOLS: &str = "Read,Grep,Glob";
 
 /// The lead run's own settings: no hook runs (project settings could turn them back on,
 /// which `--setting-sources user` keeps them from doing).
-const LEAD_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+fn lead_settings() -> String {
+    let deny: Vec<String> = o_guard::rules::CREDENTIAL_DENY_PATHS.iter().map(|path| format!("Read({path})")).collect();
+    json!({ "disableAllHooks": true, "permissions": { "deny": deny } }).to_string()
+}
 
 /// The tools O's guard hook (`o hook`) looks at: the same list as this repository's
 /// `.claude/settings.json`.
@@ -42,6 +46,38 @@ fn guard_settings() -> String {
 /// Deny rules for the commands no agent may run; they hold in every permission mode.
 fn denied_commands() -> Vec<String> {
     AGENT_ONLY_COMMANDS.iter().map(|c| format!("Bash({c}*)")).collect()
+}
+
+/// The same commands denied in either shell tool an approving lead has.
+fn denied_shell_commands() -> Vec<String> {
+    let mut rules = denied_commands();
+    if cfg!(windows) { rules.extend(AGENT_ONLY_COMMANDS.iter().map(|c| format!("PowerShell({c}*)"))); }
+    rules
+}
+
+/// An approving lead's tools: the read ones, and those that wait for the person. Claude Code
+/// has its PowerShell tool on Windows only.
+fn approved_tools() -> Vec<&'static str> {
+    let mut tools = vec!["Read", "Grep", "Glob", "Edit", "Write", "Bash"];
+    if cfg!(windows) { tools.push("PowerShell"); }
+    tools.extend(["WebSearch", "WebFetch"]);
+    tools
+}
+
+/// The tools an approving lead's own settings always ask for (`permissions.ask` wins over an
+/// allow rule of the person's settings), with hooks off as in the read-only lead.
+const ASKED_TOOLS: [&str; 7] = ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
+
+fn approval_settings() -> String {
+    let mut settings: Value = serde_json::from_str(&lead_settings()).expect("lead settings");
+    settings["permissions"]["ask"] = json!(ASKED_TOOLS);
+    settings.to_string()
+}
+
+/// `--mcp-config` with O's approval server as the only server.
+fn approval_server(command: &[String]) -> String {
+    let (program, args) = command.split_first().map_or(("o", &[][..]), |(p, a)| (p.as_str(), a));
+    json!({ "mcpServers": { approvals::SERVER: { "type": "stdio", "command": program, "args": args } } }).to_string()
 }
 
 /// The start of a YOLO launch: print mode, no permission prompts, the denied commands.
@@ -104,10 +140,25 @@ impl Provider for Claude {
     /// (code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder), so the
     /// project's settings are not read (`--setting-sources user`; the clean profile's
     /// settings are the user ones) and hooks are off for the run, first turn or resumed.
+    ///
+    /// With an approver (ADR-0008 개정 3) the write, shell and web tools exist too, but only the
+    /// read tools are allowed without a prompt; every other call goes to O's approval server
+    /// (`--permission-prompt-tool`, the only MCP server loaded), and the run's settings ask for
+    /// those tools so no allow rule of the person's own settings lets one through unasked.
     fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
         let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default"]);
-        args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
-        args.extend(strings(&["--setting-sources", "user", "--settings", LEAD_SETTINGS]));
+        match &turn.approver {
+            None => {
+                args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
+                args.extend(strings(&["--setting-sources", "user", "--settings", &lead_settings()]));
+            }
+            Some(command) => {
+                args.extend(strings(&["--tools", &approved_tools().join(","), "--allowedTools", LEAD_TOOLS, "--disallowedTools"]));
+                args.extend(denied_shell_commands());
+                args.extend(strings(&["--strict-mcp-config", "--mcp-config", &approval_server(command), "--permission-prompt-tool", &approvals::prompt_tool()]));
+                args.extend(strings(&["--setting-sources", "user", "--settings", &approval_settings()]));
+            }
+        }
         args.extend(opt("--resume", turn.session));
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));
@@ -304,6 +355,7 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                 input: num(u.get("input_tokens")) + num(u.get("cache_creation_input_tokens")),
                 cached: num(u.get("cache_read_input_tokens")),
                 output: num(u.get("output_tokens")),
+                complete: super::stream::reported(&[u.get("input_tokens"), u.get("cache_creation_input_tokens"), u.get("cache_read_input_tokens"), u.get("output_tokens")]),
             });
         }
         let text = coalesce([data.get("result")]).map(js_string).unwrap_or_default().trim().to_string();

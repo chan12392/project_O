@@ -13,3 +13,7 @@ OpenAI의 [서드파티 app-server 안내](https://developers.openai.com/siwc/to
 Antigravity의 실행·자동 조회는 ADR-0020대로 계속 차단한다. 설정 화면의 터미널 버튼은 빈 독립 PowerShell만 연다. 사용자가 직접 폴더를 선택하고 `agy`를 입력하며, O는 agy 프로세스나 대화를 제어하지 않는다. Windows 외에는 터미널을 직접 열도록 안내한다.
 
 Claude Agent SDK의 구독 인증은 [구독 안내](https://support.claude.com/en/articles/15036540-use-the-claude-agent-sdk-with-your-claude-plan)와 [제품 개발자 인증 조건](https://code.claude.com/docs/en/legal-and-compliance)의 적용 범위를 확인한 뒤 별도로 결정한다. 기존 구독 사용을 API 과금으로 자동 변경하지 않는다. Devin ACP는 읽기 전용 권한과 재개가 확인될 때까지 ADR-0016의 카드 전용 상태를 유지한다.
+
+## 개정 (2026-11-04): 승인 요청을 사람에게
+
+ADR-0008 개정 3에 따라 일반 모드 Codex 총괄은 스레드와 턴에 승인 정책 `on-request`(검토자 `user`)를 지정한다. 샌드박스는 그대로 읽기 전용이다. 명령·파일 변경 승인 요청에는 더 이상 자동으로 `decline`하지 않고 사람의 허용/거부를 받아 `accept`·`decline`(중지면 `cancel`)으로 답한다. 요청마다 10분 안에 답이 없으면 `decline`한다. 파일 변경의 diff는 같은 item의 `item/started`·`item/fileChange/patchUpdated`에서 읽고, `item/started`·`item/completed`를 진행 단계로 기록한다. 예약 실행과 카드 질문 턴은 물을 사람이 없으므로 이전처럼 `never`와 `decline`이다. 권한·MCP 입력·사용자 질문 요청은 이전처럼 거절한다.

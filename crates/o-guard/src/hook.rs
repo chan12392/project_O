@@ -37,7 +37,7 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
-static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|review|_review|lead\s+(?:send|dispatch))\b"#).unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
 static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
@@ -391,7 +391,7 @@ fn shell_words(text: &str) -> Vec<String> {
 /// nested `bash -c "cd ../x && …"` is seen too. `Err` says why the targets can't be told: a move or
 /// path built from an unknown variable or substitution, `cd -`, or more than `MAX_SHELL_TARGETS`.
 /// Plain relative words inside the current folder stay in the folder already checked.
-fn shell_targets(command: &str, cwd: &str) -> Result<Vec<String>, String> {
+pub fn shell_targets(command: &str, cwd: &str) -> Result<Vec<String>, String> {
     let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
     let home = home.as_deref();
     let mut targets: Vec<String> = Vec::new();
@@ -474,7 +474,7 @@ fn split_unquoted(text: &str) -> Vec<&str> {
 
 /// `word` as an absolute forward-slash path from `base`, expanding a leading `~` or environment
 /// variable; `None` when that can't be done (unknown variable, `~user`, a `$` or `%VAR%` left inside).
-fn resolve(word: &str, base: &str, home: Option<&str>) -> Option<String> {
+pub fn resolve(word: &str, base: &str, home: Option<&str>) -> Option<String> {
     let word = word.replace('\\', "/");
     let expanded = if let Some(rest) = word.strip_prefix('~') {
         if !(rest.is_empty() || rest.starts_with('/')) {
@@ -733,6 +733,13 @@ pub fn hook_main() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_cannot_stop_leads() {
+        assert!(AGENT_DISPATCH.is_match("o lead stop"));
+        assert!(AGENT_DISPATCH.is_match("o lead stop-all"));
+        assert!(!AGENT_DISPATCH.is_match("o lead status"));
+    }
 
     #[test]
     fn lone_ampersand_is_found_but_chains_and_redirects_are_not() {

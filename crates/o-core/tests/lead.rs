@@ -2,6 +2,7 @@
 //! with O_FAKE_LEAD_LINES it prints those lines and exits, so no real (paid) CLI runs.
 
 use std::path::{Path, PathBuf};
+mod support;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::io::{BufRead, Write};
@@ -73,6 +74,9 @@ Usage: codex [OPTIONS] [PROMPT]
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
+    // Normal-mode turns find `o` beside the running program for their approvals; whether a
+    // built `o` happens to sit beside this test binary differs by OS, so name one for every test.
+    lead::approvals::set_program(Some(std::env::current_exe().unwrap()));
     let tests: [(&str, fn()); 34] = [
         ("follow-ups only target cards dispatched by this thread", followup_routing),
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
@@ -82,7 +86,7 @@ Usage: codex [OPTIONS] [PROMPT]
         ("only the latest plan in the current thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
         ("an automatic dispatch that fails to start uses up no auto-run limit", autorun_failures_not_counted),
-        ("an automatic dispatch is cancelled when a new thread replaces its own", autorun_new_thread_cancels),
+        ("a new thread cannot replace a live lead", autorun_new_thread_cancels),
         ("an automatic dispatch never starts a plan a newer request replaced", autorun_newer_request_wins),
         ("lead child receives its agent marker", lead_child_marker),
         ("a plan block is read: none, one, malformed, two", plan_blocks),
@@ -97,22 +101,23 @@ Usage: codex [OPTIONS] [PROMPT]
         ("a thread persists per project; new starts another", threads),
         ("attachments: type, size, name and link refusals", attachments),
         ("sends started together run one turn; the others are refused", busy),
-        ("a dead turn's marker holds nothing, even with its pid reused", stale_marker),
+        ("a dead turn's marker remains unknown, even with its pid reused", stale_marker),
         ("bad requests start nothing", refused_requests),
         ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
         ("no project hook runs before a plan is approved, first turn or resumed", project_hooks_off),
         ("an attachment reached through a linked parent folder is refused", attachment_parent_links),
         ("a stop while the turn starts keeps the CLI from running and never ends the owner", stop_while_starting),
-        ("a stop ends a running CLI; an orphaned one only when its start time matches", stop_running_and_orphans),
+        ("a stop ends a running CLI but does not trust an orphan's pid", stop_running_and_orphans),
         ("a turn that outlasts its time limit is ended and says so", turn_time_limit),
         ("back from another agent, a resumed session hears the turns it missed", round_trip),
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 6] = [
+    let extra: [(&str, fn()); 7] = [
+        ("questions stand in for the answer; the next turn carries the picks", ask_questions),
         ("a Codex CLI without app-server leads through read-only exec, probed once, resuming across transports", codex_exec_fallback),
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
-        ("Codex declines read-only approval requests and continues", codex_approval),
+        ("Codex asks the person, declines what they refuse and continues", codex_approval),
         ("Codex shows partial prose while keeping the plan hidden", codex_partial),
         ("Codex refuses other server requests and the turn continues", codex_other_requests),
         ("a finished Codex turn survives a slow app-server shutdown", codex_slow_shutdown),
@@ -180,6 +185,41 @@ fn design_snapshots() {
     let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })));
     assert!(!events.iter().any(|e| matches!(e, LeadEvent::Plan { .. } | LeadEvent::Design { .. })));
+}
+
+fn ask_questions() {
+    let (home, project) = setup("ask");
+    let ask = r#"{"questions":[{"header":"형태","question":"스킬의 형태는?","options":[{"label":"MCP 서버 (추천)","description":"여러 CLI에서 같이"},{"label":"SKILL.md"}]},{"question":"언어는?","options":[{"label":"Python"},{"label":"C#"}],"multi":true}]}"#;
+    // A plan beside the questions is not taken: the person has not chosen yet.
+    let answer = format!("먼저 확인할 것이 있습니다.\n```o-ask\n{ask}\n```\n{}", plan_answer(good_plan()));
+    let (spawner, _) = fake(claude_answer("s", &answer));
+    let events = lead::send(&home, &request(&project, "스킬 만들어 줘"), spawner.as_ref()).unwrap();
+    let asked = events.iter().find_map(|e| match e { LeadEvent::Ask { ask_id, intro, questions, .. } => Some((ask_id.clone(), intro.clone(), questions.clone())), _ => None }).expect("질문");
+    assert!(asked.0.ends_with("-q1"));
+    assert!(asked.1.starts_with("먼저 확인할 것이 있습니다.") && !asked.1.contains("o-plan"), "{}", asked.1);
+    assert_eq!(asked.2.len(), 2);
+    assert!(asked.2[1].multi);
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Reply { .. } | LeadEvent::Plan { .. })));
+    // The thread file keeps it, and the next turn's history (a fresh agent) names the questions.
+    let thread = lead::current_thread(&home, &project).unwrap();
+    assert!(lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::Ask { .. })));
+    let codex_lines = vec![json!({ "type": "thread.started", "thread_id": "th-ask" }).to_string(), json!({ "type": "turn.completed", "usage": {} }).to_string()];
+    let (codex, seen) = fake_without_app_server(codex_lines, "ask", home.join("ask-probe.log"));
+    lead::send(&home, &SendRequest { provider: ProviderId::Codex, ..request(&project, "[질문 답변]\n- 형태: MCP 서버") }, codex.as_ref()).unwrap();
+    // The app-server probe comes first and has no prompt; the turn's own launch does.
+    let stdin = seen.lock().unwrap().iter().rev().find_map(|spec| spec.stdin.clone()).unwrap_or_default();
+    assert!(stdin.contains("스킬의 형태는?") && stdin.contains("o-ask"), "{stdin}");
+    // Malformed questions are refused with the prose kept.
+    for broken in [r#"{"questions":[]}"#, r#"{"questions":[{"question":"하나뿐","options":[{"label":"A"}]}]}"#, "not json"] {
+        let (spawner, _) = fake(claude_answer("s", &format!("물어볼게요\n```o-ask\n{broken}\n```")));
+        let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
+        assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })), "{broken}");
+        assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "물어볼게요")), "{broken}");
+        assert!(!events.iter().any(|e| matches!(e, LeadEvent::Ask { .. })), "{broken}");
+    }
+    // An example inside another fence stays prose.
+    let example = "````markdown\n```o-ask\n[]\n```\n````";
+    assert!(o_core::lead::prompt::split_ask(example).1.unwrap().is_none());
 }
 
 fn design_notes() {
@@ -276,7 +316,7 @@ fn fake_app_server(lines: Vec<String>) {
                 assert_eq!(read(&mut input), json!({"id":45,"result":{"answers":{}}}));
                 send(json!({"id":46,"method":"item/tool/call","params":{"threadId":id,"turnId":"fake-turn"}}));
                 let reply = read(&mut input);
-                assert!(reply["error"].is_object() && reply.get("result").is_none(), "{reply}");
+                assert!(reply["error"].is_object() || reply["result"]["success"] == false, "{reply}");
             }
             "item.completed" => {
                 let mut item = event["item"].clone();
@@ -331,10 +371,9 @@ fn fake_without_app_server(lines: Vec<String>, tag: &'static str, log: PathBuf) 
 const APP_SERVER: FakeProbe = FakeProbe { app_server: true, tag: "app-server", log: None };
 
 /// The fake CLI's answer when `spec` is the app-server probe.
-fn probe_command(spec: &LaunchSpec, cwd: &str, probe: &FakeProbe) -> Option<std::io::Result<Command>> {
+fn probe_command(spec: &LaunchSpec, cwd: &str, probe: &FakeProbe) -> Option<std::io::Result<o_core::sys::launch::Launch>> {
     if spec.bin != "codex" || spec.args != o_core::providers::codex::APP_SERVER_PROBE { return None; }
-    Some(std::env::current_exe().map(|exe| {
-        let mut command = Command::new(exe);
+    Some(support::fake_worker_launch().map(|mut command| {
         command.current_dir(cwd).arg(format!("probe-{}", probe.tag)).env(FAKE_PROBE, if probe.app_server { "1" } else { "0" });
         if let Some(log) = &probe.log { command.env(FAKE_PROBE_LOG, log); }
         command
@@ -348,7 +387,7 @@ fn fake_cli(lines: Vec<String>, ms: u64, probe: FakeProbe) -> (Arc<Spawner>, Arc
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
         if let Some(command) = probe_command(spec, cwd, &probe) { return command; }
         keep.lock().unwrap().push(spec.clone());
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_SLEEP, ms.to_string());
         if spec.bin == "codex" && spec.args.first().is_some_and(|arg| arg == "app-server") {
             command.env(FAKE_APP_SERVER, "1").env("O_FAKE_LEAD_INPUT_FILE", Path::new(cwd).join("fake-codex-input.json"));
@@ -412,7 +451,7 @@ fn live_tool_progress() {
     let worker = std::thread::spawn(move || {
         let spawner = move |spec: &LaunchSpec, cwd: &str| {
             if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_PAUSE, "500");
             Ok(command)
         };
@@ -457,7 +496,7 @@ fn codex_approval() {
     let worker = std::thread::spawn(move || {
         let spawner = move |spec: &LaunchSpec, cwd: &str| {
             if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
                 .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
             Ok(command)
@@ -468,6 +507,8 @@ fn codex_approval() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
         let view = lead::show(&home, Some(&project));
+        // Normal mode asks the person (ADR-0008 개정 3); here they refuse.
+        if let Some(id) = view["thread"]["approvals"][0]["id"].as_str() { let _ = lead::decide(&home, id, false); }
         if view["thread"]["progress"].as_array().is_some_and(|steps| steps.iter().any(|step| step["name"] == "권한" && step["summary"].as_str().is_some_and(|text| text.contains("거절")))) { break; }
         assert!(std::time::Instant::now() < deadline, "approval refusal was not visible: {view}");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -494,7 +535,7 @@ fn codex_slow_shutdown() {
         json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string()];
     let spawner = move |spec: &LaunchSpec, cwd: &str| {
         if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
             .env(FAKE_APP_SERVER, "1").env(FAKE_LINGER, "20000");
         Ok(command)
@@ -519,7 +560,7 @@ fn codex_partial() {
     let worker = std::thread::spawn(move || {
         let spawner = move |spec: &LaunchSpec, cwd: &str| {
             if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
                 .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
             Ok(command)
@@ -661,7 +702,7 @@ fn gated(lines: Vec<String>, entered: PathBuf, release: PathBuf) -> Arc<Spawner>
         while !release.exists() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap());
         Ok(command)
     })
@@ -679,19 +720,18 @@ fn autorun_new_thread_cancels() {
     let events = std::thread::scope(|scope| {
         let turn = scope.spawn(|| lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start));
         wait_until("the lead to start answering", || entered.exists());
-        // Another client starts a new thread while the lead answers.
-        lead::start(&home, &project).unwrap();
+        // Another client cannot replace a lead that is still answering.
+        assert!(lead::start(&home, &project).is_err());
         std::fs::write(&release, "").unwrap();
         turn.join().unwrap().unwrap()
     });
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Plan { ok: true, .. })));
-    assert!(auto_reason(&events, "설계가 변경"), "{events:?}");
-    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
-    assert_eq!(starts.load(Ordering::SeqCst), 0);
-    // On the current thread, the latest plan still runs exactly once.
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    // The existing dispatch prevents another automatic run while it is active.
     let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
     let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
-    assert_eq!(run.iter().filter(|e| matches!(e, LeadEvent::Dispatch { .. })).count(), 1);
+    assert!(auto_reason(&run, "진행 중"));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
 }
 
@@ -776,9 +816,9 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[], missed: &[], design: None, yolo: false };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false };
     let first = build(&input);
-    for part in ["[O 총괄] 프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
+    for part in ["[O 총괄]", "프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");
     }
     let next = build(&PromptInput { resumed: true, budget: &[], ..input });
@@ -802,7 +842,7 @@ fn send_records_a_plan() {
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["user", "session", "seen", "usage", "reply", "plan"]);
+    assert_eq!(kinds, ["user", "session", "usage", "seen", "reply", "plan"]);
     let spec = &seen.lock().unwrap()[0];
     assert!(spec.stdin.as_deref().unwrap().contains("README에 한 줄 추가"));
     assert!(!spec.args.contains(&"--resume".to_string()));
@@ -901,10 +941,12 @@ fn resumes_session() {
     assert_eq!(spec.args[0], "app-server");
     let sent: Value = serde_json::from_slice(&std::fs::read(Path::new(&project).join("fake-codex-input.json")).unwrap()).unwrap();
     assert_eq!(sent["thread"]["method"], "thread/start");
+    // Normal mode: Codex asks the person before anything outside its read-only sandbox (ADR-0023 개정).
     for at in ["thread", "turn"] {
-        assert_eq!(sent[at]["params"]["approvalPolicy"], "never");
+        assert_eq!(sent[at]["params"]["approvalPolicy"], "on-request");
         assert_eq!(sent[at]["params"]["approvalsReviewer"], "user");
     }
+    assert_eq!(sent["turn"]["params"]["sandboxPolicy"]["type"], "readOnly");
     assert!(sent["turn"]["params"]["input"][0]["text"].as_str().unwrap().contains("어느 파일인가요?"));
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "네")));
 }
@@ -1039,9 +1081,9 @@ fn busy() {
     let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
     held.try_lock().unwrap();
     assert_eq!(lead::active_count(&home).unwrap(), 1);
-    lead::start(&home, &project).unwrap();
-    assert_eq!(lead::active_count(&home).unwrap(), 1, "a superseded thread still owns its running turn");
-    // Return to the original thread for the remaining busy checks.
+    assert!(lead::start(&home, &project).is_err());
+    assert_eq!(lead::active_count(&home).unwrap(), 1);
+    // Continue the remaining busy checks on the same thread.
     drop(held);
     let thread = lead::thread_for(&home, &project, false).unwrap();
     let dir = lead::thread_dir(&home, &thread);
@@ -1056,10 +1098,11 @@ fn busy() {
         assert!(dir.join("running.json").exists(), "another sender removed the owner's marker");
     }
     assert!(seen.lock().unwrap().is_empty());
-    // Its owner gone (the OS lets go of the lock with the process), the thread is free.
+    // A missing owner does not prove that its child process tree has exited.
     drop(held);
-    lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap_err().contains("확인할 수 없어"));
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(dir.join("running.json").exists());
 
     const SENDERS: usize = 8;
     for round in 0..4 {
@@ -1093,9 +1136,7 @@ fn busy() {
     }
 }
 
-/// A marker left by a turn whose process died (an app crash, `app.exit` during an update)
-/// does not hold the thread, even when its pid now belongs to an unrelated live process;
-/// and a stop then ends nothing.
+/// A dead owner's marker cannot prove that its process tree exited.
 fn stale_marker() {
     let (home, project) = setup("stale");
     let thread = lead::thread_for(&home, &project, false).unwrap();
@@ -1104,14 +1145,19 @@ fn stale_marker() {
     let pid = other.id();
     let stale = json!({ "pid": pid, "provider": "claude", "owner": pid, "token": "dead", "child": { "pid": pid, "started": 1 } });
     std::fs::write(&marker, stale.to_string()).unwrap();
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null(), "a dead turn shows as answering");
+    let approvals = lead::thread_dir(&home, &thread).join("approvals");
+    std::fs::create_dir_all(&approvals).unwrap();
+    std::fs::write(approvals.join("old.json"), json!({"id":"old","token":"dead","at":"","expires":"","provider":"claude","kind":"file","tool":"Write","summary":"","detail":"","cwd":null,"reason":null,"files":[]}).to_string()).unwrap();
+    assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
+    assert!(lead::show(&home, Some(&project))["thread"]["approvals"].as_array().unwrap().is_empty());
     assert!(!lead::stop(&home, Some(&project)));
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(other.try_wait().unwrap().is_none(), "stop ended a process that only reused the dead turn's pid");
     let (spawner, seen) = fake(claude_answer("s", "ok"));
-    lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
-    assert_eq!(seen.lock().unwrap().len(), 1);
-    assert!(!marker.exists());
+    assert!(lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap_err().contains("종료를 확인"));
+    assert!(lead::new_thread(&home, &project).is_err());
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(marker.exists());
     let _ = other.kill();
     let _ = other.wait();
 }
@@ -1249,7 +1295,10 @@ fn project_hooks_off() {
     for spec in &specs {
         assert_eq!(arg_after(&spec.args, "--setting-sources"), Some("user"), "{:?}", spec.args);
         let settings: Value = serde_json::from_str(arg_after(&spec.args, "--settings").expect("--settings")).unwrap();
-        assert_eq!(settings, json!({ "disableAllHooks": true }));
+        // Hooks off either way; with O's approval server the asked tools come with it (ADR-0008 개정 3).
+        assert_eq!(settings["disableAllHooks"], true);
+        assert!(settings.as_object().unwrap().keys().all(|k| k == "disableAllHooks" || k == "permissions"), "{settings}");
+        assert!(settings.get("hooks").is_none() && settings["permissions"].get("allow").is_none());
     }
 
     let codex_lines = vec![
@@ -1284,7 +1333,7 @@ fn project_hooks_off() {
 fn starting_spawner(lines: Vec<String>, ran: PathBuf, delay_ms: u64) -> Arc<Spawner> {
     Arc::new(move |_spec: &LaunchSpec, cwd: &str| {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_RAN, &ran);
         Ok(command)
     })
@@ -1367,8 +1416,7 @@ fn stop_while_starting() {
     assert!(lines.contains(&"reply: 다음 턴".to_string()), "{lines:?}");
 }
 
-/// A stop while the CLI answers ends it at once. A CLI left behind by a dead owner is
-/// ended only when its pid and start time both match what the turn wrote.
+/// A stop ends the live owner's CLI; an orphan's PID alone never authorizes termination.
 fn stop_running_and_orphans() {
     let (home, project) = setup("stop-run");
     let (spawner, seen) = fake_slow(claude_answer("s", "늦은 답"), 20_000);
@@ -1395,9 +1443,11 @@ fn stop_running_and_orphans() {
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(orphan.try_wait().unwrap().is_none(), "a process whose start time differs was ended");
     std::fs::write(&marker, mark(started).to_string()).unwrap();
-    assert!(lead::stop(&home, Some(&project)));
-    wait_until("the orphaned CLI to end", || orphan.try_wait().unwrap().is_some());
-    assert!(!marker.exists(), "a dead turn's marker is cleared once its CLI is ended");
+    assert!(!lead::stop(&home, Some(&project)));
+    assert!(orphan.try_wait().unwrap().is_none());
+    assert!(marker.exists());
+    orphan.kill().unwrap();
+    orphan.wait().unwrap();
 }
 
 /// A CLI that hangs does not hold the thread forever: past the turn's limit it is ended and

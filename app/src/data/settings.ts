@@ -41,6 +41,8 @@ export interface Settings {
   clean: boolean;
   /** A desktop notification when a watched card finishes while the window is in the background. */
   notify: boolean;
+  /** A desktop notification and a flashing taskbar button when the lead or a card asks the person something (on by default). */
+  notifyQuestions: boolean;
   /** Show this PC's Claude Code sessions as runs; unset follows the source (see `sessionsShown`). */
   sessions?: boolean;
   /** Settings → 총괄: the agent and effort a new message starts with (the composer may pick others). */
@@ -64,6 +66,7 @@ export const DEFAULTS: Settings = {
   closeAction: "ask",
   clean: true,
   notify: false,
+  notifyQuestions: true,
   leadAgent: "claude",
   leadEffort: "medium",
   leadModels: {},
@@ -87,6 +90,7 @@ function load(): Settings {
       closeAction: pick(s.closeAction, ["ask", "tray", "quit"], DEFAULTS.closeAction),
       clean: typeof s.clean === "boolean" ? s.clean : DEFAULTS.clean,
       notify: typeof s.notify === "boolean" ? s.notify : DEFAULTS.notify,
+      notifyQuestions: typeof s.notifyQuestions === "boolean" ? s.notifyQuestions : DEFAULTS.notifyQuestions,
       sessions: typeof s.sessions === "boolean" ? s.sessions : undefined,
       ...leadChoice(s.leadAgent, s.leadEffort),
       leadModels: leadModels(s.leadModels),

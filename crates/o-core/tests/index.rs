@@ -63,6 +63,15 @@ fn appended_lines_are_ingested_once_each() {
 }
 
 #[test]
+fn message_state_reaches_indexed_run_events() {
+    let home = temp_home();
+    append(&home, "r1", &start("r1", "2026-11-01T10:00:00.000Z", "C:/p"));
+    append(&home, "r1", "{\"t\":\"msg.state\",\"at\":\"2026-11-01T10:00:01.000Z\",\"id\":\"m1\",\"recipient\":\"lead\",\"state\":\"unknown\"}\n");
+    let runs = all(&home);
+    assert!(runs[0].events.iter().any(|event| event["t"] == "msg.state" && event["state"] == "unknown"));
+}
+
+#[test]
 fn a_half_written_line_is_ingested_only_once_it_is_complete() {
     let home = temp_home();
     let line = msg("half");
@@ -151,9 +160,9 @@ fn an_index_from_the_previous_build_is_upgraded() {
     assert_eq!(event_count(&home, "r1"), 2);
 }
 
-/// A slot reserved by a runner that died (or whose CLI ended) is not held forever.
+/// Legacy slots lack process identity and remain held until explicitly resolved.
 #[test]
-fn slots_of_dead_holders_are_dropped() {
+fn legacy_slots_of_dead_holders_remain_held() {
     let home = temp_home();
     let mut gone = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
     let dead = gone.id();
@@ -163,9 +172,9 @@ fn slots_of_dead_holders_are_dropped() {
     conn.execute("INSERT INTO slots (run_id, card_id, provider, owner, pid) VALUES ('r1', 'b', 'codex', ?1, ?2)", [std::process::id(), dead]).unwrap();
     conn.execute("INSERT INTO slots (run_id, card_id, provider, owner) VALUES ('r2', 'c', 'claude', ?1)", [std::process::id()]).unwrap();
     let held = o_core::run::store::held_by_provider(&home).unwrap();
-    assert_eq!((held[&ProviderId::Codex], held[&ProviderId::Claude]), (0, 1));
+    assert_eq!((held[&ProviderId::Codex], held[&ProviderId::Claude]), (2, 1));
     let left: i64 = conn.query_row("SELECT count(*) FROM slots", [], |r| r.get(0)).unwrap();
-    assert_eq!(left, 1);
+    assert_eq!(left, 3);
 }
 
 #[test]
@@ -202,7 +211,7 @@ fn readers_ingesting_at_once_never_insert_a_line_twice() {
         })
         .collect();
     for i in 0..200 {
-        let event = OEvent::Msg { at: iso(Utc::now()), from: "lead".into(), to: "all".into(), text: format!("m{i}") };
+        let event = OEvent::Msg { at: iso(Utc::now()), from: "lead".into(), to: "all".into(), text: format!("m{i}"), id: None, kind: None, reply_to: None };
         append_event(&home, "r1", &event).unwrap();
     }
     for reader in readers {

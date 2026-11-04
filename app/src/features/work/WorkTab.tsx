@@ -1,4 +1,4 @@
-import { ArrowLeft, ChevronRight, ClipboardList, KanbanSquare, LayoutDashboard, type LucideIcon } from "lucide-react";
+import { ArrowLeft, ChevronRight, ClipboardList, KanbanSquare, LayoutDashboard, ListChecks, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
 import { earlierPlanOutcome, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
@@ -12,6 +12,7 @@ import { PlanCard, PlanDetails } from "../chat/LeadThread.tsx";
 import { Markdown } from "../chat/Markdown.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
 import { DesignAnnotations } from "./DesignAnnotations.tsx";
+import { IssuesPanel } from "./IssuesPanel.tsx";
 
 /** The side panel's "에이전트 작업" view. */
 export const WORK_VIEW: PanelViewDef = {
@@ -20,7 +21,7 @@ export const WORK_VIEW: PanelViewDef = {
   render: ({ run, projectRuns, card, now, onCard, lead }) => <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} lead={lead} />,
 };
 
-type Sub = "design" | "dashboard";
+type Sub = "design" | "dashboard" | "issues";
 type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
 
 /** What every sub-view of the work tab is drawn from. */
@@ -58,6 +59,7 @@ const SUBS: SubDef[] = [
       />
     ),
   },
+  { id: "issues", label: "이슈", icon: ListChecks, render: ({ runs }) => <IssuesPanel runs={runs} /> },
 ];
 const SUB_KEY = "project-o-work-tab";
 
@@ -209,7 +211,7 @@ export function WorkTab({ runs, open, onCard, now: given, lead }: Props) {
         })}
       </div>
       <div className="scrollbar-sleek min-h-0 flex-1 overflow-auto bg-chat-canvas p-4">
-        {runs.length === 0 && current.id !== "design" ? (
+        {runs.length === 0 && current.id === "dashboard" ? (
           <p className="text-sm text-muted-foreground">이 프로젝트에는 아직 작업이 없습니다.</p>
         ) : (
           <>

@@ -19,7 +19,12 @@ async function json<T>(res: Response): Promise<T> {
 /** The dev server: the /api routes of app/dev/liveRuns.ts, each answered by `o`. */
 export const devBackend: Backend = {
   kind: "dev",
+  resources: () => fetch("/api/resources").then((r) => json<{ leases: Awaited<ReturnType<Backend["resources"]>> }>(r)).then((r) => r.leases),
+  recoverResource: (id) => fetch(`/api/resources/recover?id=${encodeURIComponent(String(id))}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   followup: (run, card, text) => fetch(`/api/lead/followup?${new URLSearchParams({ run, card })}`, { method: "POST", body: text }).then((r) => json<{ runId: string }>(r)),
+  changes: (run, card) => fetch(`/api/changes?${new URLSearchParams({ run, card })}`).then((r) => json<Awaited<ReturnType<Backend["changes"]>>>(r)),
+  reply: (run, card, text, messageId) => fetch(`/api/lead/reply?${new URLSearchParams({ run, card, ...(messageId ? { message: messageId } : {}) })}`, { method: "POST", body: text }).then((r) => json<unknown>(r)).then(() => {}),
+  attention: async () => {},
   imageRead: (project, path, run, card) => fetch(`/api/lead/image/read?${new URLSearchParams({ project, path, run: run ?? "-", card: card ?? "-" })}`).then((r) => json<Awaited<ReturnType<Backend["imageRead"]>>>(r)),
   imageOpen: (project, path, folder, run, card) => fetch(`/api/lead/image/${folder ? "folder" : "open"}?${new URLSearchParams({ project, path, run: run ?? "-", card: card ?? "-" })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   schedules: () => fetch("/api/lead/schedule").then((r) => json<Awaited<ReturnType<Backend["schedules"]>>>(r)),
@@ -44,6 +49,11 @@ export const devBackend: Backend = {
     if (!res.ok || !body) throw new Error(body?.error ?? `HTTP ${res.status}`);
     return body;
   },
+  issuesSearch: (repo, query) => fetch(`/api/issues/search?${new URLSearchParams({ repo, query })}`).then((r) => json<Awaited<ReturnType<Backend["issuesSearch"]>>>(r)),
+  issuesList: (repo) => fetch(`/api/issues/list?${new URLSearchParams({ repo })}`).then((r) => json<Awaited<ReturnType<Backend["issuesList"]>>>(r)),
+  issuesRecord: (finding) => fetch("/api/issues/record", { method: "POST", body: JSON.stringify(finding) }).then((r) => json<Awaited<ReturnType<Backend["issuesRecord"]>>>(r)),
+  issuesClassify: (id, classification, issue) => fetch("/api/issues/classify", { method: "POST", body: JSON.stringify({ id, classification, issue }) }).then((r) => json<Awaited<ReturnType<Backend["issuesClassify"]>>>(r)),
+  issuesResolve: (id, resolution) => fetch("/api/issues/resolve", { method: "POST", body: JSON.stringify({ id, resolution }) }).then((r) => json<Awaited<ReturnType<Backend["issuesResolve"]>>>(r)),
   budget: () => fetch("/api/budget").then((r) => json<BudgetReport>(r)),
   setBudgetPercent: (percent) => fetch(`/api/budget/percent?value=${percent}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
   setBudgetEnabled: (enabled) => fetch(`/api/budget/enabled?value=${enabled ? "on" : "off"}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
@@ -61,8 +71,12 @@ export const devBackend: Backend = {
     ),
   leadDispatch: (planId, clean) =>
     fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
+  leadDecide: (id, allow) => fetch(`/api/lead/decide?${new URLSearchParams({ id, decision: allow ? "allow" : "deny" })}`, { method: "POST" }).then((r) => json<{ id: string; decision: "allow" | "deny" }>(r)),
   leadStop: (project) => fetch(`/api/lead/stop${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "POST" }).then((r) => json<{ stopped: boolean }>(r)),
   leadStopAll: (project) => fetch(`/api/lead/stop-all?project=${encodeURIComponent(project)}`, { method: "POST" }).then((r) => json<{ stopped: number }>(r)),
+  leadWake: (runId) => fetch(`/api/lead/wake?run=${encodeURIComponent(runId)}`, { method: "POST" }).then((r) => json<{ processed: boolean }>(r)),
+  leadRetry: (runId, messageId) => fetch(`/api/lead/retry?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST" }).then((r) => json<{ state: "queued" | "acknowledged" }>(r)),
+  leadAnswerApproval: (runId, messageId, text) => fetch(`/api/lead/answer-approval?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST", body: text }).then((r) => json<{ id: string }>(r)),
   leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
   projects: () => fetch("/api/projects").then((r) => json<ProjectList>(r)),
   projectOpen: (path) => fetch(`/api/projects/open?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),

@@ -23,9 +23,125 @@ fn ok_json(out: Output) -> Value {
     serde_json::from_slice(&out.stdout).unwrap()
 }
 
+#[test]
+fn a_card_reads_only_its_verified_predecessor_in_complete_utf8_chunks() {
+    let (base, home, project) = setup("result-read");
+    let dir = home.join("runs/r1");
+    fs::write(dir.join("plan.json"), json!({"cards":[{"id":"first"},{"id":"next","depends_on":["first"]},{"id":"other"}]}).to_string()).unwrap();
+    let original = format!("{}끝", "한글a".repeat(3500));
+    let event = |text: &str| format!("{}\n", json!({"t":"card.end","at":"now","cardId":"first","status":"done","result":text,"exitCode":0}));
+    fs::write(dir.join("events.jsonl"), event(&original)).unwrap();
+    let hash = o_core::run::result::digest(&original);
+    let mut offset = 0;
+    let mut combined = String::new();
+    loop {
+        let page = ok_json(o_in(&base, &project, "next", &["context", "--result", "first", &hash, &offset.to_string()]));
+        combined.push_str(page["text"].as_str().unwrap());
+        match page["nextOffset"].as_u64() { Some(next) => offset = next as usize, None => break }
+    }
+    assert_eq!(combined, original);
+    assert!(!o_in(&base, &project, "other", &["context", "--result", "first", &hash, "0"]).status.success());
+    assert!(!o_in(&base, &project, "next", &["context", "--result", "first", &hash, "1"]).status.success());
+    let read = || o_in(&base, &project, "next", &["context", "--result", "first", &hash, "0"]);
+    for later in [json!({"t":"card.start","at":"now","cardId":"first"}), json!({"t":"card.queued","at":"now","cardId":"first","reason":"retry"}), json!({"t":"card.start","cardId":"first"})] {
+        fs::write(dir.join("events.jsonl"), format!("{}{later}\n", event(&original))).unwrap();
+        assert!(!read().status.success());
+    }
+    fs::write(dir.join("events.jsonl"), event(&original).trim_end_matches('\n')).unwrap();
+    assert!(!read().status.success());
+    fs::write(dir.join("events.jsonl"), format!("{}{}\n", event(&original), json!({"t":"card.start","at":"now","cardId":"other"}))).unwrap();
+    assert!(read().status.success());
+    fs::write(dir.join("events.jsonl"), event("바뀐 결과")).unwrap();
+    assert!(!o_in(&base, &project, "next", &["context", "--result", "first", &hash, "0"]).status.success());
+}
+
+#[test]
+fn a_card_reads_its_long_lead_reply_through_the_cli() {
+    use o_core::run::{result, team::{self, Speaker}};
+    let base = std::env::temp_dir().join(format!("o-long-lead-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+    let home = if cfg!(windows) { base.join("project_O") } else { base.join(".local/state/project_O") };
+    let dir = home.join("runs/r1");
+    fs::create_dir_all(&dir).unwrap();
+    fs::write(dir.join("plan.json"), json!({"cards":[{"id":"a"},{"id":"b"}]}).to_string()).unwrap();
+    fs::write(dir.join("events.jsonl"), "").unwrap();
+    let card = Speaker { run_id: "r1".into(), me: "a".into(), cards: vec!["a".into(), "b".into()] };
+    let lead = Speaker { run_id: "r1".into(), me: "lead".into(), cards: card.cards.clone() };
+    let id = team::send_tracked(&home, &card, "lead", "질문", true, Some("q")).ok().unwrap();
+    let text = "한글 끝".repeat(1500);
+    let hash = result::store_lead(&home, "r1", &text).unwrap();
+    let read = |card: &str, hash: &str, offset: usize| {
+        Command::new(env!("CARGO_BIN_EXE_o")).current_dir(&base)
+            .env(if cfg!(windows) { "LOCALAPPDATA" } else { "HOME" }, &base)
+            .env("O_RUN_ID", "r1").env("O_CARD_ID", card)
+            .args(["context", "--lead-result", &id, hash, &offset.to_string()]).output().unwrap()
+    };
+    assert!(!read("a", &hash, 0).status.success());
+    team::send_reply(&home, &lead, "a", &result::lead_reference(&id, &hash), false, Some("answer"), Some(&id)).ok().unwrap();
+    let mut combined = String::new();
+    let mut offset = 0;
+    loop {
+        let page = ok_json(read("a", &hash, offset));
+        combined.push_str(page["text"].as_str().unwrap());
+        match page["nextOffset"].as_u64() { Some(next) => offset = next as usize, None => break }
+    }
+    assert_eq!(combined, text);
+    let events_path = dir.join("events.jsonl");
+    let events = fs::read_to_string(&events_path).unwrap();
+    fs::write(&events_path, events.trim_end_matches('\n')).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    fs::write(&events_path, format!("{events}{}\n", json!({"t":"msg","id":"bad"}))).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    let mut reordered: Vec<&str> = events.lines().collect();
+    let question_at = reordered.iter().position(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["id"] == id)).unwrap();
+    let reply_at = reordered.iter().position(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["replyTo"] == id)).unwrap();
+    reordered.swap(question_at, reply_at);
+    fs::write(&events_path, format!("{}\n", reordered.join("\n"))).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    fs::write(&events_path, &events).unwrap();
+    assert!(!read("b", &hash, 0).status.success());
+    assert!(!read("", &hash, 0).status.success());
+    assert!(!read("a", &hash, 1).status.success());
+    let alias = base.join("result-alias");
+    fs::hard_link(dir.join("lead-results").join(&hash), &alias).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    fs::remove_file(alias).unwrap();
+    assert!(read("a", &hash, 0).status.success());
+    fs::write(dir.join("lead-results").join(&hash), "tampered").unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    let target = base.canonicalize().unwrap();
+    let temp = std::env::temp_dir().canonicalize().unwrap();
+    assert!(target.starts_with(&temp) && target != temp && target.file_name().unwrap().to_string_lossy().starts_with("o-long-lead-"));
+    fs::remove_dir_all(target).unwrap();
+}
+
+#[test]
+fn token_report_counts_lead_requests_without_usage() {
+    let (base, home, project) = setup("lead-coverage");
+    let dir = home.join("leads/thread-1");
+    fs::create_dir_all(&dir).unwrap();
+    let events = [
+        json!({"t":"lead.start","at":"2026-11-01T00:00:00Z","threadId":"thread-1","project":project.to_string_lossy()}),
+        json!({"t":"lead.user","at":"2026-11-01T00:00:01Z","provider":"codex","text":"첫 요청"}),
+        json!({"t":"lead.usage","at":"2026-11-01T00:00:02Z","provider":"codex","input":20,"cached":10,"output":3}),
+        json!({"t":"lead.user","at":"2026-11-02T00:00:01Z","provider":"codex","text":"둘째 요청"}),
+        json!({"t":"lead.error","at":"2026-11-02T00:00:02Z","text":"시작 실패"}),
+        json!({"t":"lead.user","at":"2026-11-03T00:00:01Z","provider":"claude","text":"진행 중"}),
+    ];
+    fs::write(dir.join("events.jsonl"), events.iter().map(|event| format!("{event}\n")).collect::<String>()).unwrap();
+    let report = ok_json(o_in(&base, &project, "", &["tokens", "--json"]));
+    assert_eq!(report["lead"]["requested"], 3);
+    assert_eq!(report["lead"]["turns"], 1);
+    assert_eq!(report["lead"]["unreported"], 2);
+    assert_eq!(report["lead"]["incomplete"], 1);
+    assert!(report["summary"]["cachePercent"].is_null());
+    let since = ok_json(o_in(&base, &project, "", &["tokens", "--json", "--since", "2026-11-02"]));
+    assert_eq!(since["lead"]["requested"], 2);
+    assert_eq!(since["lead"]["unreported"], 2);
+    assert_eq!(since["lead"]["turns"], 0);
+}
+
 fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("o-context-cli-{name}-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&base);
+    let base = std::env::temp_dir().join(format!("o-context-cli-{name}-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
     let home = base.join("project_O");
     let project = base.join("game");
     fs::create_dir_all(project.join("src")).unwrap();
@@ -41,7 +157,7 @@ fn setup(name: &str) -> (PathBuf, PathBuf, PathBuf) {
             fs::write(dir.join("clean"), "").unwrap();
             events.push(json!({ "t": "run.context", "at": at, "runId": run_id, "cards": 1, "chars": 120, "cardIds": [card] }));
         }
-        events.push(json!({ "t": "card.usage", "at": at, "cardId": card, "input": tokens[0], "cached": tokens[1], "output": tokens[2] }));
+        events.push(json!({ "t": "card.usage", "at": at, "cardId": card, "input": tokens[0], "cached": tokens[1], "output": tokens[2], "complete": true }));
         events.push(json!({ "t": "card.end", "at": at, "cardId": card, "status": "done", "result": result, "exitCode": 0 }));
         let text: String = events.iter().map(|e| format!("{e}\n")).collect();
         fs::write(dir.join("events.jsonl"), text).unwrap();
@@ -137,15 +253,16 @@ fn tokens_report_and_compare() {
     let (base, _home, project) = setup("tokens");
     let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
     let keys: Vec<&str> = report.as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(keys, ["groups", "compare", "runs", "lead"]);
-    assert_eq!(report["lead"], json!({ "turns": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
+    assert_eq!(keys, ["groups", "compare", "runs", "lead", "summary"]);
+    assert_eq!(report["lead"], json!({ "turns": 0, "requested": 0, "unreported": 0, "incomplete": 0, "input": 0, "cached": 0, "output": 0, "total": 0 }));
+    assert_eq!(report["summary"]["cachePercent"], 30.0);
     assert_eq!(report["groups"].as_array().unwrap().iter().map(|g| g["key"].as_str().unwrap()).collect::<Vec<_>>(), ["normal", "clean+context"]);
     let group_keys: Vec<&str> = report["groups"][0].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(group_keys, ["key", "label", "clean", "context", "runs", "cards", "tokens", "perCard", "byProvider"]);
     assert_eq!(report["compare"]["baseline"]["perCard"], json!({ "input": 100, "cached": 50, "output": 10, "total": 160 }));
     assert_eq!(report["compare"]["shared"]["perCard"]["total"], 55);
     let run_keys: Vec<&str> = report["runs"][0].as_object().unwrap().keys().map(String::as_str).collect();
-    assert_eq!(run_keys, ["runId", "title", "project", "startedAt", "clean", "context", "cards", "tokens"]);
+    assert_eq!(run_keys, ["runId", "title", "project", "startedAt", "clean", "context", "cards", "tokens", "unreportedCards", "incompleteCards"]);
     assert_eq!(report["runs"][0]["cards"][0], json!({ "cardId": "ui", "provider": "codex", "context": true, "tokens": { "input": 40, "cached": 10, "output": 5, "total": 55 } }));
 
     let since = ok_json(o_in(&base, &base, "", &["tokens", "--json", "--since", "2026-11-02"]));
@@ -162,4 +279,89 @@ fn tokens_report_and_compare() {
     assert!(text.contains("기본 하네스") && text.contains("깨끗+세션 공유"), "{text}");
     assert!(text.contains("카드당 합계") && text.contains("160") && text.contains("-66%"), "{text}");
     assert_eq!(o_in(&base, &base, "", &["tokens", "--since", "어제"]).status.code(), Some(1));
+}
+
+#[test]
+fn tokens_distinguish_unreported_incomplete_and_zero_usage() {
+    let (base, home, project) = setup("coverage");
+    let dir = home.join("runs").join("r3");
+    fs::create_dir_all(&dir).unwrap();
+    let events = [
+        json!({ "t": "run.start", "at": "2026-11-03T10:00:00.000Z", "runId": "r3", "title": "coverage", "project": project, "cards": [
+            { "id": "waiting", "provider": "codex" },
+            { "id": "partial", "provider": "codex" },
+            { "id": "legacy", "provider": "codex" },
+            { "id": "zero", "provider": "claude" }
+        ] }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:01.000Z", "cardId": "partial", "input": 12, "cached": 0, "output": 5, "complete": false }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:01.000Z", "cardId": "legacy", "input": 10, "cached": 2, "output": 1 }),
+        json!({ "t": "card.usage", "at": "2026-11-03T10:00:02.000Z", "cardId": "zero", "input": 0, "cached": 0, "output": 0, "complete": true }),
+    ];
+    fs::write(dir.join("events.jsonl"), events.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+
+    let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
+    let run = report["runs"].as_array().unwrap().iter().find(|r| r["runId"] == "r3").unwrap();
+    assert_eq!(run["unreportedCards"], json!(["waiting"]));
+    assert_eq!(run["incompleteCards"], json!(["partial", "legacy"]));
+    assert_eq!(run["cards"].as_array().unwrap().len(), 3, "explicit zeros are reported usage");
+    assert_eq!(report["summary"]["reportedCards"], 5);
+    assert_eq!(report["summary"]["unreportedCards"], 1);
+    assert_eq!(report["summary"]["incompleteCards"], 2);
+    assert_eq!(report["summary"]["reported"]["total"], 215);
+    assert!(report["summary"]["cachePercent"].is_null());
+    assert_eq!(report["compare"]["baseline"]["cards"], 2, "partial and legacy usage are excluded from averages");
+    let text = o_in(&base, &base, "", &["tokens"]);
+    assert!(text.status.success());
+    let text = String::from_utf8_lossy(&text.stdout);
+    assert!(text.contains("사용량 미보고: waiting") && text.contains("사용량 일부 누락: partial, legacy"), "{text}");
+}
+
+#[test]
+fn tokens_preserve_usage_and_uncertainty_across_retries() {
+    let (base, home, project) = setup("retry-coverage");
+    let dir = home.join("runs").join("retry");
+    fs::create_dir_all(&dir).unwrap();
+    let at = "2026-11-03T10:00:00.000Z";
+    let events = [
+        json!({ "t": "run.start", "at": at, "runId": "retry", "title": "retry", "project": project, "cards": [
+            { "id": "complete", "provider": "codex" }, { "id": "missing", "provider": "codex" }, { "id": "restart", "provider": "claude" }
+        ] }),
+        json!({ "t": "card.start", "at": at, "cardId": "complete" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "complete", "input": 10, "cached": 3, "output": 2, "complete": true }),
+        json!({ "t": "card.start", "at": at, "cardId": "complete" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "complete", "input": 20, "cached": 5, "output": 4, "complete": true }),
+        json!({ "t": "card.start", "at": at, "cardId": "missing" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "missing", "input": 4, "cached": 1, "output": 1, "complete": true }),
+        json!({ "t": "card.start", "at": at, "cardId": "missing" }),
+        json!({ "t": "card.start", "at": at, "cardId": "restart" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "restart", "input": 7, "cached": 1, "output": 2, "complete": true }),
+        json!({ "t": "run.start", "at": at, "runId": "retry", "title": "retry", "project": project, "cards": [
+            { "id": "restart", "provider": "codex" }
+        ] }),
+        json!({ "t": "card.start", "at": at, "cardId": "restart" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "restart", "input": 8, "cached": 1, "output": 1, "complete": true }),
+    ];
+    fs::write(dir.join("events.jsonl"), events.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+
+    let attempts_dir = home.join("runs").join("attempts");
+    fs::create_dir_all(&attempts_dir).unwrap();
+    let mut attempts = events[..10].to_vec();
+    attempts[0]["runId"] = json!("attempts");
+    fs::write(attempts_dir.join("events.jsonl"), attempts.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+
+    let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
+    let runs = report["runs"].as_array().unwrap();
+    let attempts = runs.iter().find(|r| r["runId"] == "attempts").unwrap();
+    assert_eq!(attempts["incompleteCards"], json!(["missing"]), "only the unreported retry is incomplete");
+    let run = runs.iter().find(|r| r["runId"] == "retry").unwrap();
+    let cards = run["cards"].as_array().unwrap();
+    let card = |id| cards.iter().find(|c| c["cardId"] == id).unwrap();
+    assert_eq!(card("complete")["tokens"]["total"], 44);
+    assert_eq!(card("missing")["tokens"]["total"], 6);
+    assert_eq!(card("restart")["tokens"]["total"], 20);
+    assert_eq!(card("restart")["provider"], "multiple");
+    assert_eq!(run["tokens"]["total"], 70);
+    assert_eq!(run["incompleteCards"], json!(["complete", "missing", "restart"]));
+    assert!(report["summary"]["cachePercent"].is_null());
+    assert_eq!(report["compare"]["baseline"]["cards"], 3, "ambiguous restarts are excluded from comparisons");
 }

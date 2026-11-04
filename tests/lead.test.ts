@@ -85,12 +85,13 @@ test("a thread folds into messages, replies, plan cards with their run, and erro
     { t: "lead.reply", at: "5", provider: "claude", text: "카드 한 장" },
     { t: "lead.plan", at: "6", planId: "th-p1", plan: { title: "README", cards: [{ id: "docs", provider: "claude", task: "한 줄" }] }, ok: true, violations: [] },
     { t: "lead.dispatch", at: "7", planId: "th-p1", runId: "r1", clean: true },
+    { t: "lead.warning", at: "7", text: "실행 상태 불명" },
     { t: "lead.error", at: "8", text: "총괄을 중지했습니다" },
   ];
   const items = leadItems([...events, { t: "lead.future" }]);
   assert.deepEqual(
     items.map((i) => i.kind),
-    ["user", "reply", "plan", "error"],
+    ["user", "reply", "plan", "warning", "error"],
   );
   const plan = items[2];
   assert.ok(plan.kind === "plan");
@@ -101,6 +102,11 @@ test("a thread folds into messages, replies, plan cards with their run, and erro
   // A plan without a title or cards still draws.
   const bare = leadItems([{ t: "lead.plan", at: "1", planId: "p", plan: {}, ok: false, violations: [{ rule: "plan-shape", message: "x" }] } as LeadEvent]);
   assert.ok(bare[0].kind === "plan" && bare[0].title === "제목 없는 계획" && bare[0].cards.length === 0);
+});
+
+test("a card message stays distinct from a user instruction", () => {
+  const items = leadItems([{ t: "lead.worker", at: "1", runId: "r1", cardId: "a", messageId: "m1", text: "확인이 필요합니다" } as LeadEvent]);
+  assert.deepEqual(items, [{ kind: "worker", at: "1", runId: "r1", cardId: "a", text: "확인이 필요합니다" }]);
 });
 
 test("switching the lead keeps the effort, or the nearest one the new CLI takes", () => {
@@ -151,6 +157,19 @@ test("a stored plan of the wrong shape draws as a safe plan with a notice, never
   const stored: LeadEvent = { t: "lead.plan", at: "5", planId: "th-p5", plan: { title: "README", cards: [{ id: "docs", provider: "claude", task: "한 줄" }] }, ok: true, violations: [] };
   const good = leadItems([stored]);
   assert.ok(good[0].kind === "plan" && good[0].ok && good[0].problems.length === 0);
+});
+
+test("plan resources remain visible and malformed declarations prevent dispatch", () => {
+  const events = [
+    { t: "lead.plan", at: "1", planId: "good", plan: { title: "good", cards: [{ id: "a", provider: "claude", task: "x", resources: [{ kind: "project-path", key: "src", mode: "write" }] }] }, ok: true, violations: [] },
+    { t: "lead.plan", at: "2", planId: "bad", plan: { title: "bad", cards: [{ id: "a", provider: "claude", task: "x", resources: [{ kind: "external", key: "db", mode: "maybe" }] }] }, ok: true, violations: [] },
+  ] as unknown as LeadEvent[];
+  const [good, bad] = leadItems(events);
+  assert.ok(good.kind === "plan" && bad.kind === "plan");
+  assert.deepEqual(good.cards[0].resources, [{ kind: "project-path", key: "src", mode: "write" }]);
+  assert.equal(good.ok, true);
+  assert.equal(bad.ok, false);
+  assert.match(bad.problems.join(" "), /자원 선언/);
 });
 
 test("an earlier plan stays readable after a newer one, and only the latest can run (#40)", () => {

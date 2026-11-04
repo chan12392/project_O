@@ -20,6 +20,7 @@ fn main() {
             commands::window::setup_tray(app.handle())?;
             commands::window::open_main(app.handle())?;
             commands::update::start_checks();
+            std::thread::spawn(|| o_core::lead::recovery::watch(o_core::run::store::default_home(), std::sync::Arc::new(o_core::run::runner::official_command)));
             Ok(())
         })
         .invoke_handler(commands::handler())

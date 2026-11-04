@@ -28,6 +28,7 @@ import { updateSettings, useSettings } from "../../data/settings.ts";
 import { useLeadModels, type LeadState } from "../../data/useLead.ts";
 import { useAgentCheck } from "../../data/agents.ts";
 import type { Backend } from "../../platform/backend/index.ts";
+import { useAutoGrow } from "../../lib/autoGrow.ts";
 import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
@@ -96,6 +97,7 @@ export function Composer({
   const key = project ? draftKey(project) : "";
   const { text, files } = draftOf(drafts, key);
   const setText = (value: string) => setDrafts((d) => editDraft(d, key, () => ({ text: value })));
+  useAutoGrow(inputRef, text);
   const [notice, setNotice] = useState<string>();
   // The project shown now, for answers that arrive later: their notice shows only there.
   const projectNow = useRef(project);
@@ -144,7 +146,9 @@ export function Composer({
 
   const uploading = files.some((f) => !f.saved && !f.error);
   const busy = lead.busy;
-  const blocker = !project
+  const blocker = lead.thread?.busy === "unknown"
+    ? "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다"
+    : !project
     ? "프로젝트 폴더를 먼저 정하세요"
     : !checking && !agent
       ? "총괄을 맡을 에이전트가 연결되어 있지 않습니다"
@@ -281,7 +285,7 @@ export function Composer({
           }}
           onKeyDown={onKey}
           onPaste={onPaste}
-          className="block max-h-48 w-full resize-none bg-transparent px-1 text-sm text-chat-foreground outline-none placeholder:text-chat-foreground-faint"
+          className="scrollbar-sleek block max-h-[40vh] min-h-11 w-full resize-none overflow-y-auto bg-transparent px-1 text-sm text-chat-foreground outline-none placeholder:text-chat-foreground-faint"
         />
         {typing && agent && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-chat-composer-border bg-background/40 px-2 py-1.5">
@@ -447,7 +451,7 @@ export function Composer({
         aria-live="polite"
         className={`mx-auto mt-1.5 max-w-3xl px-1 empty:mt-0 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
+        {notice ?? (lead.thread?.busy === "unknown" ? blocker : busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
       </p>
     </form>
   );

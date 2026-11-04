@@ -307,6 +307,7 @@ fn read_stream(text: &mut String, data: &Map<String, Value>) -> Vec<StreamSignal
                 input: num(u.get("input_tokens")),
                 cached: num(u.get("cache_read_tokens")),
                 output: num(u.get("output_tokens")) + num(u.get("thinking_tokens")),
+                complete: super::stream::reported(&[u.get("input_tokens"), u.get("cache_read_tokens"), u.get("output_tokens"), u.get("thinking_tokens")]),
             });
         }
         out.extend(limit_from_text(&text, ok));

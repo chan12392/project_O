@@ -22,6 +22,8 @@ import { readParams, writeParam, type PanelView, type ScreenState } from "../dat
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadThread } from "../features/chat/LeadThread.tsx";
+import { LeadApprovalCard } from "../features/chat/LeadApprovalCard.tsx";
+import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
@@ -277,6 +279,7 @@ function MainWindow() {
       </a>
       <UpdatePrompt api={api} />
       <ClosePrompt onSettings={openSettings} />
+      <QuestionDialog api={api} lead={lead} runs={runViews} live={live} />
       {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
       {screen === "settings" && (
         <Settings api={api} section={section} source={source} onSection={setSection} onBack={closeSettings} onOnboarding={() => setScreen("onboarding")} />
@@ -362,7 +365,7 @@ function MainWindow() {
             <span className="min-w-0 truncate font-medium text-tab-active-foreground" title={project?.path}>
               {project ? `${project.name} 총괄` : "총괄"}
             </span>
-            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs whitespace-nowrap text-muted-foreground">{lead.busy ? "답하는 중" : LEAD_WORD[leadState]}</span>}
+            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs whitespace-nowrap text-muted-foreground" title={lead.thread?.busy === "unknown" ? "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다" : undefined}>{lead.thread?.busy === "unknown" ? "종료 불명" : lead.busy ? "답하는 중" : LEAD_WORD[leadState]}</span>}
             {/* The demo's chat is one run's transcript; a real lead chat spans runs, so no run title rides next to it (U12). */}
             {!live && current && (leadState === "working" || leadState === "ready") && <span className="min-w-0 truncate text-muted-foreground">{current.view.title}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-1">
@@ -441,6 +444,7 @@ function MainWindow() {
               />
             </div>
           )}
+          {live && state !== "error" && <div className="shrink-0 bg-chat-canvas px-6"><LeadApprovalCard lead={lead} /></div>}
           <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
         </section>
         )}

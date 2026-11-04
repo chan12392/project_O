@@ -5,6 +5,7 @@ import { createPoll } from "../../../src/core/poll.ts";
 import type { Backend, LeadDispatched } from "../platform/backend/index.ts";
 
 const POLL_MS = 2_000;
+const HIDDEN_POLL_MS = 15_000;
 
 export interface SendInput {
   provider: LeadProvider;
@@ -47,8 +48,9 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     const poll = createPoll({
       run: refresh,
       delay: POLL_MS,
-      hidden: () => document.hidden,
-      setTimer: (fn, ms) => window.setTimeout(fn, busyPoll.current ? 600 : ms),
+      // Hidden (minimized, in the tray) the thread is still read, slowly, so a question it asks can alert.
+      hidden: () => false,
+      setTimer: (fn, ms) => window.setTimeout(fn, document.hidden ? HIDDEN_POLL_MS : busyPoll.current ? 600 : ms),
       clearTimer: (id) => window.clearTimeout(id),
     });
     const onVisibility = () => poll.wake();
@@ -95,6 +97,15 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     await refresh();
   }, [api, project, refresh]);
 
+  /** The person's 허용/거부 for one waiting action; the card shows the next one after the refresh. */
+  const decide = useCallback(async (id: string, allow: boolean) => {
+    try {
+      await api.leadDecide(id, allow);
+    } finally {
+      await refresh();
+    }
+  }, [api, refresh]);
+
   const startNew = useCallback(async () => {
     if (!project) return;
     await api.leadNew(project);
@@ -126,6 +137,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     send,
     stop,
     stopAll,
+    decide,
     startNew,
     dispatch,
     changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {

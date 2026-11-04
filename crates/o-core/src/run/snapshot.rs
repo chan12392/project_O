@@ -123,6 +123,14 @@ pub struct CardView {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TeamMessage {
     pub at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(rename = "replyTo", skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub recipients: std::collections::BTreeMap<String, String>,
     pub from: String,
     pub to: String,
     pub text: String,
@@ -240,8 +248,8 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
         }
         let Some(run) = run.as_mut() else { continue };
         match e {
-            OEvent::Msg { at, from, to, text } => {
-                run.messages.push(TeamMessage { at: at.clone(), from: from.clone(), to: to.clone(), text: text.clone() });
+            OEvent::Msg { at, from, to, text, id, kind, reply_to } => {
+                run.messages.push(TeamMessage { at: at.clone(), from: from.clone(), to: to.clone(), text: text.clone(), id: id.clone(), kind: kind.clone(), reply_to: reply_to.clone(), recipients: Default::default() });
                 for card in &mut run.cards {
                     if card.id == *from || card.id == *to || (to == "all" && card.id != *from) {
                         card.log.push(CardLogEntry {
@@ -252,6 +260,12 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                             team: Some(TeamParties { from: from.clone(), to: to.clone() }),
                         });
                     }
+                }
+                continue;
+            }
+            OEvent::MsgState { id, recipient, state, .. } => {
+                if let Some(message) = run.messages.iter_mut().find(|m| m.id.as_deref() == Some(id)) {
+                    message.recipients.insert(recipient.clone(), state.clone());
                 }
                 continue;
             }

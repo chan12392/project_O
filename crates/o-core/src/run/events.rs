@@ -82,7 +82,17 @@ pub enum OEvent {
     },
     /// A team message between agents of one run (`o msg send`), "lead" for the supervisor, "all" for everyone.
     #[serde(rename = "msg")]
-    Msg { at: String, from: String, to: String, text: String },
+    Msg {
+        at: String, from: String, to: String, text: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        kind: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reply_to: Option<String>,
+    },
+    #[serde(rename = "msg.state")]
+    MsgState { at: String, id: String, recipient: String, state: String },
     /// Tokens a card spent since its last usage event (fresh input, cached input, output).
     #[serde(rename = "card.usage")]
     CardUsage {
@@ -94,6 +104,8 @@ pub enum OEvent {
         cached: f64,
         #[serde(serialize_with = "ser_num")]
         output: f64,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        complete: Option<bool>,
     },
     /// A subscription window the provider reported: share used (0 to 1) and when it resets.
     #[serde(rename = "quota")]
@@ -170,6 +182,7 @@ impl OEvent {
             OEvent::CardLimit { .. } => "card.limit",
             OEvent::CardEnd { .. } => "card.end",
             OEvent::Msg { .. } => "msg",
+            OEvent::MsgState { .. } => "msg.state",
             OEvent::CardUsage { .. } => "card.usage",
             OEvent::Quota { .. } => "quota",
             OEvent::RunEnd { .. } => "run.end",
@@ -189,7 +202,7 @@ pub enum StreamSignal {
     Message { text: String },
     Tool { name: String, summary: String },
     Limit { until: String },
-    Usage { input: f64, cached: f64, output: f64 },
+    Usage { input: f64, cached: f64, output: f64, complete: bool },
     Quota { window: String, used: f64, resets_at: String },
     Final { ok: bool, text: String },
 }

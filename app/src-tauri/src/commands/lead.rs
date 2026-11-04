@@ -175,10 +175,41 @@ pub async fn lead_models(provider: String) -> Result<Value, String> {
     Ok(json!({ "provider": provider, "models": models }))
 }
 
+/// The person's 허용/거부 for one action the lead waits on (`o lead decide`, ADR-0008 개정 3).
+#[tauri::command]
+pub async fn lead_decide(id: String, allow: bool) -> Result<Value, String> {
+    blocking(move || lead::decide(&store::default_home(), &id, allow).map(|()| json!({ "id": id, "decision": if allow { "allow" } else { "deny" } }))).await?
+}
+
 /// Stops the project's lead while it answers (`o lead stop`).
 #[tauri::command]
 pub async fn lead_stop(project: Option<String>) -> Result<Value, String> {
     blocking(move || json!({ "stopped": lead::stop(&store::default_home(), project.as_deref()) })).await
+}
+
+#[tauri::command]
+pub async fn lead_wake(run_id: String) -> Result<Value, String> {
+    blocking(move || lead::wake_run(&store::default_home(), &run_id, &official_command).map(|processed| json!({ "processed": processed }))).await?
+}
+
+#[tauri::command]
+pub async fn lead_retry(run_id: String, message_id: String) -> Result<Value, String> {
+    blocking(move || lead::retry_card(&store::default_home(), &run_id, &message_id).map(|state| json!({ "state": state }))).await?
+}
+
+#[tauri::command]
+pub async fn lead_answer_approval(run_id: String, message_id: String, text: String) -> Result<Value, String> {
+    blocking(move || {
+        use o_core::run::team::{self, Caller, Refused};
+        let home = store::default_home();
+        let speaker = team::speaker(&home, Caller { env_card: None, env_run: None, flag_run: Some(run_id), flag_as: Some("lead".into()) })?;
+        team::answer_approval(&home, &speaker, &message_id, &text)
+            .map(|id| json!({ "id": id }))
+            .map_err(|e| match e {
+                Refused::Policy(violations) => violations.into_iter().map(|v| v.message).collect::<Vec<_>>().join("\n"),
+                Refused::Io(error) => error.to_string(),
+            })
+    }).await?
 }
 
 #[tauri::command]

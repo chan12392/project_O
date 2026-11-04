@@ -4,7 +4,9 @@
   "version": "0.3.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "node ../scripts/prepare-local-cli.mjs --debug && vite",
+    "dev:tauri": "node ../scripts/prepare-local-cli.mjs && vite",
+    "build:tauri": "node ../scripts/prepare-local-cli.mjs && npm run build",
     "sidecar": "node ../scripts/prepare-sidecar.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",

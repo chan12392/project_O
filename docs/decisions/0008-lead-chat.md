@@ -1,6 +1,6 @@
 # ADR-0008: 총괄 채팅 — 읽기 전용 총괄이 계획을 제안하고 사람이 실행한다
 
-- 상태: 승인 (2026-11-02 — 대표 요청으로 구현과 함께 작성). 같은 날 개정: 총괄 모델 선택, Antigravity를 총괄에 더함(대표 요청, 아래 "개정 1")
+- 상태: 승인 (2026-11-02 — 대표 요청으로 구현과 함께 작성). 같은 날 개정: 총괄 모델 선택, Antigravity를 총괄에 더함(대표 요청, 아래 "개정 1"). 2026-11-04 개정 3: 일반 모드의 건별 승인과 진행 단계(대표 요청)
 - 날짜: 2026-11-02
 - 승인: [x] A  [ ] B (사후 확인 필요)
 - 관련: [GOALS.md](../GOALS.md) 목표 6, ADR-0002(카드 권한), ADR-0004(하루 예산), ADR-0007(모듈 구조), [ARCHITECTURE.md](../ARCHITECTURE.md)
@@ -139,9 +139,82 @@ agy 1.4.12 `--help`에 `--mode plan`, `--sandbox`, `--settings`(세션 한정 �
 
 - 경로로 받은 파일은 열기 전에 위쪽 폴더를 하나씩 확인해 링크(심볼릭 링크·정션)가 하나라도 있으면 거절하고, 실제 경로(`canonicalize`)를 다시 로그인 정보 폴더·파일 이름 규칙으로 검사한 뒤 그 실제 경로를 연다. `.claude`를 가리키는 별칭 폴더 아래의 평범한 파일이 통과하던 문제를 막는다.
 
+## 개정 3 (2026-11-04): 일반 모드 — 읽기는 자동, 나머지는 건별 승인, 진행 단계 기록
+
+대표 요청: 일반 모드(YOLO 꺼짐) 총괄도 파일을 고치거나 명령을 실행할 수 있게 하되 사람이 하나씩 허용한 것만 실행한다. 승인은 화면 전체를 덮는 창이 아니라 입력창 바로 위의 카드로 묻는다. 진행 표시는 도구별로 자세히 보이고, 답이 온 뒤에도 답 위에 접힌 "작업 n단계"로 남는다. YOLO 모드는 바꾸지 않는다.
+
+### 무엇이 자동이고 무엇을 묻나
+
+- 읽기·검색(Claude `Read`·`Grep`·`Glob`, Codex 읽기 전용 샌드박스 안의 읽기)은 묻지 않는다.
+- 파일 쓰기·수정, 셸 명령, 웹 검색·가져오기, 그 밖의 도구는 한 번에 하나씩 사람의 허용을 받아야 실행된다. "항상 허용"이나 세션 단위 허용은 없다. 거부가 기본(카드가 뜨면 포커스가 거부에 있음)이다.
+- 요청마다 10분(`approvals::WAIT`)을 기다리고, 지나면 거부(`timeout`)한다. 기다리는 동안 턴의 15분 제한(`TURN_LIMIT`)은 흐르지 않는다(감시 스레드가 `approvals/`에 요청이 있는 시간만큼 마감을 미룬다).
+- "중지"는 기다리는 요청을 `stopped`로 거부하고(Claude는 `interrupt`, Codex는 `cancel`) 그 턴을 끝낸다. 턴이 끝날 때 남은 요청은 닫는다.
+- 예약 실행과 카드 질문에 답하는 턴은 물어볼 사람이 없으므로 이전처럼 읽기 전용이다. O CLI(`o`)를 찾지 못하거나 Codex에 app-server가 없으면 경고를 남기고 그 턴은 읽기 전용으로 돈다.
+
+### Claude Code
+
+공식 `--permission-prompt-tool`로 O의 stdio MCP 서버에 묻는다. 홈 폴더 밖 임시 폴더에서 Claude Code 2.1.302로 확인했다(허용 → 파일 생성, 거부 → `tool_result` 오류와 재시도 없는 설명).
+
+| 인자 | 값 |
+|---|---|
+| 도구 | `--tools Read,Grep,Glob,Edit,Write,Bash[,PowerShell(Windows)],WebSearch,WebFetch` |
+| 묻지 않는 도구 | `--allowedTools Read,Grep,Glob` (이전과 같음) |
+| 막는 명령 | `--disallowedTools Bash(o dispatch*)…`와 Windows의 같은 `PowerShell(…)` 규칙 |
+| 승인 | `--strict-mcp-config --mcp-config {"mcpServers":{"o_lead":{"command":"<o>","args":["_lead-approve",<home>,<thread>,<token>,<project>]}}} --permission-prompt-tool mcp__o_lead__decide` |
+| 설정 | `--setting-sources user --settings {"disableAllHooks":true,"permissions":{"ask":["Bash","PowerShell","Edit","Write","NotebookEdit","WebFetch","WebSearch"]}}` — 사람의 사용자 설정에 있는 allow 규칙이 묻지 않고 통과시키지 않게 |
+
+- `o _lead-approve`는 O 실행 파일 자신(데스크톱 앱은 옆의 `o.exe`)이고, MCP 순서(`server/discover` 탐색에 빈 결과, `initialize`, `tools/list`, `tools/call`)에 답한다. `tools/call`마다 따로 기다리므로 동시에 온 요청은 차례로 카드에 뜬다. 오래 기다리면 `_meta.progressToken`으로 진행 알림을 보낸다.
+- 허용은 `{"behavior":"allow","updatedInput":<원래 입력>}`(입력을 바꾸지 않음), 거부는 `{"behavior":"deny","message":…}`.
+
+### Codex (ADR-0023 개정)
+
+app-server 일반 모드는 샌드박스를 그대로 읽기 전용(`sandbox: read-only`, `sandboxPolicy: readOnly`)으로 두고 승인 정책만 `on-request`(검토자 `user`)로 바꾼다. 쓰기 샌드박스(`workspace-write`)는 쓰기가 승인 없이 통과하므로 쓰지 않고, 폐기 예정인 `untrusted`도 쓰지 않는다.
+
+- `item/commandExecution/requestApproval` → 명령 전체·실행 위치·사유를 카드에 보이고 `accept`·`decline`·`cancel`(중지) 중 하나로만 답한다. `acceptForSession`이나 정책 추가는 보내지 않는다. 승인된 권한 상승 명령은 샌드박스 밖에서 돌기 때문에 명령을 줄이지 않고 그대로 보인다.
+- `item/fileChange/requestApproval` → 요청에는 diff가 없어 같은 item의 `item/started`·`item/fileChange/patchUpdated`의 `changes[]`(경로·종류·diff)로 파일별 `+N −M`과 diff를 보인다.
+- 권한·MCP 입력·사용자 질문 요청은 이전처럼 거절한다.
+
+### O가 먼저 막는 것
+
+사람에게 묻기 전에 O의 가드 규칙(`o_guard::hook::review` — 로그인 정보 파일, 프로바이더 직접 호출, 권한 확인을 끄는 옵션, 보호 브랜치 커밋·push, 거울 폴더)과 O 상태 폴더를 가리키는 쓰기·명령, MCP 도구 호출을 거부한다(`by: guard`). 사람에게는 묻지 않고 기록만 남긴다.
+
+### 자기 승인 차단과 결정 경로
+
+- 결정은 앱의 허용/거부 버튼(Tauri `lead_decide`, 개발 서버 `POST /api/lead/decide`), 또는 사람이 직접 친 `o lead decide <id> allow|deny`뿐이다. 에이전트 환경(`O_AGENT_ROLE`·`O_CARD_ID`)에서는 `o lead decide`를 거절하고, 가드 훅도 같은 명령을 막으며, 총괄의 셸에는 `o lead*` 거부 규칙이 있다.
+- 결정 파일은 임시 파일을 `<id>.decision`으로 연결(hard link)해 한 번만 생긴다. 지금 도는 턴(잠금과 표시의 token이 같은 요청)만 결정을 받는다.
+- 총괄의 글이나 첨부, 카드의 메시지에 적힌 "승인"은 결정이 아니다. 카드에 총괄의 요청 원문을 그대로 보이고 "채팅의 '승인'은 결정이 아님"을 적는다.
+
+### 기록
+
+| 파일·이벤트 | 내용 |
+|---|---|
+| `leads/<thread>/approvals/<id>.json` | 기다리는 요청(턴 token, 종류, 요약, 원문 16,000자까지, 파일별 `+/−`·diff, 만료 시각). `lead show`의 `thread.approvals`(token 제외) |
+| `lead.approval` | `{at,id,provider,kind:command·file·web·other,tool,summary,detail,cwd,reason,files[{path,added,removed,diff}],expires}`. id는 `<threadId>-a<n>` |
+| `lead.decision` | `{at,id,decision:allow·deny·timeout·stopped,by:user·guard·timeout·stop·o,reason}` |
+| `lead.step` | 끝난 단계 `{at,id,kind:read·search·run·edit·web·other,label,file,added,removed,status:done·failed·denied·incomplete}`. 턴당 200개까지. 진행 중 단계는 `thread.steps`(임시) |
+
+- `+N −M`은 실제 값이다. Claude는 실행 뒤 `tool_use_result.structuredPatch`(새 파일은 내용 줄 수, 없으면 바꾼 문자열), Codex는 `fileChange.changes[].diff`에서 센다.
+- 화면: 진행 중에는 "읽는 중 a.ts", "실행 중 npm test", "'README.md' +12 −3", "웹 검색 중 …"을 실시간으로, 끝나면 그 턴의 답 위에 접힌 "작업 n단계 · 파일 k개 +N −M"으로 남긴다. 승인 카드는 입력창 바로 위에 하나씩(남은 개수 표시) 뜨고 남은 시간을 센다.
+
+### 남은 위험
+
+- Codex의 읽기 전용 총괄에는 Claude의 경로별 Read 거부 규칙에 해당하는 장치가 없어 CLI 로그인 정보 파일의 자동 읽기를 차단하지 못한다.
+- "내 설정"(평소 프로필)으로 돌 때 사람의 플러그인·관리 정책이 O보다 먼저 허용할 수 있다. 실행 설정의 `permissions.ask`가 사용자 allow 규칙보다 우선하지만 관리 정책이나 다른 경로는 확인하지 못했다. 카드에 이 한계를 적는다.
+- 허용한 명령이 무엇을 하는지는 사람이 판단한다. O는 가드 규칙에 걸리는 것만 먼저 막는다.
+- 승인 서버는 Claude Code의 `--permission-prompt-tool` MCP 형식(2.1.302)과 Codex app-server 승인 스키마(0.166.0)에 기대며, 바뀌면 다시 확인한다.
+- Windows의 Codex(0.166.0)는 읽기 전용 샌드박스에서도 `Get-Content` 같은 읽기 명령에 승인을 요청했다. 승인된 명령은 샌드박스 밖에서 돌기 때문에 O는 명령 분류(`commandActions`, 참고용 추정)를 믿고 자동 허용하지 않는다. Codex 총괄은 Windows에서 셸 읽기도 승인 카드로 묻는다.
+
+### 확인 (2026-11-04, 홈 폴더 밖 `C:\tmp\o-approve-e2e`, 개발 빌드 `o lead send`)
+
+| # | 총괄 | 요청 | 결정 | 결과 |
+|---|---|---|---|---|
+| 1 | Claude Code 2.1.302 `haiku` | hello.txt 만들기 | `o lead decide … allow` | `lead show`에 대기 요청(`'hello.txt' +1 −0`)이 보였고, 허용 뒤 파일 생성, `lead.step` edit `+1 −0 done` |
+| 2 | 같은 세션 | bye.txt 만들기 | `deny` | 파일 없음, `lead.step` `denied`, 총괄이 재시도 없이 거부를 알림 |
+| 3 | Codex 0.166.0 `gpt-5.6-luna` | codex.txt 만들기 | 명령(`Set-Content`) `allow`, 이어진 읽기(`Get-Content`) `deny` | 파일 생성, 읽기 단계 `denied`, 총괄이 재시도 없이 알림 |
+
 ## 영향
 
-- 총괄은 파일을 고치거나 명령을 실행할 수 없다. 카드 권한(ADR-0002)·정책 상한·예산(ADR-0004)은 바뀌지 않고, 계획은 `o dispatch`와 같은 길로만 실행된다.
+- 총괄은 사람이 하나씩 허용하지 않은 파일 수정·명령 실행을 할 수 없다(개정 3, 그전에는 아예 할 수 없었다). 카드 권한(ADR-0002)·정책 상한·예산(ADR-0004)은 바뀌지 않고, 계획은 `o dispatch`와 같은 길로만 실행된다.
 - O 상태 폴더에 `leads/`, 그 옆에 `project_O-lead/`가 생긴다. 지워도 실행 기록과 색인에는 영향이 없다.
 - 새 프로바이더를 총괄로 쓰려면 `lead_efforts`·`lead`를 구현하고 `crates/o-core/tests/providers.rs`에 정확한 인자와 "쓰기·우회 없음" 사례를 더한다(ARCHITECTURE.md).
 - 진행 표시: 총괄 CLI의 도구 이벤트 중 최근 세 개와 도구 호출 횟수를 임시 상태로 보관하고 `lead show`의 `thread.progress`·`thread.progressCounts`로 전달한다. 횟수는 성공 여부나 현재 실행 중인 개수가 아니다. 턴이 끝나면 숨기며 기존 대화 이벤트와 인덱스는 바꾸지 않는다. 화면은 수신한 최종 답변을 짧게 나눠 표시한다. 이는 모델 토큰의 실시간 스트리밍은 아니다.

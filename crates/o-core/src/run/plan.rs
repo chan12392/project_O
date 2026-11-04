@@ -45,8 +45,24 @@ impl fmt::Display for ProviderId {
     }
 }
 
-pub const CARD_FIELDS: [&str; 7] = ["id", "provider", "role", "task", "model", "effort", "depends_on"];
+pub const CARD_FIELDS: [&str; 8] = ["id", "provider", "role", "task", "model", "effort", "depends_on", "resources"];
 pub const PLAN_FIELDS: [&str; 3] = ["title", "project", "cards"];
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Resource {
+    pub kind: ResourceKind,
+    pub key: String,
+    pub mode: ResourceMode,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ResourceKind { ProjectPath, External }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ResourceMode { Read, Write }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Card {
@@ -63,6 +79,9 @@ pub struct Card {
     /// Work that must finish successfully before this task starts.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub depends_on: Vec<String>,
+    /// An absent or empty declaration takes an exclusive global reservation.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<Resource>,
 }
 
 impl Card {

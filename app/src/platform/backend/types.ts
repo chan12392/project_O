@@ -7,6 +7,16 @@ export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, List
 
 export type AgentId = "claude" | "codex" | "agy" | "opencode" | "devin";
 
+export interface IssueRef { number: number; updatedAt: string }
+export interface Issue extends IssueRef { title: string; state: string; url: string }
+export interface Resolution { runId: string; cardId: string; evidence: string }
+export interface Finding {
+  repo: string; runId: string; cardId: string; sha: string; summary: string;
+  reproduction: string; evidence: string[]; classification: string; issue: IssueRef | null;
+  resolution?: Resolution;
+}
+export interface FindingRow { id: number; finding: Finding }
+
 export interface AgentCatalogEntry {
   id: string;
   name: string;
@@ -124,11 +134,46 @@ export interface TokenGroup {
 export interface TokenReport {
   groups: TokenGroup[];
   compare: { baseline: TokenGroup | null; shared: TokenGroup | null };
+  lead?: { requested?: number; unreported?: number; incomplete?: number };
+  /** Missing in older O versions; reported totals may omit provider usage. */
+  summary?: {
+    reported: TokenCounts;
+    reportedCards: number;
+    unreportedCards: number;
+    incompleteCards: number;
+    cachePercent: number | null;
+  };
 }
+
+export interface ResourceLease {
+  id: string;
+  runId: string;
+  cardId: string;
+  resources: unknown;
+  ownerPid: number | null;
+  ownerStarted: string | null;
+  workerPid: number | null;
+  workerStarted: string | null;
+  spawnIntent: boolean | null;
+  exitConfirmed: boolean | null;
+  state: "recoverable" | "unknown";
+}
+
+export type WorkspaceChanges = { workspace: string; note: string; baselineRunId?: string } & (
+  | { gitCommit: string; changes: { changed: string[]; staged: string[]; unstaged: string[]; unmerged: string[]; untracked: string[]; ignored: string[]; masked: { path: string; skipWorktree: boolean; assumeUnchanged: boolean }[] } }
+  | { copyBase: string; changes: { path: string; kind: "added" | "deleted" | "modified" }[] }
+);
 
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
+  resources(): Promise<ResourceLease[]>;
+  recoverResource(id: string): Promise<void>;
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
+  changes(run: string, card: string): Promise<WorkspaceChanges>;
+  /** The person's answer to a card's question, sent as the lead on the run's team channel (`o msg send --as lead`). */
+  reply(run: string, card: string, text: string, messageId?: string): Promise<void>;
+  /** Flashes the taskbar button while the window is not in front (desktop only; elsewhere nothing). */
+  attention(): Promise<void>;
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;
   agentsCatalog(refresh?: boolean): Promise<AgentCatalogEntry[]>;
@@ -159,6 +204,11 @@ export interface Backend {
    * reason (gh failed, policy refused) when the review did not start.
    */
   review(project: string, pr: string, clean: boolean): Promise<ReviewStarted>;
+  issuesSearch(repo: string, query: string): Promise<{ issues: Issue[]; possiblyTruncated: boolean }>;
+  issuesList(repo: string): Promise<FindingRow[]>;
+  issuesRecord(finding: Finding): Promise<{ id: number }>;
+  issuesClassify(id: number, classification: string, issue: IssueRef | null): Promise<{ id: number }>;
+  issuesResolve(id: number, resolution: Resolution | null): Promise<{ id: number }>;
   /** Today's usage budget per provider from saved readings (`o budget --json --cached`). */
   budget(): Promise<BudgetReport>;
   /** Settings → 에이전트: saves the day's allowance (the machine refuses anything but 12–14). */
@@ -183,8 +233,13 @@ export interface Backend {
   leadSend(request: LeadSendRequest): Promise<{ threadId: string | null; events: LeadEvent[] }>;
   /** Runs a proposed plan after the policy check; rejects with the policy's reasons when refused. */
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
+  /** The person's 허용/거부 for one action the lead waits on (`o lead decide`); only the person's click, never chat text. */
+  leadDecide(id: string, allow: boolean): Promise<{ id: string; decision: "allow" | "deny" }>;
   /** Stops the project's lead while it answers. */
   leadStop(project?: string): Promise<{ stopped: boolean }>;
+  leadWake(runId: string): Promise<{ processed: boolean }>;
+  leadRetry(runId: string, messageId: string): Promise<{ state: "queued" | "acknowledged" }>;
+  leadAnswerApproval(runId: string, messageId: string, text: string): Promise<{ id: string }>;
   leadStopAll(project: string): Promise<{ stopped: number }>;
   /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
   leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
