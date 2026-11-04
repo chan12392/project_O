@@ -43,6 +43,7 @@ pub const COMMAND: &str = "_lead-approve";
 const DETAIL_CHARS: usize = 16_000;
 const SUMMARY_CHARS: usize = 300;
 const POLL: Duration = Duration::from_millis(100);
+const MAX_PENDING: usize = 20;
 /// How often a long wait tells Claude it is still going (`notifications/progress`).
 const TICK: Duration = Duration::from_secs(20);
 
@@ -233,7 +234,29 @@ pub fn refusals(home: &Path, project: &str, request: &Request) -> Vec<String> {
         .collect();
     words.extend(request.files.iter().map(|f| f.path.clone()));
     if let Some(cwd) = &request.cwd { words.push(cwd.clone()); }
-    let names_state = words.iter().map(|w| w.replace('\\', "/").to_lowercase()).any(|w| {
+    let user_home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
+    let base = o_guard::hook::resolve(request.cwd.as_deref().unwrap_or(project), project, user_home.as_deref()).unwrap_or_else(|| {
+        reasons.push("실행 위치를 확인할 수 없어 거부했습니다".to_string());
+        project.to_string()
+    });
+    for call in &request.review {
+        for key in ["file_path", "notebook_path", "path"] {
+            if let Some(path) = call["tool_input"][key].as_str().filter(|path| !path.is_empty()) {
+                if o_guard::hook::resolve(path, &base, user_home.as_deref()).is_none() {
+                    reasons.push("요청 경로를 확인할 수 없어 거부했습니다".to_string());
+                }
+            }
+        }
+        if let Some(command) = call["tool_input"]["command"].as_str() {
+            match o_guard::hook::shell_targets(command, &base) {
+                Ok(targets) => words.extend(targets),
+                Err(_) => reasons.push("명령의 경로를 확인할 수 없어 거부했습니다".to_string()),
+            }
+        }
+    }
+    let names_state = words.iter().flat_map(|word| std::iter::once(word.as_str()).chain(word.split_whitespace()))
+        .map(|w| w.trim_matches(['"', '\'', ';', ',']))
+        .flat_map(|w| [w.replace('\\', "/").to_lowercase(), o_guard::hook::resolve(w, &base, user_home.as_deref()).unwrap_or_default().to_lowercase()]).any(|w| {
         (!state.is_empty() && w.contains(&state)) || (w.contains("localappdata") && w.contains("/project_o") && !w.contains("/project_o-"))
     });
     if names_state { reasons.push("O 상태 폴더는 총괄이 바꾸거나 실행할 수 없습니다".to_string()); }
@@ -257,6 +280,9 @@ pub fn ask(home: &Path, thread_id: &str, token: &str, project: &str, request: Re
         let Ok(_held) = lock.and_then(|file| { file.lock()?; Ok(file) }) else {
             return Outcome { allowed: false, decision: "deny", message: "승인 요청 잠금을 잡지 못해 거부했습니다.".into() };
         };
+        if fs::read_dir(&folder).into_iter().flatten().flatten().filter(|e| e.file_name().to_string_lossy().ends_with(".json")).count() >= MAX_PENDING {
+            return Outcome { allowed: false, decision: "deny", message: "승인 대기 요청이 너무 많아 거부했습니다.".into() };
+        }
         let n = super::read_thread(home, thread_id).iter().filter(|e| matches!(e, LeadEvent::Approval { .. })).count() + 1;
         let pending = Pending {
             id: format!("{thread_id}-a{n}"),
@@ -628,6 +654,34 @@ mod tests {
         let request = write_request(&path.to_string_lossy());
         assert_eq!(request.files[0].removed, None);
         assert!(!refusals(&home, "C:/p", &request).is_empty());
+    }
+
+    #[test]
+    fn state_paths_are_resolved_before_approval() {
+        let (home, _thread, project, _slot) = setup("relative-state");
+        for path in ["../state/leads/t/approvals/a.decision", "../state/./leads/t/approvals/a.decision"] {
+            assert!(!refusals(&home, &project, &write_request(path)).is_empty(), "{path}");
+        }
+        assert!(!refusals(&home, &project, &write_request("$O_UNKNOWN_PATH/leads/t/approvals/a.decision")).is_empty());
+        let command = from_claude("Bash", &json!({"command":"cd ../state && touch leads/t/approvals/a.decision"}), &project);
+        assert!(!refusals(&home, &project, &command).is_empty());
+        if let Ok(user_home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+            let state = Path::new(&user_home).join("o-test-state");
+            assert!(!refusals(&state, &project, &write_request("~/o-test-state/leads/t/approvals/a.decision")).is_empty());
+            let variable = if cfg!(windows) { "%USERPROFILE%/o-test-state/leads/t/approvals/a.decision" } else { "$HOME/o-test-state/leads/t/approvals/a.decision" };
+            assert!(!refusals(&state, &project, &write_request(variable)).is_empty());
+        }
+    }
+
+    #[test]
+    fn too_many_waiting_requests_are_refused_immediately() {
+        let (home, thread, project, slot) = setup("cap");
+        let folder = folder(&home, &thread);
+        fs::create_dir_all(&folder).unwrap();
+        for n in 0..MAX_PENDING { fs::write(folder.join(format!("{n}.json")), "{}").unwrap(); }
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request("safe.txt"), Duration::from_secs(5), &mut || panic!("waited"));
+        assert_eq!(outcome.decision, "deny");
+        assert!(outcome.message.contains("너무 많아"));
     }
 
     #[test]

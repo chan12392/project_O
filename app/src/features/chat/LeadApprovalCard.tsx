@@ -33,7 +33,7 @@ export function LeadApprovalCard({ lead }: { lead: LeadState }) {
   const [now, setNow] = useState(() => Date.now());
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
   const deny = useRef<HTMLButtonElement>(null);
-  const approvals = lead.thread?.busy ? lead.thread.approvals : undefined;
+  const approvals = lead.thread?.busy && lead.thread.busy !== "unknown" ? lead.thread.approvals : undefined;
   const view = approvalView(approvals, now);
   const id = view?.id;
   useEffect(() => {
@@ -64,6 +64,7 @@ export function LeadApprovalCard({ lead }: { lead: LeadState }) {
       aria-modal="false"
       aria-labelledby={`${view.id}-title`}
       aria-describedby={`${view.id}-what`}
+      onKeyDown={(event) => { if (event.key === "Escape" && !state.busy) { event.preventDefault(); event.stopPropagation(); void decide(false); } }}
       className="mx-auto mb-2 max-w-3xl rounded-xl border border-status-warning-text/40 bg-card text-card-foreground shadow-sm"
     >
       <header className="flex items-start justify-between gap-3 px-3.5 pt-3">
@@ -91,7 +92,7 @@ export function LeadApprovalCard({ lead }: { lead: LeadState }) {
                     <span className="min-w-0 truncate font-mono">'{file.name}'</span>
                     {file.counts && (
                       <span className="shrink-0 font-mono tabular-nums">
-                        <span className="text-status-success">+{file.added}</span> <span className="text-destructive">−{file.removed}</span>
+                        {typeof file.added === "number" && <span className="text-status-success">+{file.added}</span>}{typeof file.added === "number" && typeof file.removed === "number" && " "}{typeof file.removed === "number" && <span className="text-destructive">−{file.removed}</span>}
                       </span>
                     )}
                     <span className="min-w-0 truncate text-2xs text-muted-foreground">{file.path}</span>

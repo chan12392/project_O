@@ -25,7 +25,10 @@ const LEAD_TOOLS: &str = "Read,Grep,Glob";
 
 /// The lead run's own settings: no hook runs (project settings could turn them back on,
 /// which `--setting-sources user` keeps them from doing).
-const LEAD_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+fn lead_settings() -> String {
+    let deny: Vec<String> = o_guard::rules::CREDENTIAL_DENY_PATHS.iter().map(|path| format!("Read({path})")).collect();
+    json!({ "disableAllHooks": true, "permissions": { "deny": deny } }).to_string()
+}
 
 /// The tools O's guard hook (`o hook`) looks at: the same list as this repository's
 /// `.claude/settings.json`.
@@ -66,7 +69,9 @@ fn approved_tools() -> Vec<&'static str> {
 const ASKED_TOOLS: [&str; 7] = ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
 
 fn approval_settings() -> String {
-    json!({ "disableAllHooks": true, "permissions": { "ask": ASKED_TOOLS } }).to_string()
+    let mut settings: Value = serde_json::from_str(&lead_settings()).expect("lead settings");
+    settings["permissions"]["ask"] = json!(ASKED_TOOLS);
+    settings.to_string()
 }
 
 /// `--mcp-config` with O's approval server as the only server.
@@ -145,7 +150,7 @@ impl Provider for Claude {
         match &turn.approver {
             None => {
                 args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
-                args.extend(strings(&["--setting-sources", "user", "--settings", LEAD_SETTINGS]));
+                args.extend(strings(&["--setting-sources", "user", "--settings", &lead_settings()]));
             }
             Some(command) => {
                 args.extend(strings(&["--tools", &approved_tools().join(","), "--allowedTools", LEAD_TOOLS, "--disallowedTools"]));

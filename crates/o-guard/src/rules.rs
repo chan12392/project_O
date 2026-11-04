@@ -20,7 +20,15 @@ fn rule(id: &'static str, pattern: &str, reason: &'static str) -> Rule {
     Rule { id, pattern: Regex::new(pattern).expect("rule pattern"), reason }
 }
 
-/// Credential stores and tokens that belong to the official CLIs.
+/// Keep the credential filename patterns in sync with CREDENTIAL_RULES.
+pub const CREDENTIAL_DENY_PATHS: &[&str] = &[
+    "//**/*.[cC][rR][eE][dD][eE][nN][tT][iI][aA][lL][sS].[jJ][sS][oO][nN]*",
+    "//**/*[aA][uU][tT][hH].[jJ][sS][oO][nN]*",
+    "//**/*[oO][aA][uU][tT][hH]_[cC][rR][eE][dD][sS].[jJ][sS][oO][nN]*",
+    "//**/*[gG][oO][oO][gG][lL][eE]_[aA][cC][cC][oO][uU][nN][tT][sS].[jJ][sS][oO][nN]*",
+];
+
+/// Credential stores and tokens that belong to the official CLIs. Keep filenames in sync with CREDENTIAL_DENY_PATHS.
 pub static CREDENTIAL_RULES: LazyLock<Vec<Rule>> = LazyLock::new(|| {
     vec![
         rule("claude-credentials", r"(?i)\.credentials\.json", "Claude Code 로그인 정보 파일에 접근할 수 없습니다"),

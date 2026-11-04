@@ -1142,7 +1142,11 @@ fn stale_marker() {
     let pid = other.id();
     let stale = json!({ "pid": pid, "provider": "claude", "owner": pid, "token": "dead", "child": { "pid": pid, "started": 1 } });
     std::fs::write(&marker, stale.to_string()).unwrap();
+    let approvals = lead::thread_dir(&home, &thread).join("approvals");
+    std::fs::create_dir_all(&approvals).unwrap();
+    std::fs::write(approvals.join("old.json"), json!({"id":"old","token":"dead","at":"","expires":"","provider":"claude","kind":"file","tool":"Write","summary":"","detail":"","cwd":null,"reason":null,"files":[]}).to_string()).unwrap();
     assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
+    assert!(lead::show(&home, Some(&project))["thread"]["approvals"].as_array().unwrap().is_empty());
     assert!(!lead::stop(&home, Some(&project)));
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(other.try_wait().unwrap().is_none(), "stop ended a process that only reused the dead turn's pid");

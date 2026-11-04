@@ -17,7 +17,9 @@ test("steps read as short lines: what it does now, then what it did", () => {
   assert.equal(stepLine({ id: "6", kind: "run", label: "rm x", status: "denied" }).note, "거부됨");
   assert.equal(stepLine({ id: "7", kind: "mystery", label: "Task", status: "incomplete" }).verb, "사용함");
   assert.equal(stepLine({ id: "7", kind: "mystery", label: "Task", status: "incomplete" }).note, "중단됨");
-  assert.equal(lineCounts(undefined, 3), "");
+  assert.equal(lineCounts(undefined, 3), "−3");
+  assert.equal(lineCounts(2, undefined), "+2");
+  assert.equal(lineCounts(undefined, undefined), "");
   assert.equal(fileName("C:/a/b/"), "b");
 });
 
@@ -74,6 +76,7 @@ test("a file request lists each file with its counts instead of the raw request"
   const view = approvalView([approval({ kind: "file", tool: "Write", summary: "C:/p/a.ts", detail: "+a\n+b", files: [{ path: "C:\\p\\a.ts", added: 2, removed: 1, diff: "+a\n+b" }] })], 0);
   assert.ok(view);
   assert.deepEqual(view.files.map((f) => [f.name, f.counts]), [["a.ts", "+2 −1"]]);
+  assert.equal(approvalView([approval({ kind: "file", files: [{ path: "new.ts", added: 2 }] })], 0)?.files[0].counts, "+2");
   assert.equal(view.detail, "");
   assert.equal(approvalView([approval({ kind: "web", tool: "WebFetch", summary: "https://x.dev", detail: "요약", cwd: null, reason: null })], 0)?.title, "웹 요청");
   assert.equal(approvalView([approval({ kind: "other", files: undefined })], 0)?.title, "도구 사용");

@@ -48,8 +48,7 @@ export function stepLine(step: LeadStep): StepLine {
 
 /** "+12 −3" with a real minus sign; empty without counts. */
 export function lineCounts(added?: number, removed?: number): string {
-  if (typeof added !== "number" || typeof removed !== "number") return "";
-  return `+${added} −${removed}`;
+  return [typeof added === "number" ? `+${added}` : "", typeof removed === "number" ? `−${removed}` : ""].filter(Boolean).join(" ");
 }
 
 const APPROVAL_KIND: Record<LeadApproval["kind"], string> = { command: "명령 실행", file: "파일 변경", web: "웹 요청", other: "도구 사용" };

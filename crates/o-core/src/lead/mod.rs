@@ -1882,7 +1882,7 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
         let progress_counts = state.get("counts").cloned().unwrap_or(Value::Null);
         let partial = state.get("partial").and_then(Value::as_str).unwrap_or_default().to_string();
         let steps = state.get("live").and_then(Value::as_array).cloned().unwrap_or_default();
-        let approvals = if busy.is_some() { approvals::pending(home, &id) } else { Vec::new() };
+        let approvals = if busy.as_deref().is_some_and(|b| b != "unknown") { approvals::pending(home, &id) } else { Vec::new() };
         ThreadView {
             project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
             busy,

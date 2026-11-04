@@ -89,7 +89,7 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
               : (lead.thread?.progress ?? []).map((step, i) => (
                 <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
               ))}
-            <p>총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…</p>
+            <p>{lead.thread?.busy === "unknown" ? "총괄 종료 확인 필요" : lead.thread?.busy === "starting" ? "총괄 시작 중…" : `총괄 ${LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…`}</p>
           </div>
         )}
       </div>
@@ -133,8 +133,6 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           <ReplyText text={item.text} animate={animate} />
         </article>
       );
-    case "warning":
-      return <p role="status" className="whitespace-pre-wrap text-sm text-status-warning-text">{item.text}</p>;
     case "error":
       return (
         <p role="alert" className="flex items-start gap-2 rounded-lg border border-destructive/40 px-3.5 py-2.5 text-sm">

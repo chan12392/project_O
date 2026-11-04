@@ -309,9 +309,11 @@ fn the_claude_lead_reads_only_and_resumes_its_session() {
     assert_eq!(first.bin, "claude");
     let expected = [
         "-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--tools", "Read,Grep,Glob", "--allowedTools", "Read,Grep,Glob",
-        "--strict-mcp-config", "--setting-sources", "user", "--settings", r#"{"disableAllHooks":true}"#, "--effort", "low", "--add-dir", "C:/o-lead/t1",
+        "--strict-mcp-config", "--setting-sources", "user", "--settings", after(&first.args, "--settings"), "--effort", "low", "--add-dir", "C:/o-lead/t1",
     ];
     assert_eq!(first.args, expected);
+    let settings: Value = serde_json::from_str(after(&first.args, "--settings")).unwrap();
+    assert_eq!(settings["permissions"]["deny"], json!(o_guard::rules::CREDENTIAL_DENY_PATHS.iter().map(|p| format!("Read({p})")).collect::<Vec<_>>()));
     assert_eq!(first.stdin.as_deref(), Some("계획해 줘"));
     let next = lead_spec(ProviderId::Claude, Some("s-1"), None, &[]).unwrap();
     assert_eq!(after(&next.args, "--resume"), "s-1");
@@ -337,6 +339,7 @@ fn the_claude_lead_asks_o_before_any_write_command_or_web_call() {
     assert_eq!(servers, json!({"mcpServers":{"o_lead":{"type":"stdio","command":"C:/o/o.exe","args":approver[1..]}}}));
     let settings: Value = serde_json::from_str(after(&spec.args, "--settings")).unwrap();
     assert_eq!(settings["disableAllHooks"], true);
+    assert_eq!(settings["permissions"]["deny"], json!(o_guard::rules::CREDENTIAL_DENY_PATHS.iter().map(|p| format!("Read({p})")).collect::<Vec<_>>()));
     assert!(settings["permissions"].get("allow").is_none());
     for tool in ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"] {
         assert!(settings["permissions"]["ask"].as_array().unwrap().iter().any(|t| t == tool), "{tool}");
