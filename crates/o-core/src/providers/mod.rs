@@ -362,7 +362,7 @@ fn prompt_text(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&st
     let talks = how.iter().any(|line| line.contains(TEAM_COMMAND));
     lines.extend(how);
     if !others.is_empty() {
-        lines.push("같은 폴더에서 다른 카드가 동시에 일합니다. 맡은 파일 밖의 파일은 지우거나 고치지 마세요.".into());
+        lines.push("다른 카드가 동시에 일합니다. 작업 폴더가 분리될 수 있으니 다른 카드의 변경은 인계 후 확인하세요. 맡은 파일 밖은 수정하지 말고 공용 파일·포트·서비스는 조율하세요.".into());
     }
     lines.push(format!("작업: {}{role}", plan.title));
     lines.push(format!("프로젝트: {}", plan.project));

@@ -239,7 +239,7 @@ fn card_prompt_keeps_the_common_prefix_ahead_of_task_details() {
         "보내기: o msg send --to <카드 id|lead|all> \"내용\"   받기: o msg read",
         "일반 질문은 o msg send --to lead --question --id <재시도키> \"내용\". 사람의 승인이나 권한 결정은 --question 대신 --approval로 요청하세요. 승인 요청에는 총괄이 자동으로 답하지 않습니다. 답을 기다릴 때는 o msg wait를 사용하세요.",
         "받은 메시지는 처리한 뒤 o msg ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.",
-        "같은 폴더에서 다른 카드가 동시에 일합니다. 맡은 파일 밖의 파일은 지우거나 고치지 마세요.",
+        "다른 카드가 동시에 일합니다. 작업 폴더가 분리될 수 있으니 다른 카드의 변경은 인계 후 확인하세요. 맡은 파일 밖은 수정하지 말고 공용 파일·포트·서비스는 조율하세요.",
         "작업: 랜딩 개편 · 코딩",
         "프로젝트: C:/work/demo",
         "",
