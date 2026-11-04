@@ -315,3 +315,53 @@ fn tokens_distinguish_unreported_incomplete_and_zero_usage() {
     let text = String::from_utf8_lossy(&text.stdout);
     assert!(text.contains("사용량 미보고: waiting") && text.contains("사용량 일부 누락: partial, legacy"), "{text}");
 }
+
+#[test]
+fn tokens_preserve_usage_and_uncertainty_across_retries() {
+    let (base, home, project) = setup("retry-coverage");
+    let dir = home.join("runs").join("retry");
+    fs::create_dir_all(&dir).unwrap();
+    let at = "2026-11-03T10:00:00.000Z";
+    let events = [
+        json!({ "t": "run.start", "at": at, "runId": "retry", "title": "retry", "project": project, "cards": [
+            { "id": "complete", "provider": "codex" }, { "id": "missing", "provider": "codex" }, { "id": "restart", "provider": "claude" }
+        ] }),
+        json!({ "t": "card.start", "at": at, "cardId": "complete" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "complete", "input": 10, "cached": 3, "output": 2, "complete": true }),
+        json!({ "t": "card.start", "at": at, "cardId": "complete" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "complete", "input": 20, "cached": 5, "output": 4, "complete": true }),
+        json!({ "t": "card.start", "at": at, "cardId": "missing" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "missing", "input": 4, "cached": 1, "output": 1, "complete": true }),
+        json!({ "t": "card.start", "at": at, "cardId": "missing" }),
+        json!({ "t": "card.start", "at": at, "cardId": "restart" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "restart", "input": 7, "cached": 1, "output": 2, "complete": true }),
+        json!({ "t": "run.start", "at": at, "runId": "retry", "title": "retry", "project": project, "cards": [
+            { "id": "restart", "provider": "codex" }
+        ] }),
+        json!({ "t": "card.start", "at": at, "cardId": "restart" }),
+        json!({ "t": "card.usage", "at": at, "cardId": "restart", "input": 8, "cached": 1, "output": 1, "complete": true }),
+    ];
+    fs::write(dir.join("events.jsonl"), events.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+
+    let attempts_dir = home.join("runs").join("attempts");
+    fs::create_dir_all(&attempts_dir).unwrap();
+    let mut attempts = events[..10].to_vec();
+    attempts[0]["runId"] = json!("attempts");
+    fs::write(attempts_dir.join("events.jsonl"), attempts.iter().map(|e| format!("{e}\n")).collect::<String>()).unwrap();
+
+    let report = ok_json(o_in(&base, &base, "", &["tokens", "--json"]));
+    let runs = report["runs"].as_array().unwrap();
+    let attempts = runs.iter().find(|r| r["runId"] == "attempts").unwrap();
+    assert_eq!(attempts["incompleteCards"], json!(["missing"]), "only the unreported retry is incomplete");
+    let run = runs.iter().find(|r| r["runId"] == "retry").unwrap();
+    let cards = run["cards"].as_array().unwrap();
+    let card = |id| cards.iter().find(|c| c["cardId"] == id).unwrap();
+    assert_eq!(card("complete")["tokens"]["total"], 44);
+    assert_eq!(card("missing")["tokens"]["total"], 6);
+    assert_eq!(card("restart")["tokens"]["total"], 20);
+    assert_eq!(card("restart")["provider"], "multiple");
+    assert_eq!(run["tokens"]["total"], 70);
+    assert_eq!(run["incompleteCards"], json!(["complete", "missing", "restart"]));
+    assert!(report["summary"]["cachePercent"].is_null());
+    assert_eq!(report["compare"]["baseline"]["cards"], 3, "ambiguous restarts are excluded from comparisons");
+}
