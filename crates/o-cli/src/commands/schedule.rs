@@ -50,6 +50,8 @@ fn run(home: &Path, id: &str) -> Result<(), String> {
 
 fn check_result(events: &[LeadEvent], auto_dispatch: bool) -> Result<(), String> {
     if let Some(error) = events.iter().find_map(|event| match event { LeadEvent::Error { text, .. } => Some(text), _ => None }) { return Err(error.clone()); }
+    // A scheduled turn has no one to pick: the questions wait in the thread for the person.
+    if events.iter().any(|event| matches!(event, LeadEvent::Ask { .. })) { return Err("총괄이 사람에게 질문을 남겼습니다. 앱의 총괄 대화에서 답해 주세요".into()); }
     if auto_dispatch && !events.iter().any(|event| matches!(event, LeadEvent::Dispatch { .. })) {
         return Err(events.iter().rev().find_map(|event| match event { LeadEvent::AutoRun { reason, .. } => reason.clone(), _ => None }).unwrap_or_else(|| "분배할 설계가 생성되지 않았습니다".into()));
     }

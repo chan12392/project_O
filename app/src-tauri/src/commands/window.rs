@@ -59,6 +59,15 @@ pub async fn hide_main(app: AppHandle) -> Result<(), String> {
     app.get_webview_window(MAIN).ok_or("메인 창이 없습니다")?.hide().map_err(|e| e.to_string())
 }
 
+/// A question waits on the person: the taskbar button flashes while the main window is
+/// minimized or behind others (a window hidden in the tray has no button; its toast tells).
+#[tauri::command]
+pub async fn attention(app: AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window(MAIN).ok_or("메인 창이 없습니다")?;
+    if window.is_focused().unwrap_or(false) { return Ok(()); }
+    window.request_user_attention(Some(tauri::UserAttentionType::Critical)).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn quit_activity() -> Result<serde_json::Value, String> {
     super::blocking(|| quit_activity_in(&o_core::run::store::default_home())).await?

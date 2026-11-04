@@ -303,6 +303,7 @@ fn the_section_sits_between_the_task_and_the_team_channel() {
         "팀 대화 (실행 r9, 내 카드 c):",
         "- lead: 총괄",
         "시작할 때 한 번 받아 보고, 다른 카드가 알아야 할 결과나 막힌 점이 생기면 짧게 보내세요. 상대가 대기 중이거나 상태가 불명이면 답을 기다리며 자원을 점유하지 말고 총괄에 알리세요. 미완료 작업을 완료로 보고하지 마세요.",
+        "사람의 결정이 필요하면 --approval로 lead에게 요청하세요. 보기가 있으면 \"질문? [보기: A | B | C]\"처럼 끝에 적으면 사람이 골라 답합니다. 답은 받기로 확인합니다.",
     ]
     .join("\n");
     assert_eq!(card_prompt_with(&p.cards[0], &p, &TEAM, Some(section)), expected);

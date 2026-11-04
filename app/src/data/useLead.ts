@@ -5,6 +5,7 @@ import { createPoll } from "../../../src/core/poll.ts";
 import type { Backend, LeadDispatched } from "../platform/backend/index.ts";
 
 const POLL_MS = 2_000;
+const HIDDEN_POLL_MS = 15_000;
 
 export interface SendInput {
   provider: LeadProvider;
@@ -47,8 +48,9 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     const poll = createPoll({
       run: refresh,
       delay: POLL_MS,
-      hidden: () => document.hidden,
-      setTimer: (fn, ms) => window.setTimeout(fn, busyPoll.current ? 600 : ms),
+      // Hidden (minimized, in the tray) the thread is still read, slowly, so a question it asks can alert.
+      hidden: () => false,
+      setTimer: (fn, ms) => window.setTimeout(fn, document.hidden ? HIDDEN_POLL_MS : busyPoll.current ? 600 : ms),
       clearTimer: (id) => window.clearTimeout(id),
     });
     const onVisibility = () => poll.wake();

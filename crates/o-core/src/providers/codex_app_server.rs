@@ -635,6 +635,8 @@ mod tests {
         let line = stream_line(Event::Usage(usage[0].clone())).unwrap();
         let mut reader = crate::providers::StreamReader::new(crate::run::plan::ProviderId::Codex);
         assert!(reader.read(&line).iter().any(|signal| matches!(signal, crate::providers::StreamSignal::Usage { complete: false, .. })));
+        let mapped: Value = serde_json::from_str(&line).unwrap();
+        assert!(mapped["usage"]["cached_input_tokens"].is_null());
 
         let mut messages: Vec<Value> = input.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         messages[3]["params"]["tokenUsage"]["last"]["inputTokens"] = json!(101);

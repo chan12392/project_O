@@ -22,6 +22,28 @@ pub async fn run_followup(run: String, card: String, text: String) -> Result<ser
     }).await?
 }
 
+/// The person's answer to a card's question, sent as the lead on the run's team channel
+/// (`o msg send --run <run> --as lead --to <card>`); the message policy checks it as any.
+#[tauri::command]
+pub async fn run_reply(run: String, card: String, text: String, message_id: Option<String>) -> Result<(), String> {
+    blocking(move || reply(&store::default_home(), &run, &card, &text, message_id.as_deref())).await?
+}
+
+pub(super) fn reply(home: &Path, run: &str, card: &str, text: &str, message_id: Option<&str>) -> Result<(), String> {
+    use o_core::run::team::{self, Caller, Refused};
+    let caller = Caller { env_card: None, env_run: None, flag_run: Some(run.to_string()), flag_as: Some("lead".into()) };
+    let speaker = team::speaker(home, caller)?;
+    if !speaker.cards.iter().any(|c| c == card) { return Err(format!("이 실행에 없는 카드입니다: {card}")); }
+    if let Some(id) = message_id {
+        let messages = team::read(home, &speaker, true).map_err(|e| e.to_string())?;
+        if !messages.iter().any(|m| m.id == id && m.kind == "question" && m.from == card && m.to == "lead") { return Err("카드의 질문을 찾지 못했습니다".into()); }
+    }
+    team::send_reply(home, &speaker, card, text, false, None, message_id).map(|_| ()).map_err(|refused| match refused {
+        Refused::Policy(violations) => violations.into_iter().map(|v| v.message).collect::<Vec<_>>().join("\n"),
+        Refused::Io(error) => error.to_string(),
+    })
+}
+
 pub(super) fn start_followup(id: &str) -> std::io::Result<()> {
     let exe = super::o_binary().ok_or_else(|| std::io::Error::other("O CLI를 찾지 못했습니다"))?;
     let output = o_core::sys::proc::hide_window(std::process::Command::new(&exe).args(["about", "--json"])).output()?;

@@ -112,6 +112,10 @@ pub enum LeadEvent {
     Reply { at: String, provider: ProviderId, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] reported_files: Vec<String> },
     #[serde(rename = "lead.design")]
     Design { at: String, design: Value },
+    /// Questions for the person (an `o-ask` block) in place of an answer: the app asks them
+    /// as choices, and the next `lead.user` carries the picks. `intro` is the answer's prose.
+    #[serde(rename = "lead.ask")]
+    Ask { at: String, ask_id: String, provider: ProviderId, #[serde(default, skip_serializing_if = "String::is_empty")] intro: String, questions: Vec<prompt::AskQuestion> },
     /// A proposed plan with the project forced to the thread's and the policy check's result.
     #[serde(rename = "lead.plan")]
     Plan { at: String, plan_id: String, plan: Value, ok: bool, violations: Vec<Violation> },
@@ -542,6 +546,7 @@ fn turns_after(events: &[LeadEvent], seen: usize) -> Vec<(String, String)> {
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
+            LeadEvent::Ask { intro, questions, provider, .. } => Some((format!("총괄({provider})"), ask_text(intro, questions))),
             _ => None,
         })
         .collect()
@@ -552,11 +557,18 @@ fn worker_history(events: &[LeadEvent]) -> Vec<(String, String)> {
         LeadEvent::User { text, attachments, .. } => Some(("사용자".into(), if attachments.is_empty() { text.clone() } else { json!({"text":text,"attachments":attachments}).to_string() })),
         LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
         LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
+        LeadEvent::Ask { intro, questions, provider, .. } => Some((format!("총괄({provider})"), ask_text(intro, questions))),
         LeadEvent::Plan { .. } | LeadEvent::Design { .. } | LeadEvent::Dispatch { .. } | LeadEvent::Followup { .. }
         | LeadEvent::AutoRun { .. } | LeadEvent::Warning { .. } | LeadEvent::Error { .. } =>
             Some(("대화 상태 참고 기록".into(), serde_json::to_string(event).unwrap_or_default())),
         _ => None,
     }).collect()
+}
+
+/// Questions the lead asked, as a line of history for a session that did not see them.
+fn ask_text(intro: &str, questions: &[prompt::AskQuestion]) -> String {
+    let asked: Vec<String> = questions.iter().map(|q| format!("{} ({})", q.question, q.options.iter().map(|o| o.label.as_str()).collect::<Vec<_>>().join(" / "))).collect();
+    [intro.trim().to_string(), format!("[질문] {}", asked.join(" · "))].into_iter().filter(|s| !s.is_empty()).collect::<Vec<_>>().join("\n")
 }
 
 fn budget_lines(home: &Path) -> Vec<String> {
@@ -804,6 +816,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, .. } => Some(("총괄".to_string(), text.clone())),
+            LeadEvent::Ask { intro, questions, .. } => Some(("총괄".to_string(), ask_text(intro, questions))),
             _ => None,
         })
         .collect() };
@@ -1380,6 +1393,24 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let prose = if migrate {
         format!("결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작했습니다. 이전 대화는 최근 일부만 전달되었으며 캐시가 초기화될 수 있습니다.\n\n{prose}")
     } else { prose };
+    let (prose, ask) = prompt::split_ask(&prose);
+    match ask {
+        Ok(None) => {}
+        // Questions stand in for the answer: a plan, design or follow-up written beside them
+        // is not taken, since the person has not chosen yet (the lead is told not to mix them).
+        Ok(Some(questions)) => {
+            let asks = before.iter().filter(|e| matches!(e, LeadEvent::Ask { .. })).count();
+            emit(LeadEvent::Ask { at: now_iso(), ask_id: format!("{thread_id}-q{}", asks + 1), provider: req.provider, intro: prose, questions })?;
+            return Ok(added);
+        }
+        Err(message) => {
+            if !prose.is_empty() {
+                emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
+            }
+            emit(LeadEvent::Error { at: now_iso(), text: message })?;
+            return Ok(added);
+        }
+    }
     if !prose.is_empty() {
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
     }

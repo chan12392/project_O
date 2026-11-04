@@ -112,6 +112,7 @@ fn build_with_origin(input: &PromptInput, worker: bool) -> String {
         parts.push(YOLO_ROLE.to_string());
     }
     parts.push("Antigravity(agy)는 공급자 정책으로 사용할 수 없으니 작업에 배정하지 않습니다. 일반 질문과 단순 조사는 단일 총괄에서 답합니다. 설계가 바뀌면 합의된 전체 상태를 별도의 ```o-design 블록에 JSON {\"goal\":\"목표\",\"decisions\":[\"결정\"],\"questions\":[\"미결정\"]}으로 기록합니다. 분배할 작업이 구체화되면 o-plan으로 현재 작업 전체를 제안합니다. JSON 대신 o-plan 블록에 첫 줄 title: 제목, 다음 줄부터 [[codex]] id=작업id after=선행id 형식의 머리줄과 그 아래 작업 내용을 쓸 수도 있습니다. after는 선택입니다.".to_string());
+    parts.push(ASK_NOTE.to_string());
     if !input.resumed {
         parts.push(format!("프로젝트: {}", input.project));
     }
@@ -218,6 +219,87 @@ pub struct Followup {
     pub run: String,
     pub card: String,
     pub task: String,
+}
+
+/// The fence the lead puts questions for the person in: the app shows them as choices,
+/// and the lead's answer waits for the person's picks (the next turn carries them).
+pub const ASK_FENCE: &str = "o-ask";
+const ASK_QUESTIONS: usize = 4;
+const ASK_OPTIONS: (usize, usize) = (2, 6);
+
+/// What the lead is told about asking, on every turn (a resumed session may predate it).
+pub const ASK_NOTE: &str = "사람이 골라야 답이 정해지는 질문(범위·방식·우선순위 등)이 있으면 답이나 계획을 쓰기 전에 그 질문만 ```o-ask 블록 하나로 보내고 그 턴을 끝냅니다. 블록 앞에는 한두 줄만 씁니다. 형식: {\"questions\":[{\"header\":\"12자 이내 이름\",\"question\":\"질문\",\"options\":[{\"label\":\"보기\",\"description\":\"설명(선택)\"}],\"multi\":false}]}. 질문 1~4개, 보기 2~6개, 추천 보기는 맨 앞에 두고 label 끝에 (추천)을 붙입니다. 사람은 '기타'로 직접 적을 수도 있습니다. 같은 답에 o-plan·o-design·o-followup을 넣지 않습니다. 카드가 lead에게 보낸 질문은 앱이 사람에게 직접 보여 줍니다.";
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskOption {
+    pub label: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AskQuestion {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub header: Option<String>,
+    pub question: String,
+    pub options: Vec<AskOption>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub multi: bool,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AskBlock {
+    questions: Vec<AskQuestion>,
+}
+
+/// The answer without its question block, and the questions: `Ok(None)` when there is no
+/// block, an error when it is malformed, not closed, or there is more than one.
+pub fn split_ask(text: &str) -> (String, Result<Option<Vec<AskQuestion>>, String>) {
+    let open = format!("```{ASK_FENCE}");
+    let mut prose = Vec::new();
+    let mut body: Option<Vec<&str>> = None;
+    let mut found = None;
+    let mut other = None;
+    for line in text.lines() {
+        if body.is_none() && preserve_other_fence(line, &mut other, &open) { prose.push(line); continue; }
+        match body.as_mut() {
+            Some(lines) if top_level_fence(line, "```") => {
+                if found.is_some() { return (text.into(), Err("질문 블록은 하나만 허용됩니다".into())); }
+                found = Some(lines.join("\n"));
+                body = None;
+            }
+            Some(lines) => lines.push(line),
+            None if top_level_fence(line, &open) => body = Some(Vec::new()),
+            None => prose.push(line),
+        }
+    }
+    let prose = prose.join("\n").trim().to_string();
+    if body.is_some() { return (prose, Err("질문 블록이 닫히지 않았습니다".into())); }
+    let Some(found) = found else { return (prose, Ok(None)) };
+    (prose, parse_ask(&found).map(Some))
+}
+
+fn parse_ask(body: &str) -> Result<Vec<AskQuestion>, String> {
+    let malformed = || "질문 블록의 형식이 올바르지 않습니다".to_string();
+    // A bare array of questions is accepted too.
+    let questions = serde_json::from_str::<AskBlock>(body.trim()).map(|b| b.questions)
+        .or_else(|_| serde_json::from_str::<Vec<AskQuestion>>(body.trim()))
+        .map_err(|_| malformed())?;
+    let fits = |text: &str, chars: usize| !text.trim().is_empty() && js_len(text) <= chars;
+    let ok = (1..=ASK_QUESTIONS).contains(&questions.len())
+        && questions.iter().all(|q| {
+            fits(&q.question, 500)
+                && q.header.as_deref().is_none_or(|h| fits(h, 24))
+                && (ASK_OPTIONS.0..=ASK_OPTIONS.1).contains(&q.options.len())
+                && q.options.iter().all(|o| fits(&o.label, 80) && o.description.as_deref().is_none_or(|d| js_len(d) <= 300))
+        });
+    if !ok {
+        return Err(format!("질문은 1~{ASK_QUESTIONS}개, 보기는 질문마다 {}~{}개이고 글이 비어 있거나 너무 길면 안 됩니다", ASK_OPTIONS.0, ASK_OPTIONS.1));
+    }
+    Ok(questions)
 }
 
 /// Only a top-level, complete block can request a continuation; examples stay prose.
