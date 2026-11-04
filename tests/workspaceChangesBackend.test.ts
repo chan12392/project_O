@@ -9,11 +9,12 @@ test("desktop and development adapters return the same read-only changes", async
   const desktop = tauriBackend(async (name, args) => { calls.push([name, args]); return expected; });
   assert.deepEqual(await desktop.changes("run-1", "card-a"), expected);
   assert.deepEqual(calls, [["run_changes", { run: "run-1", card: "card-a" }]]);
+  const requests: string[] = [];
   const previous = globalThis.fetch;
-  globalThis.fetch = async (input) => { calls.push(String(input)); return new Response(JSON.stringify(expected)); };
+  globalThis.fetch = async (input) => { requests.push(String(input)); return new Response(JSON.stringify(expected)); };
   try {
     assert.deepEqual(await devBackend.changes("run-1", "card-a"), expected);
-    assert.equal(calls[1], "/api/changes?run=run-1&card=card-a");
+    assert.equal(requests[0], "/api/changes?run=run-1&card=card-a");
   } finally { globalThis.fetch = previous; }
 });
 
