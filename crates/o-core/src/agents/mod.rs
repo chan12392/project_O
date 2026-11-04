@@ -207,7 +207,11 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
     let mut argv = cli.prefix.clone();
     argv.extend(args.iter().map(|a| a.to_string()));
     let started = if clean {
-        clean::environment(root, provider).and_then(|env| proc::spawn_console(&cli.command, &argv, Some(&env), Some(&clean::profile_home(root, provider))))
+        #[cfg(target_os = "macos")]
+        let root = std::path::absolute(root);
+        #[cfg(not(target_os = "macos"))]
+        let root: std::io::Result<_> = Ok(root.to_path_buf());
+        root.and_then(|root| clean::environment(&root, provider).and_then(|env| proc::spawn_console(&cli.command, &argv, Some(&env), Some(&clean::profile_home(&root, provider)))))
     } else {
         proc::spawn_console(&cli.command, &argv, None, None)
     };
