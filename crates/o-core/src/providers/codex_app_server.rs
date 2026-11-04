@@ -142,24 +142,31 @@ fn drive(
                 }
                 "thread/tokenUsage/updated" => {
                     let usage = &message["params"]["tokenUsage"];
-                    if usage["total"].is_object() && usage["last"].is_object() {
-                        if usage_base.is_none() {
-                            let mut base = json!({});
-                            for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
-                                let total = usage["total"][key].as_u64().unwrap_or(0);
-                                let last = usage["last"][key].as_u64().unwrap_or(0);
-                                base[key] = json!(total.saturating_sub(last));
-                            }
-                            usage_base = Some(base);
+                    if usage_base.is_none() {
+                        let mut base = json!({});
+                        for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
+                            let total = usage["total"][key].as_u64();
+                            let last = usage["last"][key].as_u64();
+                            base[key] = json!(total.zip(last).and_then(|(total, last)| total.checked_sub(last)));
                         }
-                        usage_total = Some(usage["total"].clone());
+                        usage_base = Some(base);
                     }
+                    let mut total = json!({});
+                    for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
+                        let current = usage["total"][key].as_u64();
+                        let value = match &usage_total {
+                            Some(previous) => previous[key].as_u64().zip(current).and_then(|(old, new)| (new >= old).then_some(new)),
+                            None => current,
+                        };
+                        total[key] = json!(value);
+                    }
+                    usage_total = Some(total);
                 }
                 "turn/completed" => {
                     if let (Some(base), Some(total)) = (&usage_base, &usage_total) {
                         let mut usage = json!({});
                         for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
-                            usage[key] = json!(total[key].as_u64().unwrap_or(0).saturating_sub(base[key].as_u64().unwrap_or(0)));
+                            usage[key] = json!(total[key].as_u64().zip(base[key].as_u64()).and_then(|(total, base)| total.checked_sub(base)));
                         }
                         emit(Event::Usage(usage));
                     }
@@ -399,6 +406,36 @@ mod tests {
         run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).unwrap();
         let usage: Vec<_> = events.into_iter().filter_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).collect();
         assert_eq!(usage, [json!({"inputTokens":300,"cachedInputTokens":120,"outputTokens":30})]);
+    }
+
+    #[test]
+    fn invalid_usage_fields_remain_unknown_through_the_stream() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), session: Some("s"), ..Default::default() };
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":10,"outputTokens":3},"total":{"inputTokens":100,"cachedInputTokens":50,"outputTokens":10}}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":20,"cachedInputTokens":10,"outputTokens":1},"total":{"inputTokens":120,"cachedInputTokens":60,"outputTokens":9}}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":30,"cachedInputTokens":10,"outputTokens":3},"total":{"inputTokens":150,"cachedInputTokens":70,"outputTokens":12}}}}),
+            json!({"method":"turn/completed","params":{"threadId":"s","turn":{"id":"t","status":"completed"}}})]
+            .into_iter().map(|v| format!("{v}\n")).collect::<String>();
+        let mut events = Vec::new();
+        run(&turn, Cursor::new(&input), Vec::new(), |e| events.push(e)).unwrap();
+        let usage = events.into_iter().find_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).unwrap();
+        assert_eq!(usage, json!({"inputTokens":60,"cachedInputTokens":null,"outputTokens":null}));
+        let line = stream_line(Event::Usage(usage)).unwrap();
+        let mut reader = crate::providers::StreamReader::new(crate::run::plan::ProviderId::Codex);
+        assert!(reader.read(&line).iter().any(|signal| matches!(signal, crate::providers::StreamSignal::Usage { complete: false, .. })));
+
+        let mut messages: Vec<Value> = input.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        messages[3]["params"]["tokenUsage"]["last"]["inputTokens"] = json!(101);
+        let input: String = messages.iter().map(|message| format!("{message}\n")).collect();
+        let mut events = Vec::new();
+        run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).unwrap();
+        let usage = events.into_iter().find_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).unwrap();
+        assert!(usage["inputTokens"].is_null(), "a last value above the total has no valid baseline");
     }
 
     #[test]
