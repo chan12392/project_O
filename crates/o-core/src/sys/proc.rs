@@ -302,7 +302,12 @@ pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<Stri
     Ok(())
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<String, String>>, cwd: Option<&Path>) -> io::Result<()> {
+    super::macos_terminal::open(program, args, env, cwd)
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn spawn_console(program: &Path, args: &[String], env: Option<&BTreeMap<String, String>>, cwd: Option<&Path>) -> io::Result<()> {
     let mut command = Command::new(program);
     command.args(args);

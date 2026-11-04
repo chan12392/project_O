@@ -3,6 +3,8 @@
 //! and the mirror checkout sync.
 
 pub mod js;
+#[cfg(any(target_os = "macos", test))]
+mod macos_terminal;
 pub mod mirror;
 pub mod proc;
 pub mod resolve;
