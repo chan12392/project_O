@@ -25,6 +25,8 @@ pub const LEAD: Command = Command {
                              --mode yolo면 총괄이 파일을 고치고 명령을 실행 (주지 않으면 o yolo 설정, ADR-0014)
   o lead models --provider claude|codex|agy  총괄이 쓸 수 있는 모델 목록 JSON (CLI의 공식 목록·별칭)
   o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
+  o lead log-page --project <폴더> <runId> <SHA-256|-> <바이트 위치>  완료된 실행의 원본 로그 읽기(사람 전용)
+                             처음은 - 0, 다음에는 응답의 sha256과 nextOffset을 사용
   o lead note <threadId> -                  설계 주석 추가·삭제 (stdin JSON)
   o lead new --project <폴더>               새 대화 시작
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
@@ -40,6 +42,7 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
     match args.first().map(String::as_str) {
         Some("send") => send(home, rest),
         Some("show") => show(home, rest),
+        Some("log-page") => log_page(home, rest),
         Some("note") => note(home, rest),
         Some("new") => new(home, rest),
         Some("attach") => attach(home, rest),
@@ -48,6 +51,19 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("stop-all") => stop_all(home, rest),
         Some("models") => models(rest),
         _ => fail(LEAD.usage),
+    }
+}
+
+fn log_page(home: &Path, args: &[String]) -> i32 {
+    if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+        return fail("원본 로그는 사람만 읽을 수 있습니다");
+    }
+    let [flag, project, run, hash, offset] = args else { return fail("o lead log-page --project <폴더> <runId> <SHA-256|-> <바이트 위치>가 필요합니다") };
+    if flag != "--project" { return fail("--project가 필요합니다"); }
+    let Ok(offset) = offset.parse() else { return fail("바이트 위치가 올바르지 않습니다") };
+    match lead::log_page::read(home, project, run, hash, offset) {
+        Ok(page) => { println!("{}", json!(page)); 0 },
+        Err(error) => fail(&error),
     }
 }
 

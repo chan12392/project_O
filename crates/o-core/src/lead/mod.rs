@@ -19,6 +19,7 @@
 //! checked like any plan before it is stored, and again before it runs.
 
 pub mod files;
+pub mod log_page;
 pub mod notes;
 pub mod prompt;
 mod status_file;
@@ -435,7 +436,7 @@ struct StatusRecord {
     raw: Option<String>,
 }
 
-// shortcut: large histories are unavailable as a whole; upgrade to bounded on-demand paging.
+// shortcut: source histories over these limits need a streaming event index.
 const MAX_STATUS_RUNS: usize = 128;
 const MAX_STATUS_BYTES: usize = 8 * 1024 * 1024;
 const MAX_STATUS_LINES: usize = 4096;
@@ -517,11 +518,58 @@ fn write_status_index(home: &Path, thread: &str, records: Vec<StatusRecord>) -> 
     for record in &records {
         if let Some(raw) = &record.raw {
             parts = parts.saturating_add(raw.chars().count().div_ceil(512).max(1));
-            if parts > MAX_STATUS_PARTS { return Err(io::Error::other("실행 결과 원문 조각 수가 안전 상한을 초과하여 제공할 수 없습니다")); }
         }
     }
     let mut guard = status_file::create(home, thread)?;
     let mut index = String::new();
+    if parts > MAX_STATUS_PARTS {
+        use sha2::{Digest, Sha256};
+        let mut pages = String::new();
+        let mut rows = Vec::new();
+        let mut page_line = 1usize;
+        for mut record in records {
+            if let Some(raw) = record.raw.take() {
+                let first = page_line;
+                let mut start = 0;
+                while start < raw.len() {
+                    let mut end = (start + 256).min(raw.len());
+                    while !raw.is_char_boundary(end) { end -= 1; }
+                    pages.push_str(&serde_json::to_string(&raw[start..end]).map_err(io::Error::other)?);
+                    pages.push('\n');
+                    page_line += 1;
+                    start = end;
+                }
+                record.meta["pageStart"] = json!(first);
+                record.meta["pageCount"] = json!(page_line - first);
+                record.meta["sha256"] = json!(format!("{:x}", Sha256::digest(raw.as_bytes())));
+                record.meta["format"] = json!("json-string-lines");
+            }
+            rows.push(record.meta);
+        }
+        let path = guard.put(pages.as_bytes())?;
+        drop(pages);
+        let mut reader = BufReader::new(fs::File::open(&path)?);
+        for row in &rows {
+            if let Some(count) = row.get("pageCount").and_then(Value::as_u64) {
+                let mut digest = Sha256::new();
+                for _ in 0..count {
+                    let mut line = String::new();
+                    if reader.read_line(&mut line)? == 0 || line.len() > 1539 { return Err(io::Error::other("결과 페이지가 불완전합니다")); }
+                    let decoded: String = serde_json::from_str(&line).map_err(io::Error::other)?;
+                    digest.update(decoded.as_bytes());
+                }
+                if row["sha256"].as_str() != Some(&format!("{:x}", digest.finalize())) { return Err(io::Error::other("결과 페이지의 해시가 일치하지 않습니다")); }
+            }
+        }
+        if reader.fill_buf()?.first().is_some() { return Err(io::Error::other("결과 페이지에 예상하지 못한 내용이 있습니다")); }
+        for mut row in rows {
+            if row.get("pageStart").is_some() { row["file"] = json!(path.to_string_lossy()); }
+            index.push_str(&serde_json::to_string(&row).map_err(io::Error::other)?);
+            index.push('\n');
+        }
+        guard.path = guard.put(index.as_bytes())?;
+        return Ok(guard);
+    }
     for record in records {
         if let Some(raw) = record.raw {
             // Read tools may truncate long lines; parts preserve the exact text when concatenated.
@@ -621,11 +669,24 @@ mod status_tests {
     }
 
     #[test]
-    fn too_many_result_parts_are_refused_before_creating_files() {
-        let home = std::env::temp_dir().join(format!("o-limit-{}-{}", std::process::id(), now_iso().replace(':', "-")));
-        let records = vec![StatusRecord { meta: json!({"type":"unknown"}), raw: Some("가".repeat(512 * MAX_STATUS_PARTS + 1)) }];
-        assert!(write_status_index(&home, "thread", records).err().unwrap().to_string().contains("상한"));
-        assert!(!super::files::files_root(&home).exists());
+    #[cfg(windows)]
+    fn many_result_parts_are_paged_in_one_file() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("o-page-{}-{stamp}", std::process::id()));
+        std::fs::create_dir_all(&base).unwrap();
+        let home = base.join("state");
+        let raw = "가\n\\".repeat(512 * MAX_STATUS_PARTS + 1);
+        let records = vec![StatusRecord { meta: json!({"type":"unknown"}), raw: Some(raw.clone()) }];
+        let guard = write_status_index(&home, "thread", records).unwrap();
+        let index = std::fs::read_to_string(&guard.path).unwrap();
+        let row: Value = serde_json::from_str(index.trim()).unwrap();
+        let path = row["file"].as_str().unwrap();
+        let pages = std::fs::read_to_string(path).unwrap();
+        let joined: String = pages.lines().map(|line| { assert!(line.len() <= 1538); serde_json::from_str::<String>(line).unwrap() }).collect();
+        assert_eq!(joined, raw);
+        assert_eq!(row["sha256"], crate::run::result::digest(&raw));
+        assert!(std::fs::write(path, b"changed").is_err());
+        assert_eq!(std::fs::read_dir(base.join("state-lead/thread")).unwrap().count(), 2);
     }
 }
 

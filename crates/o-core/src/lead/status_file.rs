@@ -50,13 +50,12 @@ fn plain_file(file: &std::fs::File) -> io::Result<bool> {
 }
 
 #[cfg(windows)]
-pub fn read_events(home: &Path, run_id: &str) -> io::Result<Option<String>> {
-    use std::io::Read;
+pub(super) fn open_events(home: &Path, run_id: &str) -> io::Result<Option<(std::fs::File, Vec<std::fs::File>)>> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
     if !crate::run::store::is_run_id(run_id) { return Err(io::Error::other("실행 ID가 올바르지 않습니다")); }
     let dir = std::path::absolute(crate::run::store::run_dir(home, run_id))?;
-    let _parents = match protect_dirs(&dir, &[]) {
+    let parents = match protect_dirs(&dir, &[]) {
         Ok(parents) => parents,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
@@ -69,6 +68,13 @@ pub fn read_events(home: &Path, run_id: &str) -> io::Result<Option<String>> {
     if !plain_file(&file)? {
         return Err(io::Error::other("실행 기록이 링크이거나 파일 소유를 확인하지 못했습니다"));
     }
+    Ok(Some((file, parents)))
+}
+
+#[cfg(windows)]
+pub fn read_events(home: &Path, run_id: &str) -> io::Result<Option<String>> {
+    use std::io::Read;
+    let Some((file, _parents)) = open_events(home, run_id)? else { return Ok(None) };
     if file.metadata()?.len() > MAX_LOG_BYTES { return Err(io::Error::other("실행 기록이 안전한 읽기 상한을 초과했습니다")); }
     let mut bytes = Vec::new();
     file.take(MAX_LOG_BYTES + 1).read_to_end(&mut bytes)?;

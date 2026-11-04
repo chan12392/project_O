@@ -243,7 +243,7 @@ fn unavailable_result_record_does_not_block_the_lead() {
 
 #[cfg(windows)]
 #[test]
-fn oversized_result_warns_and_keeps_the_successful_reply() {
+fn large_result_is_paged_for_the_read_only_lead() {
     use std::io::Write;
     let (home, project) = fixture();
     let thread = lead::thread_for(&home, &project, false).unwrap();
@@ -254,20 +254,32 @@ fn oversized_result_warns_and_keeps_the_successful_reply() {
     std::fs::write(&source_path, &source).unwrap();
     let log = lead::thread_dir(&home, &thread).join("events.jsonl");
     writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"large", "clean":false})).unwrap();
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let expected = source.clone();
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
         let prompt = spec.stdin.as_ref().unwrap();
-        assert!(prompt.contains("상한"));
+        assert!(prompt.contains("json-string-lines"));
         assert!(prompt.contains("추측하지"));
+        let i = spec.args.iter().position(|a| a == "--add-dir").unwrap();
+        let paths = std::fs::read_dir(&spec.args[i + 1])?.map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
+        let index = paths.iter().find_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            text.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).find(|v| v["format"] == "json-string-lines")
+        }).unwrap();
+        let pages = std::fs::read_to_string(index["file"].as_str().unwrap())?;
+        let start = index["pageStart"].as_u64().unwrap() as usize - 1;
+        let count = index["pageCount"].as_u64().unwrap() as usize;
+        let reconstructed: String = pages.lines().skip(start).take(count).map(|line| serde_json::from_str::<String>(line).unwrap()).collect();
+        assert_eq!(reconstructed, expected);
+        assert_eq!(index["sha256"], o_core::run::result::digest(&expected));
         let mut command = Command::new(std::env::current_exe()?);
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
         Ok(command)
     };
     let events = lead::send(&home, &request(&project), &spawner).unwrap();
-    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("상한"))));
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("상태 확인 불가"))));
     assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Reply { text, .. } if text.contains("확인했습니다"))));
     assert!(!events.iter().any(|e| matches!(e, lead::LeadEvent::Error { .. })));
     assert_eq!(std::fs::read_to_string(source_path).unwrap(), source);
-    assert!(!lead::files::files_root(&home).exists());
 }
 
 #[cfg(windows)]
