@@ -490,3 +490,80 @@ fn snapshot_copy_base(root: &Path, source: &Path) -> io::Result<Snapshot> {
     }
     Ok(original)
 }
+
+/// A read-only inventory for review; it does not establish that applying changes is safe.
+pub fn review_changes(home: &Path, run_id: &str, card_id: &str) -> io::Result<serde_json::Value> {
+    use crate::run::{events::OEvent, store};
+    if !store::is_run_id(run_id) { return Err(io::Error::other("올바르지 않은 실행 ID")); }
+    let dir = store::run_dir(home, run_id);
+    if !dir.join("isolated-worktrees").is_file() { return Err(io::Error::other("분리된 실행이 아닙니다")); }
+    let plan = store::read_plan(home, run_id)?;
+    let ids = store::plan_card_ids(&plan)?;
+    let index = ids.iter().position(|id| id == card_id).ok_or_else(|| io::Error::other("카드를 찾지 못했습니다"))?;
+    let name = home.file_name().ok_or_else(|| io::Error::other("O 상태 폴더가 올바르지 않습니다"))?.to_string_lossy();
+    let parent = PathBuf::from(resolved_path(&home.with_file_name(format!("{name}-worktrees")).to_string_lossy()));
+    let run = parent.join(run_id);
+    let checkout = run.join((index + 1).to_string());
+    if Path::new(&resolved_path(&run.to_string_lossy())) != run || Path::new(&resolved_path(&checkout.to_string_lossy())) != checkout {
+        return Err(io::Error::other("작업 폴더 경로가 변경되었습니다"));
+    }
+    let workspace = store::read_events(home, run_id).into_iter().rev().find_map(|event| match event {
+        OEvent::CardTool { card_id: id, name, summary, .. } if id == card_id && name == "O 작업 폴더" => Some(PathBuf::from(summary)),
+        _ => None,
+    }).ok_or_else(|| io::Error::other("카드 작업 폴더 기록이 없습니다"))?;
+    if !workspace.is_dir() || Path::new(&resolved_path(&workspace.to_string_lossy())) != workspace || !workspace.starts_with(&checkout) {
+        return Err(io::Error::other("카드 작업 폴더가 변경되었습니다"));
+    }
+    let baseline: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("workspace-baseline.json"))?).map_err(io::Error::other)?;
+    if let Some(commit) = baseline.get("gitCommit").and_then(|v| v.as_str()) {
+        if !matches!(commit.len(), 40 | 64) || !commit.bytes().all(|c| c.is_ascii_hexdigit()) {
+            return Err(io::Error::other("Git 기준 커밋이 올바르지 않습니다"));
+        }
+        let output = |args: &[&str]| -> io::Result<Vec<u8>> {
+            let mut command = Command::new("git");
+            command.current_dir(&workspace).args(["-c", "core.fsmonitor=false"]).args(args).env("GIT_OPTIONAL_LOCKS", "0")
+                .env_remove("GIT_DIR").env_remove("GIT_WORK_TREE").env_remove("GIT_INDEX_FILE");
+            proc::hide_window(&mut command);
+            let out = command.output()?;
+            if !out.status.success() { return Err(io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string())); }
+            Ok(out.stdout)
+        };
+        let top = output(&["rev-parse", "--show-toplevel"])?;
+        let top = std::str::from_utf8(&top).map_err(io::Error::other)?.trim_end_matches(['\r', '\n']);
+        if Path::new(&resolved_path(top)) != checkout { return Err(io::Error::other("Git 작업 폴더가 변경되었습니다")); }
+        let list = |args: &[&str]| -> io::Result<Vec<String>> {
+            output(args)?.split(|b| *b == 0).filter(|v| !v.is_empty())
+                .map(|v| std::str::from_utf8(v).map(str::to_string).map_err(io::Error::other)).collect()
+        };
+        let collect = || -> io::Result<serde_json::Value> {
+            let changed = list(&["diff", "--relative", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", commit, "--", "."])?;
+            let staged = list(&["diff", "--relative", "--cached", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "--", "."])?;
+            let unstaged = list(&["diff", "--relative", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", "--", "."])?;
+            let unmerged = list(&["diff", "--relative", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--diff-filter=U", "--", "."])?;
+            let untracked = list(&["ls-files", "--others", "--exclude-standard", "-z", "--", "."])?;
+            let ignored = list(&["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "."])?;
+            Ok(serde_json::json!({"changed":changed,"staged":staged,"unstaged":unstaged,"unmerged":unmerged,"untracked":untracked,"ignored":ignored}))
+        };
+        let changes = collect()?;
+        if changes != collect()? { return Err(io::Error::other("변경 목록을 읽는 중 작업 폴더가 바뀌었습니다")); }
+        Ok(serde_json::json!({"workspace":workspace,"gitCommit":commit,"changes":changes,"note":"Git의 인덱스 표시 설정에 따라 숨겨진 변경이 있을 수 있습니다. 원본 적용의 안전성은 별도로 확인해야 합니다."}))
+    } else {
+        let base = run.join("base");
+        if Path::new(&resolved_path(&base.to_string_lossy())) != base { return Err(io::Error::other("기준 복사본 경로가 변경되었습니다")); }
+        let recorded = baseline.get("copyPath").and_then(|v| v.as_str()).ok_or_else(|| io::Error::other("복사본 기준 정보가 없습니다"))?;
+        if Path::new(recorded) != base || workspace != checkout { return Err(io::Error::other("복사본 경로가 변경되었습니다")); }
+        let before = snapshot(&base, false)?;
+        let after = snapshot(&workspace, true)?;
+        if before != snapshot(&base, false)? || after != snapshot(&workspace, true)? {
+            return Err(io::Error::other("변경 목록을 읽는 중 복사본이 바뀌었습니다"));
+        }
+        let names: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
+        let mut changed = Vec::new();
+        for path in names {
+            if before.get(path) != after.get(path) {
+                changed.push(serde_json::json!({"path": path.to_str().ok_or_else(|| io::Error::other("UTF-8이 아닌 경로가 있습니다"))?, "kind": if !before.contains_key(path) { "added" } else if !after.contains_key(path) { "deleted" } else { "modified" }}));
+            }
+        }
+        Ok(serde_json::json!({"workspace":workspace,"copyBase":base,"changes":changed,"note":"기준 복사본은 수정될 수 있습니다. 원본 적용의 안전성은 별도로 확인해야 합니다."}))
+    }
+}

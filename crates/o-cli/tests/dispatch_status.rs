@@ -23,6 +23,49 @@ fn status_shows_the_complete_isolated_workspace_path() {
 
 #[cfg(windows)]
 #[test]
+fn changes_reports_git_index_worktree_untracked_and_ignored() {
+    let root = std::env::temp_dir().join(format!("o-changes-git-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+    fs::create_dir(&root).unwrap();
+    assert!(root.canonicalize().unwrap().starts_with(std::env::temp_dir().canonicalize().unwrap()));
+    assert!(root.ancestors().all(|path| !path.join(".git").exists()));
+    let run = root.join("project_O/runs/run-1");
+    let workspace = root.join("project_O-worktrees/run-1/1");
+    fs::create_dir_all(&run).unwrap();
+    fs::create_dir_all(&workspace).unwrap();
+    let git = |args: &[&str]| {
+        let out = Command::new("git").current_dir(&workspace).args(args).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
+    };
+    git(&["init", "--quiet"]);
+    fs::write(workspace.join("tracked.txt"), "original").unwrap();
+    fs::write(workspace.join(".gitignore"), "ignored.txt\n").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "base"]);
+    let commit = git(&["rev-parse", "HEAD"]);
+    fs::write(workspace.join("tracked.txt"), "staged").unwrap();
+    git(&["add", "tracked.txt"]);
+    fs::write(workspace.join("tracked.txt"), "unstaged").unwrap();
+    fs::write(workspace.join("new.txt"), "new").unwrap();
+    fs::write(workspace.join("ignored.txt"), "ignored").unwrap();
+    fs::write(run.join("plan.json"), serde_json::json!({"cards":[{"id":"a"}]}).to_string()).unwrap();
+    fs::write(run.join("isolated-worktrees"), "").unwrap();
+    fs::write(run.join("workspace-baseline.json"), serde_json::json!({"gitCommit":commit}).to_string()).unwrap();
+    let workspace = o_core::run::store::resolved_path(&workspace.to_string_lossy());
+    fs::write(run.join("events.jsonl"), format!("{}\n", serde_json::json!({"t":"card.tool","at":"2026-01-01T00:00:00Z","cardId":"a","name":"O 작업 폴더","summary":workspace}))).unwrap();
+    let out = Command::new(env!("CARGO_BIN_EXE_o")).args(["changes", "run-1", "a"]).env("LOCALAPPDATA", &root).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    for (field, name) in [("changed", "tracked.txt"), ("staged", "tracked.txt"), ("unstaged", "tracked.txt"), ("untracked", "new.txt"), ("ignored", "ignored.txt")] {
+        assert!(result["changes"][field].as_array().unwrap().contains(&serde_json::json!(name)), "{field}: {result}");
+    }
+    assert_eq!(fs::read_to_string(std::path::Path::new(&workspace).join("tracked.txt")).unwrap(), "unstaged");
+    let blocked = Command::new(env!("CARGO_BIN_EXE_o")).args(["changes", "run-1", "a"]).env("LOCALAPPDATA", &root).env("O_AGENT_ROLE", "card").output().unwrap();
+    assert_eq!(blocked.status.code(), Some(2));
+}
+
+#[cfg(windows)]
+#[test]
 fn dispatch_creates_isolated_copy_before_starting_the_fake_cli() {
     use std::{io::Write, process::Stdio, time::{Duration, Instant}};
     let base = std::env::temp_dir().join(format!("o-cli-dispatch-isolated-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
@@ -81,4 +124,17 @@ fn dispatch_creates_isolated_copy_before_starting_the_fake_cli() {
     assert_eq!(std::path::Path::new(baseline).canonicalize().unwrap(), base.join("project_O-worktrees").join(id).join("base").canonicalize().unwrap());
     assert!(status.contains(baseline));
     assert!(status.contains("자동 반영되지 않습니다"));
+    fs::remove_file(path.join("original.txt")).unwrap();
+    fs::write(path.join("new.txt"), "result").unwrap();
+    let changes = Command::new(cli).args(["changes", id, "a"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    assert!(changes.status.success(), "{}", String::from_utf8_lossy(&changes.stderr));
+    let changes: serde_json::Value = serde_json::from_slice(&changes.stdout).unwrap();
+    let entries = changes["changes"].as_array().unwrap();
+    assert!(entries.contains(&serde_json::json!({"path":"original.txt","kind":"deleted"})));
+    assert!(entries.contains(&serde_json::json!({"path":"new.txt","kind":"added"})));
+    assert_eq!(fs::read_to_string(project.join("original.txt")).unwrap(), "unchanged");
+    fs::write(base.join("project_O/runs").join(id).join("workspace-baseline.json"), serde_json::json!({"copyPath":project}).to_string()).unwrap();
+    let invalid = Command::new(cli).args(["changes", id, "a"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    assert!(!invalid.status.success());
+    assert!(invalid.stdout.is_empty());
 }
