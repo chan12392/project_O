@@ -12,6 +12,7 @@ import { Markdown } from "./Markdown.tsx";
 import { ImageScope } from "./ImageGallery.tsx";
 import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
 import { openQuestions } from "./QuestionDialog.tsx";
+import { LiveWork, WorkList } from "./LeadWork.tsx";
 
 /** Thread events may name an agent this build does not know; it shows as its id. */
 const LEAD_NAME: Record<string, string> = NAMES;
@@ -63,6 +64,8 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
           </Notice>
         )}
         {lead.items.map((item, i) => (
+          // The running turn's work shows live below; once answered it folds above the answer.
+          item.kind === "work" && answering && i > lastUser ? null :
           <Item key={`${threadId}-${item.kind}-${item.at}-${i}`} item={item} animate={Boolean(item.kind === "reply" && threadId && known && known.thread === threadId && !known.replies.has(`${item.at}-${i}`))} />
         ))}
         {answering && lead.thread?.partial && <div aria-label="작성 중인 답변"><Markdown text={lead.thread.partial} /></div>}
@@ -81,9 +84,11 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
         {answering && (
           <div role="status" className="space-y-1 text-xs text-chat-foreground-faint">
             {progressSummary && <p className="flex items-center gap-1.5"><Wrench className="size-3 shrink-0" aria-hidden="true" /><span>{progressSummary}</span></p>}
-            {(lead.thread?.progress ?? []).map((step, i) => (
-              <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
-            ))}
+            {(lead.thread?.steps?.length ?? 0) > 0 || (lead.thread?.approvals?.length ?? 0) > 0
+              ? <LiveWork steps={lead.thread?.steps ?? []} waiting={lead.thread?.approvals?.length ?? 0} />
+              : (lead.thread?.progress ?? []).map((step, i) => (
+                <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
+              ))}
             <p>총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…</p>
           </div>
         )}
@@ -165,6 +170,8 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           )}
         </article>
       );
+    case "work":
+      return <WorkList entries={item.entries} />;
     case "followup":
       return <p role="status" className="text-xs text-chat-foreground-faint">{item.cardId} 에이전트의 후속 지시를 접수했습니다 · {item.runId}</p>;
     case "plan":

@@ -22,6 +22,7 @@ import { readParams, writeParam, type PanelView, type ScreenState } from "../dat
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadThread } from "../features/chat/LeadThread.tsx";
+import { LeadApprovalCard } from "../features/chat/LeadApprovalCard.tsx";
 import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
@@ -443,6 +444,7 @@ function MainWindow() {
               />
             </div>
           )}
+          {live && state !== "error" && <div className="shrink-0 bg-chat-canvas px-6"><LeadApprovalCard lead={lead} /></div>}
           <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
         </section>
         )}

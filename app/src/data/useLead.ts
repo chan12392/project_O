@@ -97,6 +97,15 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     await refresh();
   }, [api, project, refresh]);
 
+  /** The person's 허용/거부 for one waiting action; the card shows the next one after the refresh. */
+  const decide = useCallback(async (id: string, allow: boolean) => {
+    try {
+      await api.leadDecide(id, allow);
+    } finally {
+      await refresh();
+    }
+  }, [api, refresh]);
+
   const startNew = useCallback(async () => {
     if (!project) return;
     await api.leadNew(project);
@@ -128,6 +137,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     send,
     stop,
     stopAll,
+    decide,
     startNew,
     dispatch,
     changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {

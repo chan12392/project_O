@@ -16,6 +16,44 @@ export interface LeadAttachment {
 export type LeadViolation = Violation;
 
 export interface LeadProgressCounts { reads: number; searches: number; edits: number; commands: number }
+
+/** One step of a turn (crates/o-core/src/lead/steps.rs `Step`): live in `thread.steps`, finished ones as `lead.step`. */
+export interface LeadStep {
+  id: string;
+  /** read · search · run · edit · web · other (an unknown kind shows as other). */
+  kind: string;
+  label: string;
+  file?: string;
+  added?: number;
+  removed?: number;
+  /** running · done · failed · denied · incomplete. */
+  status: string;
+}
+
+export interface LeadApprovalFile { path: string; added?: number; removed?: number; diff?: string }
+
+/**
+ * An action a normal-mode lead waits on (crates/o-core/src/lead/approvals.rs): what it asks,
+ * as the CLI sent it (`detail`, data), until `expires`. Only the person's 허용/거부 decides it.
+ */
+export interface LeadApproval {
+  id: string;
+  at: string;
+  expires: string;
+  provider: ProviderId;
+  kind: "command" | "file" | "web" | "other";
+  tool: string;
+  summary: string;
+  detail?: string;
+  cwd?: string | null;
+  reason?: string | null;
+  files?: LeadApprovalFile[];
+}
+
+/** One line of a turn's work list: a step, or an approval and what became of it. */
+export type LeadWorkEntry =
+  | { type: "step"; step: LeadStep }
+  | { type: "approval"; id: string; kind: LeadApproval["kind"]; summary: string; files: LeadApprovalFile[]; decision?: string; by?: string; reason?: string };
 export interface DesignNote { id: string; quote: string; anchor?: string; occurrence?: number; tag: string; text: string; sent: boolean }
 export type DesignNoteChange = { op: "add" | "update"; note: DesignNote } | { op: "delete"; id: string };
 
@@ -78,11 +116,15 @@ export type LeadEvent =
   | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
   | { t: "lead.warning" | "lead.error"; at: string; text: string }
   /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
-  | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number };
+  | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number }
+  | ({ t: "lead.approval" } & LeadApproval)
+  /** allow · deny · timeout · stopped, by user · guard · timeout · stop · o. */
+  | { t: "lead.decision"; at: string; id: string; decision: string; by: string; reason?: string }
+  | ({ t: "lead.step"; at: string } & LeadStep);
 
 /** What `o lead show --json` prints. `unknown` means a previous turn's exit is unconfirmed. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | "starting" | "unknown" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | "unknown" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; steps?: LeadStep[]; approvals?: LeadApproval[]; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
 }
 
@@ -127,6 +169,8 @@ export type LeadItem =
   | { kind: "worker"; at: string; runId: string; cardId: string; text: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { kind: "followup"; at: string; cardId: string; runId: string }
+  /** A turn's steps and approvals, kept above its answer ("작업 n단계"). */
+  | { kind: "work"; at: string; entries: LeadWorkEntry[] }
   /** `answered`: a message followed it (the picks, or something the person wrote instead). */
   | { kind: "ask"; at: string; askId: string; provider: ProviderId; intro: string; questions: AskQuestion[]; answered: boolean }
   | {
@@ -147,14 +191,36 @@ export type LeadItem =
 /** Folds a thread's events into chat items; a dispatch marks its plan with the run it started. */
 export function leadItems(events: readonly { t: string }[]): LeadItem[] {
   const items: LeadItem[] = [];
+  // The turn's work list: one per turn, made by its first step or approval.
+  let work: Extract<LeadItem, { kind: "work" }> | undefined;
+  const workOf = (at: string) => {
+    if (!work) { work = { kind: "work", at, entries: [] }; items.push(work); }
+    return work;
+  };
   for (const raw of events) {
     const e = raw as LeadEvent;
     switch (e.t) {
+      case "lead.step":
+        if (typeof e.id === "string" && typeof e.label === "string") {
+          workOf(e.at).entries.push({ type: "step", step: { id: e.id, kind: String(e.kind), label: e.label, file: e.file, added: e.added, removed: e.removed, status: String(e.status) } });
+        }
+        break;
+      case "lead.approval":
+        if (typeof e.id === "string") workOf(e.at).entries.push({ type: "approval", id: e.id, kind: e.kind, summary: String(e.summary ?? ""), files: Array.isArray(e.files) ? e.files : [] });
+        break;
+      case "lead.decision":
+        for (const item of items) {
+          if (item.kind !== "work") continue;
+          for (const entry of item.entries) if (entry.type === "approval" && entry.id === e.id) Object.assign(entry, { decision: e.decision, by: e.by, reason: e.reason });
+        }
+        break;
       case "lead.user":
+        work = undefined;
         for (const item of items) if (item.kind === "ask") item.answered = true;
         items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
         break;
       case "lead.worker":
+        work = undefined;
         items.push({ kind: "worker", at: e.at, runId: e.runId, cardId: e.cardId, text: e.text });
         break;
       case "lead.reply":
