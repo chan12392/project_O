@@ -201,6 +201,7 @@ pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String>
     if let Some(id) = current.get(&key).filter(|id| !fresh && is_run_id(id)) {
         return Ok(id.clone());
     }
+    check_project_turns(home, project, None, false).map_err(io::Error::other)?;
     let thread_id = new_run_id(Utc::now());
     fs::create_dir_all(thread_dir(home, &thread_id))?;
     append(home, &thread_id, &LeadEvent::Start { at: now_iso(), thread_id: thread_id.clone(), project: project.to_string() })?;
@@ -300,6 +301,30 @@ fn running(home: &Path, thread_id: &str) -> Option<Busy> {
         Err(fs::TryLockError::Error(_)) => return None,
     }
     Some(Busy { marker: read_marker(home, thread_id) })
+}
+
+// Called under current.lock; never wait for a turn lock while holding it.
+fn check_project_turns(home: &Path, project: &str, except: Option<&str>, block_busy: bool) -> Result<(), String> {
+    let entries = fs::read_dir(leads_dir(home)).map_err(|e| e.to_string())?;
+    for entry in entries {
+        let id = entry.map_err(|e| e.to_string())?.file_name().to_string_lossy().into_owned();
+        if !is_run_id(&id) || except == Some(id.as_str()) { continue; }
+        let lock = turn_lock(home, &id).map_err(|e| e.to_string())?;
+        let busy = match lock.try_lock() {
+            Ok(()) => false,
+            Err(fs::TryLockError::WouldBlock) => true,
+            Err(fs::TryLockError::Error(e)) => return Err(e.to_string()),
+        };
+        let unresolved = read_marker(home, &id).is_some_and(|m| m.unresolved == Some(true));
+        if !unresolved && !(busy && block_busy) { continue; }
+        let Some(owner_project) = thread_project(&read_thread(home, &id)) else {
+            return Err("실행 중이거나 종료 상태가 불명인 총괄의 프로젝트를 확인할 수 없습니다".into());
+        };
+        if project_key(&owner_project) == project_key(project) {
+            return Err(if unresolved { "이전 총괄의 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요" } else { BUSY }.into());
+        }
+    }
+    Ok(())
 }
 
 /// Holds a thread's one turn: an OS lock on `turn.lock` that only one holder gets, and the
@@ -591,6 +616,7 @@ pub fn retry_card(home: &Path, run_id: &str, message_id: &str) -> Result<&'stati
     let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
     current.lock().map_err(|e| e.to_string())?;
     let thread_id = current_thread(home, &plan.project).ok_or("현재 총괄 대화가 없습니다")?;
+    check_project_turns(home, &plan.project, None, true)?;
     let turn = turn_lock(home, &thread_id).map_err(|e| e.to_string())?;
     turn.try_lock().map_err(|_| "총괄이 응답 중입니다. 완료 후 상태를 확인하세요")?;
     if !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. } if id == run_id)) {
@@ -612,7 +638,14 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         Some(w) => w.thread_id.to_string(),
         None => thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?,
     };
+    let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+    current.lock().map_err(|e| e.to_string())?;
+    if read_current(home).map_err(|e| e.to_string())?.get(&project_key(req.project)) != Some(&thread_id) {
+        return Err("새 대화로 전환되어 총괄을 시작하지 않았습니다".into());
+    }
+    check_project_turns(home, req.project, Some(&thread_id), true)?;
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
+    drop(current);
     if let Some(w) = &worker {
         if req.yolo || store::stop_requested(home, &w.speaker.run_id) || current_thread(home, req.project).as_deref() != Some(&thread_id)
             || !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if run_id == &w.speaker.run_id)) {
@@ -1276,6 +1309,7 @@ fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, String> {
     lock.lock().map_err(|e| e.to_string())?;
     let events = read_thread(home, thread_id);
     let project = thread_project(&events).ok_or_else(|| "총괄 대화를 찾지 못했습니다".to_string())?;
+    check_project_turns(home, &project, Some(thread_id), true)?;
     let latest = events.iter().rev().find_map(|event| match event {
         LeadEvent::Plan { plan_id, .. } => Some(Some(plan_id.as_str())),
         LeadEvent::User { .. } => Some(None),

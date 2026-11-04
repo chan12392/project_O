@@ -5,6 +5,56 @@ use o_core::lead::{self, LeadEvent, SendRequest};
 use o_core::run::plan::ProviderId;
 
 #[test]
+fn unresolved_turn_blocks_new_thread_only_for_its_project() {
+    let root = std::env::temp_dir().join(format!("o-lead-unresolved-{}", std::process::id()));
+    let home = root.join("home");
+    let project = root.join("project").to_string_lossy().into_owned();
+    let other = root.join("other").to_string_lossy().into_owned();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    std::fs::write(lead::thread_dir(&home, &thread).join("running.json"),
+        r#"{"provider":"claude","owner":1,"token":"test","unresolved":true}"#).unwrap();
+    assert!(lead::thread_for(&home, &project, true).is_err());
+    assert!(lead::thread_for(&home, &other, true).is_ok());
+    assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(thread.as_str()));
+}
+
+#[test]
+fn older_unresolved_thread_blocks_start_in_current_thread() {
+    let root = std::env::temp_dir().join(format!("o-lead-older-unresolved-{}", std::process::id()));
+    let home = root.join("home");
+    let project_dir = root.join("project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let project = project_dir.to_string_lossy().into_owned();
+    let old = lead::thread_for(&home, &project, false).unwrap();
+    let current = lead::thread_for(&home, &project, true).unwrap();
+    std::fs::write(lead::thread_dir(&home, &old).join("running.json"),
+        r#"{"provider":"claude","owner":1,"token":"test","unresolved":true}"#).unwrap();
+    let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> { panic!("unresolved turn must block the provider") };
+    assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("불명"));
+    assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(current.as_str()));
+}
+
+#[test]
+fn live_turn_blocks_start_in_new_thread_until_released() {
+    let root = std::env::temp_dir().join(format!("o-lead-busy-thread-{}", std::process::id()));
+    let home = root.join("home");
+    let project_dir = root.join("project");
+    std::fs::create_dir_all(&project_dir).unwrap();
+    let project = project_dir.to_string_lossy().into_owned();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
+        .open(lead::thread_dir(&home, &thread).join("turn.lock")).unwrap();
+    lock.lock().unwrap();
+    let next = lead::thread_for(&home, &project, true).unwrap();
+    let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> { panic!("live turn must block the provider") };
+    assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("답하는 중"));
+    drop(lock);
+    assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(next.as_str()));
+}
+
+#[test]
 #[allow(clippy::zombie_processes)] // The fixture deliberately orphans its pipe-holding child.
 fn closed_stdout_fixture() {
     if std::env::var_os("O_TEST_CLOSED_STDOUT").is_none() { return; }
