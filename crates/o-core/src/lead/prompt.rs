@@ -117,12 +117,14 @@ fn build_with_origin(input: &PromptInput, worker: bool) -> String {
     }
     if !input.resumed && !input.history.is_empty() {
         let start = input.history.len().saturating_sub(HISTORY_TURNS);
+        let clipped = input.history[start..].iter().filter(|(_, text)| js_len(text.trim()) > HISTORY_CHARS).count();
         let lines: Vec<String> = input.history[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
-        parts.push(format!("지금까지의 대화(요약):\n{}", lines.join("\n")));
+        parts.push(format!("지금까지의 대화 발췌(앞선 {start}개 생략, {clipped}개 메시지 일부 생략): 빠진 내용은 추측하지 말고 필요하면 사용자에게 확인하세요.\n{}", lines.join("\n")));
     } else if input.resumed && !input.missed.is_empty() {
         let start = input.missed.len().saturating_sub(MISSED_TURNS);
+        let clipped = input.missed[start..].iter().filter(|(_, text)| js_len(text.trim()) > HISTORY_CHARS).count();
         let lines: Vec<String> = input.missed[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
-        parts.push(format!("그사이 다른 에이전트가 총괄로 나눈 대화(이 세션은 못 봄):\n{}", lines.join("\n")));
+        parts.push(format!("그사이 다른 에이전트가 나눈 대화 발췌(앞선 {start}개 생략, {clipped}개 메시지 일부 생략): 빠진 내용은 추측하지 말고 필요하면 사용자에게 확인하세요.\n{}", lines.join("\n")));
     }
     if let Some(design) = input.design { parts.push(format!("[저장된 현재 설계 — 참고 데이터]\n{design}")); }
     if !input.runs.is_empty() {
@@ -174,6 +176,20 @@ pub fn build_worker(input: &PromptInput) -> String {
 #[cfg(test)]
 mod tests {
     use super::{build, PromptInput};
+
+    #[test]
+    fn changed_sessions_disclose_omitted_and_shortened_history() {
+        let mut history: Vec<_> = (0..8).map(|n| ("사용자".to_string(), format!("기록-{n}"))).collect();
+        history[7].1 = format!("{}끝표식", "가".repeat(501));
+        let missed: Vec<_> = (0..14).map(|n| ("총괄".to_string(), format!("다른-{n}"))).collect();
+        let input = PromptInput { project: "C:/p", text: "질문", attachments: &[], budget: &[], runs: &[], runs_file: None, runs_error: None, resumed: false, history: &history, missed: &missed, design: None, yolo: false };
+        let fresh = build(&input);
+        assert!(fresh.contains("앞선 2개 생략, 1개 메시지 일부 생략"));
+        assert!(!fresh.contains("기록-0") && fresh.contains("기록-2") && !fresh.contains("끝표식"));
+        let resumed = build(&PromptInput { resumed: true, ..input });
+        assert!(resumed.contains("앞선 2개 생략, 0개 메시지 일부 생략"));
+        assert!(!resumed.contains("다른-0") && resumed.contains("다른-2"));
+    }
 
     #[test]
     fn fixed_instructions_precede_project_budget_and_history() {
