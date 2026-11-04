@@ -134,6 +134,13 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           <span className="min-w-0 whitespace-pre-wrap">{item.text}</span>
         </p>
       );
+    case "warning":
+      return (
+        <p role="status" className="flex items-start gap-2 rounded-lg border px-3.5 py-2.5 text-sm text-status-warning-text">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 whitespace-pre-wrap break-words">{item.text}</span>
+        </p>
+      );
     case "followup":
       return <p role="status" className="text-xs text-chat-foreground-faint">{item.cardId} 에이전트의 후속 지시를 접수했습니다 · {item.runId}</p>;
     case "plan":
