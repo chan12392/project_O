@@ -105,7 +105,7 @@ test("a thread folds into messages, replies, plan cards with their run, and erro
 });
 
 test("a card message stays distinct from a user instruction", () => {
-  const items = leadItems([{ t: "lead.worker", at: "1", runId: "r1", cardId: "a", messageId: "m1", text: "확인이 필요합니다" } satisfies LeadEvent]);
+  const items = leadItems([{ t: "lead.worker", at: "1", runId: "r1", cardId: "a", messageId: "m1", text: "확인이 필요합니다" } as LeadEvent]);
   assert.deepEqual(items, [{ kind: "worker", at: "1", runId: "r1", cardId: "a", text: "확인이 필요합니다" }]);
 });
 
