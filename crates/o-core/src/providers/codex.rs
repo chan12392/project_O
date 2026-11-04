@@ -207,20 +207,6 @@ fn supports_ephemeral_version(version: &str) -> bool {
     (parts[0], parts[1], parts[2]) >= (0, 166, 0)
 }
 
-#[cfg(test)]
-mod default_model_version_tests {
-    use super::supports_ephemeral_version;
-
-    #[test]
-    fn only_known_or_newer_release_versions_enable_the_probe() {
-        assert!(supports_ephemeral_version("codex-cli 0.166.0\n"));
-        assert!(supports_ephemeral_version("codex-cli 0.167.1"));
-        assert!(!supports_ephemeral_version("codex-cli 0.165.9"));
-        assert!(!supports_ephemeral_version("codex-cli 0.166.0-alpha"));
-        assert!(!supports_ephemeral_version("not codex"));
-    }
-}
-
 pub fn supports_default_model_probe(mut command: Command) -> bool {
     let key = format!("default-model {:?} {:?}", command.get_program(), command.get_args().collect::<Vec<_>>());
     let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
@@ -467,4 +453,18 @@ pub fn unwrap_shell(command: &str) -> String {
     let inner = found[1].trim();
     let quoted = inner.len() >= 2 && ((inner.starts_with('"') && inner.ends_with('"')) || (inner.starts_with('\'') && inner.ends_with('\'')));
     if quoted { inner[1..inner.len() - 1].to_string() } else { inner.to_string() }
+}
+
+#[cfg(test)]
+mod default_model_version_tests {
+    use super::supports_ephemeral_version;
+
+    #[test]
+    fn only_known_or_newer_release_versions_enable_the_probe() {
+        assert!(supports_ephemeral_version("codex-cli 0.166.0\n"));
+        assert!(supports_ephemeral_version("codex-cli 0.167.1"));
+        assert!(!supports_ephemeral_version("codex-cli 0.165.9"));
+        assert!(!supports_ephemeral_version("codex-cli 0.166.0-alpha"));
+        assert!(!supports_ephemeral_version("not codex"));
+    }
 }

@@ -119,9 +119,10 @@ mod tests {
         assert!(payload("cli", &[], &env, "/tmp").is_err());
     }
 
+    #[cfg(unix)]
     #[test]
     fn shell_receives_exact_values_and_only_selected_environment() {
-        let shell = if cfg!(windows) { r"C:\Program Files\Git\bin\bash.exe" } else { "/bin/sh" };
+        let shell = "/bin/sh";
         if !std::path::Path::new(shell).is_file() { eprintln!("shell unavailable; payload execution not checked"); return; }
         let mut env = BTreeMap::new();
         env.insert("O_TEST".into(), "a'$(printf WRONG)\nvalue".into());

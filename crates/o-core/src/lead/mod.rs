@@ -400,6 +400,7 @@ impl TurnSlot {
         loop {
             match lock.try_lock() {
                 Ok(()) => break,
+                Err(fs::TryLockError::WouldBlock) if running_path(home, thread_id).exists() => return Err(BUSY.into()),
                 Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
                 Err(fs::TryLockError::WouldBlock) => return Err(BUSY.into()),
                 Err(fs::TryLockError::Error(e)) => return Err(format!("총괄 대화를 시작하지 못했습니다: {e}")),
@@ -587,71 +588,6 @@ fn budget_lines(home: &Path) -> Vec<String> {
 // shortcut: hide all code fences until completion, including ordinary code; upgrade when previews parse streamed Markdown.
 fn partial_prose(text: &str) -> &str {
     text.find("```").map_or_else(|| text.trim_end_matches('`'), |at| &text[..at])
-}
-
-#[cfg(test)]
-mod preview_tests {
-    use super::partial_prose;
-
-    #[test]
-    fn partial_fences_never_expose_their_contents() {
-        for text in ["답변\n`", "답변\n``", "답변\n```o-plan\n비공개"] {
-            assert_eq!(partial_prose(text), "답변\n");
-        }
-        assert_eq!(partial_prose("아직 답변 중"), "아직 답변 중");
-    }
-}
-
-#[cfg(test)]
-mod status_tests {
-    use super::*;
-
-    #[test]
-    fn dispatched_runs_keep_order_deduplicate_and_limit() {
-        let event = |id: &str| LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: id.into(), clean: false, profile: None, yolo: false };
-        let (runs, uncertain) = dispatched_runs(&[event("b"), event("a"), event("b"), event("../bad")]);
-        assert_eq!(runs, ["b", "a"]);
-        assert!(uncertain);
-        let events: Vec<_> = (0..=MAX_STATUS_RUNS).map(|n| event(&format!("run-{n}"))).collect();
-        let (runs, uncertain) = dispatched_runs(&events);
-        assert!(runs.is_empty() && uncertain);
-    }
-
-    #[test]
-    fn worker_session_requires_matching_settings_complete_history_and_no_unfinished_turn() {
-        let mut events: Vec<LeadEvent> = [
-            json!({"t":"lead.start","at":"now","threadId":"thread","project":"p"}),
-            json!({"t":"lead.worker","at":"now","runId":"run","cardId":"card","messageId":"m","text":"question"}),
-        ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
-        let hash = crate::run::result::digest(&serde_json::to_string(&events).unwrap());
-        events.push(LeadEvent::WorkerSession { at: "now".into(), provider: ProviderId::Claude, session_id: "worker".into(), model: Some("model-a".into()), effort: Some("high".into()), profile: Profile::Own, result_tools: false, through: 1, history_hash: hash });
-        let req = SendRequest { project: "p", provider: ProviderId::Claude, model: Some("model-a"), effort: Some("high"), text: "question", attach: &[], fresh: false, clean: None, yolo: false };
-        assert_eq!(worker_session(&events, &req, false).unwrap().unwrap().0, "worker");
-        assert!(worker_session(&events, &SendRequest { model: Some("model-b"), ..req }, false).is_err());
-        assert!(worker_session(&events, &SendRequest { model: None, ..req }, false).is_err());
-        assert!(worker_session(&events, &SendRequest { provider: ProviderId::Codex, ..req }, false).is_err());
-        assert!(worker_session(&events, &SendRequest { clean: Some(Path::new("other")), ..req }, false).is_err());
-        assert!(worker_session(&events, &SendRequest { effort: None, ..req }, false).is_err());
-        let mut damaged = events.clone();
-        damaged.remove(0);
-        assert!(worker_session(&damaged, &req, false).is_err());
-        let mut interrupted = events.clone();
-        interrupted.push(serde_json::from_value(json!({"t":"lead.worker","at":"now","runId":"run","cardId":"card","messageId":"m2","text":"unfinished"})).unwrap());
-        assert!(worker_session(&interrupted, &req, false).is_err());
-        let mut collision = events;
-        collision.push(serde_json::from_value(json!({"t":"lead.session","at":"now","provider":"claude","sessionId":"worker","clean":false})).unwrap());
-        assert!(worker_session(&collision, &req, false).is_err());
-
-        let mut default_events = collision;
-        default_events.pop();
-        if let LeadEvent::WorkerSession { provider, model, .. } = default_events.last_mut().unwrap() {
-            *provider = ProviderId::Codex;
-            *model = None;
-        }
-        let default_req = SendRequest { provider: ProviderId::Codex, model: None, ..req };
-        assert!(worker_session(&default_events, &default_req, false).is_err());
-        assert_eq!(worker_session(&default_events, &default_req, true).unwrap().unwrap().0, "worker");
-    }
 }
 
 /// Sends one message: saves it and its attachments, runs the lead CLI read-only in the
@@ -849,11 +785,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     };
     #[cfg(not(windows))]
     let status_file: Option<status_file::StatusFile> = if ids.is_empty() { None } else {
-        runs.extend(ids.iter().map(|id| match snapshot(&read_events(home, id)) {
-            Some(view) => prompt::run_status(&view),
-            None => format!("- 실행 {id}: 아직 기록 없음 또는 상태 불명"),
-        }));
-        status_error = Some("이 운영체제에서는 실행 결과 원문 파일을 지원하지 않아 요약만 제공됩니다".to_string());
+        runs.extend(ids.iter().map(|id| format!("- 실행 {id}: 원문과 상태를 확인할 수 없음")));
+        status_error = Some("이 운영체제에서는 실행 기록의 안전한 읽기를 지원하지 않습니다".to_string());
         None
     };
     if let Some(error) = &status_error { emit(LeadEvent::Warning { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
@@ -1985,4 +1918,69 @@ pub fn tokens(home: &Path, project: Option<&str>, since: Option<&str>) -> LeadTo
         if selected && !reported { sum.unreported += 1; }
     }
     sum
+}
+
+#[cfg(test)]
+mod preview_tests {
+    use super::partial_prose;
+
+    #[test]
+    fn partial_fences_never_expose_their_contents() {
+        for text in ["답변\n`", "답변\n``", "답변\n```o-plan\n비공개"] {
+            assert_eq!(partial_prose(text), "답변\n");
+        }
+        assert_eq!(partial_prose("아직 답변 중"), "아직 답변 중");
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn dispatched_runs_keep_order_deduplicate_and_limit() {
+        let event = |id: &str| LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: id.into(), clean: false, profile: None, yolo: false };
+        let (runs, uncertain) = dispatched_runs(&[event("b"), event("a"), event("b"), event("../bad")]);
+        assert_eq!(runs, ["b", "a"]);
+        assert!(uncertain);
+        let events: Vec<_> = (0..=MAX_STATUS_RUNS).map(|n| event(&format!("run-{n}"))).collect();
+        let (runs, uncertain) = dispatched_runs(&events);
+        assert!(runs.is_empty() && uncertain);
+    }
+
+    #[test]
+    fn worker_session_requires_matching_settings_complete_history_and_no_unfinished_turn() {
+        let mut events: Vec<LeadEvent> = [
+            json!({"t":"lead.start","at":"now","threadId":"thread","project":"p"}),
+            json!({"t":"lead.worker","at":"now","runId":"run","cardId":"card","messageId":"m","text":"question"}),
+        ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
+        let hash = crate::run::result::digest(&serde_json::to_string(&events).unwrap());
+        events.push(LeadEvent::WorkerSession { at: "now".into(), provider: ProviderId::Claude, session_id: "worker".into(), model: Some("model-a".into()), effort: Some("high".into()), profile: Profile::Own, result_tools: false, through: 1, history_hash: hash });
+        let req = SendRequest { project: "p", provider: ProviderId::Claude, model: Some("model-a"), effort: Some("high"), text: "question", attach: &[], fresh: false, clean: None, yolo: false };
+        assert_eq!(worker_session(&events, &req, false).unwrap().unwrap().0, "worker");
+        assert!(worker_session(&events, &SendRequest { model: Some("model-b"), ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { model: None, ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { provider: ProviderId::Codex, ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { clean: Some(Path::new("other")), ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { effort: None, ..req }, false).is_err());
+        let mut damaged = events.clone();
+        damaged.remove(0);
+        assert!(worker_session(&damaged, &req, false).is_err());
+        let mut interrupted = events.clone();
+        interrupted.push(serde_json::from_value(json!({"t":"lead.worker","at":"now","runId":"run","cardId":"card","messageId":"m2","text":"unfinished"})).unwrap());
+        assert!(worker_session(&interrupted, &req, false).is_err());
+        let mut collision = events;
+        collision.push(serde_json::from_value(json!({"t":"lead.session","at":"now","provider":"claude","sessionId":"worker","clean":false})).unwrap());
+        assert!(worker_session(&collision, &req, false).is_err());
+
+        let mut default_events = collision;
+        default_events.pop();
+        if let LeadEvent::WorkerSession { provider, model, .. } = default_events.last_mut().unwrap() {
+            *provider = ProviderId::Codex;
+            *model = None;
+        }
+        let default_req = SendRequest { provider: ProviderId::Codex, model: None, ..req };
+        assert!(worker_session(&default_events, &default_req, false).is_err());
+        assert_eq!(worker_session(&default_events, &default_req, true).unwrap().unwrap().0, "worker");
+    }
 }

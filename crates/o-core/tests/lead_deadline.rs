@@ -32,7 +32,7 @@ fn older_unresolved_thread_blocks_start_in_current_thread() {
         r#"{"provider":"claude","owner":1,"token":"test","unresolved":true}"#).unwrap();
     let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
     let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("unresolved turn must block the provider") };
-    assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("불명"));
+    assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("확인할 수 없어"));
     assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(current.as_str()));
 }
 
@@ -47,11 +47,12 @@ fn live_turn_blocks_start_in_new_thread_until_released() {
     let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(lead::thread_dir(&home, &thread).join("turn.lock")).unwrap();
     lock.lock().unwrap();
-    let next = lead::thread_for(&home, &project, true).unwrap();
+    assert!(lead::thread_for(&home, &project, true).is_err());
     let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
     let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("live turn must block the provider") };
     assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("답하는 중"));
     drop(lock);
+    let next = lead::thread_for(&home, &project, true).unwrap();
     assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(next.as_str()));
 }
 

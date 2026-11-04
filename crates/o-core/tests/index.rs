@@ -160,9 +160,9 @@ fn an_index_from_the_previous_build_is_upgraded() {
     assert_eq!(event_count(&home, "r1"), 2);
 }
 
-/// A slot reserved by a runner that died (or whose CLI ended) is not held forever.
+/// Legacy slots lack process identity and remain held until explicitly resolved.
 #[test]
-fn slots_of_dead_holders_are_dropped() {
+fn legacy_slots_of_dead_holders_remain_held() {
     let home = temp_home();
     let mut gone = std::process::Command::new(std::env::current_exe().unwrap()).arg("--list").stdout(std::process::Stdio::null()).spawn().unwrap();
     let dead = gone.id();
@@ -172,9 +172,9 @@ fn slots_of_dead_holders_are_dropped() {
     conn.execute("INSERT INTO slots (run_id, card_id, provider, owner, pid) VALUES ('r1', 'b', 'codex', ?1, ?2)", [std::process::id(), dead]).unwrap();
     conn.execute("INSERT INTO slots (run_id, card_id, provider, owner) VALUES ('r2', 'c', 'claude', ?1)", [std::process::id()]).unwrap();
     let held = o_core::run::store::held_by_provider(&home).unwrap();
-    assert_eq!((held[&ProviderId::Codex], held[&ProviderId::Claude]), (0, 1));
+    assert_eq!((held[&ProviderId::Codex], held[&ProviderId::Claude]), (2, 1));
     let left: i64 = conn.query_row("SELECT count(*) FROM slots", [], |r| r.get(0)).unwrap();
-    assert_eq!(left, 1);
+    assert_eq!(left, 3);
 }
 
 #[test]

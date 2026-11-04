@@ -624,10 +624,11 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         #[cfg(windows)]
         {
             let native = command.native(std::env::vars_os())?;
-            let executable = command.handle_owner_executable.unwrap_or(std::env::current_exe()?);
-            let owner = crate::sys::win_launch::HandleOwner::start(executable, "--o-handle-owner")?;
+            let owner_executable = match command.handle_owner_executable { Some(path) => path, None => std::env::current_exe()? };
+            let owner = crate::sys::win_launch::HandleOwner::start(owner_executable, "--o-handle-owner")?;
             if stop_requested(home, run_id) { return Err(io::Error::new(io::ErrorKind::Interrupted, "작업이 중지되었습니다")); }
             crate::run::store::mark_spawning(home, &slot.reservation)?;
+            // A panic after the durable spawn marker must keep the reservation unknown.
             slot.started = true;
             match native.spawn(&owner) {
                 Ok((child, tree)) => Ok((crate::sys::worker::Child::native(child), Some(Arc::new(Mutex::new(tree))))),

@@ -145,7 +145,7 @@ fn long_answer_is_not_referenced_when_the_card_cannot_read_context() {
 }
 
 #[test]
-fn replacing_thread_during_turn_prevents_answer_delivery() {
+fn replacing_thread_during_turn_is_refused_and_answer_is_delivered() {
     let (home, project, card) = fixture();
     let id = team::send_tracked(&home, &card, "lead", "질문", true, Some("stale")).ok().unwrap();
     let (started, ready) = std::sync::mpsc::channel();
@@ -159,11 +159,11 @@ fn replacing_thread_during_turn_prevents_answer_delivery() {
     let job = std::thread::spawn(move || lead::wake_card(&h, &p, "run-1", &cards, spawner.as_ref()));
     ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
     assert!(lead::retry_card(&home, "run-1", &id).is_err());
-    lead::new_thread(&home, &project).unwrap();
-    assert!(job.join().unwrap().is_err());
-    assert!(team::read(&home, &card, false).unwrap().is_empty());
+    assert!(lead::new_thread(&home, &project).is_err());
+    assert!(job.join().unwrap().is_ok());
+    assert!(team::read(&home, &card, false).unwrap().iter().any(|m| m.reply_to.as_deref() == Some(id.as_str())));
     let recipient = Speaker { run_id: "run-1".into(), me: "lead".into(), cards: card.cards.clone() };
-    assert!(team::read(&home, &recipient, false).unwrap().iter().any(|m| m.id == id && m.state == "unknown"));
+    assert!(team::read(&home, &recipient, false).unwrap().iter().all(|m| m.id != id));
     cleanup(&home);
 }
 

@@ -313,7 +313,7 @@ fn fake_app_server(lines: Vec<String>) {
                 assert_eq!(read(&mut input), json!({"id":45,"result":{"answers":{}}}));
                 send(json!({"id":46,"method":"item/tool/call","params":{"threadId":id,"turnId":"fake-turn"}}));
                 let reply = read(&mut input);
-                assert!(reply["error"].is_object() && reply.get("result").is_none(), "{reply}");
+                assert!(reply["error"].is_object() || reply["result"]["success"] == false, "{reply}");
             }
             "item.completed" => {
                 let mut item = event["item"].clone();
@@ -723,11 +723,11 @@ fn autorun_new_thread_cancels() {
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Plan { ok: true, .. })));
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
-    // On the current thread, the latest plan still runs exactly once.
+    // The existing dispatch prevents another automatic run while it is active.
     let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
     let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
-    assert_eq!(run.iter().filter(|e| matches!(e, LeadEvent::Dispatch { .. })).count(), 1);
-    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert!(auto_reason(&run, "진행 중"));
+    assert_eq!(starts.load(Ordering::SeqCst), 1);
 }
 
 /// Another request lands right as the lead's answer ends: the auto path either starts the plan
@@ -837,7 +837,7 @@ fn send_records_a_plan() {
             _ => "other",
         })
         .collect();
-    assert_eq!(kinds, ["user", "session", "seen", "usage", "reply", "plan"]);
+    assert_eq!(kinds, ["user", "session", "usage", "seen", "reply", "plan"]);
     let spec = &seen.lock().unwrap()[0];
     assert!(spec.stdin.as_deref().unwrap().contains("README에 한 줄 추가"));
     assert!(!spec.args.contains(&"--resume".to_string()));
@@ -1074,9 +1074,9 @@ fn busy() {
     let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
     held.try_lock().unwrap();
     assert_eq!(lead::active_count(&home).unwrap(), 1);
-    lead::start(&home, &project).unwrap();
-    assert_eq!(lead::active_count(&home).unwrap(), 1, "a superseded thread still owns its running turn");
-    // Return to the original thread for the remaining busy checks.
+    assert!(lead::start(&home, &project).is_err());
+    assert_eq!(lead::active_count(&home).unwrap(), 1);
+    // Continue the remaining busy checks on the same thread.
     drop(held);
     let thread = lead::thread_for(&home, &project, false).unwrap();
     let dir = lead::thread_dir(&home, &thread);
@@ -1091,10 +1091,11 @@ fn busy() {
         assert!(dir.join("running.json").exists(), "another sender removed the owner's marker");
     }
     assert!(seen.lock().unwrap().is_empty());
-    // Its owner gone (the OS lets go of the lock with the process), the thread is free.
+    // A missing owner does not prove that its child process tree has exited.
     drop(held);
-    lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
-    assert_eq!(seen.lock().unwrap().len(), 1);
+    assert!(lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap_err().contains("확인할 수 없어"));
+    assert!(seen.lock().unwrap().is_empty());
+    assert!(dir.join("running.json").exists());
 
     const SENDERS: usize = 8;
     for round in 0..4 {

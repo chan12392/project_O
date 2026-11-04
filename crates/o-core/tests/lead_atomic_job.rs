@@ -7,7 +7,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 fn fixture() -> (PathBuf, String) {
-    let root = std::env::temp_dir().join(format!("o-lead-atomic-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let root = std::env::temp_dir().join(format!("o-lead-atomic-{}-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap(), NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
     let project = root.join("project");
     std::fs::create_dir_all(&project).unwrap();
     (root.join("home"), project.to_string_lossy().into_owned())

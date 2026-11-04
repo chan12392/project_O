@@ -397,19 +397,6 @@ fn mac_boot_scope(bytes: &[u8]) -> Option<String> {
     Some(format!("macos-boot:{}", uuid.to_ascii_lowercase()))
 }
 
-#[cfg(test)]
-mod mac_owner_scope_tests {
-    use super::mac_boot_scope;
-    #[test]
-    fn only_complete_nonzero_boot_uuids_are_accepted() {
-        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890ab\0").as_deref(), Some("macos-boot:12345678-abcd-1234-abcd-1234567890ab"));
-        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890ab"), None);
-        assert_eq!(mac_boot_scope(b"00000000-0000-0000-0000-000000000000\0"), None);
-        assert_eq!(mac_boot_scope(b"12345678_ABCD-1234-abcd-1234567890ab\0"), None);
-        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890az\0"), None);
-    }
-}
-
 #[cfg(target_os = "linux")]
 fn proc_self_matches() -> bool {
     std::fs::read_link("/proc/self").ok().and_then(|path| path.to_str().and_then(|s| s.parse::<u32>().ok())) == Some(std::process::id())
@@ -571,4 +558,17 @@ pub fn open_url(url: &str) -> io::Result<()> {
 pub fn open_url(url: &str) -> io::Result<()> {
     let opener = if cfg!(target_os = "macos") { "open" } else { "xdg-open" };
     Command::new(opener).arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).spawn().map(drop)
+}
+
+#[cfg(test)]
+mod mac_owner_scope_tests {
+    use super::mac_boot_scope;
+    #[test]
+    fn only_complete_nonzero_boot_uuids_are_accepted() {
+        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890ab\0").as_deref(), Some("macos-boot:12345678-abcd-1234-abcd-1234567890ab"));
+        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890ab"), None);
+        assert_eq!(mac_boot_scope(b"00000000-0000-0000-0000-000000000000\0"), None);
+        assert_eq!(mac_boot_scope(b"12345678_ABCD-1234-abcd-1234567890ab\0"), None);
+        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890az\0"), None);
+    }
 }

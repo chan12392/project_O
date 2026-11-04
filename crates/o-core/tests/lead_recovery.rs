@@ -30,6 +30,7 @@ fn page_text(row: &serde_json::Value) -> String {
 
 #[test]
 fn fake_child() {
+    if let Some(path) = std::env::var_os("O_LEAD_STARTED_FILE") { std::fs::write(path, "started").unwrap(); }
     if std::env::var_os("O_LEAD_SUCCESS_REPLY").is_some() { println!("\n{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"확인했습니다\"}}"); }
     if let Some(index) = std::env::var_os("O_STREAM_INDEX") {
         use std::io::{BufRead, BufReader};
@@ -64,6 +65,67 @@ fn fake_child() {
         let seen = std::env::var_os("O_LEAD_STATUS_SEEN").unwrap();
         writeln!(std::fs::OpenOptions::new().create(true).append(true).open(seen).unwrap(), "read").unwrap();
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn invalid_helper_never_starts_lead_and_next_turn_can_start() {
+    let (home, project) = fixture();
+    let marker = PathBuf::from(&project).join("started");
+    let marker_for_bad = marker.clone();
+    let bad = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut launch = support::fake_worker_launch()?;
+        launch.handle_owner_executable = Some(marker_for_bad.with_file_name("missing-owner.exe"));
+        launch.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_STARTED_FILE", &marker_for_bad);
+        Ok(launch)
+    };
+    let events = lead::send(&home, &request(&project), &bad).unwrap();
+    assert!(events.iter().any(|event| matches!(event, lead::LeadEvent::Error { .. })));
+    assert!(!marker.exists());
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    let good = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut launch = support::fake_worker_launch()?;
+        launch.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
+        Ok(launch)
+    };
+    assert!(lead::send(&home, &request(&project), &good).unwrap().iter().any(|event| matches!(event, lead::LeadEvent::Reply { .. })));
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_spawn_intent_marker_does_not_start_lead_or_leave_turn_busy() {
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let running = lead::thread_dir(&home, &thread).join("running.json");
+    let marker = PathBuf::from(&project).join("must-not-run");
+    let output = marker.clone();
+    let marker_path = running.clone();
+    let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let data: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker_path)?).unwrap();
+        let token = data["token"].as_str().unwrap();
+        std::fs::create_dir(marker_path.with_extension(format!("{token}.tmp")))?;
+        let mut launch = support::fake_worker_launch()?;
+        launch.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_STARTED_FILE", &output);
+        Ok(launch)
+    };
+    assert!(lead::send(&home, &request(&project), &spawner).unwrap().iter().any(|event| matches!(event, lead::LeadEvent::Error { .. })));
+    assert!(!marker.exists());
+    assert!(!running.exists());
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+}
+
+#[test]
+fn a_finished_turn_allows_the_next_turn() {
+    let (home, project) = fixture();
+    let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut cmd = support::fake_worker_launch()?;
+        cmd.args(["--exact", "fake_child"]).env("O_LEAD_RECOVERY_SHORT", "1");
+        Ok(cmd)
+    };
+    lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
 }
 
 #[test]
