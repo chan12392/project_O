@@ -23,6 +23,18 @@ fn preparation_refuses_unsafe_run_ids_without_creating_state() {
     assert!(!home.exists());
 }
 
+#[test]
+fn preparation_refuses_a_hard_link_without_creating_a_run() {
+    let (home, project, plan) = fixture();
+    let outside = home.parent().unwrap().join("outside.txt");
+    fs::write(&outside, "private").unwrap();
+    fs::hard_link(&outside, project.join("linked.txt")).unwrap();
+    let error = runner::prepare_isolated(&home, "run-1", &plan, &RunMode::of(Profile::Own)).unwrap_err();
+    assert!(error.to_string().contains("링크된 파일"));
+    assert!(!home.exists());
+    assert_eq!(fs::read_to_string(outside).unwrap(), "private");
+}
+
 #[cfg(windows)]
 #[test]
 fn fake_card() {

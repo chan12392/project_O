@@ -53,6 +53,40 @@ type Entries = BTreeMap<PathBuf, (bool, u64, SystemTime)>;
 type SnapshotEntry = Option<(Vec<u8>, fs::Permissions)>;
 type Snapshot = BTreeMap<PathBuf, SnapshotEntry>;
 
+fn open_plain(path: &Path) -> io::Result<fs::File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
+        options.custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).share_mode(FILE_SHARE_READ);
+    }
+    #[cfg(target_os = "linux")]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(0x2_0000);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() { return Err(io::Error::other("일반 파일이 아닙니다")); }
+    #[cfg(windows)]
+    {
+        use std::os::windows::{fs::MetadataExt, io::AsRawHandle};
+        use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, GetFileInformationByHandle};
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0 || unsafe { info.assume_init() }.nNumberOfLinks != 1 {
+            return Err(io::Error::other("링크된 파일은 복사하거나 비교할 수 없습니다"));
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if metadata.nlink() != 1 { return Err(io::Error::other("링크된 파일은 복사하거나 비교할 수 없습니다")); }
+    }
+    Ok(file)
+}
+
 fn snapshot_hash(snapshot: &Snapshot) -> String {
     use sha2::{Digest, Sha256};
     let mut hash = Sha256::new();
@@ -90,7 +124,11 @@ fn snapshot(root: &Path, skip_git: bool) -> io::Result<Snapshot> {
     for (path, (dir, _, _)) in &entries {
         result.insert(path.clone(), if *dir { None } else {
             let file = root.join(path);
-            Some((fs::read(&file)?, fs::metadata(file)?.permissions()))
+            let mut file = open_plain(&file)?;
+            let permissions = file.metadata()?.permissions();
+            let mut bytes = Vec::new();
+            file.read_to_end(&mut bytes)?;
+            Some((bytes, permissions))
         });
     }
     if entries != inventory_copy(root, skip_git)? {
@@ -129,6 +167,7 @@ fn inventory_copy(root: &Path, skip_git: bool) -> io::Result<Entries> {
             }
             let is_dir = meta.is_dir();
             if !is_dir && !meta.is_file() { return Err(io::Error::other(format!("일반 파일이 아닙니다: {}", relative.display()))); }
+            if !is_dir { open_plain(&entry.path())?; }
             entries.insert(relative.clone(), (is_dir, meta.len(), meta.modified()?));
             if is_dir { dirs.push(relative); }
         }
@@ -144,7 +183,12 @@ fn copy_entries(source: &Path, target: &Path, entries: &Entries) -> io::Result<(
         if meta.file_type().is_symlink() || !PathBuf::from(resolved_path(&src.to_string_lossy())).starts_with(source) {
             return Err(io::Error::other(format!("복사 중 링크가 변경됐습니다: {}", path.display())));
         }
-        if *is_dir { fs::create_dir(target.join(path))?; } else { fs::copy(src, target.join(path))?; }
+        if *is_dir { fs::create_dir(target.join(path))?; } else {
+            let mut source_file = open_plain(&src)?;
+            let mut output = fs::OpenOptions::new().write(true).create_new(true).open(target.join(path))?;
+            io::copy(&mut source_file, &mut output)?;
+            output.set_permissions(source_file.metadata()?.permissions())?;
+        }
     }
     Ok(())
 }

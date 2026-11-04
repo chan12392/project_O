@@ -142,6 +142,15 @@ fn dispatch_creates_isolated_copy_before_starting_the_fake_cli() {
     assert!(entries.contains(&serde_json::json!({"path":"original.txt","kind":"deleted"})));
     assert!(entries.contains(&serde_json::json!({"path":"new.txt","kind":"added"})));
     assert_eq!(fs::read_to_string(project.join("original.txt")).unwrap(), "unchanged");
+    let outside = base.join("outside.txt");
+    let link = path.join("linked.txt");
+    fs::write(&outside, "private").unwrap();
+    fs::hard_link(&outside, &link).unwrap();
+    let linked = Command::new(cli).args(["changes", id, "a"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    assert!(!linked.status.success());
+    assert!(String::from_utf8_lossy(&linked.stderr).contains("링크된 파일"));
+    assert_eq!(fs::read_to_string(&outside).unwrap(), "private");
+    fs::remove_file(&link).unwrap();
     let baseline_file = base.join("project_O/runs").join(id).join("workspace-baseline.json");
     let saved = fs::read(&baseline_file).unwrap();
     fs::write(&baseline_file, serde_json::json!({"copyPath":baseline}).to_string()).unwrap();
