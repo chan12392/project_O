@@ -5,7 +5,7 @@
 //! ```text
 //! leads/current.json                 project (normalized) → its current thread id
 //! leads/<threadId>/events.jsonl      the thread: lead.start · lead.user · lead.session · lead.reply
-//!                                    · lead.plan · lead.dispatch · lead.usage · lead.error · lead.seen
+//!                                    · lead.plan · lead.dispatch · lead.usage · lead.warning · lead.error · lead.seen
 //! leads/<threadId>/turn.raw.jsonl    the CLIs' stdout, for reading back a turn
 //! leads/<threadId>/sessions.txt      the CLI session ids it used, one per line (`o runs --sessions` reads these)
 //! leads/<threadId>/turn.lock         held (OS lock) by the turn in progress, for as long as it runs
@@ -19,9 +19,13 @@
 //! checked like any plan before it is stored, and again before it runs.
 
 pub mod files;
+pub mod log_page;
 pub mod notes;
 pub mod prompt;
 pub mod recovery;
+mod status_file;
+#[cfg(windows)]
+mod stream_status;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -120,6 +124,8 @@ pub enum LeadEvent {
     /// Tokens one lead turn spent (`o tokens` counts them as planning overhead).
     #[serde(rename = "lead.usage")]
     Usage { at: String, provider: ProviderId, input: f64, cached: f64, output: f64, #[serde(default, skip_serializing_if = "Option::is_none")] complete: Option<bool> },
+    #[serde(rename = "lead.warning")]
+    Warning { at: String, text: String },
     #[serde(rename = "lead.error")]
     Error { at: String, text: String },
     /// A CLI session got the turn whose `lead.user` is event `through` of the thread (as
@@ -417,18 +423,26 @@ pub fn start(home: &Path, project: &str) -> Result<String, String> {
     new_thread(home, project).map_err(|e| e.to_string())
 }
 
-/// How each run the thread dispatched is doing, oldest first.
-fn dispatched_runs(home: &Path, events: &[LeadEvent]) -> Vec<String> {
-    events
-        .iter()
-        .filter_map(|e| match e {
-            LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if is_run_id(run_id) => Some(match snapshot(&read_events(home, run_id)) {
-                Some(view) => prompt::run_status(&view),
-                None => format!("- 실행 {run_id}: 아직 기록 없음(시작 전이거나 시작하지 못함)"),
-            }),
-            _ => None,
-        })
-        .collect()
+// Bound the number of separate run sources and index rows held for one turn.
+const MAX_STATUS_RUNS: usize = 128;
+#[cfg(windows)]
+const MAX_STATUS_RECORDS: usize = 512;
+
+fn dispatched_runs(events: &[LeadEvent]) -> (Vec<String>, bool) {
+    let mut seen = BTreeSet::new();
+    let mut runs = Vec::new();
+    let mut uncertain = false;
+    for event in events {
+        let run = match event {
+            LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => run_id,
+            _ => continue,
+        };
+        if !seen.insert(run) { continue; }
+        if !is_run_id(run) { uncertain = true; continue; }
+        if runs.len() == MAX_STATUS_RUNS { return (Vec::new(), true); }
+        runs.push(run.clone());
+    }
+    (runs, uncertain)
 }
 
 /// The messages a resumed session has not seen: those of every turn after the last one it
@@ -472,6 +486,22 @@ mod preview_tests {
             assert_eq!(partial_prose(text), "답변\n");
         }
         assert_eq!(partial_prose("아직 답변 중"), "아직 답변 중");
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn dispatched_runs_keep_order_deduplicate_and_limit() {
+        let event = |id: &str| LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: id.into(), clean: false, profile: None, yolo: false };
+        let (runs, uncertain) = dispatched_runs(&[event("b"), event("a"), event("b"), event("../bad")]);
+        assert_eq!(runs, ["b", "a"]);
+        assert!(uncertain);
+        let events: Vec<_> = (0..=MAX_STATUS_RUNS).map(|n| event(&format!("run-{n}"))).collect();
+        let (runs, uncertain) = dispatched_runs(&events);
+        assert!(runs.is_empty() && uncertain);
     }
 }
 
@@ -629,7 +659,35 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         })
         .collect();
     let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
-    let runs = dispatched_runs(home, &before);
+    let (ids, invalid) = dispatched_runs(&before);
+    let mut runs = if invalid { vec!["- 실행 ID 또는 실행 수가 올바르지 않아 일부 상태 불명".to_string()] } else { Vec::new() };
+    let mut status_error = invalid.then(|| "일부 실행의 ID 또는 실행 수를 확인할 수 없습니다".to_string());
+    #[cfg(windows)]
+    let status_file = if ids.is_empty() { None } else {
+        match stream_status::write(home, &thread_id, &ids) {
+            Ok((file, summaries, uncertain, first_error)) => {
+                runs.extend(summaries);
+                if uncertain > 0 { status_error = Some(first_error.map_or_else(|| "일부 실행은 기록 접근 실패, 안전 상한 또는 해석하지 못한 기록으로 상태가 불명입니다".to_string(), |error| format!("일부 실행의 상태가 불명입니다: {error}"))); }
+                Some(file)
+            }
+            Err(e) => {
+                runs.extend(ids.iter().map(|id| format!("- 실행 {id}: 상태 불명")));
+                status_error = Some(format!("실행 결과 원문을 안전하게 제공할 수 없습니다: {e}"));
+                None
+            }
+        }
+    };
+    #[cfg(not(windows))]
+    let status_file: Option<status_file::StatusFile> = if ids.is_empty() { None } else {
+        runs.extend(ids.iter().map(|id| match snapshot(&read_events(home, id)) {
+            Some(view) => prompt::run_status(&view),
+            None => format!("- 실행 {id}: 아직 기록 없음 또는 상태 불명"),
+        }));
+        status_error = Some("이 운영체제에서는 실행 결과 원문 파일을 지원하지 않아 요약만 제공됩니다".to_string());
+        None
+    };
+    if let Some(error) = &status_error { emit(LeadEvent::Warning { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
+    let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
     let input = prompt::PromptInput {
@@ -638,6 +696,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         attachments: &attachments,
         budget: &budget,
         runs: &runs,
+        runs_file: status_path.as_deref(),
+        runs_error: status_error.as_deref(),
         resumed: session.is_some(),
         history: &history,
         missed: &missed,
@@ -645,7 +705,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         yolo: req.yolo,
     };
     let text = if worker.is_some() { prompt::build_worker(&input) } else { prompt::build(&input) };
-    let files_dir = files::thread_files(home, &thread_id);
+    let files_dir = status_file.as_ref().and_then(|f| f.path.parent()).map(Path::to_path_buf).unwrap_or_else(|| files::thread_files(home, &thread_id));
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
     let images: Vec<String> = attachments.iter().filter(|a| a.image).map(|a| a.path.clone()).collect();
     // The read-only Codex lead runs on app-server when the CLI has it, else on `codex exec`

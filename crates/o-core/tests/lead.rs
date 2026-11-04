@@ -776,7 +776,7 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], resumed: false, history: &[], missed: &[], design: None, yolo: false };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, resumed: false, history: &[], missed: &[], design: None, yolo: false };
     let first = build(&input);
     for part in ["[O 총괄]", "프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");
