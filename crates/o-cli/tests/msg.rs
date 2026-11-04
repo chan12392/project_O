@@ -347,11 +347,18 @@ fn concurrent_processes_preserve_records_and_same_key_is_idempotent() {
 }
 
 #[test]
-fn legacy_cursor_and_interrupted_tail_do_not_lose_new_messages() {
+fn legacy_cursor_and_interrupted_tail_require_repair_before_new_messages() {
     let (base, home) = setup("legacy");
     let dir = home.join("runs/r1");
-    std::fs::write(dir.join("events.jsonl"), "{\"t\":\"msg\",\"at\":\"old\",\"from\":\"lead\",\"to\":\"a\",\"text\":\"old\"}\n{\"t\":\"msg\"").unwrap();
+    let old = "{\"t\":\"msg\",\"at\":\"old\",\"from\":\"lead\",\"to\":\"a\",\"text\":\"old\"}\n";
+    let path = dir.join("events.jsonl");
+    std::fs::write(&path, format!("{old}{{\"t\":\"msg\"")).unwrap();
     std::fs::write(dir.join("read.a"), "99").unwrap();
+    let refused = o(&base, &["msg", "send", "--run", "r1", "--to", "a", "new"], &[]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("손상"));
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("new"));
+    std::fs::write(&path, old).unwrap();
     assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "new"], &[]).status.success());
     let read = o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]);
     assert!(!read.status.success());

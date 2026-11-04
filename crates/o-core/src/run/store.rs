@@ -112,9 +112,9 @@ pub(crate) fn with_events<T>(home: &Path, run_id: &str, f: impl FnOnce(&mut std:
 
 pub(crate) fn event_text(file: &mut std::fs::File) -> io::Result<String> {
     file.seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes)?;
-    Ok(String::from_utf8_lossy(&bytes).into_owned())
+    let mut text = String::new();
+    file.read_to_string(&mut text)?;
+    Ok(text)
 }
 
 /// Read a stable event log without changing a partially written record.

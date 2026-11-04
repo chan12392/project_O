@@ -114,6 +114,24 @@ pub fn answer_approval(home: &Path, speaker: &Speaker, question_id: &str, text: 
     Ok(id)
 }
 
+fn checked_event_text(file: &mut fs::File) -> io::Result<String> {
+    let content = event_text(file).map_err(|_| io::Error::other("메시지 기록이 손상되어 전달 상태를 확인할 수 없습니다"))?;
+    for line in content.lines().filter(|line| !line.trim().is_empty()) {
+        let event: Value = serde_json::from_str(line).map_err(|_| io::Error::other("메시지 기록이 손상되어 전달 상태를 확인할 수 없습니다"))?;
+        let string = |name: &str| event.get(name).and_then(Value::as_str).is_some();
+        let optional_string = |name: &str| event.get(name).is_none_or(|value| value.is_null() || value.is_string());
+        let valid = match event.get("t").and_then(Value::as_str) {
+            Some("msg") => string("from") && string("to") && string("text") && optional_string("id") && optional_string("replyTo")
+                && event.get("kind").is_none_or(|value| value.is_null() || matches!(value.as_str(), Some("message" | "question" | "approval"))),
+            Some("msg.state") => string("id") && string("recipient") && matches!(event.get("state").and_then(Value::as_str), Some("stored" | "delivered" | "unknown" | "acknowledged" | "cancelled")),
+            Some(_) => true,
+            None => false,
+        };
+        if !valid { return Err(io::Error::other("메시지 기록이 손상되어 전달 상태를 확인할 수 없습니다")); }
+    }
+    Ok(content)
+}
+
 fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, key: Option<&str>, reply_to: Option<&str>) -> Result<String, Refused> {
     let violations = check_message(text, &Parties { from: &speaker.me, to, known: &speaker.cards });
     if !violations.is_empty() {
@@ -123,7 +141,7 @@ fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, k
         return Err(Refused::Io(io::Error::other("메시지 키는 영문·숫자·-·_ 1~64자여야 합니다")));
     }
     with_events(home, &speaker.run_id, |file| {
-        let content = event_text(file)?;
+        let content = checked_event_text(file)?;
         let id = key.map_or_else(|| format!("m{}", content.len()), |key| format!("k{}-{}-{key}", speaker.me.len(), speaker.me));
         let events = records(&content);
         if let Some(existing) = events.iter().find(|m| m.id == id) {
@@ -214,7 +232,7 @@ impl Received {
 /// Reading is non-destructive: output does not prove that an agent processed it.
 pub fn read(home: &Path, speaker: &Speaker, all: bool) -> io::Result<Vec<Received>> {
     with_events(home, &speaker.run_id, |file| {
-        let content = event_text(file)?;
+        let content = checked_event_text(file)?;
         let states = states_for(home, &speaker.run_id, &content, &speaker.me)?;
         let messages = records(&content).into_iter().filter_map(|mut m| {
             m.state = states.get(&m.id).cloned().unwrap_or_else(|| "stored".into());
@@ -227,7 +245,7 @@ pub fn read(home: &Path, speaker: &Speaker, all: bool) -> io::Result<Vec<Receive
 /// Claim one message atomically. A crash after this point leaves an unknown outcome.
 pub fn claim(home: &Path, speaker: &Speaker) -> io::Result<Option<Received>> {
     with_events(home, &speaker.run_id, |file| {
-        let content = event_text(file)?;
+        let content = checked_event_text(file)?;
         let current = states_for(home, &speaker.run_id, &content, &speaker.me)?;
         let msg = records(&content).into_iter().find(|m| {
             m.from != speaker.me && (m.to == speaker.me || m.to == "all") && !matches!(current.get(&m.id).map(String::as_str), Some("acknowledged" | "cancelled"))
@@ -284,7 +302,7 @@ fn states_for(home: &Path, run_id: &str, content: &str, recipient: &str) -> io::
 /// A recipient explicitly confirms processing; a sender may cancel an unprocessed message.
 pub fn transition(home: &Path, speaker: &Speaker, id: &str, state: &str) -> io::Result<()> {
     with_events(home, &speaker.run_id, |file| {
-        let content = event_text(file)?;
+        let content = checked_event_text(file)?;
         let messages = records(&content);
         let msg = messages.iter().find(|m| m.id == id).ok_or_else(|| io::Error::other("메시지를 찾지 못했습니다"))?;
         let recipient = match state {
