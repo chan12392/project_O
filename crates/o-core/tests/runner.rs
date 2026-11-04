@@ -200,7 +200,7 @@ fn followup_resumes_workspace() {
     let record = runs.iter().find(|run| run.run_id == interrupted).unwrap();
     assert!(record.events.iter().any(|event| event["t"] == "card.end" && event["status"] == "failed"));
     assert!(record.events.iter().any(|event| event["t"] == "run.end" && event["status"] == "failed"));
-    assert_eq!(o_core::run::followup::target(&home, &interrupted, "a").unwrap().session, "s1");
+    assert!(o_core::run::followup::target(&home, &interrupted, "a").is_err());
 }
 
 fn isolated_copies() {

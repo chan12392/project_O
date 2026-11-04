@@ -257,7 +257,8 @@ fn show(home: &Path, args: &[String]) -> i32 {
         }
     }
     if let Some(busy) = thread["busy"].as_str() {
-        println!("\n({busy} 총괄이 답하는 중)");
+        if busy == "unknown" { println!("\n(이전 총괄의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다)"); }
+        else { println!("\n({busy} 총괄이 답하는 중)"); }
     }
     0
 }

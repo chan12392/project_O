@@ -80,9 +80,9 @@ export type LeadEvent =
   /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
   | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number };
 
-/** What `o lead show --json` prints. `busy` is the answering agent, or "starting" for a turn still setting up. */
+/** What `o lead show --json` prints. `unknown` means a previous turn's exit is unconfirmed. */
 export interface LeadShow {
-  thread: { threadId: string; project: string; busy: ProviderId | "starting" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
+  thread: { threadId: string; project: string; busy: ProviderId | "starting" | "unknown" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
   projects: { project: string; threadId: string }[];
 }
 

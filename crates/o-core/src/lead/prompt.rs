@@ -74,7 +74,7 @@ fn role(yolo: bool) -> String {
         String::new(),
         "답은 마크다운으로 씁니다. 작업을 제안할 때만 답 끝에 아래 블록을 정확히 하나 넣습니다. project는 O가 채웁니다. 선행 작업이 있으면 depends_on에 작업 id 배열을 넣습니다.".to_string(),
         format!("```{PLAN_FENCE}"),
-        r#"{"title":"짧은 제목","cards":[{"id":"ui","provider":"codex","effort":"medium","role":"코딩","task":"무엇을, 어느 파일에서, 완료 기준"}]}"#.to_string(),
+        r#"{"title":"짧은 제목","cards":[{"id":"ui","provider":"codex","effort":"medium","role":"코딩","task":"무엇을, 어느 파일에서, 완료 기준","resources":[{"kind":"project-path","key":"src/ui","mode":"write"}]}]}"#.to_string(),
         "```".to_string(),
     ]);
     lines.join("\n")

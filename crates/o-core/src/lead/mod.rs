@@ -209,6 +209,14 @@ pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String>
     lock.lock()?;
     let mut current = read_current(home)?;
     let key = project_key(project);
+    for id in thread_ids(home) {
+        if current.get(&key) == Some(&id) || thread_project(&read_thread(home, &id)).is_some_and(|p| project_key(&p) == key) {
+            if let Some(busy) = running(home, &id) {
+                if busy.unknown { return Err(io::Error::other(UNKNOWN)); }
+                if fresh || current.get(&key) != Some(&id) { return Err(io::Error::other(BUSY)); }
+            }
+        }
+    }
     if let Some(id) = current.get(&key).filter(|id| !fresh && is_run_id(id)) {
         return Ok(id.clone());
     }
@@ -302,6 +310,7 @@ struct ChildMark {
 /// A turn holding a thread: its marker, or `None` while the owner has not written it yet.
 struct Busy {
     marker: Option<Running>,
+    unknown: bool,
 }
 
 /// `busy` of a turn whose owner has not written its marker yet.
@@ -311,6 +320,7 @@ const STARTING: &str = "starting";
 const STOP_POLL: Duration = Duration::from_millis(100);
 
 const BUSY: &str = "총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요";
+const UNKNOWN: &str = "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다";
 
 fn running_path(home: &Path, thread_id: &str) -> PathBuf {
     thread_dir(home, thread_id).join("running.json")
@@ -330,18 +340,19 @@ fn turn_lock(home: &Path, thread_id: &str) -> io::Result<fs::File> {
     OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("turn.lock"))
 }
 
-/// The live turn of a thread, if any. Whether a turn runs is the lock, never the marker:
-/// a marker that is missing, empty or half-written under a held lock is a turn starting,
-/// and a marker without a held lock is a turn whose process is gone.
+/// A held lock is a live turn; a marker without that lock has an unknown process-tree state.
 fn running(home: &Path, thread_id: &str) -> Option<Busy> {
-    let lock = turn_lock(home, thread_id).ok()?;
+    let lock = match turn_lock(home, thread_id) {
+        Ok(lock) => lock,
+        Err(_) => return Some(Busy { marker: None, unknown: true }),
+    };
     match lock.try_lock() {
         // Free: no turn. Dropping the file lets go of the lock again.
-        Ok(()) => return None,
+        Ok(()) => return running_path(home, thread_id).exists().then(|| Busy { marker: read_marker(home, thread_id), unknown: true }),
         Err(fs::TryLockError::WouldBlock) => {}
-        Err(fs::TryLockError::Error(_)) => return None,
+        Err(fs::TryLockError::Error(_)) => return Some(Busy { marker: None, unknown: true }),
     }
-    Some(Busy { marker: read_marker(home, thread_id) })
+    Some(Busy { marker: read_marker(home, thread_id), unknown: false })
 }
 
 // Called under current.lock; never wait for a turn lock while holding it.
@@ -356,7 +367,7 @@ fn check_project_turns(home: &Path, project: &str, except: Option<&str>, block_b
             Err(fs::TryLockError::WouldBlock) => true,
             Err(fs::TryLockError::Error(e)) => return Err(e.to_string()),
         };
-        let unresolved = read_marker(home, &id).is_some_and(|m| m.unresolved == Some(true));
+        let unresolved = !busy && running_path(home, &id).exists();
         if !unresolved && !(busy && block_busy) { continue; }
         let Some(owner_project) = thread_project(&read_thread(home, &id)) else {
             return Err("실행 중이거나 종료 상태가 불명인 총괄의 프로젝트를 확인할 수 없습니다".into());
@@ -394,9 +405,7 @@ impl TurnSlot {
                 Err(fs::TryLockError::Error(e)) => return Err(format!("총괄 대화를 시작하지 못했습니다: {e}")),
             }
         }
-        if read_marker(home, thread_id).is_some_and(|marker| marker.unresolved == Some(true)) {
-            return Err("이전 총괄의 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요".into());
-        }
+        if running_path(home, thread_id).exists() { return Err(UNKNOWN.into()); }
         // A stop file here is an older turn's: this one has no marker yet, so none was meant for it.
         let _ = fs::remove_file(stop_path(home, thread_id));
         let marker = Running { provider, owner: std::process::id(), token: new_run_id(Utc::now()), child: None, unresolved: None };
@@ -1545,9 +1554,7 @@ fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, String> {
             Err(_) => return Err("총괄이 답하는 중입니다. 새 설계를 확인한 뒤 분배하세요".to_string()),
         }
     }
-    if read_marker(home, thread_id).is_some_and(|marker| marker.unresolved == Some(true)) {
-        return Err("이전 총괄의 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요".into());
-    }
+    if running_path(home, thread_id).exists() { return Err(UNKNOWN.into()); }
     let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
     lock.lock().map_err(|e| e.to_string())?;
     let events = read_thread(home, thread_id);
@@ -1744,6 +1751,7 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
     let mut stopped = false;
     for thread_id in threads {
         if let Some(busy) = running(home, &thread_id) {
+            if busy.unknown { continue; }
             // A request the turn's owner acts on: before its CLI starts it does not start it, after
             // it ends it. Nothing is killed from here, so the owner (the app, or `o lead send`)
             // is never ended and no pid is trusted. The marker may be a moment from being written.
@@ -1757,8 +1765,6 @@ pub fn stop(home: &Path, project: Option<&str>) -> bool {
             }
             let _ = fs::write(stop_path(home, &thread_id), marker.map(|m| m.token).unwrap_or_default());
             stopped = true;
-        } else if let Some(stopped_orphan) = clear_dead_turn(home, &thread_id) {
-            stopped |= stopped_orphan;
         }
     }
     stopped
@@ -1790,31 +1796,6 @@ pub fn stop_all(home: &Path, project: &str) -> Result<usize, String> {
         if store::run_is_live(home, &run_id) && crate::run::runner::stop_run(home, &run_id).map_err(|e| e.to_string())? { count += 1; }
     }
     Ok(count)
-}
-
-/// A marker whose owner is gone, cleared under the turn lock (so never a new turn's). Its
-/// CLI, if the owner left it running (no kill-on-close job held it), is ended only when its
-/// pid still names the process the turn started (same start time). `Some(ended)` when a
-/// marker was there.
-fn clear_dead_turn(home: &Path, thread_id: &str) -> Option<bool> {
-    let lock = turn_lock(home, thread_id).ok()?;
-    lock.try_lock().ok()?;
-    let marker = read_marker(home, thread_id);
-    let path = running_path(home, thread_id);
-    if marker.is_none() && !path.exists() {
-        return None;
-    }
-    if marker.as_ref().is_some_and(|marker| marker.unresolved == Some(true)) { return Some(false); }
-    let mut ended = false;
-    if let Some(orphan) = marker.and_then(|m| m.child) {
-        let started = proc::started_at(orphan.pid);
-        if started.is_some() && started == orphan.started {
-            proc::kill_tree(orphan.pid);
-            ended = true;
-        }
-    }
-    let _ = fs::remove_file(path);
-    Some(ended)
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -1858,8 +1839,7 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
     };
     let thread = thread_id.map(|id| {
         let (notes, notes_error) = match notes::read(home, &id) { Ok(notes) => (notes, None), Err(error) => (Vec::new(), Some(error.to_string())) };
-        let busy = running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()))
-            .or_else(|| read_marker(home, &id).filter(|m| m.unresolved == Some(true)).map(|_| "unknown".to_string()));
+        let busy = running(home, &id).map(|b| if b.unknown { "unknown".to_string() } else { b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()) });
         let state: Value = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
             .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
         let progress = state.get("steps").or_else(|| state.is_array().then_some(&state)).and_then(Value::as_array).cloned().unwrap_or_default();
@@ -1898,7 +1878,7 @@ pub fn active_count(home: &Path) -> io::Result<usize> {
         if !is_run_id(&id) { continue; }
         let lock = turn_lock(home, &id)?;
         match lock.try_lock() {
-            Ok(()) => {},
+            Ok(()) => { if running_path(home, &id).exists() { count += 1; } },
             Err(fs::TryLockError::WouldBlock) => count += 1,
             Err(fs::TryLockError::Error(error)) => return Err(error),
         }

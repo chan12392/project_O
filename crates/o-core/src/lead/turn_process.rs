@@ -311,14 +311,14 @@ mod tests {
         let thread_id = lead::current_thread(&home, &project).unwrap();
         assert!(lead::running(&home, &thread_id).is_some());
         let deadline = Instant::now() + Duration::from_secs(5);
-        while lead::running(&home, &thread_id).is_some() {
+        while lead::running(&home, &thread_id).is_some_and(|busy| !busy.unknown) {
             assert!(Instant::now() < deadline, "turn did not recover after inherited pipes closed");
             thread::sleep(Duration::from_millis(25));
         }
         assert_eq!(lead::read_marker(&home, &thread_id).unwrap().unresolved, Some(true));
         assert!(lead::TurnSlot::take(&home, &thread_id, ProviderId::Claude).is_err());
-        assert!(lead::lock_latest(&home, &format!("{thread_id}-p1")).is_err_and(|error| error.contains("불명")));
-        assert_eq!(lead::clear_dead_turn(&home, &thread_id), Some(false));
+        assert!(lead::lock_latest(&home, &format!("{thread_id}-p1")).is_err_and(|error| error.contains("종료")));
+        assert!(!lead::stop(&home, Some(&project)));
         assert!(lead::running_path(&home, &thread_id).exists());
     }
 
@@ -352,6 +352,7 @@ mod tests {
         assert_eq!(lead::read_marker(&home, &id).unwrap().unresolved, Some(true));
         assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
         assert!(lead::thread_for(&home, &project, true).is_err());
-        assert_eq!(lead::clear_dead_turn(&home, &id), Some(false));
+        assert!(!lead::stop(&home, Some(&project)));
+        assert!(lead::running_path(&home, &id).exists());
     }
 }

@@ -364,7 +364,7 @@ function MainWindow() {
             <span className="min-w-0 truncate font-medium text-tab-active-foreground" title={project?.path}>
               {project ? `${project.name} 총괄` : "총괄"}
             </span>
-            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs whitespace-nowrap text-muted-foreground">{lead.busy ? "답하는 중" : LEAD_WORD[leadState]}</span>}
+            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs whitespace-nowrap text-muted-foreground" title={lead.thread?.busy === "unknown" ? "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다" : undefined}>{lead.thread?.busy === "unknown" ? "종료 불명" : lead.busy ? "답하는 중" : LEAD_WORD[leadState]}</span>}
             {/* The demo's chat is one run's transcript; a real lead chat spans runs, so no run title rides next to it (U12). */}
             {!live && current && (leadState === "working" || leadState === "ready") && <span className="min-w-0 truncate text-muted-foreground">{current.view.title}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-1">
