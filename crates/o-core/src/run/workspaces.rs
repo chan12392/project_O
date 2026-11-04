@@ -335,6 +335,7 @@ impl Workspaces {
         for (index, id) in card.depends_on.iter().enumerate() {
             let source = Path::new(self.paths.get(id).ok_or_else(|| io::Error::other("선행 작업 폴더가 없습니다"))?);
             let source_root = verify(source)?;
+            let _source_files = lock_git_files(&source_root)?;
             let head = git(source, &["rev-parse", "--verify", "HEAD^{commit}"])?;
             git(source, &["merge-base", "--is-ancestor", base_commit, &head])
                 .map_err(|_| io::Error::other("선행 작업의 기준 커밋이 바뀌었습니다"))?;
@@ -445,7 +446,7 @@ fn same_file(a: &Path, b: &Path, name: &str) -> io::Result<bool> {
     }
     if !left.is_file() || !right.is_file() { return Err(io::Error::other("일반 파일이 아닙니다")); }
     if left.len() != right.len() { return Ok(false); }
-    let (mut left, mut right) = (fs::File::open(&paths[0])?, fs::File::open(&paths[1])?);
+    let (mut left, mut right) = (open_plain(&paths[0])?, open_plain(&paths[1])?);
     let (mut a, mut b) = ([0u8; 8192], [0u8; 8192]);
     loop {
         let count = left.read(&mut a)?;
@@ -469,6 +470,33 @@ fn git_output(dir: &Path, args: &[&str]) -> io::Result<Vec<u8>> {
     let out = proc::hide_window(&mut command).output()?;
     if !out.status.success() { return Err(io::Error::other(String::from_utf8_lossy(&out.stderr).trim().to_string())); }
     Ok(out.stdout)
+}
+
+fn lock_git_files(root: &Path) -> io::Result<Vec<fs::File>> {
+    let names = git_output(root, &["ls-files", "--cached", "--others", "--exclude-standard", "-z", "--", "."])?;
+    let mut seen = HashSet::new();
+    let mut files = Vec::new();
+    for name in names.split(|b| *b == 0).filter(|name| !name.is_empty()) {
+        let name = std::str::from_utf8(name).map_err(io::Error::other)?;
+        let path = Path::new(name);
+        if !path.components().all(|component| matches!(component, std::path::Component::Normal(_))) {
+            return Err(io::Error::other("Git 작업 파일 경로가 올바르지 않습니다"));
+        }
+        if !seen.insert(path.to_path_buf()) { continue; }
+        let full = root.join(path);
+        let meta = match fs::symlink_metadata(&full) {
+            Ok(meta) => meta,
+            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(error),
+        };
+        if meta.file_type().is_symlink() { continue; }
+        if !meta.is_file() { return Err(io::Error::other("Git 작업 파일이 일반 파일이 아닙니다")); }
+        if !PathBuf::from(resolved_path(&full.to_string_lossy())).starts_with(root) {
+            return Err(io::Error::other("Git 작업 파일 경로가 작업 폴더 밖을 가리킵니다"));
+        }
+        files.push(open_plain(&full)?);
+    }
+    Ok(files)
 }
 
 fn apply(dir: &Path, patch: &[u8], check: bool) -> io::Result<()> {
@@ -647,5 +675,42 @@ pub fn review_changes(home: &Path, run_id: &str, card_id: &str) -> io::Result<se
             }
         }
         Ok(serde_json::json!({"workspace":workspace,"copyBase":base,"changes":changed,"note":"기준 복사본은 저장된 해시와 일치합니다. 기록 자체도 변경될 수 있으며 원본 적용의 안전성은 별도로 확인해야 합니다."}))
+    }
+}
+
+#[cfg(test)]
+mod git_file_tests {
+    use super::*;
+
+    #[test]
+    fn refuses_git_hardlinks_and_keeps_regular_inputs_stable() {
+        let name = format!("o-git-inputs-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos());
+        let base = std::env::temp_dir().join(name);
+        fs::create_dir(&base).unwrap();
+        let base = PathBuf::from(resolved_path(&base.to_string_lossy()));
+        assert!(base.starts_with(PathBuf::from(resolved_path(&std::env::temp_dir().to_string_lossy()))));
+        assert!(base.ancestors().all(|path| !path.join(".git").exists()));
+        let root = base.join("repository");
+        fs::create_dir(&root).unwrap();
+        git(&root, &["init", "--quiet"]).unwrap();
+        fs::write(root.join("tracked.txt"), "tracked").unwrap();
+        git(&root, &["-c", "core.fsmonitor=false", "add", "tracked.txt"]).unwrap();
+        let outside = base.join("outside.txt");
+        fs::write(&outside, "private").unwrap();
+        let link = root.join("linked.txt");
+        fs::hard_link(&outside, &link).unwrap();
+        assert!(lock_git_files(&root).err().unwrap().to_string().contains("링크된 파일"));
+        assert_eq!(fs::read_to_string(&outside).unwrap(), "private");
+        fs::remove_file(link).unwrap();
+        let files = lock_git_files(&root).unwrap();
+        assert_eq!(files.len(), 1);
+        let index = base.join("temporary.index");
+        git_index(&root, &index, &["read-tree", "--empty"]).unwrap();
+        git_index(&root, &index, &["add", "--all", "--", "."]).unwrap();
+        assert!(!git_index(&root, &index, &["diff", "--cached", "--name-only"]).unwrap().is_empty());
+        #[cfg(windows)]
+        assert!(fs::write(root.join("tracked.txt"), "changed").is_err());
+        drop(files);
+        fs::write(root.join("tracked.txt"), "changed").unwrap();
     }
 }
