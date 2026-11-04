@@ -47,6 +47,7 @@ fn normal_dispatch_preparation_runs_a_card_in_an_isolated_non_git_copy() {
     assert_eq!(runner::run_plan(&home, "run-1", &plan, None, spawner).unwrap(), CardStatus::Done);
     assert_eq!(fs::read_to_string(project.join("result.txt")).unwrap(), "original");
     let baseline: serde_json::Value = serde_json::from_slice(&fs::read(store::run_dir(&home, "run-1").join("workspace-baseline.json")).unwrap()).unwrap();
+    assert_eq!(baseline["copySha256"].as_str().unwrap().len(), 64);
     let baseline = PathBuf::from(baseline["copyPath"].as_str().unwrap());
     assert_eq!(fs::read_to_string(baseline.join("result.txt")).unwrap(), "original");
     let events = store::read_events(&home, "run-1");

@@ -53,6 +53,33 @@ type Entries = BTreeMap<PathBuf, (bool, u64, SystemTime)>;
 type SnapshotEntry = Option<(Vec<u8>, fs::Permissions)>;
 type Snapshot = BTreeMap<PathBuf, SnapshotEntry>;
 
+fn snapshot_hash(snapshot: &Snapshot) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hash = Sha256::new();
+    hash.update(b"project-o-copy-v1\0");
+    for (path, value) in snapshot {
+        let name = path.as_os_str().as_encoded_bytes();
+        hash.update((name.len() as u64).to_le_bytes());
+        hash.update(name);
+        match value {
+            None => hash.update([0]),
+            Some((bytes, permissions)) => {
+                hash.update([1]);
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    hash.update(permissions.mode().to_le_bytes());
+                }
+                #[cfg(not(unix))]
+                hash.update([u8::from(permissions.readonly())]);
+                hash.update((bytes.len() as u64).to_le_bytes());
+                hash.update(bytes);
+            }
+        }
+    }
+    format!("{:x}", hash.finalize())
+}
+
 fn snapshot(root: &Path, skip_git: bool) -> io::Result<Snapshot> {
     if PathBuf::from(resolved_path(&root.to_string_lossy())) != root {
         return Err(io::Error::other("복사본 경로가 변경되었습니다"));
@@ -474,7 +501,7 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
     } else { None };
     let baseline = match &git_base {
         Some((_, _, commit)) => serde_json::json!({"gitCommit": commit}),
-        None => serde_json::json!({"copyPath": run.join("base")}),
+        None => serde_json::json!({"copyPath": run.join("base"), "copySha256": snapshot_hash(copy_base.as_ref().expect("non-Git snapshot"))}),
     };
     let mut baseline_file = fs::OpenOptions::new().write(true).create_new(true)
         .open(crate::run::store::run_dir(home, run_id).join("workspace-baseline.json"))?;
@@ -557,6 +584,8 @@ pub fn review_changes(home: &Path, run_id: &str, card_id: &str) -> io::Result<se
         if before != snapshot(&base, false)? || after != snapshot(&workspace, true)? {
             return Err(io::Error::other("변경 목록을 읽는 중 복사본이 바뀌었습니다"));
         }
+        let recorded_hash = baseline.get("copySha256").and_then(|v| v.as_str()).ok_or_else(|| io::Error::other("이전 실행에는 기준 복사본 검증 정보가 없습니다. 보관된 복사본을 직접 확인하세요"))?;
+        if snapshot_hash(&before) != recorded_hash { return Err(io::Error::other("기준 복사본이 작업 시작 후 변경되어 비교하지 않았습니다")); }
         let names: std::collections::BTreeSet<_> = before.keys().chain(after.keys()).collect();
         let mut changed = Vec::new();
         for path in names {
@@ -564,6 +593,6 @@ pub fn review_changes(home: &Path, run_id: &str, card_id: &str) -> io::Result<se
                 changed.push(serde_json::json!({"path": path.to_str().ok_or_else(|| io::Error::other("UTF-8이 아닌 경로가 있습니다"))?, "kind": if !before.contains_key(path) { "added" } else if !after.contains_key(path) { "deleted" } else { "modified" }}));
             }
         }
-        Ok(serde_json::json!({"workspace":workspace,"copyBase":base,"changes":changed,"note":"기준 복사본은 수정될 수 있습니다. 원본 적용의 안전성은 별도로 확인해야 합니다."}))
+        Ok(serde_json::json!({"workspace":workspace,"copyBase":base,"changes":changed,"note":"기준 복사본은 저장된 해시와 일치합니다. 기록 자체도 변경될 수 있으며 원본 적용의 안전성은 별도로 확인해야 합니다."}))
     }
 }

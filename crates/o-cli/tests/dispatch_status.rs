@@ -133,6 +133,17 @@ fn dispatch_creates_isolated_copy_before_starting_the_fake_cli() {
     assert!(entries.contains(&serde_json::json!({"path":"original.txt","kind":"deleted"})));
     assert!(entries.contains(&serde_json::json!({"path":"new.txt","kind":"added"})));
     assert_eq!(fs::read_to_string(project.join("original.txt")).unwrap(), "unchanged");
+    let baseline_file = base.join("project_O/runs").join(id).join("workspace-baseline.json");
+    let saved = fs::read(&baseline_file).unwrap();
+    fs::write(&baseline_file, serde_json::json!({"copyPath":baseline}).to_string()).unwrap();
+    let legacy = Command::new(cli).args(["changes", id, "a"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    assert!(!legacy.status.success());
+    assert!(String::from_utf8_lossy(&legacy.stderr).contains("검증 정보가 없습니다"));
+    fs::write(&baseline_file, saved).unwrap();
+    fs::write(std::path::Path::new(baseline).join("original.txt"), "tampered").unwrap();
+    let changed_base = Command::new(cli).args(["changes", id, "a"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    assert!(!changed_base.status.success());
+    assert!(String::from_utf8_lossy(&changed_base.stderr).contains("기준 복사본이 작업 시작 후 변경"));
     fs::write(base.join("project_O/runs").join(id).join("workspace-baseline.json"), serde_json::json!({"copyPath":project}).to_string()).unwrap();
     let invalid = Command::new(cli).args(["changes", id, "a"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
     assert!(!invalid.status.success());
