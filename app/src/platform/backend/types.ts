@@ -159,7 +159,7 @@ export interface ResourceLease {
   state: "recoverable" | "unknown";
 }
 
-export type WorkspaceChanges = { workspace: string; note: string } & (
+export type WorkspaceChanges = { workspace: string; note: string; baselineRunId?: string } & (
   | { gitCommit: string; changes: { changed: string[]; staged: string[]; unstaged: string[]; unmerged: string[]; untracked: string[]; ignored: string[]; masked: { path: string; skipWorktree: boolean; assumeUnchanged: boolean }[] } }
   | { copyBase: string; changes: { path: string; kind: "added" | "deleted" | "modified" }[] }
 );
