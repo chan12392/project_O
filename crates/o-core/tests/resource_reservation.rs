@@ -689,7 +689,7 @@ fn dead_workers_with_unreleased_leases_still_fill_provider_capacity() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_lead_timeout_stops_owned_child_and_preserves_unknown_marker() {
+fn linux_lead_timeout_stops_owned_child_and_leaves_the_lead_usable() {
     use o_core::lead::{self, SendRequest};
     let (home, project) = fixture();
     let project = project.to_string_lossy().into_owned();
@@ -703,7 +703,9 @@ fn linux_lead_timeout_stops_owned_child_and_preserves_unknown_marker() {
     let events = lead::send_within(&home, &req, &spawner, Duration::from_secs(1)).unwrap();
     assert!(started.elapsed() < Duration::from_secs(10));
     assert!(events.iter().any(|event| matches!(event, lead::LeadEvent::Error { text, .. } if text.contains("시간"))));
-    assert!(lead::send(&home, &req, &spawner).is_err());
+    // The owned process group was ended, so the turn is settled (best effort, ADR-0025) and the
+    // next turn may start instead of waiting for a manual recovery.
+    assert!(lead::send(&home, &req, &spawner).is_ok());
 }
 
 #[cfg(windows)]

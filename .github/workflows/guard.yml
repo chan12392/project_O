@@ -51,7 +51,8 @@ jobs:
         if: steps.same.outputs.skip != 'true'
         run: |
           # The desktop shell (crate project-o) needs WebView system libraries that the CI image lacks.
-          cargo test --workspace --exclude project-o
+          # Every failing test binary is reported, not only the first.
+          cargo test --workspace --exclude project-o --no-fail-fast
           cargo clippy --workspace --all-targets --exclude project-o -- -D warnings
       - uses: actions/setup-node@v4
         if: steps.same.outputs.skip != 'true'
