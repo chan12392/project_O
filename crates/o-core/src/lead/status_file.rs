@@ -1,16 +1,14 @@
 //! A read-only snapshot kept stable while the lead is running.
 
-use std::io;
-use std::path::{Path, PathBuf};
-
 #[cfg(windows)]
-const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
+use std::{io, path::Path};
+use std::path::PathBuf;
 
 pub struct StatusFile {
     pub path: PathBuf,
     #[cfg(windows)]
     _handles: Vec<std::fs::File>,
-    #[cfg(windows)]
+    #[cfg(all(test, windows))]
     saved: std::collections::BTreeMap<String, Vec<(Vec<u8>, PathBuf)>>,
 }
 
@@ -71,31 +69,6 @@ pub(super) fn open_events(home: &Path, run_id: &str) -> io::Result<Option<(std::
     Ok(Some((file, parents)))
 }
 
-#[cfg(windows)]
-pub fn read_events(home: &Path, run_id: &str) -> io::Result<Option<String>> {
-    use std::io::{Read, Seek, SeekFrom};
-    let Some((mut file, _parents)) = open_events(home, run_id)? else { return Ok(None) };
-    if file.metadata()?.len() > MAX_LOG_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "실행 기록이 안전한 읽기 상한을 초과했습니다")); }
-    let mut lines = 0usize;
-    let mut chunk = [0u8; 8192];
-    loop {
-        let n = file.read(&mut chunk)?;
-        if n == 0 { break; }
-        lines += chunk[..n].iter().filter(|&&byte| byte == b'\n').count();
-        if lines > super::MAX_STATUS_LINES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "실행 기록의 행 수가 안전한 읽기 상한을 초과했습니다")); }
-    }
-    file.seek(SeekFrom::Start(0))?;
-    let mut bytes = Vec::new();
-    file.take(MAX_LOG_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_LOG_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "실행 기록이 안전한 읽기 상한을 초과했습니다")); }
-    let text = String::from_utf8(bytes).map_err(io::Error::other)?;
-    Ok(Some(text))
-}
-
-#[cfg(not(windows))]
-pub fn read_events(_home: &Path, _run_id: &str) -> io::Result<Option<String>> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "이 운영체제에서는 실행 기록의 안전한 읽기를 지원하지 않습니다"))
-}
 
 #[cfg(windows)]
 pub fn create(home: &Path, thread: &str) -> io::Result<StatusFile> {
@@ -103,7 +76,7 @@ pub fn create(home: &Path, thread: &str) -> io::Result<StatusFile> {
     let root = std::path::absolute(super::files::files_root(home))?;
     let dir = root.join(thread);
     let handles = protect_dirs(&dir, &[root, dir.clone()])?;
-    Ok(StatusFile { path: dir, _handles: handles, saved: Default::default() })
+    Ok(StatusFile { path: dir, _handles: handles, #[cfg(test)] saved: Default::default() })
 }
 
 #[cfg(windows)]
@@ -127,6 +100,7 @@ pub(super) fn temporary(&self) -> io::Result<(PathBuf, std::fs::File)> {
 
 pub(super) fn retain(&mut self, file: std::fs::File) { self._handles.push(file); }
 
+#[cfg(test)]
 pub fn put(&mut self, bytes: &[u8]) -> io::Result<PathBuf> {
     use std::fs::OpenOptions;
     use std::io::{Read, Write};
@@ -160,18 +134,6 @@ pub fn put(&mut self, bytes: &[u8]) -> io::Result<PathBuf> {
         }
     }
     Err(io::Error::other("결과 파일 이름을 확보하지 못했습니다"))
-}
-}
-
-#[cfg(not(windows))]
-pub fn create(_home: &Path, _thread: &str) -> io::Result<StatusFile> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "이 운영체제에서는 결과 파일의 안전한 생성을 지원하지 않습니다"))
-}
-
-#[cfg(not(windows))]
-impl StatusFile {
-pub fn put(&mut self, _bytes: &[u8]) -> io::Result<PathBuf> {
-    Err(io::Error::new(io::ErrorKind::Unsupported, "이 운영체제에서는 결과 파일의 안전한 생성을 지원하지 않습니다"))
 }
 }
 
@@ -269,7 +231,7 @@ mod tests {
         let target = home.parent().unwrap().join("outside.jsonl");
         std::fs::write(&target, "{}\n").unwrap();
         std::fs::hard_link(&target, run.join("events.jsonl")).unwrap();
-        assert!(read_events(&home, "run").is_err());
+        assert!(open_events(&home, "run").is_err());
         assert_eq!(std::fs::read_to_string(target).unwrap(), "{}\n");
     }
 
@@ -279,32 +241,11 @@ mod tests {
         let run = crate::run::store::run_dir(&home, "run");
         std::fs::create_dir_all(&run).unwrap();
         let writer = std::fs::OpenOptions::new().create_new(true).write(true).open(run.join("events.jsonl")).unwrap();
-        assert!(read_events(&home, "run").is_err());
+        assert!(open_events(&home, "run").is_err());
         drop(writer);
-        assert_eq!(read_events(&home, "run").unwrap().as_deref(), Some(""));
+        assert_eq!(open_events(&home, "run").unwrap().unwrap().0.metadata().unwrap().len(), 0);
     }
 
-    #[test]
-    fn oversized_record_is_rejected_without_reading_a_prefix() {
-        let home = home();
-        let run = crate::run::store::run_dir(&home, "run");
-        std::fs::create_dir_all(&run).unwrap();
-        let path = run.join("events.jsonl");
-        let file = std::fs::File::create(&path).unwrap();
-        file.set_len(MAX_LOG_BYTES + 1).unwrap();
-        drop(file);
-        assert!(read_events(&home, "run").unwrap_err().to_string().contains("상한"));
-        assert_eq!(std::fs::metadata(path).unwrap().len(), MAX_LOG_BYTES + 1);
-    }
-
-    #[test]
-    fn many_short_lines_select_streaming_before_loading_the_log() {
-        let home = home();
-        let run = crate::run::store::run_dir(&home, "run");
-        std::fs::create_dir_all(&run).unwrap();
-        std::fs::write(run.join("events.jsonl"), "{}\n".repeat(super::super::MAX_STATUS_LINES + 1)).unwrap();
-        assert_eq!(read_events(&home, "run").unwrap_err().kind(), io::ErrorKind::FileTooLarge);
-    }
 
     #[test]
     fn source_handle_blocks_changes_and_replacement() {

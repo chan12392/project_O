@@ -1,17 +1,19 @@
-//! Bounded streaming fallback for long run logs. Files are held until the lead exits.
-use std::io::{self, BufRead, BufReader, Cursor, Read, Seek, SeekFrom, Write};
+//! Bounded streaming for run logs. Files are held until the lead exits.
+use std::io::{self, BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::Path;
 use std::sync::LazyLock;
 use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
-use super::{status_file, StatusRecord, MAX_STATUS_RECORDS};
+use super::{prompt, status_file, MAX_STATUS_RECORDS};
+use crate::run::events::OEvent;
 
 // shortcut: limit per-turn disk and scan time; upgrade to a bounded, on-demand index.
 const MAX_INPUT: u64 = 128 * 1024 * 1024;
 const MAX_OUTPUT: u64 = 256 * 1024 * 1024;
-const SMALL_LINE: u64 = 64 * 1024;
+const SMALL_LINE: u64 = 256 * 1024;
+const MAX_SUMMARY_BYTES: u64 = 1024 * 1024;
 static LARGE_CARD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^\{"t":"card\.end","at":"[^"\\\r\n]{1,128}","cardId":"([A-Za-z0-9][A-Za-z0-9_-]{0,63})","status":"(?:done|failed|stopped)","result":""#).unwrap());
 static LARGE_END: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"","exitCode":(?:null|-?[0-9]{1,19})\}\r?\n$"#).unwrap());
 
@@ -50,10 +52,10 @@ fn emit_pages(mut input: impl Read, output: &mut std::fs::File, first: &mut u64,
     Ok(())
 }
 
-fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, rows: &mut Vec<Value>, scanned: &mut u64) -> io::Result<()> {
+fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, rows: &mut Vec<Value>, scanned: &mut u64) -> io::Result<(String, bool)> {
     let Some((file, _parents)) = status_file::open_events(home, run)? else {
         rows.push(json!({"runId":run,"type":"unavailable","error":"실행 기록이 없음"}));
-        return Ok(());
+        return Ok((format!("- 실행 {run}: 기록 없음(시작 전이거나 시작하지 못함)"), true));
     };
     let size = file.metadata()?.len();
     *scanned = scanned.checked_add(size).ok_or_else(|| io::Error::other("실행 기록 크기 초과"))?;
@@ -61,6 +63,9 @@ fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, r
     let mut source = BufReader::new(file);
     let mut line_no = 0u64;
     let mut unknown = 0u64;
+    let mut typed_events = Vec::new();
+    let mut summary_bytes = 0u64;
+    let mut summary_limited = false;
     loop {
         let start = source.stream_position()?;
         let mut prefix = Vec::new();
@@ -68,10 +73,11 @@ fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, r
         let mut depth = 0i32;
         let mut string = false;
         let mut escape = false;
+        let mut complete = false;
         loop {
             let buf = source.fill_buf()?;
             if buf.is_empty() {
-                if len != 0 { return Err(io::Error::other("실행 기록의 마지막 줄이 잘렸습니다")); }
+                if len > SMALL_LINE { return Err(io::Error::other("실행 기록의 마지막 줄이 잘렸습니다")); }
                 break;
             }
             let n = buf.iter().position(|b| *b == b'\n').map_or(buf.len(), |i| i + 1);
@@ -84,21 +90,30 @@ fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, r
             }
             len = len.checked_add(n as u64).ok_or_else(|| io::Error::other("실행 기록 크기 초과"))?;
             if start.saturating_add(len) > size { return Err(io::Error::other("실행 기록의 크기가 바뀌었습니다")); }
-            let complete = buf[n - 1] == b'\n';
+            complete = buf[n - 1] == b'\n';
             source.consume(n);
             if complete { break; }
         }
         if len == 0 { break; }
         line_no += 1;
+        if len as usize == prefix.len() && prefix.iter().all(u8::is_ascii_whitespace) {
+            source.seek(SeekFrom::Start(start + len))?;
+            continue;
+        }
         let mut meta = None;
         if len <= SMALL_LINE {
             source.seek(SeekFrom::Start(start))?;
             let value: Option<Value> = serde_json::from_reader(source.by_ref().take(len)).ok();
-            let typed = value.clone().and_then(|v| serde_json::from_value::<crate::run::events::OEvent>(v).ok());
+            let typed = complete.then(|| value.clone().and_then(|v| serde_json::from_value::<OEvent>(v).ok())).flatten();
             let kind = value.as_ref().and_then(|v| v.get("t")).and_then(Value::as_str).unwrap_or("unknown");
             let private = matches!(kind, "msg" | "msg.state" | "card.tool" | "card.message" | "card.input");
-            let keep = !private && (typed.is_none() || matches!(kind, "run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end"));
+            // An unparseable line cannot be proven not to be a private team or tool event.
+            let keep = value.is_some() && !private && (typed.is_none() || matches!(kind, "run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end"));
             if typed.is_none() { unknown += 1; }
+            if let Some(event) = typed.as_ref().filter(|event| matches!(event, OEvent::RunStart { .. } | OEvent::RunBlocked { .. } | OEvent::RunEnd { .. } | OEvent::CardQueued { .. } | OEvent::CardStart { .. } | OEvent::CardEnd { .. })) {
+                summary_bytes = summary_bytes.saturating_add(len);
+                if summary_bytes <= MAX_SUMMARY_BYTES && typed_events.len() < MAX_STATUS_RECORDS { typed_events.push(event.clone()); } else { summary_limited = true; }
+            }
             if keep {
                 let card = value.as_ref().and_then(|v| v.get("cardId")).and_then(Value::as_str).filter(|s| crate::run::store::is_run_id(s));
                 meta = Some(json!({"runId":run,"cardId":card,"type":if kind.len() <= 80 {kind} else {"unknown"},"line":line_no,"unknown":typed.is_none()}));
@@ -130,9 +145,11 @@ fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, r
             serde::de::IgnoredAny::deserialize(&mut parser).map_err(io::Error::other)?;
             parser.end().map_err(io::Error::other)?;
             unknown += 1;
+            summary_limited = true;
             meta = Some(json!({"runId":run,"cardId":&captures[1],"type":"card.end","line":line_no,"unknown":true}));
         } else {
             unknown += 1;
+            summary_limited = true;
         }
         if let Some(mut item) = meta {
             if rows.len() >= MAX_STATUS_RECORDS { return Err(io::Error::other("실행 결과 색인 항목 상한 초과")); }
@@ -145,7 +162,17 @@ fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, r
     if source.get_ref().metadata()?.len() != size || source.stream_position()? != size { return Err(io::Error::other("실행 기록의 크기가 바뀌었습니다")); }
     rows.push(json!({"runId":run,"type":"run-summary","unrecognized":unknown}));
     if rows.len() > MAX_STATUS_RECORDS { return Err(io::Error::other("실행 결과 색인 항목 상한 초과")); }
-    Ok(())
+    let summary = if summary_limited {
+        format!("- 실행 {run}: 요약을 확인할 수 없음, 상태 불명 (원문 색인 확인)")
+    } else {
+        match crate::run::snapshot::snapshot(&typed_events) {
+            Some(view) => prompt::run_status(&view),
+            None if typed_events.is_empty() && unknown > 0 => format!("- 실행 {run}: 해석할 수 없는 기록만 있어 상태 불명"),
+            None if typed_events.is_empty() => format!("- 실행 {run}: 아직 기록 없음(시작 전이거나 시작하지 못함)"),
+            None => format!("- 실행 {run}: 시작 상태 불명, 기록된 차단·종료 여부는 원문을 확인"),
+        }
+    };
+    Ok((if unknown > 0 { format!("{summary}\n  - 해석하지 못한 기록 {unknown}개: 상태를 단정하지 말고 색인의 원문을 확인") } else { summary }, summary_limited || unknown > 0))
 }
 
 fn verify_pages(reader: impl Read, rows: &[Value]) -> io::Result<()> {
@@ -167,19 +194,31 @@ fn verify_pages(reader: impl Read, rows: &[Value]) -> io::Result<()> {
     Ok(())
 }
 
-pub(super) fn write(home: &Path, thread: &str, records: Vec<StatusRecord>) -> io::Result<status_file::StatusFile> {
+pub(super) fn write(home: &Path, thread: &str, runs: &[String]) -> io::Result<(status_file::StatusFile, Vec<String>, usize, Option<String>)> {
     let mut guard = status_file::create(home, thread)?;
     let (path, mut pages) = guard.temporary()?;
     let mut rows = Vec::new();
     let mut page = 1u64;
     let mut scanned = 0u64;
-    for mut record in records {
-        if record.meta["type"] == "stream-run" {
-            let id = record.meta["runId"].as_str().ok_or_else(|| io::Error::other("실행 ID 누락"))?;
-            scan_run(home, id, &mut pages, &mut page, &mut rows, &mut scanned)?;
-        } else {
-            if let Some(raw) = record.raw { emit_pages(Cursor::new(raw), &mut pages, &mut page, &mut record.meta)?; }
-            rows.push(record.meta);
+    let mut summaries = Vec::new();
+    let mut uncertain = 0;
+    let mut first_error = None;
+    for id in runs {
+        let offset = pages.stream_position()?;
+        let first = page;
+        let count = rows.len();
+        match scan_run(home, id, &mut pages, &mut page, &mut rows, &mut scanned) {
+            Ok((summary, unknown)) => { summaries.push(summary); uncertain += usize::from(unknown); }
+            Err(error) => {
+                pages.set_len(offset)?;
+                pages.seek(SeekFrom::Start(offset))?;
+                page = first;
+                rows.truncate(count);
+                summaries.push(format!("- 실행 {id}: 원문과 상태를 확인할 수 없음 ({})", serde_json::to_string(&error.to_string()).unwrap_or_default()));
+                rows.push(json!({"runId":id,"type":"unavailable","error":error.to_string()}));
+                if first_error.is_none() { first_error = Some(error.to_string()); }
+                uncertain += 1;
+            }
         }
         if rows.len() > MAX_STATUS_RECORDS { return Err(io::Error::other("실행 결과 색인 항목 상한 초과")); }
     }
@@ -196,12 +235,13 @@ pub(super) fn write(home: &Path, thread: &str, records: Vec<StatusRecord>) -> io
     guard.path = index_path;
     guard.retain(pages);
     guard.retain(index);
-    Ok(guard)
+    Ok((guard, summaries, uncertain, first_error))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
     #[test]
     fn rejects_changed_missing_and_oversized_pages() {
         let rows = [json!({"pageCount":1,"sha256":format!("{:x}", Sha256::digest(b"hello"))})];
@@ -228,13 +268,80 @@ mod tests {
     }
 
     #[test]
+    fn small_preview_excludes_private_and_damaged_records() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("o-stream-small-{}-{stamp}", std::process::id()));
+        let home = base.join("state");
+        let run = crate::run::store::run_dir(&home, "run");
+        std::fs::create_dir_all(&run).unwrap();
+        let events = [
+            json!({"t":"run.start","at":"now","runId":"run","title":"제목","project":"p","cards":[{"id":"card","provider":"claude"}]}),
+            json!({"t":"msg","at":"now","from":"a","to":"b","text":"PRIVATE-TEAM"}),
+            json!({"t":"card.tool","at":"now","cardId":"card","name":"read","summary":"PRIVATE-TOOL"}),
+            json!({"t":"card.end","at":"now","cardId":"card","status":"failed","result":"결과","exitCode":1}),
+            json!({"t":"run.end","at":"now","runId":"run","status":"failed"}),
+        ];
+        let source = events.iter().map(|event| format!("{event}\n")).collect::<String>() + "{\"t\":\"msg\",\"text\":\"PRIVATE-BROKEN\"\n";
+        std::fs::write(run.join("events.jsonl"), source).unwrap();
+        let mut pages = std::fs::OpenOptions::new().read(true).write(true).create_new(true).open(base.join("pages.txt")).unwrap();
+        let mut rows = Vec::new();
+        let mut first = 1;
+        let mut scanned = 0;
+        let (summary, uncertain) = scan_run(&home, "run", &mut pages, &mut first, &mut rows, &mut scanned).unwrap();
+        assert!(uncertain && summary.contains("failed") && summary.contains("결과"));
+        assert!(rows.iter().any(|row| row["type"] == "card.end"));
+        pages.seek(SeekFrom::Start(0)).unwrap();
+        verify_pages(&mut pages, &rows).unwrap();
+        pages.seek(SeekFrom::Start(0)).unwrap();
+        let mut output = String::new();
+        pages.read_to_string(&mut output).unwrap();
+        assert!(!output.contains("PRIVATE"));
+    }
+
+    #[test]
+    fn summary_budget_keeps_pages_but_marks_status_unknown() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("o-stream-summary-{}-{stamp}", std::process::id()));
+        let home = base.join("state");
+        let run = crate::run::store::run_dir(&home, "run");
+        std::fs::create_dir_all(&run).unwrap();
+        let mut source = std::fs::File::create(run.join("events.jsonl")).unwrap();
+        let event = json!({"t":"card.end","at":"now","cardId":"card","status":"done","result":"x".repeat(150 * 1024),"exitCode":0});
+        for _ in 0..8 { writeln!(source, "{event}").unwrap(); }
+        drop(source);
+        let mut output = std::fs::File::create(base.join("pages.txt")).unwrap();
+        let mut rows = Vec::new();
+        let mut first = 1;
+        let mut scanned = 0;
+        let (summary, uncertain) = scan_run(&home, "run", &mut output, &mut first, &mut rows, &mut scanned).unwrap();
+        assert!(uncertain && summary.contains("상태 불명"));
+        assert_eq!(rows.iter().filter(|row| row["type"] == "card.end").count(), 8);
+    }
+
+    #[test]
+    fn index_limit_reports_unavailable_without_partial_pages() {
+        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+        let base = std::env::temp_dir().join(format!("o-stream-index-{}-{stamp}", std::process::id()));
+        let home = base.join("state");
+        let run = crate::run::store::run_dir(&home, "run");
+        std::fs::create_dir_all(&run).unwrap();
+        let event = format!("{}\n", json!({"t":"card.end","at":"now","cardId":"card","status":"done","result":"x","exitCode":0}));
+        std::fs::write(run.join("events.jsonl"), event.repeat(MAX_STATUS_RECORDS + 1)).unwrap();
+        let (guard, summaries, unknown, error) = write(&home, "thread", &["run".into()]).unwrap();
+        assert_eq!(unknown, 1);
+        assert!(error.unwrap().contains("상한") && summaries[0].contains("확인할 수 없음"));
+        let index = std::fs::read_to_string(&guard.path).unwrap();
+        assert!(index.contains("unavailable") && !index.contains("pageStart"));
+    }
+
+    #[test]
     fn large_card_event_with_extra_fields_is_not_exported() {
         let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
         let base = std::env::temp_dir().join(format!("o-stream-fields-{}-{stamp}", std::process::id()));
         let home = base.join("state");
         let run = crate::run::store::run_dir(&home, "run");
         std::fs::create_dir_all(&run).unwrap();
-        let event = format!("{{\"t\":\"card.end\",\"at\":\"now\",\"cardId\":\"card\",\"status\":\"done\",\"result\":\"{}\",\"extra\":\"PRIVATE\",\"exitCode\":0}}\n", "a".repeat(70 * 1024));
+        let event = format!("{{\"t\":\"card.end\",\"at\":\"now\",\"cardId\":\"card\",\"status\":\"done\",\"result\":\"{}\",\"extra\":\"PRIVATE\",\"exitCode\":0}}\n", "a".repeat(SMALL_LINE as usize + 1));
         std::fs::write(run.join("events.jsonl"), event).unwrap();
         let mut output = std::fs::File::create(base.join("pages.txt")).unwrap();
         let mut rows = Vec::new();

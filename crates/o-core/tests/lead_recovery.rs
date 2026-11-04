@@ -17,6 +17,14 @@ fn request(project: &str) -> SendRequest<'_> {
     SendRequest { project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false }
 }
 
+fn page_text(row: &serde_json::Value) -> String {
+    use std::io::{BufRead, BufReader};
+    let path = row["file"].as_str().unwrap();
+    let first = row["pageStart"].as_u64().unwrap() as usize - 1;
+    let count = row["pageCount"].as_u64().unwrap() as usize;
+    BufReader::new(std::fs::File::open(path).unwrap()).lines().skip(first).take(count).map(|line| serde_json::from_str::<String>(&line.unwrap()).unwrap()).collect()
+}
+
 #[test]
 fn fake_child() {
     if std::env::var_os("O_LEAD_SUCCESS_REPLY").is_some() { println!("\n{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"확인했습니다\"}}"); }
@@ -44,15 +52,10 @@ fn fake_child() {
     if let Some(path) = std::env::var_os("O_LEAD_STATUS_PATH") {
         use std::io::Write;
         let index = std::fs::read_to_string(&path).unwrap();
-        let mut items: Vec<_> = index.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).filter(|item| item["runId"] == "run-7" && item["cardId"] == "card" && item["type"] == "card.end").collect();
-        items.sort_by_key(|item| item["part"].as_u64().unwrap());
-        assert!(items.len() > 1);
-        let mut source = String::new();
-        for item in &items {
-            let source_path = item["file"].as_str().unwrap();
-            source.push_str(&std::fs::read_to_string(source_path).unwrap());
-            assert!(std::fs::write(source_path, b"tampered").is_err());
-        }
+        let item = index.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).find(|item| item["runId"] == "run-7" && item["cardId"] == "card" && item["type"] == "card.end").unwrap();
+        let source = page_text(&item);
+        assert_eq!(item["sha256"], o_core::run::result::digest(&source));
+        assert!(std::fs::write(item["file"].as_str().unwrap(), b"tampered").is_err());
         assert!(source.contains("LAST-LINE-한글"));
         assert!(std::fs::write(path, b"tampered").is_err());
         let seen = std::env::var_os("O_LEAD_STATUS_SEEN").unwrap();
@@ -143,7 +146,7 @@ fn live_owner_stops_its_contained_child_and_releases_the_turn() {
 
 #[cfg(windows)]
 #[test]
-fn lead_reads_complete_results_and_reuses_an_unchanged_snapshot() {
+fn lead_reads_complete_results_across_repeated_turns() {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
     use o_core::run::events::{CardInfo, CardStatus, OEvent};
@@ -172,26 +175,26 @@ fn lead_reads_complete_results_and_reuses_an_unchanged_snapshot() {
         let prompt = spec.stdin.as_ref().unwrap();
         assert!(prompt.contains("생략"));
         assert!(prompt.contains("신뢰할 수 없는"));
+        assert!(prompt.contains("failed") && prompt.contains("결과 미리보기"));
         assert!(!prompt.contains(end));
         let tools = spec.args.iter().position(|a| a == "--tools").unwrap();
         assert_eq!(spec.args[tools + 1], "Read,Grep,Glob");
         let index = spec.args.iter().position(|a| a == "--add-dir").unwrap();
         let dir = PathBuf::from(&spec.args[index + 1]);
-        let files: Vec<_> = std::fs::read_dir(&dir)?.map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("run-status-")).collect();
+        let files: Vec<_> = std::fs::read_dir(&dir)?.map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("run-pages-")).collect();
         let index_file = files.iter().find(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("run-summary"))).unwrap();
         let index_text = std::fs::read_to_string(index_file)?;
         let entries: Vec<serde_json::Value> = index_text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
         for n in 0..12 {
             let id = format!("run-{n}");
-            let mut results: Vec<_> = entries.iter().filter(|e| e["runId"] == id && e["type"] == "card.end").collect();
-            results.sort_by_key(|e| e["part"].as_u64().unwrap());
-            assert!(results.len() > 1);
-            let restored: String = results.iter().map(|e| std::fs::read_to_string(e["file"].as_str().unwrap()).unwrap()).collect();
+            let row = entries.iter().find(|e| e["runId"] == id && e["type"] == "card.end").unwrap();
+            let restored = page_text(row);
+            assert_eq!(row["sha256"], o_core::run::result::digest(&restored));
             let source: serde_json::Value = serde_json::from_str(&restored)?;
             assert_eq!(source["result"], result);
         }
         assert!(std::fs::write(index_file, b"tampered").is_err());
-        captured.lock().unwrap().push((index_file.clone(), files.len()));
+        captured.lock().unwrap().push((entries.iter().find(|e| e["runId"] == "run-7" && e["type"] == "card.end").unwrap()["sha256"].clone(), files.len()));
         let mut command = Command::new(std::env::current_exe()?);
         command.args(["--exact", "fake_child"]).env("O_LEAD_STATUS_PATH", index_file).env("O_LEAD_STATUS_SEEN", &child_evidence);
         Ok(command)
@@ -224,9 +227,9 @@ fn unknown_result_record_is_preserved_and_does_not_block_the_lead() {
         let index_file = files.iter().find(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("run-summary"))).unwrap();
         let index = std::fs::read_to_string(index_file)?;
         let unknown_entries: Vec<serde_json::Value> = index.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).filter(|v| v["unknown"] == true).collect();
-        assert_eq!(unknown_entries.len(), 3);
-        let restored: String = unknown_entries.iter().map(|v| std::fs::read_to_string(v["file"].as_str().unwrap()).unwrap()).collect();
-        assert_eq!(restored, unknown);
+        assert_eq!(unknown_entries.len(), 2);
+        let restored: String = unknown_entries.iter().map(page_text).collect();
+        assert_eq!(restored, unknown.replace("{not-json}\n", ""));
         let mut command = Command::new(std::env::current_exe()?);
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
         Ok(command)
@@ -367,6 +370,63 @@ fn very_large_card_result_streams_without_tool_or_team_events() {
 
 #[cfg(windows)]
 #[test]
+fn both_sides_of_the_previous_four_mib_boundary_stream() {
+    use std::io::{BufRead, BufReader, Write};
+    use sha2::{Digest, Sha256};
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let thread_log = lead::thread_dir(&home, &thread).join("events.jsonl");
+    let mut expected = Vec::new();
+    for (id, size) in [("under", 4 * 1024 * 1024 - 1), ("over", 4 * 1024 * 1024 + 1)] {
+        let run = o_core::run::store::run_dir(&home, id);
+        std::fs::create_dir_all(&run).unwrap();
+        let path = run.join("events.jsonl");
+        let mut file = std::fs::File::create(&path).unwrap();
+        let prefix = b"{\"t\":\"card.end\",\"at\":\"now\",\"cardId\":\"card\",\"status\":\"done\",\"result\":\"";
+        let suffix = b"\",\"exitCode\":0}\n";
+        let mut hash = Sha256::new();
+        file.write_all(prefix).unwrap();
+        hash.update(prefix);
+        let mut left = size - prefix.len() - suffix.len();
+        let chunk = [b'a'; 8192];
+        while left > 0 { let n = left.min(chunk.len()); file.write_all(&chunk[..n]).unwrap(); hash.update(&chunk[..n]); left -= n; }
+        file.write_all(suffix).unwrap();
+        hash.update(suffix);
+        drop(file);
+        assert_eq!(std::fs::metadata(path).unwrap().len(), size as u64);
+        expected.push((id.to_owned(), format!("{:x}", hash.finalize())));
+        writeln!(std::fs::OpenOptions::new().append(true).open(&thread_log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":id,"clean":false})).unwrap();
+    }
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        let at = spec.args.iter().position(|a| a == "--add-dir").unwrap();
+        let paths = std::fs::read_dir(&spec.args[at + 1])?.map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
+        let (index_path, rows) = paths.iter().find_map(|path| {
+            let text = std::fs::read_to_string(path).ok()?;
+            let rows: Vec<serde_json::Value> = text.lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+            rows.iter().any(|row| row["type"] == "card.end").then(|| (path.clone(), rows))
+        }).unwrap();
+        for (id, digest) in &expected {
+            let row = rows.iter().find(|row| row["runId"].as_str() == Some(id.as_str()) && row["type"] == "card.end").unwrap();
+            assert_eq!(row["sha256"], *digest);
+            let first = row["pageStart"].as_u64().unwrap() as usize - 1;
+            let count = row["pageCount"].as_u64().unwrap() as usize;
+            let mut hash = Sha256::new();
+            for line in BufReader::new(std::fs::File::open(row["file"].as_str().unwrap())?).lines().skip(first).take(count) {
+                hash.update(serde_json::from_str::<String>(&line?)?.as_bytes());
+            }
+            assert_eq!(format!("{:x}", hash.finalize()), *digest);
+        }
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index_path).env("O_STREAM_SHA", &expected[0].1);
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|event| matches!(event, lead::LeadEvent::Reply { .. })));
+    assert!(!events.iter().any(|event| matches!(event, lead::LeadEvent::Error { .. })));
+}
+
+#[cfg(windows)]
+#[test]
 fn truncated_large_record_is_unavailable_and_partial_pages_are_removed() {
     use std::io::Write;
     let (home, project) = fixture();
@@ -379,11 +439,19 @@ fn truncated_large_record_is_unavailable_and_partial_pages_are_removed() {
     for _ in 0..1100 { record.write_all(&[b'a'; 4096]).unwrap(); }
     drop(record);
     let log = lead::thread_dir(&home, &thread).join("events.jsonl");
-    writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"truncated","clean":false})).unwrap();
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    writeln!(std::fs::OpenOptions::new().append(true).open(&log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"truncated","clean":false})).unwrap();
+    let good = o_core::run::store::run_dir(&home, "good");
+    std::fs::create_dir_all(&good).unwrap();
+    let event = format!("{}\n", serde_json::json!({"t":"card.end","at":"now","cardId":"card","status":"done","result":"보존","exitCode":0}));
+    std::fs::write(good.join("events.jsonl"), &event).unwrap();
+    writeln!(std::fs::OpenOptions::new().append(true).open(&log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"good","clean":false})).unwrap();
+    let hash = o_core::run::result::digest(&event);
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
         assert!(spec.stdin.as_ref().unwrap().contains("잘렸"));
+        let at = spec.args.iter().position(|a| a == "--add-dir").unwrap();
+        let index = std::fs::read_dir(&spec.args[at + 1])?.filter_map(|entry| entry.ok()).map(|entry| entry.path()).find(|path| std::fs::read_to_string(path).is_ok_and(|text| text.contains("unavailable") && text.contains("card.end"))).unwrap();
         let mut command = Command::new(std::env::current_exe()?);
-        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
+        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index).env("O_STREAM_SHA", &hash);
         Ok(command)
     };
     let events = lead::send(&home, &request(&project), &spawner).unwrap();

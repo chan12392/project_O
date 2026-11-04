@@ -432,188 +432,25 @@ pub fn start(home: &Path, project: &str) -> Result<String, String> {
     new_thread(home, project).map_err(|e| e.to_string())
 }
 
-/// How each run the thread dispatched is doing, oldest first.
-struct StatusRecord {
-    meta: Value,
-    raw: Option<String>,
-}
-
-// shortcut: source histories over these limits need a streaming event index.
+// Bound the number of separate run sources and index rows held for one turn.
 const MAX_STATUS_RUNS: usize = 128;
-const MAX_STATUS_BYTES: usize = 8 * 1024 * 1024;
-const MAX_STATUS_LINES: usize = 4096;
 const MAX_STATUS_RECORDS: usize = 512;
-const MAX_STATUS_PARTS: usize = 256;
 
-fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str) -> io::Result<Option<String>>) -> (Vec<String>, Vec<StatusRecord>, usize) {
+fn dispatched_runs(events: &[LeadEvent]) -> (Vec<String>, bool) {
     let mut seen = BTreeSet::new();
-    let mut summaries = Vec::new();
-    let mut originals = Vec::new();
-    let mut unavailable = 0;
-    let mut bytes = 0usize;
-    let mut lines = 0usize;
-    let limit = || {
-        let mut ids = BTreeSet::new();
-        for event in events {
-            if let LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } = event {
-                if is_run_id(run_id) { ids.insert(run_id); }
-                if ids.len() > MAX_STATUS_RUNS { break; }
-            }
-        }
-        let records = if ids.len() <= MAX_STATUS_RUNS { ids.into_iter().map(|id| StatusRecord { meta: json!({"runId":id,"type":"stream-run"}), raw: None }).collect() } else { Vec::new() };
-        (vec!["- 실행 요약 안전 상한 초과: 상태 불명, 가능한 원문은 색인 확인".to_string()], records, 1)
-    };
+    let mut runs = Vec::new();
+    let mut uncertain = false;
     for event in events {
-        let run_id = match event {
+        let run = match event {
             LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => run_id,
             _ => continue,
         };
-        if !seen.insert(run_id) { continue; }
-        if seen.len() > MAX_STATUS_RUNS { return limit(); }
-        if !is_run_id(run_id) {
-            unavailable += 1;
-            summaries.push("- 실행 ID가 올바르지 않아 상태와 원문을 확인할 수 없음".into());
-            originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"unavailable","error":"실행 ID가 올바르지 않음"}), raw: None });
-            continue;
-        }
-        let text = match read(home, run_id) {
-            Ok(Some(text)) => text,
-            Ok(None) => {
-                summaries.push(format!("- 실행 {run_id}: 기록 없음(시작 전이거나 시작하지 못함)"));
-                originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"unavailable","error":"실행 기록이 없음"}), raw: None });
-                unavailable += 1;
-                continue;
-            }
-            Err(e) if e.kind() == ErrorKind::FileTooLarge => {
-                summaries.push(format!("- 실행 {run_id}: 대용량 기록의 상태 불명, 가능한 원문은 색인 확인"));
-                originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"stream-run"}), raw: None });
-                unavailable += 1;
-                continue;
-            }
-            Err(e) => {
-                summaries.push(format!("- 실행 {run_id}: 원문과 상태를 확인할 수 없음 ({})", serde_json::to_string(&e.to_string()).unwrap_or_default()));
-                originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"unavailable","error":e.to_string()}), raw: None });
-                unavailable += 1;
-                continue;
-            }
-        };
-        bytes = bytes.saturating_add(text.len());
-        if bytes > MAX_STATUS_BYTES { return limit(); }
-        let mut typed = Vec::new();
-        let mut unknown = 0;
-        for (line_no, raw) in text.split_inclusive('\n').enumerate().filter(|(_, s)| !s.trim().is_empty()) {
-            lines += 1;
-            if lines > MAX_STATUS_LINES || originals.len() >= MAX_STATUS_RECORDS { return limit(); }
-            let value = serde_json::from_str::<Value>(raw).ok();
-            let parsed = if raw.ends_with('\n') { value.clone().and_then(|v| serde_json::from_value::<crate::run::events::OEvent>(v).ok()) } else { None };
-            let kind = value.as_ref().and_then(|v| v.get("t")).and_then(Value::as_str).unwrap_or("unknown");
-            let private = matches!(kind, "msg" | "msg.state" | "card.tool" | "card.message" | "card.input");
-            let keep = !private && (parsed.is_none() || matches!(kind, "run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end"));
-            if parsed.is_none() { unknown += 1; }
-            if keep {
-                let card_id = value.as_ref().and_then(|v| v.get("cardId")).and_then(Value::as_str).filter(|s| s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
-                let index_kind = if kind.len() <= 80 { kind } else { "unknown" };
-                originals.push(StatusRecord { meta: json!({"runId":run_id,"cardId":card_id,"type":index_kind,"line":line_no + 1,"unknown":parsed.is_none()}), raw: Some(raw.to_string()) });
-            }
-            if let Some(parsed) = parsed { typed.push(parsed); }
-        }
-        let summary = match snapshot(&typed) {
-            Some(view) => prompt::run_status(&view),
-            None if typed.is_empty() && unknown > 0 => format!("- 실행 {run_id}: 해석할 수 없는 기록만 있어 상태 불명"),
-            None if typed.is_empty() => format!("- 실행 {run_id}: 아직 기록 없음(시작 전이거나 시작하지 못함)"),
-            None => format!("- 실행 {run_id}: 시작 상태 불명, 기록된 차단·종료 여부는 원문을 확인"),
-        };
-        if unknown > 0 { unavailable += 1; }
-        summaries.push(if unknown > 0 { format!("{summary}\n  - 해석하지 못한 기록 {unknown}개: 상태를 단정하지 말고 색인의 원문을 확인") } else { summary });
-        originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"run-summary","unrecognized":unknown}), raw: None });
-        if originals.len() > MAX_STATUS_RECORDS { return limit(); }
+        if !seen.insert(run) { continue; }
+        if !is_run_id(run) { uncertain = true; continue; }
+        if runs.len() == MAX_STATUS_RUNS { return (Vec::new(), true); }
+        runs.push(run.clone());
     }
-    (summaries, originals, unavailable)
-}
-
-fn write_status_index(home: &Path, thread: &str, records: Vec<StatusRecord>) -> io::Result<status_file::StatusFile> {
-    if records.len() > MAX_STATUS_RECORDS { return Err(io::Error::other("실행 색인 항목 수가 안전 상한을 초과했습니다")); }
-    #[cfg(windows)]
-    if records.iter().any(|record| record.meta["type"] == "stream-run") { return stream_status::write(home, thread, records); }
-    let mut parts = 0usize;
-    for record in &records {
-        if let Some(raw) = &record.raw {
-            parts = parts.saturating_add(raw.chars().count().div_ceil(512).max(1));
-        }
-    }
-    let mut guard = status_file::create(home, thread)?;
-    let mut index = String::new();
-    if parts > MAX_STATUS_PARTS {
-        use sha2::{Digest, Sha256};
-        let mut pages = String::new();
-        let mut rows = Vec::new();
-        let mut page_line = 1usize;
-        for mut record in records {
-            if let Some(raw) = record.raw.take() {
-                let first = page_line;
-                let mut start = 0;
-                while start < raw.len() {
-                    let mut end = (start + 256).min(raw.len());
-                    while !raw.is_char_boundary(end) { end -= 1; }
-                    pages.push_str(&serde_json::to_string(&raw[start..end]).map_err(io::Error::other)?);
-                    pages.push('\n');
-                    page_line += 1;
-                    start = end;
-                }
-                record.meta["pageStart"] = json!(first);
-                record.meta["pageCount"] = json!(page_line - first);
-                record.meta["sha256"] = json!(format!("{:x}", Sha256::digest(raw.as_bytes())));
-                record.meta["format"] = json!("json-string-lines");
-            }
-            rows.push(record.meta);
-        }
-        let path = guard.put(pages.as_bytes())?;
-        drop(pages);
-        let mut reader = BufReader::new(fs::File::open(&path)?);
-        for row in &rows {
-            if let Some(count) = row.get("pageCount").and_then(Value::as_u64) {
-                let mut digest = Sha256::new();
-                for _ in 0..count {
-                    let mut line = String::new();
-                    if reader.read_line(&mut line)? == 0 || line.len() > 1539 { return Err(io::Error::other("결과 페이지가 불완전합니다")); }
-                    let decoded: String = serde_json::from_str(&line).map_err(io::Error::other)?;
-                    digest.update(decoded.as_bytes());
-                }
-                if row["sha256"].as_str() != Some(&format!("{:x}", digest.finalize())) { return Err(io::Error::other("결과 페이지의 해시가 일치하지 않습니다")); }
-            }
-        }
-        if reader.fill_buf()?.first().is_some() { return Err(io::Error::other("결과 페이지에 예상하지 못한 내용이 있습니다")); }
-        for mut row in rows {
-            if row.get("pageStart").is_some() { row["file"] = json!(path.to_string_lossy()); }
-            index.push_str(&serde_json::to_string(&row).map_err(io::Error::other)?);
-            index.push('\n');
-        }
-        guard.path = guard.put(index.as_bytes())?;
-        return Ok(guard);
-    }
-    for record in records {
-        if let Some(raw) = record.raw {
-            // Read tools may truncate long lines; parts preserve the exact text when concatenated.
-            let mut boundaries = vec![0];
-            boundaries.extend(raw.char_indices().enumerate().filter_map(|(n, (offset, _))| (n > 0 && n % 512 == 0).then_some(offset)));
-            boundaries.push(raw.len());
-            let total = boundaries.len() - 1;
-            for (n, range) in boundaries.windows(2).enumerate() {
-                let path = guard.put(&raw.as_bytes()[range[0]..range[1]])?;
-                let mut meta = record.meta.clone();
-                meta["file"] = json!(path.to_string_lossy());
-                meta["part"] = json!(n + 1);
-                meta["parts"] = json!(total);
-                index.push_str(&serde_json::to_string(&meta).map_err(io::Error::other)?);
-                index.push('\n');
-            }
-        } else {
-            index.push_str(&serde_json::to_string(&record.meta).map_err(io::Error::other)?);
-            index.push('\n');
-        }
-    }
-    guard.path = guard.put(index.as_bytes())?;
-    Ok(guard)
+    (runs, uncertain)
 }
 
 /// The messages a resumed session has not seen: those of every turn after the last one it
@@ -664,59 +501,14 @@ mod status_tests {
     use super::*;
 
     #[test]
-    fn unsupported_reader_keeps_the_conversation_prompt_explicit() {
-        let events = [LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: "run".into(), clean: false, profile: None, yolo: false }];
-        let (runs, records, unknown) = dispatched_runs(Path::new("unused"), &events, |_, _| Err(io::Error::new(ErrorKind::Unsupported, "안전한 읽기 미지원")));
-        assert_eq!(unknown, 1);
-        assert_eq!(records[0].meta["type"], "unavailable");
-        let text = prompt::build(&prompt::PromptInput { project: "project", text: "질문", attachments: &[], budget: &[], runs: &runs, runs_file: None, runs_error: Some("원문 미지원"), resumed: false, history: &[], missed: &[], design: None, yolo: false });
-        assert!(text.contains("안전한 읽기 미지원"));
-        assert!(text.contains("원문 미지원"));
-        assert!(text.contains("추측하지"));
-        assert!(text.contains("질문"));
-    }
-
-    #[test]
-    fn malformed_team_events_are_not_included_in_result_files() {
-        let events = [LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: "run".into(), clean: false, profile: None, yolo: false }];
-        let (_, records, unknown) = dispatched_runs(Path::new("unused"), &events, |_, _| Ok(Some("{\"t\":\"msg\",\"text\":\"PRIVATE\"}\n{\"t\":\"future\",\"value\":\"visible\"}\n".into())));
-        assert_eq!(unknown, 1);
-        assert!(records.iter().all(|record| !record.raw.as_deref().unwrap_or("").contains("PRIVATE")));
-        assert!(records.iter().any(|record| record.raw.as_deref().is_some_and(|raw| raw.contains("visible"))));
-    }
-
-    #[test]
-    fn oversized_histories_are_not_partially_reported() {
-        let dispatch = LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: "run".into(), clean: false, profile: None, yolo: false };
-        let (summaries, records, unknown) = dispatched_runs(Path::new("unused"), &[dispatch.clone()], |_, _| Ok(Some("{}\n".repeat(MAX_STATUS_LINES + 1))));
-        assert_eq!(unknown, 1);
-        assert_eq!(records[0].meta["type"], "stream-run");
-        assert!(summaries[0].contains("상한"));
-        let (summaries, records, unknown) = dispatched_runs(Path::new("unused"), &[dispatch], |_, _| Ok(Some("x".repeat(MAX_STATUS_BYTES + 1))));
-        assert_eq!(unknown, 1);
-        assert_eq!(records[0].meta["type"], "stream-run");
-        assert!(summaries[0].contains("상한"));
-    }
-
-    #[test]
-    #[cfg(windows)]
-    fn many_result_parts_are_paged_in_one_file() {
-        let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
-        let base = std::env::temp_dir().join(format!("o-page-{}-{stamp}", std::process::id()));
-        std::fs::create_dir_all(&base).unwrap();
-        let home = base.join("state");
-        let raw = "가\n\\".repeat(512 * MAX_STATUS_PARTS + 1);
-        let records = vec![StatusRecord { meta: json!({"type":"unknown"}), raw: Some(raw.clone()) }];
-        let guard = write_status_index(&home, "thread", records).unwrap();
-        let index = std::fs::read_to_string(&guard.path).unwrap();
-        let row: Value = serde_json::from_str(index.trim()).unwrap();
-        let path = row["file"].as_str().unwrap();
-        let pages = std::fs::read_to_string(path).unwrap();
-        let joined: String = pages.lines().map(|line| { assert!(line.len() <= 1538); serde_json::from_str::<String>(line).unwrap() }).collect();
-        assert_eq!(joined, raw);
-        assert_eq!(row["sha256"], crate::run::result::digest(&raw));
-        assert!(std::fs::write(path, b"changed").is_err());
-        assert_eq!(std::fs::read_dir(base.join("state-lead/thread")).unwrap().count(), 2);
+    fn dispatched_runs_keep_order_deduplicate_and_limit() {
+        let event = |id: &str| LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: id.into(), clean: false, profile: None, yolo: false };
+        let (runs, uncertain) = dispatched_runs(&[event("b"), event("a"), event("b"), event("../bad")]);
+        assert_eq!(runs, ["b", "a"]);
+        assert!(uncertain);
+        let events: Vec<_> = (0..=MAX_STATUS_RUNS).map(|n| event(&format!("run-{n}"))).collect();
+        let (runs, uncertain) = dispatched_runs(&events);
+        assert!(runs.is_empty() && uncertain);
     }
 }
 
@@ -797,13 +589,29 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         })
         .collect();
     let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
-    let (runs, originals, uncertain) = dispatched_runs(home, &before, status_file::read_events);
-    let mut status_error = (uncertain > 0).then(|| "일부 실행은 기록 접근 실패, 안전 상한 초과 또는 해석할 수 없는 기록으로 상태가 불명입니다".to_string());
-    let status_file = if originals.is_empty() { None } else {
-        match write_status_index(home, &thread_id, originals) {
-            Ok(file) => Some(file),
-            Err(e) => { status_error = Some(format!("실행 결과 원문을 안전하게 제공할 수 없습니다: {e}")); None }
+    let (ids, invalid) = dispatched_runs(&before);
+    let mut runs = if invalid { vec!["- 실행 ID 또는 실행 수가 올바르지 않아 일부 상태 불명".to_string()] } else { Vec::new() };
+    let mut status_error = invalid.then(|| "일부 실행의 ID 또는 실행 수를 확인할 수 없습니다".to_string());
+    #[cfg(windows)]
+    let status_file = if ids.is_empty() { None } else {
+        match stream_status::write(home, &thread_id, &ids) {
+            Ok((file, summaries, uncertain, first_error)) => {
+                runs.extend(summaries);
+                if uncertain > 0 { status_error = Some(first_error.map_or_else(|| "일부 실행은 기록 접근 실패, 안전 상한 또는 해석하지 못한 기록으로 상태가 불명입니다".to_string(), |error| format!("일부 실행의 상태가 불명입니다: {error}"))); }
+                Some(file)
+            }
+            Err(e) => {
+                runs.extend(ids.iter().map(|id| format!("- 실행 {id}: 상태 불명")));
+                status_error = Some(format!("실행 결과 원문을 안전하게 제공할 수 없습니다: {e}"));
+                None
+            }
         }
+    };
+    #[cfg(not(windows))]
+    let status_file: Option<status_file::StatusFile> = if ids.is_empty() { None } else {
+        runs.extend(ids.iter().map(|id| format!("- 실행 {id}: 원문과 상태를 확인할 수 없음")));
+        status_error = Some("이 운영체제에서는 실행 기록의 안전한 읽기를 지원하지 않습니다".to_string());
+        None
     };
     if let Some(error) = &status_error { emit(LeadEvent::Warning { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
     let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
