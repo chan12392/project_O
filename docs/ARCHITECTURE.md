@@ -33,11 +33,11 @@
 |---|---|---|
 | `run/` | `plan` `events` `runner` `store` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기, 상태 폴더, SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
 | `policy.rs` | | 계획·팀 메시지 허용 여부와 `LIMITS`. 공용 경계라 맨 위에 둔다 |
-| `providers/` | `mod.rs` `claude.rs` `codex.rs` `codex_app_server.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필, 사용량 조회. YOLO가 아닌 Codex 총괄은 `codex app-server`(읽기 전용 샌드박스, 승인 `never`, 훅 끔, ADR-0023, app-server가 없는 CLI는 읽기 전용 `codex exec`), 카드와 YOLO 총괄은 `codex exec` |
+| `providers/` | `mod.rs` `claude.rs` `codex.rs` `codex_app_server.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필, 사용량 조회. YOLO가 아닌 Codex 총괄은 `codex app-server`(읽기 전용 샌드박스, 승인 `on-request`를 사람에게, 훅 끔, ADR-0023 개정, app-server가 없는 CLI는 읽기 전용 `codex exec`), 카드와 YOLO 총괄은 `codex exec` |
 | `agents/` | `mod.rs` `clean.rs` | 앱이 보여 주는 CLI 설치·로그인 상태와 공식 설치·로그인, 깨끗한 테스트 프로필(환경변수 허용 목록·오염 검사) |
 | `usage/` | `mod.rs` `probe.rs` `budget.rs` | 구독 창 형식, `usage.json` 조회·저장, 하루 사용 예산(ADR-0004) |
 | `context/` | `mod.rs` `tokens.rs` | 세션 공유 컨텍스트 검색·주입과 토큰 보고(ADR-0005) |
-| `lead/` | `mod.rs` `prompt.rs` `files.rs` | 총괄 채팅(ADR-0008): 프로젝트별 스레드(`leads/<id>/events.jsonl`), 읽기 전용 총괄 한 턴과 세션 재개, `o-plan` 블록 읽기·정책 검사·한 번만 실행, 첨부(O 상태 폴더 밖) |
+| `lead/` | `mod.rs` `prompt.rs` `files.rs` `approvals.rs` `steps.rs` | 총괄 채팅(ADR-0008): 프로젝트별 스레드(`leads/<id>/events.jsonl`), 총괄 한 턴과 세션 재개, `o-plan` 블록 읽기·정책 검사·한 번만 실행, 첨부(O 상태 폴더 밖). 일반 모드의 건별 승인(`approvals`: 가드 먼저, `approvals/<id>.json` 대기, `decide`, Claude용 MCP 서버 `o _lead-approve`)과 진행 단계(`steps`: 스트림 → `lead.step`, 개정 3) |
 | `review.rs` | | `o review`: PR을 gh로 읽어 검토 카드 하나로 실행(ADR-0006) |
 | `sessions.rs` | | 이 PC의 Claude Code 세션을 실행처럼 읽기(읽기 전용) |
 | `projects.rs` | | 앱 왼쪽 목록의 프로젝트(ADR-0009): 프로젝트 루트(기본 `~/.project_o/project`)의 하위 폴더, 그 `test` 묶음, 등록한 폴더(`projects.json`). 등록은 `policy::check_project`와 같은 검사 |
@@ -47,7 +47,7 @@
 
 ### `crates/o-cli/src`
 
-`main.rs`는 `commands::find`로 명령을 찾아 실행할 뿐이다. `commands/mod.rs`의 `COMMANDS` 표가 이름·도움말 줄·처리 함수를 가지며 `o help`는 이 표의 순서대로 만들어진다. 명령 파일: `dispatch`(check·dispatch·내부 `_run`), `status`, `events`, `stop`, `msg`, `lead`(send·show·new·attach·dispatch·stop·models), `review`(내부 `_review` 포함), `context`, `tokens`, `usage`, `budget`, `runs`, `sessions`, `projects`(list·add·remove·new·root·check), `guard`(hook·scan), `mirror`, `agents`, `about`.
+`main.rs`는 `commands::find`로 명령을 찾아 실행할 뿐이다. `commands/mod.rs`의 `COMMANDS` 표가 이름·도움말 줄·처리 함수를 가지며 `o help`는 이 표의 순서대로 만들어진다. 명령 파일: `dispatch`(check·dispatch·내부 `_run`), `status`, `events`, `stop`, `msg`, `lead`(send·show·new·attach·dispatch·decide·stop·models, 내부 `_lead-approve`), `review`(내부 `_review` 포함), `context`, `tokens`, `usage`, `budget`, `runs`, `sessions`, `projects`(list·add·remove·new·root·check), `guard`(hook·scan), `mirror`, `agents`, `about`.
 
 ### `app/src-tauri/src`
 
@@ -58,7 +58,7 @@
 | 폴더 | 내용 |
 |---|---|
 | `shell/` | `App.tsx`(메인 창·팝아웃), `Sidebar`, `SidePanel`(오른쪽 패널과 보기 목록), `StatusBar`, `panelLayout.ts`, `announcer.ts`, 막힌 링크 안내 `LinkNotice`(`main.tsx`에 마운트) |
-| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 프로젝트나 작업 폴더 안의 로컬 이미지만 별도 표시, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
+| `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 진행 단계 `LeadWork`(진행 중 목록·답 위의 접힌 "작업 n단계"), 입력창 바로 위 승인 카드 `LeadApprovalCard`(거부가 기본 포커스, 항상 허용 없음), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 프로젝트나 작업 폴더 안의 로컬 이미지만 별도 표시, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(설계·대시보드), 팀 에이전트 탭·분할 화면 `AgentPanes`(1·2·4칸, 칸 배정은 `src/core/panes.ts`), 전체 `WorkDashboard`·`AllNextUp`, 예약 `Automation`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
@@ -70,11 +70,11 @@
 | `lib/` | `format`, `storage`, `timeScale`, `dismiss` |
 | `ui/` | 여러 기능이 쓰는 컨트롤(`controls.tsx`), 위로 열리는 선택 메뉴 `Menu.tsx`, `AgentStateDot`, 바깥 링크 `ExternalAnchor`(데스크톱은 `open_external`, 브라우저는 noopener 새 탭 — 채팅 Markdown 밖의 모든 바깥 링크) |
 
-저장소 루트의 `src/core/*.ts`(기록 접기 `snapshot`, 다음 할 일 `attention`, 이벤트 타입, 한도 표시값, 총괄 스레드 접기·노력 수준·첨부 검사 `lead`, 프로젝트 소속·첫 실행 후보·카드 칩 요약 `projects`, 에이전트 칸 배정 `panes`)는 화면과 `tests/`가 같이 쓰는 순수 로직이다. 화면은 판단하지 않고 이 함수의 결과를 그린다.
+저장소 루트의 `src/core/*.ts`(기록 접기 `snapshot`, 다음 할 일 `attention`, 이벤트 타입, 한도 표시값, 총괄 스레드 접기·노력 수준·첨부 검사 `lead`, 진행 단계 문구·승인 카드 표시값 `leadWork`, 프로젝트 소속·첫 실행 후보·카드 칩 요약 `projects`, 에이전트 칸 배정 `panes`)는 화면과 `tests/`가 같이 쓰는 순수 로직이다. 화면은 판단하지 않고 이 함수의 결과를 그린다.
 
 ## 데이터 흐름
 
-0. **총괄 채팅**(ADR-0008): 앱 입력창의 글과 첨부가 `o lead send`(Tauri `lead_send`)로 가면 `lead`가 그 프로젝트의 스레드에 남기고, 등록부의 `Provider::lead` 인자로 총괄 CLI를 읽기 전용으로 한 턴 띄운다(세션 재개, API 키 변수 제거). 답의 `o-plan` 블록은 프로젝트를 고정해 2단계와 같은 검사를 받고 `lead.plan`으로 저장된다. 사람이 계획 카드의 "실행"을 누르면 `o lead dispatch`가 다시 검사해 3단계로 넘긴다.
+0. **총괄 채팅**(ADR-0008): 앱 입력창의 글과 첨부가 `o lead send`(Tauri `lead_send`)로 가면 `lead`가 그 프로젝트의 스레드에 남기고, 등록부의 `Provider::lead` 인자로 총괄 CLI를 한 턴 띄운다(세션 재개, API 키 변수 제거). 읽기 외의 동작은 `lead::approvals`가 가드 검사 뒤 승인 카드(`thread.approvals`)로 사람에게 묻고, `o lead decide`(Tauri `lead_decide`)의 답만 받는다. 스트림의 도구 호출은 `lead::steps`가 `lead.step`으로 남긴다(개정 3). 답의 `o-plan` 블록은 프로젝트를 고정해 2단계와 같은 검사를 받고 `lead.plan`으로 저장된다. 사람이 계획 카드의 "실행"을 누르면 `o lead dispatch`가 다시 검사해 3단계로 넘긴다.
 1. **계획**: 총괄(앱 총괄 채팅, 또는 `skills/o`를 쓰는 터미널 에이전트)이 계획 JSON(프로젝트 하나, 카드 몇 장)을 만든다. 카드에는 데이터만 있다(`run::plan`).
 2. **정책**: `policy::check_plan`이 `run::store::policy_context`(오늘 카드 수·실행 중 카드·쿨다운·하루 예산)로 계획을 검사한다. 위반이 하나라도 있으면 아무것도 실행하지 않는다(종료 코드 2).
 3. **실행**: 통과하면 `runs/<runId>/`를 만들고 `o _run`을 백그라운드로 띄운다. `run::runner`는 카드마다 시작 직전에 상한·예산을 다시 확인하고, `context::prepare`로 관련 컨텍스트 절을 만든 뒤 `providers::launch_spec_with`의 인자로 공식 CLI를 셸 없이 띄운다(`--profile project-o`·`--clean`이면 `agents::clean` 환경, ADR-0013). Windows에서는 Job Object로 묶는다.
@@ -131,7 +131,7 @@
 
 ## 바꿀 때 지키는 것
 
-- 프로바이더 보안 동작(허용 도구 `Bash(o msg *)`·`Bash(o context *)`, Codex `--add-dir`, agy의 정확한 두 허용 규칙, 깨끗한 환경 허용 목록, 권한 우회 옵션 없음)은 `crates/o-core/tests/{providers,clean,agents}.rs`가 고정한다. 총괄의 읽기 전용 실행·한 번만 실행·첨부 규칙·API 키 변수 제거는 `crates/o-core/tests/{providers,lead}.rs`가 고정한다.
+- 프로바이더 보안 동작(허용 도구 `Bash(o msg *)`·`Bash(o context *)`, Codex `--add-dir`, agy의 정확한 두 허용 규칙, 깨끗한 환경 허용 목록, 권한 우회 옵션 없음)은 `crates/o-core/tests/{providers,clean,agents}.rs`가 고정한다. 총괄의 읽기 전용 실행·한 번만 실행·첨부 규칙·API 키 변수 제거는 `crates/o-core/tests/{providers,lead}.rs`가, 일반 모드 승인(허용·거부·시간 초과·중지·가드 거부·자기 승인 차단·Codex 응답 매핑)과 YOLO 불변은 `lead/approvals.rs`·`tests/lead_approvals.rs`·`providers.rs`(`yolo_leads_ignore_the_approver`)·`o-cli/tests/agent_boundary.rs`가 고정한다.
 - `policy.rs`의 `LIMITS`, `crates/o-guard/src/rules.rs`의 규칙·허용 경로는 공용 경계다(ADR + 두 사람 승인).
 - `events.jsonl`의 이벤트 형식은 화면 계약이다(`src/core/events.ts`). 새 이벤트는 모르는 화면이 무시할 수 있게 더한다.
 - `o help`·명령 출력·종료 코드는 총괄 에이전트와 개발 서버가 읽는다. 구조를 바꿔도 그대로 둔다.
