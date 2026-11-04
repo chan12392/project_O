@@ -3,11 +3,15 @@
 use std::{path::PathBuf, process::Command, sync::{Arc, Mutex}};
 use o_core::run::{events::CardStatus, plan::Plan, runner::{run_plan, Spawner}, store};
 
+fn sample_result() -> String {
+    format!("begin-617b{}한글\n\"middle-4f92\"{}end-9c72", "data".repeat(5_000), "data".repeat(5_000))
+}
+
 #[test]
 fn fake_agent() {
     match std::env::var("O_PROMPT_TEST_ROLE").as_deref() {
         Ok("source") => {
-            let result = format!("begin-617b{}middle-4f92{}end-9c72", "data".repeat(5_000), "data".repeat(5_000));
+            let result = sample_result();
             println!("{}", serde_json::json!({"type":"result","subtype":"success","is_error":false,"result":result}));
         }
         Ok("target") => {
@@ -52,7 +56,7 @@ fn devin_receives_the_complete_large_predecessor_result_without_a_worktree() {
     });
     assert_eq!(run_plan(&home, "run", &plan, None, spawner).unwrap(), CardStatus::Done);
     let received = std::fs::read_to_string(base.join("received.txt")).unwrap();
-    assert!(received.contains("begin-617b") && received.contains("middle-4f92") && received.contains("end-9c72"));
+    assert!(received.contains(&serde_json::to_string(&sample_result()).unwrap()));
     assert!(!observed.lock().unwrap().as_ref().unwrap().exists());
     assert!(!store::run_dir(&home, "run").join("isolated-worktrees").exists());
 }
