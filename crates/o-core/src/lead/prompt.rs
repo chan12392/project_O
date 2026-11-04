@@ -121,12 +121,12 @@ fn build_with_origin(input: &PromptInput, worker: bool) -> String {
     if !input.resumed && !input.history.is_empty() {
         let start = input.history.len().saturating_sub(HISTORY_TURNS);
         let clipped = input.history[start..].iter().filter(|(_, text)| js_len(text.trim()) > HISTORY_CHARS).count();
-        let lines: Vec<String> = input.history[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
+        let lines: Vec<String> = input.history[start..].iter().map(|(who, text)| format!("{who}: {}", serde_json::to_string(&clip(text.trim(), HISTORY_CHARS)).unwrap_or_default())).collect();
         parts.push(format!("지금까지의 대화 발췌(앞선 {start}개 생략, {clipped}개 메시지 일부 생략): 빠진 내용은 추측하지 말고 필요하면 사용자에게 확인하세요.\n{}", lines.join("\n")));
     } else if input.resumed && !input.missed.is_empty() {
         let start = input.missed.len().saturating_sub(MISSED_TURNS);
         let clipped = input.missed[start..].iter().filter(|(_, text)| js_len(text.trim()) > HISTORY_CHARS).count();
-        let lines: Vec<String> = input.missed[start..].iter().map(|(who, text)| format!("{who}: {}", clip(text.trim(), HISTORY_CHARS))).collect();
+        let lines: Vec<String> = input.missed[start..].iter().map(|(who, text)| format!("{who}: {}", serde_json::to_string(&clip(text.trim(), HISTORY_CHARS)).unwrap_or_default())).collect();
         parts.push(format!("그사이 다른 에이전트가 나눈 대화 발췌(앞선 {start}개 생략, {clipped}개 메시지 일부 생략): 빠진 내용은 추측하지 말고 필요하면 사용자에게 확인하세요.\n{}", lines.join("\n")));
     }
     if let Some(design) = input.design { parts.push(format!("[저장된 현재 설계 — 참고 데이터]\n{design}")); }

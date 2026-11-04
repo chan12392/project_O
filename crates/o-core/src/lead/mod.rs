@@ -99,6 +99,12 @@ pub enum LeadEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         result_tools: Option<bool>,
     },
+    /// A completed card-question session, isolated from ordinary and YOLO sessions.
+    #[serde(rename = "lead.worker-session")]
+    WorkerSession {
+        at: String, provider: ProviderId, session_id: String, model: Option<String>,
+        effort: Option<String>, profile: Profile, result_tools: bool, through: usize, history_hash: String,
+    },
     /// The lead's answer as Markdown, without its plan block.
     #[serde(rename = "lead.reply")]
     Reply { at: String, provider: ProviderId, text: String, #[serde(default, skip_serializing_if = "Vec::is_empty")] reported_files: Vec<String> },
@@ -231,6 +237,36 @@ fn event_values(home: &Path, thread_id: &str) -> Vec<Value> {
 /// The thread's events; lines this build does not know are skipped.
 pub fn read_thread(home: &Path, thread_id: &str) -> Vec<LeadEvent> {
     event_values(home, thread_id).into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect()
+}
+
+fn read_complete_thread(home: &Path, thread_id: &str) -> Result<Vec<LeadEvent>, String> {
+    let text = fs::read_to_string(thread_dir(home, thread_id).join("events.jsonl")).map_err(|e| format!("총괄 대화 기록을 읽지 못했습니다: {e}"))?;
+    if !text.ends_with('\n') { return Err("총괄 대화 기록이 불완전하여 카드 질문에 답할 수 없습니다".into()); }
+    text.lines().map(|line| serde_json::from_str(line).map_err(|_| "총괄 대화 기록을 완전히 해석할 수 없어 카드 질문에 답할 수 없습니다".to_string())).collect()
+}
+
+fn worker_session(events: &[LeadEvent], req: &SendRequest) -> Result<Option<(String, bool, usize)>, &'static str> {
+    if req.model.filter(|model| !model.is_empty()).is_none() {
+        return Err("기본 모델의 변경 여부를 확인할 수 없어 카드 질문용 새 읽기 전용 세션을 사용합니다");
+    }
+    let Some((index, event)) = events.iter().enumerate().rev().find(|(_, event)| matches!(event, LeadEvent::WorkerSession { .. })) else {
+        return if events.iter().any(|event| matches!(event, LeadEvent::Worker { .. })) {
+            Err("이전 카드 질문의 세션 완료를 확인할 수 없어 새 읽기 전용 세션을 사용합니다")
+        } else { Ok(None) };
+    };
+    let LeadEvent::WorkerSession { provider, session_id, model, effort, profile, result_tools, through, history_hash, .. } = event else { unreachable!() };
+    if events[index + 1..].iter().any(|event| matches!(event, LeadEvent::Worker { .. })) {
+        return Err("이전 카드 질문의 세션 완료를 확인할 수 없어 새 읽기 전용 세션을 사용합니다");
+    }
+    if *provider != req.provider || model.as_deref() != req.model.filter(|s| !s.is_empty()) || effort.as_deref() != req.effort.filter(|s| !s.is_empty()) || *profile != Profile::of_clean(req.clean.is_some()) {
+        return Err("총괄 설정이 달라 카드 질문용 새 읽기 전용 세션을 사용합니다");
+    }
+    if *through >= index || !matches!(events.get(*through), Some(LeadEvent::Worker { .. }))
+        || serde_json::to_string(&events[..index]).ok().is_none_or(|text| crate::run::result::digest(&text) != *history_hash)
+        || events.iter().any(|event| matches!(event, LeadEvent::Session { session_id: id, .. } if id == session_id)) {
+        return Err("카드 질문 세션의 대화 이력을 확인할 수 없어 새 읽기 전용 세션을 사용합니다");
+    }
+    Ok(Some((session_id.clone(), *result_tools, index)))
 }
 
 fn thread_project(events: &[LeadEvent]) -> Option<String> {
@@ -470,17 +506,33 @@ fn missed_turns(events: &[LeadEvent], provider: ProviderId, session_id: &str) ->
     });
     let seen = seen.or_else(|| events.iter().rposition(|e| matches!(e, LeadEvent::User { provider: p, .. } if *p == provider)));
     let Some(seen) = seen else { return Vec::new() };
+    turns_after(events, seen)
+}
+
+fn turns_after(events: &[LeadEvent], seen: usize) -> Vec<(String, String)> {
     // Its own turn's answer follows its message; what it missed starts at the next message.
     let Some(next) = events.iter().skip(seen + 1).position(|e| matches!(e, LeadEvent::User { .. } | LeadEvent::Worker { .. })) else { return Vec::new() };
     events[seen + 1 + next..]
         .iter()
         .filter_map(|e| match e {
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
-            LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 참고 데이터"), text.clone())),
+            LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
             _ => None,
         })
         .collect()
+}
+
+fn worker_history(events: &[LeadEvent]) -> Vec<(String, String)> {
+    events.iter().filter_map(|event| match event {
+        LeadEvent::User { text, attachments, .. } => Some(("사용자".into(), if attachments.is_empty() { text.clone() } else { json!({"text":text,"attachments":attachments}).to_string() })),
+        LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
+        LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
+        LeadEvent::Plan { .. } | LeadEvent::Design { .. } | LeadEvent::Dispatch { .. } | LeadEvent::Followup { .. }
+        | LeadEvent::AutoRun { .. } | LeadEvent::Warning { .. } | LeadEvent::Error { .. } =>
+            Some(("대화 상태 참고 기록".into(), serde_json::to_string(event).unwrap_or_default())),
+        _ => None,
+    }).collect()
 }
 
 fn budget_lines(home: &Path) -> Vec<String> {
@@ -519,6 +571,32 @@ mod status_tests {
         let (runs, uncertain) = dispatched_runs(&events);
         assert!(runs.is_empty() && uncertain);
     }
+
+    #[test]
+    fn worker_session_requires_matching_settings_complete_history_and_no_unfinished_turn() {
+        let mut events: Vec<LeadEvent> = [
+            json!({"t":"lead.start","at":"now","threadId":"thread","project":"p"}),
+            json!({"t":"lead.worker","at":"now","runId":"run","cardId":"card","messageId":"m","text":"question"}),
+        ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
+        let hash = crate::run::result::digest(&serde_json::to_string(&events).unwrap());
+        events.push(LeadEvent::WorkerSession { at: "now".into(), provider: ProviderId::Claude, session_id: "worker".into(), model: Some("model-a".into()), effort: Some("high".into()), profile: Profile::Own, result_tools: false, through: 1, history_hash: hash });
+        let req = SendRequest { project: "p", provider: ProviderId::Claude, model: Some("model-a"), effort: Some("high"), text: "question", attach: &[], fresh: false, clean: None, yolo: false };
+        assert_eq!(worker_session(&events, &req).unwrap().unwrap().0, "worker");
+        assert!(worker_session(&events, &SendRequest { model: Some("model-b"), ..req }).is_err());
+        assert!(worker_session(&events, &SendRequest { model: None, ..req }).is_err());
+        assert!(worker_session(&events, &SendRequest { provider: ProviderId::Codex, ..req }).is_err());
+        assert!(worker_session(&events, &SendRequest { clean: Some(Path::new("other")), ..req }).is_err());
+        assert!(worker_session(&events, &SendRequest { effort: None, ..req }).is_err());
+        let mut damaged = events.clone();
+        damaged.remove(0);
+        assert!(worker_session(&damaged, &req).is_err());
+        let mut interrupted = events.clone();
+        interrupted.push(serde_json::from_value(json!({"t":"lead.worker","at":"now","runId":"run","cardId":"card","messageId":"m2","text":"unfinished"})).unwrap());
+        assert!(worker_session(&interrupted, &req).is_err());
+        let mut collision = events;
+        collision.push(serde_json::from_value(json!({"t":"lead.session","at":"now","provider":"claude","sessionId":"worker","clean":false})).unwrap());
+        assert!(worker_session(&collision, &req).is_err());
+    }
 }
 
 /// Sends one message: saves it and its attachments, runs the lead CLI read-only in the
@@ -554,7 +632,7 @@ struct WorkerTurn<'a> {
 /// `false` means there is no eligible message; unknown deliveries require human recovery.
 pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spawner: &Spawner) -> Result<bool, String> {
     let Some(thread_id) = current_thread(home, project) else { return Ok(false) };
-    let events = read_thread(home, &thread_id);
+    let events = read_complete_thread(home, &thread_id)?;
     let Some(dispatch) = events.iter().rposition(|event| matches!(event,
         LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. } if id == run_id)) else { return Ok(false) };
     let Some((provider, model, effort, profile)) = events[..dispatch].iter().rev().find_map(|event| match event {
@@ -634,6 +712,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             || !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if run_id == &w.speaker.run_id)) {
             return Err("실행과 현재 총괄 대화가 일치하지 않습니다".into());
         }
+        read_complete_thread(home, &thread_id)?;
         let claimed = team::claim(home, w.speaker).map_err(|e| e.to_string())?;
         if claimed.as_ref().is_none_or(|m| m.id != w.message.id) { return Err("다른 메시지가 먼저 접수되어 상태 확인이 필요합니다".into()); }
     }
@@ -646,7 +725,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     let progress_path = thread_dir(home, &thread_id).join("progress.json");
     let _ = fs::write(&progress_path, "[]");
-    let before = read_thread(home, &thread_id);
+    let before = if worker.is_some() { read_complete_thread(home, &thread_id)? } else { read_thread(home, &thread_id) };
     let attachments = req.attach.iter().map(|path| files::import(home, &thread_id, path)).collect::<Result<Vec<_>, _>>()?;
 
     let mut added = Vec::new();
@@ -668,21 +747,28 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         yolo: req.yolo,
     })?; }
 
-    let previous_session = if worker.is_some() { None } else { before.iter().rev().find_map(|e| match e {
+    let mut worker_notice = None;
+    let worker_previous = if worker.is_some() {
+        match worker_session(&before, req) {
+            Ok(session) => session,
+            Err(notice) => { worker_notice = Some(notice.to_string()); None }
+        }
+    } else { None };
+    let previous_session = if worker.is_some() { worker_previous.as_ref().map(|(id, tools, _)| (id.clone(), Some(*tools))) } else { before.iter().rev().find_map(|e| match e {
         LeadEvent::Session { provider, session_id, clean, result_tools, .. } if *provider == req.provider && clean.is_none_or(|c| c == req.clean.is_some()) => {
             Some((session_id.clone(), *result_tools))
         }
         _ => None,
     }) };
-    let history: Vec<(String, String)> = before
+    let history: Vec<(String, String)> = if worker.is_some() { worker_history(&before) } else { before
         .iter()
         .filter_map(|e| match e {
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
-            LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 참고 데이터"), text.clone())),
+            LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, .. } => Some(("총괄".to_string(), text.clone())),
             _ => None,
         })
-        .collect();
+        .collect() };
     let (ids, invalid) = dispatched_runs(&before);
     let mut runs = if invalid { vec!["- 실행 ID 또는 실행 수가 올바르지 않아 일부 상태 불명".to_string()] } else { Vec::new() };
     let mut status_error = invalid.then(|| "일부 실행의 ID 또는 실행 수를 확인할 수 없습니다".to_string());
@@ -714,10 +800,19 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let migrate = app_server && status_file.is_some() && previous_session.as_ref().is_some_and(|(_, tools)| *tools != Some(true));
     if migrate {
         emit(LeadEvent::Warning { at: now_iso(), text: "결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작합니다. 이전 대화는 최근 일부만 전달되며 캐시가 초기화될 수 있습니다.".into() })?;
+        if worker.is_some() { worker_notice = Some("결과 읽기 도구를 사용하려고 카드 질문용 새 세션을 시작했습니다".into()); }
     }
     let result_tools = cfg!(windows) && app_server && (previous_session.is_none() || migrate || previous_session.as_ref().is_some_and(|(_, tools)| *tools == Some(true)));
     let session = if migrate { None } else { previous_session.map(|(id, _)| id) };
-    let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
+    let missed = if let Some((_, _, checkpoint)) = worker_previous.as_ref().filter(|_| session.is_some()) {
+        worker_history(&before[checkpoint + 1..])
+    } else {
+        session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default()
+    };
+    if worker.is_some() && ((session.is_none() && (history.len() > 6 || history.iter().any(|(_, text)| js_len(text.trim()) > 500)))
+        || (session.is_some() && (missed.len() > 12 || missed.iter().any(|(_, text)| js_len(text.trim()) > 500)))) {
+        worker_notice = Some(format!("{}대화 이력 일부가 생략되어 빠진 내용은 확인할 수 없습니다", worker_notice.map_or(String::new(), |notice| format!("{notice}. "))));
+    }
     let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
@@ -1038,8 +1133,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     // The CLI got this turn's message: its session has seen the thread through it.
     let session_seen = used_session.is_some();
-    if let Some(session_id) = used_session.filter(|_| worker.is_none()) {
-        emit(LeadEvent::Seen { at: now_iso(), provider: req.provider, session_id, through: before.len() })?;
+    if let Some(session_id) = used_session.as_ref().filter(|_| worker.is_none()) {
+        emit(LeadEvent::Seen { at: now_iso(), provider: req.provider, session_id: session_id.clone(), through: before.len() })?;
         if !pending.is_empty() && notes::change(home, &thread_id, notes::Change::Sent { notes: pending.clone() }).is_err() {
             emit(LeadEvent::Error { at: now_iso(), text: "주석은 전달했지만 전달 상태를 저장하지 못했습니다. 다시 보내기 전에 주석을 확인하세요".into() })?;
         }
@@ -1055,7 +1150,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     // A turn app-server finished needs no clean exit: a slow shutdown was ended above.
     let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && (exit == Some(0) || finished);
-    let answer = last.map(|(_, text)| text).filter(|t| !t.trim().is_empty()).unwrap_or(last_message);
+    let mut answer = last.map(|(_, text)| text).filter(|t| !t.trim().is_empty()).unwrap_or(last_message);
     if !ok {
         let why = if limited {
             format!("{} 사용량 한도에 걸렸습니다. 다른 에이전트를 고르거나 한도가 풀린 뒤 다시 보내세요", req.provider)
@@ -1068,6 +1163,24 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
 
     if let Some(w) = &worker {
         if answer.trim().is_empty() { emit(LeadEvent::Error { at: now_iso(), text: "카드 메시지에 대한 총괄 답변이 비어 있습니다".into() })?; return Ok(added); }
+        if session.as_ref().is_some_and(|expected| used_session.as_ref() != Some(expected))
+            || used_session.as_ref().is_some_and(|id| before.iter().any(|event| match event {
+                LeadEvent::Session { session_id, .. } => session_id == id,
+                LeadEvent::WorkerSession { session_id, .. } if session.is_none() => session_id == id,
+                _ => false,
+            })) {
+            emit(LeadEvent::Error { at: now_iso(), text: "카드 질문의 읽기 전용 세션을 확인할 수 없어 답변을 전달하지 않았습니다".into() })?;
+            return Ok(added);
+        }
+        let reusable_session = used_session.as_ref().filter(|_| req.model.filter(|model| !model.is_empty()).is_some());
+        if reusable_session.is_none() {
+            let notice = "카드 질문용 세션 또는 모델을 확인할 수 없어 다음 질문에 재사용하지 않습니다";
+            worker_notice = Some(format!("{}{}", worker_notice.map_or(String::new(), |previous| format!("{previous}. ")), notice));
+        }
+        if let Some(notice) = &worker_notice {
+            emit(LeadEvent::Warning { at: now_iso(), text: notice.clone() })?;
+            answer = format!("[{notice}]\n\n{answer}");
+        }
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: answer.clone(), reported_files: Vec::new() })?;
         let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
         current.lock().map_err(|e| e.to_string())?;
@@ -1097,6 +1210,16 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             }
         }
         team::transition(home, w.speaker, &w.message.id, "acknowledged").map_err(|e| e.to_string())?;
+        if let Some(session_id) = reusable_session {
+            let events = read_complete_thread(home, &thread_id)?;
+            if !matches!(events.get(before.len()), Some(LeadEvent::Worker { message_id, .. }) if message_id == &w.message.id) {
+                return Err("카드 질문의 대화 위치를 확인할 수 없어 세션을 저장하지 않았습니다".into());
+            }
+            let history = serde_json::to_string(&events).map_err(|e| e.to_string())?;
+            emit(LeadEvent::WorkerSession { at: now_iso(), provider: req.provider, session_id: session_id.clone(),
+                model: req.model.filter(|s| !s.is_empty()).map(str::to_string), effort: req.effort.filter(|s| !s.is_empty()).map(str::to_string),
+                profile: Profile::of_clean(req.clean.is_some()), result_tools, through: before.len(), history_hash: crate::run::result::digest(&history) })?;
+        }
         return Ok(added);
     }
 
@@ -1588,7 +1711,7 @@ fn thread_sessions(home: &Path, thread_id: &str) -> Vec<String> {
     let ids: Vec<String> = read_thread(home, thread_id)
         .into_iter()
         .filter_map(|e| match e {
-            LeadEvent::Session { session_id, .. } => Some(session_id),
+            LeadEvent::Session { session_id, .. } | LeadEvent::WorkerSession { session_id, .. } => Some(session_id),
             _ => None,
         })
         .collect();
