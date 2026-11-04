@@ -71,6 +71,7 @@ export const devBackend: Backend = {
     ),
   leadDispatch: (planId, clean) =>
     fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
+  leadDecide: (id, allow) => fetch(`/api/lead/decide?${new URLSearchParams({ id, decision: allow ? "allow" : "deny" })}`, { method: "POST" }).then((r) => json<{ id: string; decision: "allow" | "deny" }>(r)),
   leadStop: (project) => fetch(`/api/lead/stop${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "POST" }).then((r) => json<{ stopped: boolean }>(r)),
   leadStopAll: (project) => fetch(`/api/lead/stop-all?project=${encodeURIComponent(project)}`, { method: "POST" }).then((r) => json<{ stopped: number }>(r)),
   leadWake: (runId) => fetch(`/api/lead/wake?run=${encodeURIComponent(runId)}`, { method: "POST" }).then((r) => json<{ processed: boolean }>(r)),

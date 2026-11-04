@@ -135,6 +135,8 @@ const ATTACH_LIMIT = 10 * 1024 * 1024;
 const LEAD_PROVIDER = /^(claude|codex|agy)$/;
 const LEAD_EFFORT = /^(minimal|low|medium|high|xhigh|max)$/;
 const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
+/** A waiting approval's id (`<threadId>-a<n>`, crates/o-core/src/lead/approvals.rs); `o lead decide` checks it again. */
+const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
 /** How long a lead model list is reused before the CLI is asked again (the Tauri `lead_models` keeps it as long). */
 const MODELS_TTL_MS = 10 * 60_000;
 const leadModels = new Map<string, { at: number; out: string }>();
@@ -246,6 +248,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
     try { run(oWithInput(["lead", "note", thread, "-"], await body(req, 64 * 1024), 60_000)); }
     catch (e) { fail(413, (e as Error).message); }
+    return true;
+  }
+  // The Tauri lead_decide twin: the person's 허용/거부 for one action the lead waits on.
+  if (path === "/lead/decide") {
+    const id = query.get("id") ?? "";
+    const decision = query.get("decision") ?? "";
+    if (!APPROVAL_ID.test(id) || (decision !== "allow" && decision !== "deny")) { fail(400, "승인 요청 id나 결정이 올바르지 않습니다"); return true; }
+    run(o(["lead", "decide", id, decision]));
     return true;
   }
   if (path === "/lead/stop") {

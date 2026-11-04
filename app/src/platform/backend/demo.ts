@@ -162,6 +162,7 @@ export const demoBackend: Backend = {
   leadAttach: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadSend: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadDispatch: () => Promise.reject(new Error(LEAD_REFUSED)),
+  leadDecide: () => Promise.reject(new Error(LEAD_REFUSED)),
   leadStop: async () => ({ stopped: false }),
   leadWake: async () => { throw new Error("미리보기에서는 총괄을 실행할 수 없습니다"); },
   leadRetry: async () => { throw new Error("미리보기에서는 메시지를 복구할 수 없습니다"); },

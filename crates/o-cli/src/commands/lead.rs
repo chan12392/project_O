@@ -25,6 +25,25 @@ pub const WATCH: super::Command = super::Command {
         0
     },
 };
+/// `o _lead-approve <home> <threadId> <token> <project>`: one normal-mode Claude lead turn's
+/// approval server (ADR-0008 개정 3), started by Claude Code as its only MCP server. It asks the
+/// person and waits; it never decides anything itself.
+pub const APPROVE: super::Command = super::Command {
+    name: o_core::lead::approvals::COMMAND,
+    usage: "",
+    run: |_, args| {
+        let [home, thread_id, token, project] = args else { return fail("o _lead-approve <home> <threadId> <token> <project>") };
+        let server = o_core::lead::approvals::Server {
+            home: PathBuf::from(home),
+            thread_id: thread_id.clone(),
+            token: token.clone(),
+            project: project.clone(),
+            wait: o_core::lead::approvals::WAIT,
+        };
+        o_core::lead::approvals::serve(server, std::io::stdin().lock(), std::io::stdout());
+        0
+    },
+};
 use o_core::run::yolo;
 use o_core::sys::proc;
 use serde_json::json;
@@ -48,6 +67,7 @@ pub const LEAD: Command = Command {
   o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
   o lead dispatch <planId> [--profile project-o|own] [--no-context] [--mode yolo|normal]
                              제안된 계획을 정책 검사 후 한 번 실행, runId 출력 (--profile은 o dispatch와 같음)
+  o lead decide <승인 id> allow|deny         총괄이 기다리는 작업 하나를 허용하거나 거부 (사람 전용)
   o lead stop [--project <폴더>]             답하는 중인 총괄 중지
   o lead stop-all --project <폴더>           이 대화의 총괄과 실행을 모두 중지",
     run: lead_main,
@@ -65,6 +85,7 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("retry") => retry(home, rest),
         Some("attach") => attach(home, rest),
         Some("dispatch") => dispatch(home, rest),
+        Some("decide") => decide(home, rest),
         Some("stop") => stop(home, rest),
         Some("stop-all") => stop_all(home, rest),
         Some("models") => models(rest),
@@ -330,6 +351,21 @@ fn dispatch(home: &Path, args: &[String]) -> i32 {
             2
         }
         Err(DispatchError::Other(message)) => fail(&message),
+    }
+}
+
+/// The person's answer to one waiting request. Agents never run this: `main` refuses it in
+/// an agent's environment, and a lead's shell is denied `o lead` altogether.
+fn decide(home: &Path, args: &[String]) -> i32 {
+    let [id, answer] = args else { return fail("o lead decide <승인 id> allow|deny가 필요합니다") };
+    let allow = match answer.as_str() {
+        "allow" => true,
+        "deny" => false,
+        _ => return fail("allow나 deny를 적으세요"),
+    };
+    match lead::decide(home, id, allow) {
+        Ok(()) => { println!("{}", json!({ "id": id, "decision": answer })); 0 }
+        Err(error) => fail(&error),
     }
 }
 

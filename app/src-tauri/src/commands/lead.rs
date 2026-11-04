@@ -175,6 +175,12 @@ pub async fn lead_models(provider: String) -> Result<Value, String> {
     Ok(json!({ "provider": provider, "models": models }))
 }
 
+/// The person's 허용/거부 for one action the lead waits on (`o lead decide`, ADR-0008 개정 3).
+#[tauri::command]
+pub async fn lead_decide(id: String, allow: bool) -> Result<Value, String> {
+    blocking(move || lead::decide(&store::default_home(), &id, allow).map(|()| json!({ "id": id, "decision": if allow { "allow" } else { "deny" } }))).await?
+}
+
 /// Stops the project's lead while it answers (`o lead stop`).
 #[tauri::command]
 pub async fn lead_stop(project: Option<String>) -> Result<Value, String> {
