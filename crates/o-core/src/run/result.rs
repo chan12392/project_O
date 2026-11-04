@@ -202,7 +202,13 @@ pub fn read(home: &Path, run_id: &str, recipient: &str, source: &str, expected: 
         .is_some_and(|dependencies| dependencies.iter().any(|id| id == source));
     if !allowed { return Err("이 카드가 의존하는 선행 결과만 읽을 수 있습니다".into()); }
     let events = locked_event_text(home, run_id).map_err(|e| format!("실행 기록을 읽지 못했습니다: {e}"))?;
-    framed(&events)?;
+    let text = verify_event_result(&events, source, expected)?;
+    chunk(run_id, source, expected, offset, &text)
+}
+
+/// Validate a locked event snapshot without acquiring the event lock again.
+pub(crate) fn verify_event_result(events: &str, source: &str, expected: &str) -> Result<String, String> {
+    framed(events)?;
     let mut found: Option<(CardStatus, Option<String>)> = None;
     for line in events.lines().filter(|line| !line.trim().is_empty()) {
         let event: Value = serde_json::from_str(line).map_err(|_| "실행 기록이 불완전하거나 손상되었습니다")?;
@@ -219,7 +225,7 @@ pub fn read(home: &Path, run_id: &str, recipient: &str, source: &str, expected: 
     if status != CardStatus::Done { return Err("선행 작업이 성공하지 않았습니다".into()); }
     let text = result.as_deref().unwrap_or("");
     if digest(text) != expected { return Err("선행 결과가 변경되어 읽기를 중단했습니다".into()); }
-    chunk(run_id, source, expected, offset, text)
+    Ok(text.to_string())
 }
 
 #[cfg(all(test, windows))]

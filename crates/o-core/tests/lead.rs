@@ -2,6 +2,7 @@
 //! with O_FAKE_LEAD_LINES it prints those lines and exits, so no real (paid) CLI runs.
 
 use std::path::{Path, PathBuf};
+mod support;
 use std::process::Command;
 use std::sync::{Arc, Mutex};
 use std::io::{BufRead, Write};
@@ -331,10 +332,9 @@ fn fake_without_app_server(lines: Vec<String>, tag: &'static str, log: PathBuf) 
 const APP_SERVER: FakeProbe = FakeProbe { app_server: true, tag: "app-server", log: None };
 
 /// The fake CLI's answer when `spec` is the app-server probe.
-fn probe_command(spec: &LaunchSpec, cwd: &str, probe: &FakeProbe) -> Option<std::io::Result<Command>> {
+fn probe_command(spec: &LaunchSpec, cwd: &str, probe: &FakeProbe) -> Option<std::io::Result<o_core::sys::launch::Launch>> {
     if spec.bin != "codex" || spec.args != o_core::providers::codex::APP_SERVER_PROBE { return None; }
-    Some(std::env::current_exe().map(|exe| {
-        let mut command = Command::new(exe);
+    Some(support::fake_worker_launch().map(|mut command| {
         command.current_dir(cwd).arg(format!("probe-{}", probe.tag)).env(FAKE_PROBE, if probe.app_server { "1" } else { "0" });
         if let Some(log) = &probe.log { command.env(FAKE_PROBE_LOG, log); }
         command
@@ -348,7 +348,7 @@ fn fake_cli(lines: Vec<String>, ms: u64, probe: FakeProbe) -> (Arc<Spawner>, Arc
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
         if let Some(command) = probe_command(spec, cwd, &probe) { return command; }
         keep.lock().unwrap().push(spec.clone());
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_SLEEP, ms.to_string());
         if spec.bin == "codex" && spec.args.first().is_some_and(|arg| arg == "app-server") {
             command.env(FAKE_APP_SERVER, "1").env("O_FAKE_LEAD_INPUT_FILE", Path::new(cwd).join("fake-codex-input.json"));
@@ -412,7 +412,7 @@ fn live_tool_progress() {
     let worker = std::thread::spawn(move || {
         let spawner = move |spec: &LaunchSpec, cwd: &str| {
             if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_PAUSE, "500");
             Ok(command)
         };
@@ -457,7 +457,7 @@ fn codex_approval() {
     let worker = std::thread::spawn(move || {
         let spawner = move |spec: &LaunchSpec, cwd: &str| {
             if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
                 .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
             Ok(command)
@@ -494,7 +494,7 @@ fn codex_slow_shutdown() {
         json!({"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":5}}).to_string()];
     let spawner = move |spec: &LaunchSpec, cwd: &str| {
         if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
             .env(FAKE_APP_SERVER, "1").env(FAKE_LINGER, "20000");
         Ok(command)
@@ -519,7 +519,7 @@ fn codex_partial() {
     let worker = std::thread::spawn(move || {
         let spawner = move |spec: &LaunchSpec, cwd: &str| {
             if let Some(probe) = probe_command(spec, cwd, &APP_SERVER) { return probe; }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap())
                 .env(FAKE_APP_SERVER, "1").env(FAKE_PAUSE, "500");
             Ok(command)
@@ -661,7 +661,7 @@ fn gated(lines: Vec<String>, entered: PathBuf, release: PathBuf) -> Arc<Spawner>
         while !release.exists() {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap());
         Ok(command)
     })
@@ -1284,7 +1284,7 @@ fn project_hooks_off() {
 fn starting_spawner(lines: Vec<String>, ran: PathBuf, delay_ms: u64) -> Arc<Spawner> {
     Arc::new(move |_spec: &LaunchSpec, cwd: &str| {
         std::thread::sleep(std::time::Duration::from_millis(delay_ms));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_RAN, &ran);
         Ok(command)
     })

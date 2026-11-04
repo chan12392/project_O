@@ -32,6 +32,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(any(not(windows), test))]
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -373,6 +374,9 @@ struct TurnSlot {
     keep_marker: bool,
 }
 
+#[cfg(all(test, windows))]
+thread_local! { static FAIL_CHILD_MARKER: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
+
 impl TurnSlot {
     fn take(home: &Path, thread_id: &str, provider: ProviderId) -> Result<TurnSlot, String> {
         let lock = turn_lock(home, thread_id).map_err(|e| e.to_string())?;
@@ -404,9 +408,11 @@ impl TurnSlot {
         fs::rename(&temp, &self.path)
     }
 
-    fn set_child(&mut self, pid: u32) {
+    fn set_child(&mut self, pid: u32) -> io::Result<()> {
+        #[cfg(all(test, windows))]
+        if FAIL_CHILD_MARKER.get() { return Err(io::Error::other("injected child marker failure")); }
         self.marker.child = Some(ChildMark { pid, started: proc::started_at(pid) });
-        let _ = self.write();
+        self.write()
     }
 
     /// Whether this turn was asked to stop: the stop file names its token, or is empty (written
@@ -776,9 +782,9 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
 
     let app_server = req.provider == ProviderId::Codex
         && !req.yolo
-        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(providers::codex::supports_app_server);
+        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(|launch| providers::codex::supports_app_server(launch.command()));
     let default_model_supported = worker.is_some() && app_server && req.model.filter(|model| !model.is_empty()).is_none()
-        && spawner(&providers::codex::default_model_probe(), req.project).is_ok_and(providers::codex::supports_default_model_probe);
+        && spawner(&providers::codex::default_model_probe(), req.project).is_ok_and(|launch| providers::codex::supports_default_model_probe(launch.command()));
     let mut worker_notice = None;
     let worker_previous = if worker.is_some() {
         match worker_session(&before, req, default_model_supported) {
@@ -894,7 +900,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             command.env_clear().envs(env);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.
-        providers::remove_inherited(&mut command, &spec.env_remove);
+        for name in providers::names_to_remove(&spec.env_remove, std::env::vars_os().map(|(key, _)| key)) { command.env_remove(name); }
         command.envs(&spec.env);
         command.env("O_AGENT_ROLE", "lead");
         Ok(command)
@@ -905,20 +911,79 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         emit(stopped())?;
         return Ok(added);
     }
-    let spawned = command.and_then(|mut command| proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn());
-    let mut child = match spawned {
+    let spawned = command.and_then(|command| {
+        #[cfg(windows)]
+        {
+            #[cfg(test)]
+            if turn_process::NO_JOB.get() {
+                let mut command = command.command();
+                slot.marker.unresolved = Some(true);
+                slot.keep_marker = true;
+                if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
+                let child = match proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+                    Ok(child) => child,
+                    Err(error) => { slot.keep_marker = false; return Err(error); }
+                };
+                return Ok((crate::sys::worker::Child::standard(child), None));
+            }
+            let native = command.native(std::env::vars_os())?;
+            let executable = match command.handle_owner_executable {
+                Some(path) => path,
+                None => {
+                    let current = std::env::current_exe()?;
+                    if current.file_name().is_some_and(|name| name.eq_ignore_ascii_case("o.exe")) { current }
+                    else { current.parent().ok_or_else(|| io::Error::other("총괄 도우미 위치를 찾지 못했습니다"))?.join("o.exe") }
+                }
+            };
+            let owner = crate::sys::win_launch::HandleOwner::start(executable, "--o-handle-owner")?;
+            if slot.stop_asked() { return Err(io::Error::new(io::ErrorKind::Interrupted, "총괄이 중지되었습니다")); }
+            slot.marker.unresolved = Some(true);
+            slot.keep_marker = true;
+            if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
+            match native.spawn(&owner) {
+                Ok((child, tree)) => Ok((crate::sys::worker::Child::native(child), Some(Arc::new(Mutex::new(tree))))),
+                Err(error) => { slot.keep_marker = false; Err(error) }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let mut command = command.command();
+            slot.marker.unresolved = Some(true);
+            slot.keep_marker = true;
+            if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
+            let child = match proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+                Ok(child) => child,
+                Err(error) => { slot.keep_marker = false; return Err(error); }
+            };
+            let tree = proc::contain(&child).map(|tree| Arc::new(Mutex::new(tree)));
+            Ok((crate::sys::worker::Child::standard(child), tree))
+        }
+    });
+    let (mut child, tree) = match spawned {
         Ok(child) => child,
         Err(error) => {
+            if slot.stop_asked() { emit(stopped())?; return Ok(added); }
             emit(LeadEvent::Error { at: now_iso(), text: format!("총괄 CLI를 시작하지 못했습니다: {error}") })?;
             return Ok(added);
         }
     };
-    #[cfg(not(test))]
-    let tree = proc::contain(&child);
-    #[cfg(test)]
-    let tree = if turn_process::NO_JOB.get() { None } else { proc::contain(&child) };
     let contained = tree.is_some();
-    slot.set_child(child.id());
+    if let Err(error) = slot.set_child(child.id()) {
+        slot.keep_marker = true;
+        slot.marker.unresolved = Some(true);
+        let _ = slot.write();
+        let _ = child.kill();
+        return Err(format!("총괄 프로세스 상태를 기록하지 못했습니다: {error}"));
+    }
+    #[cfg(windows)]
+    if slot.stop_asked() {
+        let confirmed = tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|mut tree| tree.stop_and_confirm())) && child.wait(&tree).is_ok();
+        if confirmed { slot.keep_marker = false; }
+        emit(if confirmed { stopped() } else { LeadEvent::Error { at: now_iso(), text: "총괄 중지 후 자손 종료 상태가 불명입니다".into() } })?;
+        return Ok(added);
+    }
+    #[cfg(windows)]
+    if contained { if let Err(error) = child.resume() { return Err(format!("총괄 시작 상태가 불명입니다: {error}")); } }
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr_pipe = child.stderr.take();
@@ -1157,15 +1222,17 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let incomplete = status.is_none() || stdout_worker.as_ref().is_some_and(|h| !h.is_finished()) || stderr.as_ref().is_some_and(|h| !h.is_finished())
         || stdin_worker.as_ref().is_some_and(|h| !h.is_finished());
     let stop_asked = slot.stop_asked();
-    let (reason, reap) = process.finish();
+    let (reason, reap, tree_confirmed) = process.finish();
     let stderr_tail = stderr_tail.lock().unwrap().clone();
     let mut unknown_saved = true;
     // Without a job, closed pipes cannot prove that detached descendants have exited.
-    let unresolved = incomplete || (!contained && reason != turn_process::End::Complete);
+    let unresolved = incomplete || (!contained && reason != turn_process::End::Complete) || (cfg!(windows) && contained && !tree_confirmed);
     if unresolved {
         slot.marker.unresolved = Some(true);
         unknown_saved = slot.write().is_ok();
         slot.keep_marker = true;
+    } else {
+        slot.keep_marker = false;
     }
     if incomplete {
         // Keep the turn locked until the process and inherited pipes actually finish.
@@ -1213,12 +1280,12 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     if stop_asked || reason == turn_process::End::Stop {
         let text = if unknown_saved { "총괄 중지를 요청했지만 자손 프로세스 종료 여부는 불명입니다." }
             else { "총괄 중지를 요청했지만 자손 종료 여부가 불명이며 이 상태를 저장하지 못했습니다." };
-        emit(if contained { stopped() } else { LeadEvent::Error { at: now_iso(), text: text.into() } })?;
+        emit(if contained && !unresolved { stopped() } else { LeadEvent::Error { at: now_iso(), text: text.into() } })?;
         return Ok(added);
     }
     if timed_out {
         let minutes = limit.as_secs().div_ceil(60);
-        let text = if contained { format!("총괄이 제한 시간({minutes}분) 안에 답하지 않아 멈췄습니다. 요청을 나눠 다시 보내세요") }
+        let text = if contained && !unresolved { format!("총괄이 제한 시간({minutes}분) 안에 답하지 않아 멈췄습니다. 요청을 나눠 다시 보내세요") }
             else if unknown_saved { format!("총괄이 제한 시간({minutes}분)을 넘겨 종료를 요청했지만 자손 프로세스 종료 여부는 불명입니다.") }
             else { format!("총괄이 제한 시간({minutes}분)을 넘겼고 자손 종료 여부가 불명이며 이 상태를 저장하지 못했습니다.") };
         emit(LeadEvent::Error { at: now_iso(), text })?;
@@ -1760,7 +1827,8 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
     };
     let thread = thread_id.map(|id| {
         let (notes, notes_error) = match notes::read(home, &id) { Ok(notes) => (notes, None), Err(error) => (Vec::new(), Some(error.to_string())) };
-        let busy = running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()));
+        let busy = running(home, &id).map(|b| b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()))
+            .or_else(|| read_marker(home, &id).filter(|m| m.unresolved == Some(true)).map(|_| "unknown".to_string()));
         let state: Value = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
             .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
         let progress = state.get("steps").or_else(|| state.is_array().then_some(&state)).and_then(Value::as_array).cloned().unwrap_or_default();

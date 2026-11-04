@@ -38,7 +38,8 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
         _ => None,
     });
     let active = store::active_markers(home);
-    if active.iter().any(|m| m.run_id == run && m.card_id == card.id)
+    if store::resource_held(home, run, &card.id).map_err(|e| e.to_string())?
+        || active.iter().any(|m| m.run_id == run && m.card_id == card.id)
         || (ended.is_none() && (run_is_live(home, run) || !dir.join("followup.json").exists() || active.iter().any(|m| m.run_id == run))) {
         return Err("이전 작업이 아직 실행 중이거나 정상적으로 종료되지 않았습니다".into());
     }

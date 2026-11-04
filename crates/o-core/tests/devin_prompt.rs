@@ -1,6 +1,7 @@
 #![cfg(windows)]
 
-use std::{path::PathBuf, process::Command, sync::{Arc, Mutex}};
+mod support;
+use std::{path::PathBuf, sync::{Arc, Mutex}};
 use o_core::run::{events::CardStatus, plan::Plan, runner::{run_plan, Spawner}, store};
 
 fn sample_result() -> String {
@@ -41,7 +42,7 @@ fn devin_receives_the_complete_large_predecessor_result_without_a_worktree() {
     let observed = Arc::new(Mutex::new(None::<PathBuf>));
     let captured = Arc::clone(&observed);
     let spawner: Arc<Spawner> = Arc::new(move |spec, _| {
-        let mut child = Command::new(std::env::current_exe()?);
+        let mut child = support::fake_worker_launch()?;
         child.args(["--exact", "fake_agent", "--nocapture"]);
         if spec.bin == "devin" {
             let at = spec.args.iter().position(|arg| arg == "--prompt-file").expect("long prompt must use a file");

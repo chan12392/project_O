@@ -1,7 +1,7 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::PathBuf;
-use std::process::{Child, ExitStatus};
+use std::process::ExitStatus;
 use std::sync::{atomic::{AtomicBool, Ordering}, mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -14,7 +14,8 @@ use super::STOP_POLL;
 thread_local! { pub(super) static NO_JOB: std::cell::Cell<bool> = const { std::cell::Cell::new(false) }; }
 
 struct State {
-    child: Child,
+    child: crate::sys::worker::Child,
+    tree: Option<Arc<Mutex<KillOnClose>>>,
     status: Option<ExitStatus>,
     unknown: bool,
 }
@@ -27,14 +28,16 @@ pub(super) struct TurnProcess {
     cancelled: Arc<AtomicBool>,
     signal: mpsc::Sender<End>,
     watcher: JoinHandle<End>,
+    tree: Option<Arc<Mutex<KillOnClose>>>,
 }
 
 impl TurnProcess {
-    pub(super) fn start(child: Child, tree: Option<KillOnClose>, stop: PathBuf, token: String, limit: Duration) -> Self {
-        let state = Arc::new(Mutex::new(State { child, status: None, unknown: false }));
+    pub(super) fn start(child: crate::sys::worker::Child, tree: Option<Arc<Mutex<KillOnClose>>>, stop: PathBuf, token: String, limit: Duration) -> Self {
+        let state = Arc::new(Mutex::new(State { child, tree: tree.clone(), status: None, unknown: false }));
         let cancelled = Arc::new(AtomicBool::new(false));
         let (signal, events) = mpsc::channel();
         let (watched, interrupted) = (Arc::clone(&state), Arc::clone(&cancelled));
+        let watched_tree = tree.clone();
         let watcher = thread::spawn(move || {
             let deadline = Instant::now() + limit;
             let reason = loop {
@@ -48,11 +51,12 @@ impl TurnProcess {
             };
             if reason != End::Complete {
                 interrupted.store(true, Ordering::Release);
+                if let Some(tree) = &watched_tree { if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); } }
                 // The same lock guards reap and termination; never signal a reaped PID.
                 let mut state = watched.lock().unwrap();
-                drop(tree);
                 if state.status.is_none() && !state.unknown {
-                    match state.child.try_wait() {
+                    let tree = state.tree.clone();
+                    match state.child.try_wait(&tree) {
                         Ok(Some(status)) => state.status = Some(status),
                         Ok(None) => { let _ = state.child.kill(); }
                         Err(_) => state.unknown = true,
@@ -61,7 +65,7 @@ impl TurnProcess {
             }
             reason
         });
-        Self { state, cancelled, signal, watcher }
+        Self { state, cancelled, signal, watcher, tree }
     }
 
     pub(super) fn reader(&self, mut pipe: impl Read + Send + 'static) -> (PipeReader, JoinHandle<()>) {
@@ -95,7 +99,8 @@ impl TurnProcess {
     pub(super) fn poll(&self) -> Option<ExitStatus> {
         let mut state = self.state.lock().unwrap();
         if state.status.is_none() && !state.unknown {
-            match state.child.try_wait() {
+            let tree = state.tree.clone();
+            match state.child.try_wait(&tree) {
                 Ok(status) => state.status = status,
                 Err(_) => state.unknown = true,
             }
@@ -107,10 +112,11 @@ impl TurnProcess {
     pub(super) fn cancelled(&self) -> bool { self.cancelled.load(Ordering::Acquire) }
     pub(super) fn kill(&self) { let _ = self.signal.send(End::Kill); }
 
-    pub(super) fn finish(self) -> (End, Reap) {
+    pub(super) fn finish(self) -> (End, Reap, bool) {
         let _ = self.signal.send(End::Complete);
         let reason = self.watcher.join().unwrap_or(End::Kill);
-        (reason, Reap(self.state))
+        let confirmed = self.tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|mut tree| tree.stop_and_confirm()));
+        (reason, Reap(self.state), confirmed)
     }
 }
 
@@ -141,7 +147,8 @@ impl Reap {
     pub(super) fn wait(self) {
         loop {
             let mut state = self.0.lock().unwrap();
-            if state.status.is_some() || state.child.try_wait().ok().flatten().is_some() { return; }
+            let tree = state.tree.clone();
+            if state.status.is_some() || state.child.try_wait(&tree).ok().flatten().is_some() { return; }
             drop(state);
             thread::sleep(Duration::from_secs(1));
         }
@@ -186,13 +193,14 @@ impl Read for PipeReader {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::process::{Command, Stdio};
+    use std::process::{Child, Command, Stdio};
 
     #[test]
     #[allow(clippy::zombie_processes)] // The fixture deliberately orphans its pipe-holding child.
     fn child_fixture() {
         let Ok(mode) = std::env::var("O_TEST_TURN_PROCESS") else { return };
         if mode == "exit" { return; }
+        if mode == "mark" { fs::write(std::env::var_os("O_TEST_MARKER").unwrap(), "started").unwrap(); return; }
         if mode == "parent" {
             eprintln!("partial stderr");
             let mut command = Command::new(std::env::current_exe().unwrap());
@@ -215,13 +223,13 @@ mod tests {
     fn no_job_pipe_is_interruptible_and_remains_unfinished_until_descendant_exits() {
         let mut child = child("parent");
         let stdout = child.stdout.take().unwrap();
-        let process = TurnProcess::start(child, None, PathBuf::new(), String::new(), Duration::from_millis(600));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_millis(600));
         let (mut reader, worker) = process.reader(stdout);
         let mut output = Vec::new();
         reader.read_to_end(&mut output).unwrap();
         assert!(process.cancelled());
         assert!(!worker.is_finished(), "inherited pipe was incorrectly treated as closed");
-        let (end, reap) = process.finish();
+        let (end, reap, _) = process.finish();
         assert!(end == End::Timeout);
         drop(reader);
         reap.wait();
@@ -231,21 +239,21 @@ mod tests {
     #[test]
     fn unknown_process_is_not_killed_by_watcher() {
         let child = child("idle");
-        let process = TurnProcess::start(child, None, PathBuf::new(), String::new(), Duration::from_secs(5));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_secs(5));
         process.state.lock().unwrap().unknown = true;
         process.kill();
-        let (end, reap) = process.finish();
+        let (end, reap, _) = process.finish();
         assert!(end == End::Kill);
         let mut state = reap.0.lock().unwrap();
-        assert!(state.child.try_wait().unwrap().is_none());
+        assert!(state.child.try_wait(&None).unwrap().is_none());
         state.child.kill().unwrap();
-        state.child.wait().unwrap();
+        state.child.wait(&None).unwrap();
     }
 
     #[test]
     fn watcher_does_not_signal_after_child_is_reaped() {
         let exited = child("exit");
-        let process = TurnProcess::start(exited, None, PathBuf::new(), String::new(), Duration::from_secs(5));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(exited), None, PathBuf::new(), String::new(), Duration::from_secs(5));
         let deadline = Instant::now() + Duration::from_secs(3);
         while process.poll().is_none() {
             assert!(Instant::now() < deadline);
@@ -253,7 +261,7 @@ mod tests {
         }
         let mut bystander = child("idle");
         process.kill();
-        let (end, _) = process.finish();
+        let (end, _, _) = process.finish();
         assert!(end == End::Kill);
         assert!(bystander.try_wait().unwrap().is_none());
         bystander.kill().unwrap();
@@ -267,13 +275,13 @@ mod tests {
             .env("O_TEST_TURN_PROCESS", "idle").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
         let mut child = crate::sys::proc::hide_window(&mut command).spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
-        let process = TurnProcess::start(child, None, PathBuf::new(), String::new(), Duration::from_millis(500));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_millis(500));
         let (mut writer, worker) = process.writer(stdin);
         let started = Instant::now();
         assert!(writer.write_all(&vec![b'x'; 1024 * 1024]).is_err());
         assert!(started.elapsed() < Duration::from_secs(3));
         drop(writer);
-        let (end, reap) = process.finish();
+        let (end, reap, _) = process.finish();
         assert!(end == End::Timeout);
         reap.wait();
         worker.join().unwrap();
@@ -291,7 +299,7 @@ mod tests {
         let project = project.to_string_lossy();
         let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
         let spawn = |_: &crate::providers::LaunchSpec, _: &str| {
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = crate::sys::launch::Launch::new(std::env::current_exe()?);
             command.args(["--exact", "lead::turn_process::tests::child_fixture", "--nocapture"]).env("O_TEST_TURN_PROCESS", "parent");
             Ok(command)
         };
@@ -312,5 +320,38 @@ mod tests {
         assert!(lead::lock_latest(&home, &format!("{thread_id}-p1")).is_err_and(|error| error.contains("불명")));
         assert_eq!(lead::clear_dead_turn(&home, &thread_id), Some(false));
         assert!(lead::running_path(&home, &thread_id).exists());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn child_marker_failure_keeps_unknown_and_never_resumes() {
+        use crate::lead::{self, SendRequest};
+        use crate::run::plan::ProviderId;
+        let root = std::env::temp_dir().join(format!("o-lead-marker-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let home = root.join("home");
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let marker = root.join("child-started");
+        let helper = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("o-handle-owner.exe");
+        assert!(helper.exists());
+        let output = marker.clone();
+        let spawn = move |_: &crate::providers::LaunchSpec, _: &str| {
+            let mut launch = crate::sys::launch::Launch::new(std::env::current_exe()?);
+            launch.handle_owner_executable = Some(helper.clone());
+            launch.args(["--exact", "lead::turn_process::tests::child_fixture", "--nocapture"]).env("O_TEST_TURN_PROCESS", "mark").env("O_TEST_MARKER", &output);
+            Ok(launch)
+        };
+        let project = project.to_string_lossy();
+        let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+        super::super::FAIL_CHILD_MARKER.set(true);
+        let result = lead::send(&home, &request, &spawn);
+        super::super::FAIL_CHILD_MARKER.set(false);
+        assert!(result.is_err());
+        assert!(!marker.exists());
+        let id = lead::current_thread(&home, &project).unwrap();
+        assert_eq!(lead::read_marker(&home, &id).unwrap().unresolved, Some(true));
+        assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
+        assert!(lead::thread_for(&home, &project, true).is_err());
+        assert_eq!(lead::clear_dead_turn(&home, &id), Some(false));
     }
 }

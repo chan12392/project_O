@@ -1,3 +1,4 @@
+mod support;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -30,7 +31,7 @@ fn older_unresolved_thread_blocks_start_in_current_thread() {
     std::fs::write(lead::thread_dir(&home, &old).join("running.json"),
         r#"{"provider":"claude","owner":1,"token":"test","unresolved":true}"#).unwrap();
     let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
-    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> { panic!("unresolved turn must block the provider") };
+    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("unresolved turn must block the provider") };
     assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("불명"));
     assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(current.as_str()));
 }
@@ -48,7 +49,7 @@ fn live_turn_blocks_start_in_new_thread_until_released() {
     lock.lock().unwrap();
     let next = lead::thread_for(&home, &project, true).unwrap();
     let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
-    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> { panic!("live turn must block the provider") };
+    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("live turn must block the provider") };
     assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("답하는 중"));
     drop(lock);
     assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(next.as_str()));
@@ -105,7 +106,7 @@ fn closed_stdout_turn() {
     let mode = std::env::var("O_TEST_MODE").unwrap_or_default();
     let (spawn_mode, spawn_ready, spawn_pid) = (mode.clone(), ready.clone(), descendant_pid.clone());
     let spawn = move |_: &o_core::providers::LaunchSpec, _: &str| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "closed_stdout_fixture", "--nocapture"]).env("O_TEST_CLOSED_STDOUT", "1");
         if spawn_mode == "descendant" || spawn_mode == "both" { command.env("O_TEST_DESCENDANT", "1").env("O_TEST_DESC_PID", &spawn_pid); }
         if spawn_mode == "both" { command.env("O_TEST_HOLD_STDOUT", "1"); }

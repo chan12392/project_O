@@ -6,6 +6,7 @@
 
 pub mod events;
 pub mod followup;
+mod resources;
 pub mod index;
 pub mod mode;
 pub mod plan;

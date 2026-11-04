@@ -1,5 +1,6 @@
 #![cfg(windows)]
 
+mod support;
 use std::{fs, io::{BufRead, BufReader, Write}, path::Path, process::Command};
 use o_core::{lead::{self, LeadEvent, SendRequest}, run::{events::{CardInfo, CardStatus, OEvent}, plan::{Card, Plan, ProviderId}, store::{append_event, create_run}}};
 use serde_json::{json, Value};
@@ -34,9 +35,9 @@ fn unavailable_result_emits_warning_without_failing_the_reply() {
     let project = project_dir.to_str().unwrap();
     let thread = lead::thread_for(&home, project, false).unwrap();
     writeln!(fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap(), "{}", json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"missing","clean":false})).unwrap();
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         assert!(spec.stdin.as_deref().unwrap().contains("상태 불명"));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_stream_cli", "--nocapture"]).env("O_TEST_STREAM_PLAIN", "1");
         Ok(command)
     };
@@ -55,18 +56,18 @@ fn lead_can_read_the_end_of_a_long_result_on_repeated_turns() {
     fs::create_dir_all(&project_dir).unwrap();
     let project = project_dir.to_str().unwrap();
     let thread = lead::thread_for(&home, project, false).unwrap();
-    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Claude, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![] }] };
+    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Claude, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![], resources: vec![] }] };
     create_run(&home, "run", &plan).unwrap();
     append_event(&home, "run", &OEvent::RunStart { at: "now".into(), run_id: "run".into(), title: "test".into(), project: project.into(), cards: vec![CardInfo { id: "card".into(), provider: ProviderId::Claude, label: None, role: None, model: None, effort: None }] }).unwrap();
     append_event(&home, "run", &OEvent::CardEnd { at: "now".into(), card_id: "card".into(), status: CardStatus::Done, result: Some(format!("{}마지막 결과", "앞부분\n".repeat(5000))), exit_code: Some(0) }).unwrap();
     append_event(&home, "run", &OEvent::RunEnd { at: "now".into(), run_id: "run".into(), status: CardStatus::Done }).unwrap();
     writeln!(fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap(), "{}", json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"run","clean":false})).unwrap();
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let prompt = spec.stdin.as_deref().unwrap();
         assert!(prompt.contains("결과 미리보기") && prompt.contains("json-string-lines"));
         let index = spec.args.iter().position(|arg| arg == "--add-dir").unwrap();
         let index = fs::read_dir(Path::new(&spec.args[index + 1]))?.map(|entry| entry.unwrap().path()).find(|path| fs::read_to_string(path).is_ok_and(|text| text.contains("run-summary"))).unwrap();
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_stream_cli", "--nocapture"]).env("O_TEST_STREAM_INDEX", index);
         Ok(command)
     };
@@ -88,7 +89,7 @@ fn official_codex_reads_the_last_part_of_a_result() {
     fs::create_dir_all(&project_dir).unwrap();
     let project = project_dir.to_str().unwrap();
     let thread = lead::thread_for(&home, project, false).unwrap();
-    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Codex, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![] }] };
+    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Codex, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![], resources: vec![] }] };
     create_run(&home, "run", &plan).unwrap();
     append_event(&home, "run", &OEvent::RunStart { at: "now".into(), run_id: "run".into(), title: "test".into(), project: project.into(), cards: vec![CardInfo { id: "card".into(), provider: ProviderId::Codex, label: None, role: None, model: None, effort: None }] }).unwrap();
     let marker = format!("RESULT-{stamp}");
@@ -114,7 +115,7 @@ fn official_codex_finds_a_result_omitted_from_the_summary() {
     let project = project_dir.to_str().unwrap();
     let thread = lead::thread_for(&home, project, false).unwrap();
     let marker = format!("OLDEST-{stamp}");
-    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Codex, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![] }] };
+    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Codex, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![], resources: vec![] }] };
     let mut history = fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap();
     for n in 0..20 {
         let run = if n == 0 { format!("older-{stamp}") } else { format!("run-{n}") };
@@ -175,8 +176,9 @@ fn main() {
     assert!(o_core::sys::proc::hide_window(&mut compiler).status().unwrap().success());
     let log = base.join("requests.jsonl");
     let child_log = log.clone();
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
-        let mut command = Command::new(&binary);
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut command = support::fake_worker_launch()?;
+        command.executable = binary.clone();
         if spec.args.iter().any(|arg| arg == "--help") { command.arg("--help"); }
         command.env("TEST_LOG", &child_log);
         Ok(command)

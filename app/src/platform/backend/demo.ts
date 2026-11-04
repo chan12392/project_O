@@ -104,6 +104,8 @@ const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 export const demoBackend: Backend = {
   kind: "demo",
+  resources: () => Promise.resolve([]),
+  recoverResource: () => Promise.reject(new Error("미리보기에서는 예약을 복구하지 않습니다")),
   imageRead: async () => { throw new Error("미리보기에서는 로컬 이미지를 열 수 없습니다"); },
   imageOpen: async () => { throw new Error("미리보기에서는 로컬 이미지를 열 수 없습니다"); },
   schedules: async () => [],

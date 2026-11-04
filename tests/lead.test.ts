@@ -159,6 +159,19 @@ test("a stored plan of the wrong shape draws as a safe plan with a notice, never
   assert.ok(good[0].kind === "plan" && good[0].ok && good[0].problems.length === 0);
 });
 
+test("plan resources remain visible and malformed declarations prevent dispatch", () => {
+  const events = [
+    { t: "lead.plan", at: "1", planId: "good", plan: { title: "good", cards: [{ id: "a", provider: "claude", task: "x", resources: [{ kind: "project-path", key: "src", mode: "write" }] }] }, ok: true, violations: [] },
+    { t: "lead.plan", at: "2", planId: "bad", plan: { title: "bad", cards: [{ id: "a", provider: "claude", task: "x", resources: [{ kind: "external", key: "db", mode: "maybe" }] }] }, ok: true, violations: [] },
+  ] as unknown as LeadEvent[];
+  const [good, bad] = leadItems(events);
+  assert.ok(good.kind === "plan" && bad.kind === "plan");
+  assert.deepEqual(good.cards[0].resources, [{ kind: "project-path", key: "src", mode: "write" }]);
+  assert.equal(good.ok, true);
+  assert.equal(bad.ok, false);
+  assert.match(bad.problems.join(" "), /자원 선언/);
+});
+
 test("an earlier plan stays readable after a newer one, and only the latest can run (#40)", () => {
   const items = leadItems([
     { t: "lead.user", at: "1", text: "로그인 고쳐 줘", provider: "claude", attachments: [] },

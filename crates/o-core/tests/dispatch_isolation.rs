@@ -1,3 +1,5 @@
+#[cfg(windows)]
+mod support;
 use std::{fs, path::PathBuf};
 use o_core::run::{mode::{Profile, RunMode}, plan::Plan, runner};
 #[cfg(windows)]
@@ -46,13 +48,13 @@ fn fake_card() {
 #[cfg(windows)]
 #[test]
 fn normal_dispatch_preparation_runs_a_card_in_an_isolated_non_git_copy() {
-    use std::{process::Command, sync::Arc};
+    use std::sync::Arc;
     use o_core::run::events::{CardStatus, OEvent};
     let (home, project, plan) = fixture();
     runner::prepare_isolated(&home, "run-1", &plan, &RunMode::of(Profile::Own)).unwrap();
     assert!(store::run_dir(&home, "run-1").join("isolated-worktrees").is_file());
     let spawner: Arc<runner::Spawner> = Arc::new(|_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_card", "--nocapture"]).env("O_DISPATCH_ISOLATION_FAKE", "1");
         Ok(command)
     });

@@ -27,6 +27,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         runs::run_changes,
         runs::run_followup,
         usage::usage,
+        usage::resource_leases,
+        usage::resource_recover,
         usage::usage_refresh,
         usage::budget,
         usage::budget_set_percent,

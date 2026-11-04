@@ -1,3 +1,4 @@
+mod support;
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -33,8 +34,9 @@ fn main() {
     let mut compiler = Command::new("rustc");
     compiler.arg(&source).arg("-o").arg(&binary);
     assert!(o_core::sys::proc::hide_window(&mut compiler).status().unwrap().success());
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
-        let mut command = Command::new(&binary);
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut command = support::fake_worker_launch()?;
+        command.executable = binary.clone();
         if spec.args.iter().any(|arg| arg == "--help") { command.arg("--help"); }
         Ok(command)
     };

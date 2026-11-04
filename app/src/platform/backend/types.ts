@@ -145,6 +145,20 @@ export interface TokenReport {
   };
 }
 
+export interface ResourceLease {
+  id: string;
+  runId: string;
+  cardId: string;
+  resources: unknown;
+  ownerPid: number | null;
+  ownerStarted: string | null;
+  workerPid: number | null;
+  workerStarted: string | null;
+  spawnIntent: boolean | null;
+  exitConfirmed: boolean | null;
+  state: "recoverable" | "unknown";
+}
+
 export type WorkspaceChanges = { workspace: string; note: string; baselineRunId?: string } & (
   | { gitCommit: string; changes: { changed: string[]; staged: string[]; unstaged: string[]; unmerged: string[]; untracked: string[]; ignored: string[]; masked: { path: string; skipWorktree: boolean; assumeUnchanged: boolean }[] } }
   | { copyBase: string; changes: { path: string; kind: "added" | "deleted" | "modified" }[] }
@@ -152,6 +166,8 @@ export type WorkspaceChanges = { workspace: string; note: string; baselineRunId?
 
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
+  resources(): Promise<ResourceLease[]>;
+  recoverResource(id: string): Promise<void>;
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
   changes(run: string, card: string): Promise<WorkspaceChanges>;
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */

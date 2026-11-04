@@ -2,6 +2,7 @@
 //! itself: started with O_FAKE_CLI_LINES it prints those lines and exits, so
 //! the tests need no node, shell or provider CLI.
 
+mod support;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
@@ -523,7 +524,7 @@ fn failed_log() {
         let observed = Arc::clone(&launched);
         let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
             if spec.env["O_CARD_ID"] == "second" { observed.store(true, Ordering::SeqCst); }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, "[]").env(FAKE_SLEEP, "30000");
             Ok(command)
         });
@@ -540,7 +541,7 @@ fn raw_output_preserved() {
     let p = plan(vec![card("a", ProviderId::Claude, "raw")]);
     create_run(&home, "raw", &p).unwrap();
     let spawner: Arc<Spawner> = Arc::new(|_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).arg("--fake-raw");
         Ok(command)
     });
@@ -567,7 +568,7 @@ fn dependency_result_limit() {
                 observed.store(true, Ordering::SeqCst);
             }
             let line = serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "result":format!("{}END", "x".repeat(size))}).to_string();
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&vec![line]).unwrap());
             Ok(command)
         });
@@ -610,7 +611,7 @@ fn devin_transcript() {
     create_run(&home, "devin", &p).unwrap();
     let spawner: Arc<Spawner> = Arc::new(|spec, cwd| {
         let export = spec.args.iter().position(|arg| arg == "--export").unwrap();
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--fake-devin", &spec.args[export + 1]]);
         Ok(command)
     });
@@ -623,7 +624,7 @@ fn devin_transcript() {
 /// Stands in for a provider CLI: prints the given stream lines, then exits.
 fn fake_cli(lines_for: impl Fn(&LaunchSpec) -> Vec<&'static str> + Send + Sync + 'static) -> Arc<Spawner> {
     Arc::new(move |spec: &LaunchSpec, cwd: &str| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines_for(spec)).unwrap());
         Ok(command)
     })
@@ -636,7 +637,7 @@ fn temp_home() -> PathBuf {
 }
 
 fn card(id: &str, provider: ProviderId, task: &str) -> Card {
-    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] }
+    Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![], resources: vec![] }
 }
 
 fn plan(cards: Vec<Card>) -> Plan {
@@ -817,7 +818,7 @@ fn clean_run() {
     create_run(&home, "r6", &p).unwrap();
     let target = dump.clone();
     let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, cwd: &str| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).arg(DUMP_ENV).arg(&target);
         Ok(command)
     });
@@ -839,7 +840,11 @@ fn clean_run() {
 fn same_provider_slots_in_one_plan() {
     let home = temp_home();
     let max = LIMITS.max_active_per_provider(ProviderId::Claude);
-    let p = plan((0..=max).map(|i| card(&format!("c{i}"), ProviderId::Claude, "x")).collect());
+    let p = plan((0..=max).map(|i| {
+        let mut card = card(&format!("c{i}"), ProviderId::Claude, "x");
+        card.resources = vec![o_core::run::plan::Resource { kind: o_core::run::plan::ResourceKind::External, key: format!("test-{i}"), mode: o_core::run::plan::ResourceMode::Write }];
+        card
+    }).collect());
     create_run(&home, "r10", &p).unwrap();
     let inner = quiet();
     // A slow start (PATH lookup, process creation) leaves the window the runner must not miss.
@@ -914,6 +919,9 @@ fn runners_share_slots() {
         let codex = LIMITS.max_active_total - claude;
         let mut cards: Vec<Card> = (0..claude).map(|i| card(&format!("{prefix}c{i}"), ProviderId::Claude, "x")).collect();
         cards.extend((0..codex).map(|i| card(&format!("{prefix}x{i}"), ProviderId::Codex, "x")));
+        for card in &mut cards {
+            card.resources = vec![o_core::run::plan::Resource { kind: o_core::run::plan::ResourceKind::External, key: format!("test-{}", card.id), mode: o_core::run::plan::ResourceMode::Write }];
+        }
         plan(cards)
     };
     let seen = Arc::new(Mutex::new(InFlight::default()));
@@ -1043,7 +1051,7 @@ fn api_keys_dropped() {
     create_run(&home, "r9", &p).unwrap();
     let dumps = home.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).arg(DUMP_ENV).arg(dumps.join(format!("{}.json", spec.bin)));
         Ok(command)
     });

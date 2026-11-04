@@ -22,6 +22,7 @@ mod mirror;
 mod msg;
 mod projects;
 mod review;
+mod resources;
 mod runs;
 mod schedule;
 mod sessions;
@@ -52,6 +53,7 @@ pub const COMMANDS: &[Command] = &[
     images::IMAGE,
     issues::ISSUES,
     review::REVIEW,
+    resources::RESOURCES,
     context::CONTEXT,
     tokens::TOKENS,
     usage::USAGE,
