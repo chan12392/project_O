@@ -15,7 +15,7 @@ execFileSync("cargo", ["build", "--release", "-p", "o-cli"], { cwd: root, stdio:
 const host = execFileSync("rustc", ["-vV"], { encoding: "utf8" }).match(/^host: (\S+)$/m)?.[1];
 if (!host) throw new Error("rustc -vV did not report a host target triple");
 
-const targetDir = process.env.CARGO_TARGET_DIR ? resolve(process.env.CARGO_TARGET_DIR) : join(root, "target");
+const targetDir = process.env.CARGO_TARGET_DIR ? resolve(root, process.env.CARGO_TARGET_DIR) : join(root, "target");
 const from = join(targetDir, "release", `o${exe}`);
 const binaries = join(root, "app", "src-tauri", "binaries");
 const to = join(binaries, `o-${host}${exe}`);
