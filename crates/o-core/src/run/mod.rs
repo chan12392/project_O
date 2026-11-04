@@ -17,3 +17,4 @@ pub mod store;
 pub mod team;
 pub mod yolo;
 pub(crate) mod workspaces;
+pub use workspaces::review_changes;

@@ -45,6 +45,7 @@ pub const COMMANDS: &[Command] = &[
     dispatch::DISPATCH,
     followup::FOLLOWUP,
     status::STATUS,
+    status::CHANGES,
     events::EVENTS,
     stop::STOP,
     msg::MSG,

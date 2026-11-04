@@ -18,6 +18,18 @@ pub const STATUS: Command = Command {
     },
 };
 
+pub const CHANGES: Command = Command {
+    name: "changes",
+    usage: "  o changes <runId> <cardId>  분리된 카드의 변경 목록 (읽기 전용 JSON)",
+    run: |home, args| match args {
+        [run, card] if run_id_arg(Some(run)).is_some() => match o_core::run::review_changes(home, run, card) {
+            Ok(changes) => { println!("{changes}"); 0 }
+            Err(error) => super::fail(&error.to_string()),
+        },
+        _ => super::fail("사용법: o changes <runId> <cardId>"),
+    },
+};
+
 fn status(home: &Path, run_id: Option<&str>) -> i32 {
     let ids: Vec<String> = match run_id {
         Some(id) => vec![id.to_string()],
@@ -38,9 +50,11 @@ fn status(home: &Path, run_id: Option<&str>) -> i32 {
                 if let Some(commit) = baseline.get("gitCommit").and_then(|v| v.as_str()) {
                     println!("  작업 전 Git 기준: {commit}");
                     println!("  분리된 결과는 원본에 자동 반영되지 않습니다. 기준과 작업 폴더를 비교해 검토하세요.");
+                    println!("  변경 목록: o changes {id} <cardId>");
                 } else if let Some(path) = baseline.get("copyPath").and_then(|v| v.as_str()) {
                     println!("  작업 전 복사본 (변경 가능): {path}");
                     println!("  분리된 결과는 원본에 자동 반영되지 않습니다. 기준과 작업 폴더를 비교해 검토하세요.");
+                    println!("  변경 목록: o changes {id} <cardId>");
                 }
             }
         }
