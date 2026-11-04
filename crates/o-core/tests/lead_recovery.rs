@@ -23,7 +23,16 @@ fn fake_child() {
     if std::env::var_os("O_LEAD_RECOVERY_SHORT").is_some() { std::thread::sleep(Duration::from_millis(500)); }
     if let Some(path) = std::env::var_os("O_LEAD_STATUS_PATH") {
         use std::io::Write;
-        let source = std::fs::read_to_string(&path).unwrap();
+        let index = std::fs::read_to_string(&path).unwrap();
+        let mut items: Vec<_> = index.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).filter(|item| item["runId"] == "run-7" && item["cardId"] == "card" && item["type"] == "card.end").collect();
+        items.sort_by_key(|item| item["part"].as_u64().unwrap());
+        assert!(items.len() > 1);
+        let mut source = String::new();
+        for item in &items {
+            let source_path = item["file"].as_str().unwrap();
+            source.push_str(&std::fs::read_to_string(source_path).unwrap());
+            assert!(std::fs::write(source_path, b"tampered").is_err());
+        }
         assert!(source.contains("LAST-LINE-한글"));
         assert!(std::fs::write(path, b"tampered").is_err());
         let seen = std::env::var_os("O_LEAD_STATUS_SEEN").unwrap();
@@ -149,15 +158,22 @@ fn lead_reads_complete_results_and_reuses_an_unchanged_snapshot() {
         let index = spec.args.iter().position(|a| a == "--add-dir").unwrap();
         let dir = PathBuf::from(&spec.args[index + 1]);
         let files: Vec<_> = std::fs::read_dir(&dir)?.map(|e| e.unwrap().path()).filter(|p| p.file_name().unwrap().to_string_lossy().starts_with("run-status-")).collect();
-        assert_eq!(files.len(), 1);
-        let source: serde_json::Value = serde_json::from_slice(&std::fs::read(&files[0])?)?;
-        let runs = source["runs"].as_array().unwrap();
-        assert_eq!(runs.len(), 12);
-        for run in runs { assert_eq!(run["resultEvents"][1]["result"], result); }
-        assert!(std::fs::write(&files[0], b"tampered").is_err());
-        captured.lock().unwrap().push(files[0].clone());
+        let index_file = files.iter().find(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("run-summary"))).unwrap();
+        let index_text = std::fs::read_to_string(index_file)?;
+        let entries: Vec<serde_json::Value> = index_text.lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        for n in 0..12 {
+            let id = format!("run-{n}");
+            let mut results: Vec<_> = entries.iter().filter(|e| e["runId"] == id && e["type"] == "card.end").collect();
+            results.sort_by_key(|e| e["part"].as_u64().unwrap());
+            assert!(results.len() > 1);
+            let restored: String = results.iter().map(|e| std::fs::read_to_string(e["file"].as_str().unwrap()).unwrap()).collect();
+            let source: serde_json::Value = serde_json::from_str(&restored)?;
+            assert_eq!(source["result"], result);
+        }
+        assert!(std::fs::write(index_file, b"tampered").is_err());
+        captured.lock().unwrap().push((index_file.clone(), files.len()));
         let mut command = Command::new(std::env::current_exe()?);
-        command.args(["--exact", "fake_child"]).env("O_LEAD_STATUS_PATH", &files[0]).env("O_LEAD_STATUS_SEEN", &child_evidence);
+        command.args(["--exact", "fake_child"]).env("O_LEAD_STATUS_PATH", index_file).env("O_LEAD_STATUS_SEEN", &child_evidence);
         Ok(command)
     };
     lead::send(&home, &request(&project), &spawner).unwrap();
@@ -170,16 +186,82 @@ fn lead_reads_complete_results_and_reuses_an_unchanged_snapshot() {
 
 #[cfg(windows)]
 #[test]
-fn unreadable_result_record_is_reported_before_starting_the_lead() {
+fn unknown_result_record_is_preserved_and_does_not_block_the_lead() {
     use std::io::Write;
     let (home, project) = fixture();
     let thread = lead::thread_for(&home, &project, false).unwrap();
     let run_dir = o_core::run::store::run_dir(&home, "broken");
     std::fs::create_dir_all(&run_dir).unwrap();
-    std::fs::write(run_dir.join("events.jsonl"), "{not-json}\n").unwrap();
+    let unknown = "{\"t\":\"future.result\",\"cardId\":\"card\",\"result\":\"완전한 원문\"}\n{not-json}\n{\"t\":\"future.partial\",\"result\":\"마지막\"}";
+    std::fs::write(run_dir.join("events.jsonl"), unknown).unwrap();
     let log = lead::thread_dir(&home, &thread).join("events.jsonl");
     writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"broken", "clean":false})).unwrap();
-    let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> { panic!("should not start") };
-    let error = lead::send(&home, &request(&project), &spawner).unwrap_err();
-    assert!(error.contains("기록을 읽지 못했습니다"), "{error}");
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        assert!(spec.stdin.as_ref().unwrap().contains("추측"));
+        let index = spec.args.iter().position(|a| a == "--add-dir").unwrap();
+        let dir = PathBuf::from(&spec.args[index + 1]);
+        let files: Vec<_> = std::fs::read_dir(dir)?.map(|e| e.unwrap().path()).collect();
+        let index_file = files.iter().find(|p| std::fs::read_to_string(p).is_ok_and(|s| s.contains("run-summary"))).unwrap();
+        let index = std::fs::read_to_string(index_file)?;
+        let unknown_entries: Vec<serde_json::Value> = index.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).filter(|v| v["unknown"] == true).collect();
+        assert_eq!(unknown_entries.len(), 3);
+        let restored: String = unknown_entries.iter().map(|v| std::fs::read_to_string(v["file"].as_str().unwrap()).unwrap()).collect();
+        assert_eq!(restored, unknown);
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child"]);
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Error { text, .. } if text.contains("실행 상태 확인 불가"))));
+}
+
+#[cfg(windows)]
+#[test]
+fn unavailable_result_record_does_not_block_the_lead() {
+    use std::io::Write;
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let run = o_core::run::store::run_dir(&home, "busy");
+    std::fs::create_dir_all(&run).unwrap();
+    let _writer = std::fs::OpenOptions::new().write(true).create_new(true).open(run.join("events.jsonl")).unwrap();
+    let log = lead::thread_dir(&home, &thread).join("events.jsonl");
+    writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"busy", "clean":false})).unwrap();
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        let prompt = spec.stdin.as_ref().unwrap();
+        assert!(prompt.contains("원문과 상태를 확인할 수 없음"));
+        assert!(prompt.contains("추측하지"));
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child"]);
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Error { text, .. } if text.contains("실행 상태 확인 불가"))));
+}
+
+#[cfg(windows)]
+#[test]
+fn unsafe_output_folder_is_reported_without_blocking_the_lead() {
+    use std::io::Write;
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let run = o_core::run::store::run_dir(&home, "one");
+    std::fs::create_dir_all(&run).unwrap();
+    std::fs::write(run.join("events.jsonl"), "{\"t\":\"run.end\",\"at\":\"now\",\"runId\":\"one\",\"status\":\"failed\"}\n").unwrap();
+    let log = lead::thread_dir(&home, &thread).join("events.jsonl");
+    writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"one", "clean":false})).unwrap();
+    let target = home.parent().unwrap().join("untrusted");
+    std::fs::create_dir(&target).unwrap();
+    let root = lead::files::files_root(&home);
+    let mut junction = Command::new("cmd");
+    junction.args(["/C", "mklink", "/J"]).arg(root).arg(&target).stdout(Stdio::null()).stderr(Stdio::null());
+    assert!(o_core::sys::proc::hide_window(&mut junction).status().unwrap().success());
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        assert!(spec.stdin.as_ref().unwrap().contains("원문을 안전하게 제공할 수 없습니다"));
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child"]);
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Error { text, .. } if text.contains("안전하게 제공할 수 없습니다"))));
+    assert_eq!(std::fs::read_dir(target).unwrap().count(), 0);
 }

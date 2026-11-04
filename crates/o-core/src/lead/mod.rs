@@ -428,43 +428,97 @@ pub fn start(home: &Path, project: &str) -> Result<String, String> {
 }
 
 /// How each run the thread dispatched is doing, oldest first.
-fn dispatched_runs(home: &Path, events: &[LeadEvent]) -> Result<(Vec<String>, Vec<Value>), String> {
+struct StatusRecord {
+    meta: Value,
+    raw: Option<String>,
+}
+
+fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str) -> io::Result<Option<String>>) -> (Vec<String>, Vec<StatusRecord>, usize) {
     let mut seen = BTreeSet::new();
     let mut summaries = Vec::new();
     let mut originals = Vec::new();
+    let mut unavailable = 0;
     for event in events {
         let run_id = match event {
             LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => run_id,
             _ => continue,
         };
-        if !is_run_id(run_id) { return Err("실행 기록의 ID가 올바르지 않아 결과를 확인할 수 없습니다".into()); }
         if !seen.insert(run_id) { continue; }
-        let text = match status_file::read_events(home, run_id) {
+        if !is_run_id(run_id) {
+            unavailable += 1;
+            summaries.push("- 실행 ID가 올바르지 않아 상태와 원문을 확인할 수 없음".into());
+            originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"unavailable","error":"실행 ID가 올바르지 않음"}), raw: None });
+            continue;
+        }
+        let text = match read(home, run_id) {
             Ok(Some(text)) => text,
             Ok(None) => {
                 summaries.push(format!("- 실행 {run_id}: 기록 없음(시작 전이거나 시작하지 못함)"));
-                originals.push(json!({"runId": run_id, "error": "실행 기록이 없음"}));
+                originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"unavailable","error":"실행 기록이 없음"}), raw: None });
+                unavailable += 1;
                 continue;
             }
-            Err(e) => return Err(format!("실행 {run_id}의 결과 기록을 읽지 못했습니다: {e}")),
+            Err(e) => {
+                summaries.push(format!("- 실행 {run_id}: 원문과 상태를 확인할 수 없음 ({})", serde_json::to_string(&e.to_string()).unwrap_or_default()));
+                originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"unavailable","error":e.to_string()}), raw: None });
+                unavailable += 1;
+                continue;
+            }
         };
-        if !text.is_empty() && !text.ends_with('\n') { return Err(format!("실행 {run_id}의 기록이 완전하지 않습니다. 다시 확인하세요")); }
         let mut typed = Vec::new();
-        let mut result_events = Vec::new();
-        for line in text.lines().filter(|s| !s.trim().is_empty()) {
-            let value: Value = serde_json::from_str(line).map_err(|e| format!("실행 {run_id}의 기록을 읽지 못했습니다: {e}"))?;
-            let parsed = serde_json::from_value(value.clone()).map_err(|e| format!("실행 {run_id}의 기록을 해석하지 못했습니다: {e}"))?;
-            if matches!(value.get("t").and_then(Value::as_str), Some("run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end")) { result_events.push(value); }
-            typed.push(parsed);
+        let mut unknown = 0;
+        for (line_no, raw) in text.split_inclusive('\n').enumerate().filter(|(_, s)| !s.trim().is_empty()) {
+            let value = serde_json::from_str::<Value>(raw).ok();
+            let parsed = if raw.ends_with('\n') { value.clone().and_then(|v| serde_json::from_value::<crate::run::events::OEvent>(v).ok()) } else { None };
+            let kind = value.as_ref().and_then(|v| v.get("t")).and_then(Value::as_str).unwrap_or("unknown");
+            let keep = parsed.is_none() || matches!(kind, "run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end");
+            if parsed.is_none() { unknown += 1; }
+            if keep {
+                let card_id = value.as_ref().and_then(|v| v.get("cardId")).and_then(Value::as_str).filter(|s| s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
+                let index_kind = if kind.len() <= 80 { kind } else { "unknown" };
+                originals.push(StatusRecord { meta: json!({"runId":run_id,"cardId":card_id,"type":index_kind,"line":line_no + 1,"unknown":parsed.is_none()}), raw: Some(raw.to_string()) });
+            }
+            if let Some(parsed) = parsed { typed.push(parsed); }
         }
-        summaries.push(match snapshot(&typed) {
+        let summary = match snapshot(&typed) {
             Some(view) => prompt::run_status(&view),
+            None if typed.is_empty() && unknown > 0 => format!("- 실행 {run_id}: 해석할 수 없는 기록만 있어 상태 불명"),
             None if typed.is_empty() => format!("- 실행 {run_id}: 아직 기록 없음(시작 전이거나 시작하지 못함)"),
             None => format!("- 실행 {run_id}: 시작 상태 불명, 기록된 차단·종료 여부는 원문을 확인"),
-        });
-        originals.push(json!({"runId": run_id, "resultEvents": result_events}));
+        };
+        if unknown > 0 { unavailable += 1; }
+        summaries.push(if unknown > 0 { format!("{summary}\n  - 해석하지 못한 기록 {unknown}개: 상태를 단정하지 말고 색인의 원문을 확인") } else { summary });
+        originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"run-summary","unrecognized":unknown}), raw: None });
     }
-    Ok((summaries, originals))
+    (summaries, originals, unavailable)
+}
+
+fn write_status_index(home: &Path, thread: &str, records: Vec<StatusRecord>) -> io::Result<status_file::StatusFile> {
+    let mut guard = status_file::create(home, thread)?;
+    let mut index = String::new();
+    for record in records {
+        if let Some(raw) = record.raw {
+            // Read tools may truncate long lines; parts preserve the exact text when concatenated.
+            let mut boundaries = vec![0];
+            boundaries.extend(raw.char_indices().enumerate().filter_map(|(n, (offset, _))| (n > 0 && n % 512 == 0).then_some(offset)));
+            boundaries.push(raw.len());
+            let total = boundaries.len() - 1;
+            for (n, range) in boundaries.windows(2).enumerate() {
+                let path = guard.put(&raw.as_bytes()[range[0]..range[1]])?;
+                let mut meta = record.meta.clone();
+                meta["file"] = json!(path.to_string_lossy());
+                meta["part"] = json!(n + 1);
+                meta["parts"] = json!(total);
+                index.push_str(&serde_json::to_string(&meta).map_err(io::Error::other)?);
+                index.push('\n');
+            }
+        } else {
+            index.push_str(&serde_json::to_string(&record.meta).map_err(io::Error::other)?);
+            index.push('\n');
+        }
+    }
+    guard.path = guard.put(index.as_bytes())?;
+    Ok(guard)
 }
 
 /// The messages a resumed session has not seen: those of every turn after the last one it
@@ -507,6 +561,24 @@ mod preview_tests {
             assert_eq!(partial_prose(text), "답변\n");
         }
         assert_eq!(partial_prose("아직 답변 중"), "아직 답변 중");
+    }
+}
+
+#[cfg(test)]
+mod status_tests {
+    use super::*;
+
+    #[test]
+    fn unsupported_reader_keeps_the_conversation_prompt_explicit() {
+        let events = [LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: "run".into(), clean: false, profile: None, yolo: false }];
+        let (runs, records, unknown) = dispatched_runs(Path::new("unused"), &events, |_, _| Err(io::Error::new(ErrorKind::Unsupported, "안전한 읽기 미지원")));
+        assert_eq!(unknown, 1);
+        assert_eq!(records[0].meta["type"], "unavailable");
+        let text = prompt::build(&prompt::PromptInput { project: "project", text: "질문", attachments: &[], budget: &[], runs: &runs, runs_file: None, runs_error: Some("원문 미지원"), resumed: false, history: &[], missed: &[], design: None, yolo: false });
+        assert!(text.contains("안전한 읽기 미지원"));
+        assert!(text.contains("원문 미지원"));
+        assert!(text.contains("추측하지"));
+        assert!(text.contains("질문"));
     }
 }
 
@@ -587,11 +659,15 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         })
         .collect();
     let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
-    let (runs, originals) = dispatched_runs(home, &before)?;
+    let (runs, originals, uncertain) = dispatched_runs(home, &before, status_file::read_events);
+    let mut status_error = (uncertain > 0).then(|| format!("{uncertain}개 실행은 원문을 읽지 못했거나 해석할 수 없는 기록이 있어 상태가 불명입니다"));
     let status_file = if originals.is_empty() { None } else {
-        let bytes = serde_json::to_vec_pretty(&json!({"runs": originals})).map_err(|e| format!("실행 결과를 만들지 못했습니다: {e}"))?;
-        Some(status_file::save(home, &thread_id, &bytes).map_err(|e| format!("실행 결과 원문을 안전하게 저장하지 못했습니다: {e}"))?)
+        match write_status_index(home, &thread_id, originals) {
+            Ok(file) => Some(file),
+            Err(e) => { status_error = Some(format!("실행 결과 원문을 안전하게 제공할 수 없습니다: {e}")); None }
+        }
     };
+    if let Some(error) = &status_error { emit(LeadEvent::Error { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
     let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
@@ -602,6 +678,7 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         budget: &budget,
         runs: &runs,
         runs_file: status_path.as_deref(),
+        runs_error: status_error.as_deref(),
         resumed: session.is_some(),
         history: &history,
         missed: &missed,

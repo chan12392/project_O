@@ -7,6 +7,8 @@ pub struct StatusFile {
     pub path: PathBuf,
     #[cfg(windows)]
     _handles: Vec<std::fs::File>,
+    #[cfg(windows)]
+    saved: std::collections::BTreeMap<String, Vec<(Vec<u8>, PathBuf)>>,
 }
 
 #[cfg(windows)]
@@ -75,25 +77,33 @@ pub fn read_events(_home: &Path, _run_id: &str) -> io::Result<Option<String>> {
 }
 
 #[cfg(windows)]
-pub fn save(home: &Path, thread: &str, bytes: &[u8]) -> io::Result<StatusFile> {
+pub fn create(home: &Path, thread: &str) -> io::Result<StatusFile> {
+    if !crate::run::store::is_run_id(thread) { return Err(io::Error::other("총괄 대화 ID가 올바르지 않습니다")); }
+    let root = std::path::absolute(super::files::files_root(home))?;
+    let dir = root.join(thread);
+    let handles = protect_dirs(&dir, &[root, dir.clone()])?;
+    Ok(StatusFile { path: dir, _handles: handles, saved: Default::default() })
+}
+
+#[cfg(windows)]
+impl StatusFile {
+pub fn put(&mut self, bytes: &[u8]) -> io::Result<PathBuf> {
     use std::fs::OpenOptions;
     use std::io::{Read, Write};
     use std::os::windows::fs::OpenOptionsExt;
     use sha2::{Digest, Sha256};
     use windows_sys::Win32::Storage::FileSystem::{FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ};
-    if !crate::run::store::is_run_id(thread) { return Err(io::Error::other("총괄 대화 ID가 올바르지 않습니다")); }
-    let root = std::path::absolute(super::files::files_root(home))?;
-    let dir = root.join(thread);
-    let mut handles = protect_dirs(&dir, &[root, dir.clone()])?;
     let hash = format!("{:x}", Sha256::digest(bytes));
+    if let Some((_, path)) = self.saved.get(&hash).and_then(|items| items.iter().find(|(stored, _)| stored == bytes)) { return Ok(path.clone()); }
     for n in 0..1000 {
-        let path = dir.join(format!("run-status-{hash}-{n}.json"));
+        let path = self.path.join(format!("run-status-{hash}-{n}.txt"));
         match OpenOptions::new().read(true).write(true).create_new(true).share_mode(FILE_SHARE_READ).open(&path) {
             Ok(mut file) => {
                 file.write_all(bytes)?;
                 file.flush()?;
-                handles.push(file);
-                return Ok(StatusFile { path, _handles: handles });
+                self._handles.push(file);
+                self.saved.entry(hash.clone()).or_default().push((bytes.to_vec(), path.clone()));
+                return Ok(path);
             }
             Err(e) if e.kind() == io::ErrorKind::AlreadyExists => {
                 let opened = OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(&path);
@@ -102,7 +112,7 @@ pub fn save(home: &Path, thread: &str, bytes: &[u8]) -> io::Result<StatusFile> {
                     if plain_file(&file)? && meta.len() == bytes.len() as u64 {
                         let mut existing = Vec::new();
                         file.read_to_end(&mut existing)?;
-                        if existing == bytes { handles.push(file); return Ok(StatusFile { path, _handles: handles }); }
+                        if existing == bytes { self._handles.push(file); self.saved.entry(hash.clone()).or_default().push((bytes.to_vec(), path.clone())); return Ok(path); }
                     }
                 }
             }
@@ -111,11 +121,28 @@ pub fn save(home: &Path, thread: &str, bytes: &[u8]) -> io::Result<StatusFile> {
     }
     Err(io::Error::other("결과 파일 이름을 확보하지 못했습니다"))
 }
+}
 
 #[cfg(not(windows))]
-pub fn save(_home: &Path, _thread: &str, _bytes: &[u8]) -> io::Result<StatusFile> {
+pub fn create(_home: &Path, _thread: &str) -> io::Result<StatusFile> {
     Err(io::Error::new(io::ErrorKind::Unsupported, "이 운영체제에서는 결과 파일의 안전한 생성을 지원하지 않습니다"))
 }
+
+#[cfg(not(windows))]
+impl StatusFile {
+pub fn put(&mut self, _bytes: &[u8]) -> io::Result<PathBuf> {
+    Err(io::Error::new(io::ErrorKind::Unsupported, "이 운영체제에서는 결과 파일의 안전한 생성을 지원하지 않습니다"))
+}
+}
+
+#[cfg(all(test, windows))]
+pub fn save(home: &Path, thread: &str, bytes: &[u8]) -> io::Result<StatusFile> {
+    let mut file = create(home, thread)?;
+    let path = file.put(bytes)?;
+    file.path = path;
+    Ok(file)
+}
+
 
 #[cfg(all(test, windows))]
 mod tests {
@@ -215,5 +242,23 @@ mod tests {
         assert!(read_events(&home, "run").is_err());
         drop(writer);
         assert_eq!(read_events(&home, "run").unwrap().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn protected_ancestors_cannot_be_replaced_during_use() {
+        let home = home();
+        let status = save(&home, "thread", b"result").unwrap();
+        let root = super::super::files::files_root(&home);
+        let base = std::fs::canonicalize(home.parent().unwrap()).unwrap();
+        let temp = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        assert!(base.starts_with(&temp));
+        assert_eq!(std::fs::canonicalize(&root).unwrap().parent(), Some(base.as_path()));
+        let moved = base.join("moved-root");
+        assert_eq!(moved.parent(), Some(base.as_path()));
+        assert!(std::fs::rename(&root, &moved).is_err());
+        let moved_base = temp.join(format!("{}-moved", base.file_name().unwrap().to_string_lossy()));
+        assert_eq!(moved_base.parent(), Some(temp.as_path()));
+        assert!(std::fs::rename(&base, moved_base).is_err());
+        drop(status);
     }
 }
