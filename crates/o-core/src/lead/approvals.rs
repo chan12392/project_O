@@ -541,6 +541,12 @@ mod tests {
         })
     }
 
+    /// A file inside the test's own project: `C:/p/...` is relative on Unix and would be judged
+    /// against whatever checkout the test runs from (a protected branch in some CI runs).
+    fn in_project(project: &str) -> String {
+        Path::new(project).join("a.txt").to_string_lossy().into_owned()
+    }
+
     fn decisions(home: &Path, thread: &str) -> Vec<(String, String)> {
         read_thread(home, thread).into_iter().filter_map(|e| match e { LeadEvent::Decision { decision, by, .. } => Some((decision, by)), _ => None }).collect()
     }
@@ -571,8 +577,9 @@ mod tests {
     #[test]
     fn a_request_times_out_or_stops_with_the_turn() {
         let (home, thread, project, slot) = setup("timeout");
+        let file = in_project(&project);
         let started = Instant::now();
-        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request("C:/p/a.txt"), Duration::from_millis(300), &mut || {});
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request(&file), Duration::from_millis(300), &mut || {});
         assert_eq!(outcome.decision, "timeout");
         assert!(started.elapsed() < Duration::from_secs(3));
         let stopper = {
@@ -583,7 +590,7 @@ mod tests {
                 fs::write(stop_path(&home, &thread), token).unwrap();
             })
         };
-        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request("C:/p/a.txt"), Duration::from_secs(5), &mut || {});
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request(&file), Duration::from_secs(5), &mut || {});
         stopper.join().unwrap();
         assert_eq!(outcome.decision, "stopped");
         assert_eq!(decisions(&home, &thread), [("timeout".into(), "timeout".into()), ("stopped".into(), "stop".into())]);
@@ -596,7 +603,7 @@ mod tests {
         let folder = folder(&home, &thread);
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join(format!("{thread}-a1.decision")), "allow").unwrap();
-        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request("C:/p/a.txt"), Duration::ZERO, &mut || {});
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request(&in_project(&project)), Duration::ZERO, &mut || {});
         assert_eq!(outcome.decision, "timeout");
     }
 
@@ -604,8 +611,9 @@ mod tests {
     fn request_is_refused_if_its_number_cannot_be_locked() {
         let (home, thread, project, slot) = setup("lock-failure");
         fs::create_dir_all(folder(&home, &thread).join(".lock")).unwrap();
-        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request("C:/p/a.txt"), Duration::from_secs(5), &mut || {});
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request(&in_project(&project)), Duration::from_secs(5), &mut || {});
         assert_eq!(outcome.decision, "deny");
+        assert!(outcome.message.contains("잠금"), "{}", outcome.message);
         assert!(pending(&home, &thread).is_empty());
     }
 
@@ -691,7 +699,7 @@ mod tests {
         let helper = answer(&home, &thread, None);
         let asker = {
             let (home, thread, project, token) = (home.clone(), thread.clone(), project.clone(), slot.marker.token.clone());
-            thread::spawn(move || ask(&home, &thread, &token, &project, write_request("C:/p/a.txt"), Duration::from_secs(5), &mut || {}))
+            thread::spawn(move || ask(&home, &thread, &token, &project, write_request(&in_project(&project)), Duration::from_secs(5), &mut || {}))
         };
         let id = helper.join().unwrap().unwrap();
         assert!(waiting(&folder(&home, &thread)));
