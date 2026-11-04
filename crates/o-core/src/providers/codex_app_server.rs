@@ -241,7 +241,7 @@ fn drive(
                 } else {
                     if read.is_some() {
                         params["dynamicTools"] = json!([{"type":"function","name":"o_read_card_result",
-                            "description":"Read an authorized card result page for the current lead session.",
+                            "description":"Read authorized result pages or list result metadata for the current lead session.",
                             "inputSchema":{"type":"object","properties":{
                                 "runId":{"type":"string","minLength":1,"maxLength":256},
                                 "cardId":{"type":"string","minLength":1,"maxLength":256},

@@ -103,6 +103,36 @@ fn official_codex_reads_the_last_part_of_a_result() {
 }
 
 #[test]
+#[ignore = "실제 Codex 구독과 실행 한도를 사용하는 수동 통합 검사"]
+fn official_codex_finds_a_result_omitted_from_the_summary() {
+    use o_core::{agents::clean, run::runner::official_command};
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::path::PathBuf::from(r"C:\tmp").join(format!("o-live-index-{}-{stamp}", std::process::id()));
+    let home = base.join("state");
+    let project_dir = base.join("project");
+    fs::create_dir_all(&project_dir).unwrap();
+    let project = project_dir.to_str().unwrap();
+    let thread = lead::thread_for(&home, project, false).unwrap();
+    let marker = format!("OLDEST-{stamp}");
+    let plan = Plan { title: "test".into(), project: project.into(), cards: vec![Card { id: "card".into(), provider: ProviderId::Codex, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![] }] };
+    let mut history = fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap();
+    for n in 0..20 {
+        let run = if n == 0 { format!("older-{stamp}") } else { format!("run-{n}") };
+        create_run(&home, &run, &plan).unwrap();
+        append_event(&home, &run, &OEvent::RunStart { at: "now".into(), run_id: run.clone(), title: "test".into(), project: project.into(), cards: vec![CardInfo { id: "card".into(), provider: ProviderId::Codex, label: None, role: None, model: None, effort: None }] }).unwrap();
+        let result = if n == 0 { format!("{}\n{marker}", "padding ".repeat(60)) } else { "padding ".repeat(40) };
+        append_event(&home, &run, &OEvent::CardEnd { at: "now".into(), card_id: "card".into(), status: CardStatus::Done, result: Some(result), exit_code: Some(0) }).unwrap();
+        append_event(&home, &run, &OEvent::RunEnd { at: "now".into(), run_id: run.clone(), status: CardStatus::Done }).unwrap();
+        writeln!(history, "{}", json!({"t":"lead.dispatch","at":"now","planId":format!("p-{n}"),"runId":run,"clean":false})).unwrap();
+    }
+    let root = clean::default_root();
+    let request = SendRequest { project, provider: ProviderId::Codex, model: None, effort: Some("low"), text: "이 대화에서 가장 오래된 실행의 카드 결과 원문을 색인에서 찾아 끝까지 확인한 뒤, 마지막 줄의 OLDEST-로 시작하는 식별자만 답하세요. 모르면 모른다고 답하세요.", attach: &[], fresh: false, clean: Some(&root), yolo: false };
+    let events = lead::send(&home, &request, &official_command).unwrap();
+    let answer = events.iter().find_map(|event| match event { LeadEvent::Reply { text, .. } => Some(text.as_str()), _ => None });
+    assert!(answer.is_some_and(|text| text.contains(&marker)), "색인에서 이전 결과를 찾지 못했습니다: {events:?}");
+}
+
+#[test]
 fn old_codex_session_migrates_once_and_new_session_resumes() {
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
     let base = std::env::temp_dir().join(format!("o-codex-migrate-{}-{stamp}", std::process::id()));
@@ -127,6 +157,11 @@ fn main() {
         if line.contains("\"id\":2") { println!("{}", r#"{"id":2,"result":{"thread":{"id":"new"}}}"#); }
         if line.contains("\"id\":3") {
             println!("{}", r#"{"id":3,"result":{"turn":{"id":"t"}}}"#);
+            println!("{}", r#"{"id":42,"method":"item/tool/call","params":{"threadId":"new","turnId":"t","callId":"c","namespace":null,"tool":"o_read_card_result","arguments":{"runId":"*","cardId":"*"}}}"#);
+            io::stdout().flush().unwrap();
+        }
+        if line.contains("\"id\":42") {
+            assert!(line.contains("unavailable") && line.contains("missing") && line.contains("\"success\":true"));
             println!("{}", r#"{"method":"item/completed","params":{"threadId":"new","turnId":"t","item":{"type":"agentMessage","text":"확인"}}}"#);
             println!("{}", r#"{"method":"turn/completed","params":{"threadId":"new","turn":{"id":"t","status":"completed"}}}"#);
             io::stdout().flush().unwrap(); return;

@@ -932,7 +932,12 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                     let result = if result_tools {
                         providers::codex_app_server::run_with_card_results(&turn, BufReader::new(stdout), stdin, on_event, |request| {
                             let guard = status_file.as_ref().ok_or("현재 실행 결과가 없습니다")?;
-                            stream_status::read_card_result(guard, &request.run_id, &request.card_id, request.line, request.offset.unwrap_or(0))
+                            let result = if request.run_id == "*" && request.card_id == "*" && request.line.is_none() {
+                                stream_status::list_results(guard, request.offset.unwrap_or(0))
+                            } else {
+                                stream_status::read_card_result(guard, &request.run_id, &request.card_id, request.line, request.offset.unwrap_or(0))
+                            };
+                            result
                                 .map(|value| value.to_string()).map_err(|error| error.to_string())
                         })
                     } else {
