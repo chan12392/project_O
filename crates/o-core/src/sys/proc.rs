@@ -8,6 +8,7 @@ use std::ffi::OsStr;
 use std::io::{self, Read};
 use std::path::Path;
 use std::process::{Child, Command, ExitStatus, Stdio};
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -92,11 +93,14 @@ pub fn spawn_detached(command: &mut Command) -> std::io::Result<Child> {
     command.spawn()
 }
 
-/// Holds a child's process tree. Dropping it (or this process dying) kills
-/// whatever is still in the tree, so a crashed runner leaves no orphans.
+/// Windows holds a kill-on-close job; Linux only tracks the directly owned child.
 pub struct KillOnClose {
     #[cfg(windows)]
     job: windows_sys::Win32::Foundation::HANDLE,
+    #[cfg(target_os = "linux")]
+    pid: u32,
+    #[cfg(target_os = "linux")]
+    reaped: bool,
 }
 
 // The job handle is only closed once, by Drop.
@@ -114,7 +118,7 @@ impl Drop for KillOnClose {
 impl KillOnClose {
     /// Stop the job and confirm that no processes remain before reusing resources.
     #[cfg(windows)]
-    pub fn stop_and_confirm(&self) -> bool {
+    pub fn stop_and_confirm(&mut self) -> bool {
         use windows_sys::Win32::System::JobObjects::{JobObjectBasicAccountingInformation, QueryInformationJobObject, TerminateJobObject, JOBOBJECT_BASIC_ACCOUNTING_INFORMATION};
         unsafe {
             let _ = TerminateJobObject(self.job, 1);
@@ -128,11 +132,19 @@ impl KillOnClose {
         }
     }
 
-    #[cfg(not(windows))]
-    pub fn stop_and_confirm(&self) -> bool { false }
+    #[cfg(target_os = "linux")]
+    pub fn stop_and_confirm(&mut self) -> bool {
+        unsafe extern "C" { fn kill(pid: i32, signal: i32) -> i32; }
+        if !self.reaped { unsafe { kill(self.pid as i32, 9); } }
+        // shortcut: a stopped parent does not prove descendant exit, retain the reservation.
+        false
+    }
+
+    #[cfg(not(any(windows, target_os = "linux")))]
+    pub fn stop_and_confirm(&mut self) -> bool { false }
 }
 
-/// Puts a freshly spawned child in a job object that kills it, and every
+/// On Windows, puts a freshly spawned child in a job object that kills it, and every
 /// process it started, when the job handle closes. `None` when the system refuses.
 #[cfg(windows)]
 pub fn contain(child: &Child) -> Option<KillOnClose> {
@@ -163,9 +175,38 @@ pub fn contain(child: &Child) -> Option<KillOnClose> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn contain(child: &Child) -> Option<KillOnClose> {
+    Some(KillOnClose { pid: child.id(), reaped: false })
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn contain(_child: &Child) -> Option<KillOnClose> {
     None
+}
+
+/// Serialize reaping with an owned stop, so a reused PID is never signalled.
+pub fn try_wait_worker(child: &mut Child, tree: &Option<Arc<Mutex<KillOnClose>>>) -> io::Result<Option<ExitStatus>> {
+    #[cfg(target_os = "linux")]
+    if let Some(tree) = tree {
+        let mut tree = tree.lock().map_err(|_| io::Error::other("프로세스 상태 잠금 실패"))?;
+        let status = child.try_wait()?;
+        if status.is_some() { tree.reaped = true; }
+        return Ok(status);
+    }
+    #[cfg(not(target_os = "linux"))]
+    let _ = tree;
+    child.try_wait()
+}
+
+pub fn wait_worker(child: &mut Child, tree: &Option<Arc<Mutex<KillOnClose>>>) -> io::Result<ExitStatus> {
+    #[cfg(target_os = "linux")]
+    loop {
+        if let Some(status) = try_wait_worker(child, tree)? { return Ok(status); }
+        thread::sleep(Duration::from_millis(25));
+    }
+    #[cfg(not(target_os = "linux"))]
+    { let _ = tree; child.wait() }
 }
 
 /// A short-lived child with no window whose process tree is stopped however

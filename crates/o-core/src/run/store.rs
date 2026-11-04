@@ -282,9 +282,7 @@ pub enum Reserved {
     DayFull,
 }
 
-/// The providers of every card holding a slot: slots reserved in o.db whose holder is
-/// still alive, and live markers no reservation stands for (left by an older runner).
-/// Dead holders' slots are dropped on the way.
+/// Count durable leases until release or recovery, plus live legacy slots and markers.
 fn held_slots(home: &Path, tx: &rusqlite::Transaction) -> io::Result<Vec<ProviderId>> {
     let rows: Vec<(i64, String, String, String, u32, u32)> = {
         let mut stmt = tx.prepare("SELECT rowid, run_id, card_id, provider, owner, pid FROM slots").map_err(sql)?;
@@ -294,13 +292,23 @@ fn held_slots(home: &Path, tx: &rusqlite::Transaction) -> io::Result<Vec<Provide
     let mut held = Vec::new();
     let mut cards = HashSet::new();
     for (rowid, run_id, card_id, provider, owner, pid) in rows {
-        // Before the CLI runs the runner holds the slot; after, the CLI does (its job dies with the runner).
+        // Legacy slots have no durable lease and use the former liveness check.
         let holder = if pid != 0 { pid } else { owner };
-        if !proc::is_alive(holder) {
+        let leased: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM resource_leases WHERE slot_id = ?1)", [rowid], |r| r.get(0)).map_err(sql)?;
+        if !leased && !proc::is_alive(holder) {
             tx.execute("DELETE FROM slots WHERE rowid = ?1", [rowid]).map_err(sql)?;
             continue;
         }
-        held.extend(ProviderId::parse(&provider));
+        held.push(ProviderId::parse(&provider).ok_or_else(|| io::Error::other("예약의 공급자를 확인할 수 없어 동시 실행 상한을 계산하지 못했습니다"))?);
+        cards.insert((run_id, card_id));
+    }
+    // Older versions could delete the slot while retaining its lease.
+    let mut orphaned = tx.prepare("SELECT l.run_id, l.card_id, s.provider FROM resource_leases l LEFT JOIN slots ON slots.id = l.slot_id LEFT JOIN starts s ON s.rowid = l.start_id AND s.run_id = l.run_id AND s.card_id = l.card_id WHERE slots.id IS NULL").map_err(sql)?;
+    let rows = orphaned.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?, r.get::<_, Option<String>>(2)?))).map_err(sql)?;
+    for row in rows {
+        let (run_id, card_id, provider) = row.map_err(sql)?;
+        let provider = provider.as_deref().and_then(ProviderId::parse).ok_or_else(|| io::Error::other("예약의 공급자를 확인할 수 없어 동시 실행 상한을 계산하지 못했습니다"))?;
+        held.push(provider);
         cards.insert((run_id, card_id));
     }
     for marker in active_markers(home) {

@@ -463,12 +463,12 @@ impl Drop for RunningChild {
             let _ = done.send(());
             let _ = watcher.join();
         }
-        let tree_exited = self._tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|tree| tree.stop_and_confirm()));
+        let tree_exited = self._tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|mut tree| tree.stop_and_confirm()));
         #[cfg(windows)]
         if !matches!(self.child.try_wait(), Ok(Some(_))) {
             let _ = self.child.kill();
         }
-        let exited = self.child.wait().is_ok();
+        let exited = proc::wait_worker(&mut self.child, &self._tree).is_ok();
         self.exited.store(exited && tree_exited, Ordering::Release);
     }
 }
@@ -601,7 +601,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         let (done, receiver) = mpsc::channel();
         let watcher = thread::spawn(move || loop {
             if stop.exists() {
-                if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); }
+                if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); }
                 break;
             }
             if !matches!(receiver.recv_timeout(Duration::from_millis(100)), Err(mpsc::RecvTimeoutError::Timeout)) { break; }
@@ -711,7 +711,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         Some(handle) => handle.join().map_err(|_| io::Error::other("표준 오류 기록 중 내부 오류"))??,
         None => String::new(),
     };
-    let (exit_code, error) = match child.wait() {
+    let (exit_code, error) = match proc::wait_worker(child, &running_child._tree) {
         Ok(status) => (proc::exit_code(status), None),
         Err(error) => (None, Some(format!("실행 실패: {error}"))),
     };

@@ -125,7 +125,7 @@ fn process_fixture() {
             let mut command = std::process::Command::new(std::env::current_exe().unwrap());
             command.args(["--exact", "process_fixture"]).env_remove("O_RESOURCE_HOME").env_remove("O_RESOURCE_MARK_EXIT").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
             let mut worker = o_core::sys::proc::spawn_worker(&mut command).unwrap();
-            let tree = o_core::sys::proc::contain(&worker).unwrap();
+            let mut tree = o_core::sys::proc::contain(&worker).unwrap();
             link_slot(&home, lease, worker.id()).unwrap();
             o_core::sys::proc::resume_worker(worker.id()).unwrap();
             worker.wait().unwrap();
@@ -195,7 +195,7 @@ fn crashed_owner_leaves_its_reservation_intact() {
     assert!(o_core::run::store::recover_resource(&home, id).is_err());
     child.kill().unwrap();
     child.wait().unwrap();
-    o_core::run::store::held_by_provider(&home).unwrap();
+    assert_eq!(o_core::run::store::held_by_provider(&home).unwrap().get(&ProviderId::Claude), Some(&1));
     let leases = o_core::run::store::resource_leases(&home).unwrap();
     assert_eq!(leases.len(), 1);
     assert_eq!(leases[0].worker_pid, None);
@@ -284,7 +284,11 @@ fn dead_child_does_not_erase_lease_without_confirmed_release() {
     link_slot(&home, &lease, child.id()).unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
-    o_core::run::store::held_by_provider(&home).unwrap();
+    assert_eq!(o_core::run::store::held_by_provider(&home).unwrap().get(&ProviderId::Claude), Some(&1));
+    let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    conn.execute("DELETE FROM slots WHERE run_id='one'", []).unwrap();
+    drop(conn);
+    assert_eq!(o_core::run::store::held_by_provider(&home).unwrap().get(&ProviderId::Claude), Some(&1));
     let leases = o_core::run::store::resource_leases(&home).unwrap();
     assert_eq!(leases.len(), 1);
     assert_eq!(leases[0].worker_pid, Some(child.id()));
@@ -295,6 +299,115 @@ fn dead_child_does_not_erase_lease_without_confirmed_release() {
     assert!(matches!(reserve(&home, &project, "two", &first), Reserved::Busy(_)));
     release_slot(&home, &lease, true).unwrap();
     assert!(matches!(reserve(&home, &project, "two", &first), Reserved::Granted(_)));
+}
+
+#[test]
+fn orphaned_lease_without_provider_blocks_capacity_checks() {
+    let (home, project) = fixture();
+    let lease = granted(reserve(&home, &project, "one", &card("one", vec![])));
+    let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    conn.execute("DELETE FROM slots WHERE run_id='one'", []).unwrap();
+    conn.execute("DELETE FROM starts WHERE run_id='one'", []).unwrap();
+    drop(conn);
+    assert!(o_core::run::store::held_by_provider(&home).is_err());
+    assert!(reserve_slot(&home, "two", &card("two", vec![]), project.to_str().unwrap(), Utc::now()).is_err());
+    release_slot(&home, &lease, true).unwrap();
+}
+
+#[test]
+fn dead_workers_with_unreleased_leases_still_fill_provider_capacity() {
+    let (home, project) = fixture();
+    let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+    command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+    let mut child = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
+    for n in 0..o_core::policy::LIMITS.max_active_per_provider(ProviderId::Claude) {
+        let id = format!("run{n}");
+        let lease = granted(reserve(&home, &project, &id, &card(&id, vec![res(ResourceKind::External, &id, ResourceMode::Write)])));
+        link_slot(&home, &lease, child.id()).unwrap();
+    }
+    child.kill().unwrap();
+    child.wait().unwrap();
+    let next = card("next", vec![res(ResourceKind::External, "different", ResourceMode::Write)]);
+    assert!(matches!(reserve(&home, &project, "next", &next), Reserved::Busy(reason) if reason.contains("동시 실행")));
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_lead_timeout_stops_owned_child_and_preserves_unknown_marker() {
+    use o_core::lead::{self, SendRequest};
+    let (home, project) = fixture();
+    let project = project.to_string_lossy().into_owned();
+    let req = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
+    let spawner = |_: &o_core::providers::LaunchSpec, _: &str| {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1");
+        Ok(command)
+    };
+    let started = std::time::Instant::now();
+    let events = lead::send_within(&home, &req, &spawner, Duration::from_secs(1)).unwrap();
+    assert!(started.elapsed() < Duration::from_secs(10));
+    assert!(events.iter().any(|event| matches!(event, lead::LeadEvent::Error { text, .. } if text.contains("시간"))));
+    assert!(lead::send(&home, &req, &spawner).is_err());
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_lead_can_start_another_turn_after_exit() {
+    use o_core::lead::{self, SendRequest};
+    let (home, project) = fixture();
+    let project_text = project.to_string_lossy().into_owned();
+    let req = SendRequest { project: &project_text, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
+    let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| {
+        let mut command = std::process::Command::new(std::env::current_exe()?);
+        command.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_LOCK", project.join("running"));
+        Ok(command)
+    };
+    assert!(lead::send(&home, &req, &spawner).is_ok());
+    assert!(lead::send(&home, &req, &spawner).is_ok());
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_worker_completes_or_stops_but_keeps_unverified_reservations() {
+    use o_core::run::events::CardStatus;
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, stop_run, Spawner};
+    use o_core::run::store::{active_markers, create_run};
+
+    for (id, stop) in [("normal", false), ("stopped", true)] {
+        let (home, project) = fixture();
+        let card = card(id, vec![res(ResourceKind::External, "shared", ResourceMode::Write)]);
+        let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card.clone()] };
+        create_run(&home, id, &plan).unwrap();
+        let worker_home = home.clone();
+        let descendant = project.join("child.pid");
+        let child_pid_file = descendant.clone();
+        let worker = std::thread::spawn(move || {
+            let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+                let mut command = std::process::Command::new(std::env::current_exe()?);
+                command.args(["--exact", "process_fixture", "--nocapture"]);
+                if stop { command.env("O_RESOURCE_FAKE", "1"); }
+                else { command.env("O_RESOURCE_DESCENDANT", &child_pid_file); }
+                Ok(command)
+            });
+            run_plan(&worker_home, id, &plan, None, spawner).unwrap()
+        });
+        if stop {
+            for _ in 0..500 {
+                if !active_markers(&home).is_empty() { break; }
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            assert!(!active_markers(&home).is_empty());
+            stop_run(&home, id).unwrap();
+        }
+        assert_eq!(worker.join().unwrap(), if stop { CardStatus::Stopped } else { CardStatus::Done });
+        assert!(resource_held(&home, id, id).unwrap());
+        assert!(matches!(reserve(&home, &project, "next", &card), Reserved::Busy(_)));
+        if !stop {
+            let pid = std::fs::read_to_string(descendant).unwrap().parse().unwrap();
+            assert!(o_core::sys::proc::is_alive(pid));
+        }
+    }
 }
 
 #[cfg(windows)]

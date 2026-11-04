@@ -802,11 +802,11 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         let deadline = Instant::now() + limit;
         thread::spawn(move || loop {
             if fs::read_to_string(&stop).is_ok_and(|t| t.is_empty() || t == token) {
-                if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
+                if let Some(tree) = &tree { if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); } }
                 return false;
             }
             if Instant::now() >= deadline {
-                if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
+                if let Some(tree) = &tree { if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); } }
                 return true;
             }
             match finished.recv_timeout(STOP_POLL) {
@@ -978,17 +978,17 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     let _ = fs::write(&progress_path, "[]");
     // The turn ends with an error below; the CLI must not outlive it.
-    if fatal.is_some() && matches!(child.try_wait(), Ok(None)) {
-        if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
+    if fatal.is_some() && matches!(proc::try_wait_worker(&mut child, &tree), Ok(None)) {
+        if let Some(tree) = &tree { if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); } }
     }
     // app-server is a long-lived process; do not let a stuck shutdown keep the turn open forever.
     // A turn it already finished keeps its result: only the process is ended.
     if app_server && fatal.is_none() {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if !matches!(child.try_wait(), Ok(None)) { break; }
+            if !matches!(proc::try_wait_worker(&mut child, &tree), Ok(None)) { break; }
             if Instant::now() >= deadline {
-                if let Some(tree) = &tree { if let Ok(tree) = tree.lock() { tree.stop_and_confirm(); } }
+                if let Some(tree) = &tree { if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); } }
                 if !finished {
                     last = Some((false, "Codex app-server가 종료되지 않았습니다. 대화 상태를 확인하세요.".into()));
                 }
@@ -1001,8 +1001,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     drop(done);
     let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    let status = child.wait();
-    let tree_exited = tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|tree| tree.stop_and_confirm()));
+    let status = proc::wait_worker(&mut child, &tree);
+    let tree_exited = tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|mut tree| tree.stop_and_confirm()));
     if status.is_ok() && tree_exited { slot.preserve = false; }
     let exit = status.ok().and_then(proc::exit_code);
     if used {
