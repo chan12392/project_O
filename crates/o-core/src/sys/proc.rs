@@ -260,7 +260,17 @@ pub fn definitely_exited(pid: u32, expected: u64) -> bool {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "linux")]
+pub fn definitely_exited(pid: u32, expected: u64) -> bool {
+    // A missing proc entry alone is inconclusive when procfs hides other processes.
+    if pid == 0 || pid > i32::MAX as u32 || !proc_self_matches() { return false; }
+    if let Some(actual) = started_at(pid) { return actual != expected; }
+    unsafe extern "C" { fn kill(pid: i32, signal: i32) -> i32; }
+    const ESRCH: i32 = 3;
+    unsafe { kill(pid as i32, 0) == -1 && io::Error::last_os_error().raw_os_error() == Some(ESRCH) }
+}
+
+#[cfg(not(any(windows, target_os = "linux")))]
 pub fn definitely_exited(_pid: u32, _expected: u64) -> bool { false }
 
 #[cfg(not(windows))]
@@ -290,9 +300,16 @@ pub fn started_at(pid: u32) -> Option<u64> {
 
 #[cfg(not(windows))]
 pub fn started_at(pid: u32) -> Option<u64> {
+    #[cfg(target_os = "linux")]
+    if !proc_self_matches() { return None; }
     // Field 22 of /proc/<pid>/stat, counted after the parenthesized command name.
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[cfg(target_os = "linux")]
+fn proc_self_matches() -> bool {
+    std::fs::read_link("/proc/self").ok().and_then(|path| path.to_str().and_then(|s| s.parse::<u32>().ok())) == Some(std::process::id())
 }
 
 /// Ends a process and everything it started (`taskkill /T /F` on Windows).

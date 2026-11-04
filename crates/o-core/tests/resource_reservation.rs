@@ -14,6 +14,22 @@ fn fixture() -> (PathBuf, PathBuf) {
     (base.join("state"), project)
 }
 
+#[test]
+#[cfg(target_os = "linux")]
+fn linux_process_identity_distinguishes_live_reused_and_reaped_pids() {
+    use o_core::sys::proc::{definitely_exited, started_at};
+    let pid = std::process::id();
+    let started = started_at(pid).unwrap();
+    assert!(!definitely_exited(pid, started));
+    assert!(definitely_exited(pid, started + 1));
+    assert!(!definitely_exited(0, 0));
+    assert!(!definitely_exited(u32::MAX, 0));
+    let mut child = std::process::Command::new("sh").args(["-c", "exit 0"]).spawn().unwrap();
+    let child_pid = child.id();
+    child.wait().unwrap();
+    assert!(definitely_exited(child_pid, 0));
+}
+
 fn card(id: &str, resources: Vec<Resource>) -> Card {
     Card { id: id.into(), provider: ProviderId::Claude, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![], resources }
 }
@@ -188,7 +204,7 @@ fn crashed_owner_leaves_its_reservation_intact() {
     assert!(leases[0].worker_started.is_none());
     assert!(resource_held(&home, "one", "one").unwrap());
     assert!(matches!(reserve(&home, &project, "two", &card("two", vec![res(ResourceKind::External, "shared", ResourceMode::Write)])), Reserved::Busy(_)));
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "linux"))]
     {
         assert_eq!(leases[0].state, "recoverable");
         let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
@@ -205,7 +221,7 @@ fn crashed_owner_leaves_its_reservation_intact() {
     }
 }
 
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "linux"))]
 #[test]
 fn ambiguous_spawn_is_never_recovered_from_owner_death_alone() {
     let (home, project) = fixture();
