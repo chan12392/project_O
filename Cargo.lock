@@ -2203,6 +2203,7 @@ dependencies = [
  "o-core",
  "o-guard",
  "serde_json",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2210,6 +2211,7 @@ name = "o-core"
 version = "0.3.0"
 dependencies = [
  "chrono",
+ "libc",
  "o-guard",
  "regex",
  "rusqlite",

@@ -34,9 +34,9 @@ fn unavailable_result_emits_warning_without_failing_the_reply() {
     let project = project_dir.to_str().unwrap();
     let thread = lead::thread_for(&home, project, false).unwrap();
     writeln!(fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap(), "{}", json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"missing","clean":false})).unwrap();
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         assert!(spec.stdin.as_deref().unwrap().contains("상태 불명"));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_stream_cli", "--nocapture"]).env("O_TEST_STREAM_PLAIN", "1");
         Ok(command)
     };
@@ -61,12 +61,12 @@ fn lead_can_read_the_end_of_a_long_result_on_repeated_turns() {
     append_event(&home, "run", &OEvent::CardEnd { at: "now".into(), card_id: "card".into(), status: CardStatus::Done, result: Some(format!("{}마지막 결과", "앞부분\n".repeat(5000))), exit_code: Some(0) }).unwrap();
     append_event(&home, "run", &OEvent::RunEnd { at: "now".into(), run_id: "run".into(), status: CardStatus::Done }).unwrap();
     writeln!(fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap(), "{}", json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"run","clean":false})).unwrap();
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let prompt = spec.stdin.as_deref().unwrap();
         assert!(prompt.contains("결과 미리보기") && prompt.contains("json-string-lines"));
         let index = spec.args.iter().position(|arg| arg == "--add-dir").unwrap();
         let index = fs::read_dir(Path::new(&spec.args[index + 1]))?.map(|entry| entry.unwrap().path()).find(|path| fs::read_to_string(path).is_ok_and(|text| text.contains("run-summary"))).unwrap();
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_stream_cli", "--nocapture"]).env("O_TEST_STREAM_INDEX", index);
         Ok(command)
     };
@@ -175,8 +175,10 @@ fn main() {
     assert!(o_core::sys::proc::hide_window(&mut compiler).status().unwrap().success());
     let log = base.join("requests.jsonl");
     let child_log = log.clone();
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
-        let mut command = Command::new(&binary);
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut command = o_core::sys::launch::Launch::new(&binary);
+        #[cfg(windows)]
+        { command.handle_owner_executable = Some(env!("CARGO_BIN_EXE_o-handle-owner").into()); }
         if spec.args.iter().any(|arg| arg == "--help") { command.arg("--help"); }
         command.env("TEST_LOG", &child_log);
         Ok(command)
@@ -191,3 +193,5 @@ fn main() {
     assert_eq!(calls.iter().filter(|v| v["method"] == "thread/start" && v["params"]["dynamicTools"].is_array()).count(), 1);
     assert_eq!(calls.iter().filter(|v| v["method"] == "thread/resume" && v["params"]["threadId"] == "new").count(), 1);
 }
+
+mod support;

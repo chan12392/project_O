@@ -1,7 +1,7 @@
 // Builds the release `o` CLI and copies it to app/src-tauri/binaries/o-<target triple>[.exe],
 // the sidecar that the installer config (scripts/installer/tauri.installer.json) bundles
 // next to project_O.exe. Runs as the installer build's beforeBuildCommand (`npm run sidecar`)
-// and from scripts/build-installer.ps1. Plain `cargo build`/`tauri dev` do not need it.
+// and from scripts/build-installer.ps1. Local Tauri builds prepare the CLI separately.
 import { execFileSync } from "node:child_process";
 import { copyFileSync, mkdirSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";

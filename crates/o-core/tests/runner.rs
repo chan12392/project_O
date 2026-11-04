@@ -523,7 +523,7 @@ fn failed_log() {
         let observed = Arc::clone(&launched);
         let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
             if spec.env["O_CARD_ID"] == "second" { observed.store(true, Ordering::SeqCst); }
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, "[]").env(FAKE_SLEEP, "30000");
             Ok(command)
         });
@@ -540,7 +540,7 @@ fn raw_output_preserved() {
     let p = plan(vec![card("a", ProviderId::Claude, "raw")]);
     create_run(&home, "raw", &p).unwrap();
     let spawner: Arc<Spawner> = Arc::new(|_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).arg("--fake-raw");
         Ok(command)
     });
@@ -567,7 +567,7 @@ fn dependency_result_limit() {
                 observed.store(true, Ordering::SeqCst);
             }
             let line = serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "result":format!("{}END", "x".repeat(size))}).to_string();
-            let mut command = Command::new(std::env::current_exe()?);
+            let mut command = support::fake_worker_launch()?;
             command.current_dir(cwd).env(FAKE, serde_json::to_string(&vec![line]).unwrap());
             Ok(command)
         });
@@ -610,7 +610,7 @@ fn devin_transcript() {
     create_run(&home, "devin", &p).unwrap();
     let spawner: Arc<Spawner> = Arc::new(|spec, cwd| {
         let export = spec.args.iter().position(|arg| arg == "--export").unwrap();
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--fake-devin", &spec.args[export + 1]]);
         Ok(command)
     });
@@ -623,7 +623,7 @@ fn devin_transcript() {
 /// Stands in for a provider CLI: prints the given stream lines, then exits.
 fn fake_cli(lines_for: impl Fn(&LaunchSpec) -> Vec<&'static str> + Send + Sync + 'static) -> Arc<Spawner> {
     Arc::new(move |spec: &LaunchSpec, cwd: &str| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines_for(spec)).unwrap());
         Ok(command)
     })
@@ -817,7 +817,7 @@ fn clean_run() {
     create_run(&home, "r6", &p).unwrap();
     let target = dump.clone();
     let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, cwd: &str| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).arg(DUMP_ENV).arg(&target);
         Ok(command)
     });
@@ -1050,7 +1050,7 @@ fn api_keys_dropped() {
     create_run(&home, "r9", &p).unwrap();
     let dumps = home.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).arg(DUMP_ENV).arg(dumps.join(format!("{}.json", spec.bin)));
         Ok(command)
     });
@@ -1180,3 +1180,5 @@ fn budget_off_keeps_effort_and_refuses_nothing() {
     let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
     assert_eq!(run_plan(&spent_home, "spent", &p, None, inner).unwrap(), CardStatus::Done, "{:?}", read_events(&spent_home, "spent"));
 }
+
+mod support;

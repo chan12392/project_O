@@ -27,6 +27,7 @@ fn page_text(row: &serde_json::Value) -> String {
 
 #[test]
 fn fake_child() {
+    if let Some(path) = std::env::var_os("O_LEAD_STARTED_FILE") { std::fs::write(path, "started").unwrap(); }
     if std::env::var_os("O_LEAD_SUCCESS_REPLY").is_some() { println!("\n{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"확인했습니다\"}}"); }
     if let Some(index) = std::env::var_os("O_STREAM_INDEX") {
         use std::io::{BufRead, BufReader};
@@ -63,11 +64,58 @@ fn fake_child() {
     }
 }
 
+#[cfg(windows)]
+#[test]
+fn invalid_helper_never_starts_lead_and_next_turn_can_start() {
+    let (home, project) = fixture();
+    let marker = PathBuf::from(&project).join("started");
+    let marker_for_bad = marker.clone();
+    let bad = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut launch = support::fake_worker_launch()?;
+        launch.handle_owner_executable = Some(marker_for_bad.with_file_name("missing-owner.exe"));
+        launch.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_STARTED_FILE", &marker_for_bad);
+        Ok(launch)
+    };
+    let events = lead::send(&home, &request(&project), &bad).unwrap();
+    assert!(events.iter().any(|event| matches!(event, lead::LeadEvent::Error { .. })));
+    assert!(!marker.exists());
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    let good = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut launch = support::fake_worker_launch()?;
+        launch.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
+        Ok(launch)
+    };
+    assert!(lead::send(&home, &request(&project), &good).unwrap().iter().any(|event| matches!(event, lead::LeadEvent::Reply { .. })));
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_child_marker_keeps_turn_unknown_without_resuming_lead() {
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let running = lead::thread_dir(&home, &thread).join("running.json");
+    let marker = PathBuf::from(&project).join("must-not-run");
+    let output = marker.clone();
+    let marker_path = running.clone();
+    let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let data: serde_json::Value = serde_json::from_slice(&std::fs::read(&marker_path)?).unwrap();
+        let token = data["token"].as_str().unwrap();
+        std::fs::create_dir(marker_path.with_extension(format!("{token}.tmp")))?;
+        let mut launch = support::fake_worker_launch()?;
+        launch.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_STARTED_FILE", &output);
+        Ok(launch)
+    };
+    assert!(lead::send(&home, &request(&project), &spawner).is_err());
+    assert!(!marker.exists());
+    assert!(running.exists());
+    assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
+}
+
 #[test]
 fn a_finished_turn_allows_the_next_turn() {
     let (home, project) = fixture();
-    let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
-        let mut cmd = Command::new(std::env::current_exe()?);
+    let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+        let mut cmd = support::fake_worker_launch()?;
         cmd.args(["--exact", "fake_child"]).env("O_LEAD_RECOVERY_SHORT", "1");
         Ok(cmd)
     };
@@ -97,7 +145,7 @@ fn orphan_and_legacy_markers_never_authorize_a_kill_or_new_turn() {
         assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
         assert!(!lead::stop(&home, Some(&project)));
         assert!(lead::new_thread(&home, &project).is_err());
-        let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> { panic!("unexpected spawn") };
+        let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("unexpected spawn") };
         assert!(lead::send(&home, &request(&project), &spawner).unwrap_err().contains("종료를 확인"));
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), content);
         assert!(other.try_wait().unwrap().is_none());
@@ -116,9 +164,9 @@ fn simultaneous_fresh_turns_start_at_most_one_child() {
     let workers: Vec<_> = (0..2).map(|_| {
         let (home, project, barrier, starts) = (home.clone(), project.clone(), Arc::clone(&barrier), Arc::clone(&starts));
         std::thread::spawn(move || {
-            let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+            let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
                 starts.fetch_add(1, Ordering::SeqCst);
-                let mut cmd = Command::new(std::env::current_exe()?);
+                let mut cmd = support::fake_worker_launch()?;
                 cmd.args(["--exact", "fake_child"]).env("O_LEAD_RECOVERY_SHORT", "1");
                 Ok(cmd)
             };
@@ -139,8 +187,8 @@ fn live_owner_stops_its_contained_child_and_releases_the_turn() {
     let marker = lead::thread_dir(&home, &thread).join("running.json");
     let (worker_home, worker_project) = (home.clone(), project.clone());
     let worker = std::thread::spawn(move || {
-        let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
-            let mut cmd = Command::new(std::env::current_exe()?);
+        let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
+            let mut cmd = support::fake_worker_launch()?;
             cmd.args(["--exact", "fake_child"]).env("O_LEAD_RECOVERY_WAIT", "1");
             Ok(cmd)
         };
@@ -185,7 +233,7 @@ fn lead_reads_complete_results_across_repeated_turns() {
     let captured = Arc::clone(&observations);
     let evidence = home.parent().unwrap().join("child-read.txt");
     let child_evidence = evidence.clone();
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let prompt = spec.stdin.as_ref().unwrap();
         assert!(prompt.contains("생략"));
         assert!(prompt.contains("신뢰할 수 없는"));
@@ -209,7 +257,7 @@ fn lead_reads_complete_results_across_repeated_turns() {
         }
         assert!(std::fs::write(index_file, b"tampered").is_err());
         captured.lock().unwrap().push((entries.iter().find(|e| e["runId"] == "run-7" && e["type"] == "card.end").unwrap()["sha256"].clone(), files.len()));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child"]).env("O_LEAD_STATUS_PATH", index_file).env("O_LEAD_STATUS_SEEN", &child_evidence);
         Ok(command)
     };
@@ -233,7 +281,7 @@ fn unknown_result_record_is_preserved_and_does_not_block_the_lead() {
     std::fs::write(run_dir.join("events.jsonl"), unknown).unwrap();
     let log = lead::thread_dir(&home, &thread).join("events.jsonl");
     writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"broken", "clean":false})).unwrap();
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         assert!(spec.stdin.as_ref().unwrap().contains("추측"));
         let index = spec.args.iter().position(|a| a == "--add-dir").unwrap();
         let dir = PathBuf::from(&spec.args[index + 1]);
@@ -244,7 +292,7 @@ fn unknown_result_record_is_preserved_and_does_not_block_the_lead() {
         assert_eq!(unknown_entries.len(), 2);
         let restored: String = unknown_entries.iter().map(page_text).collect();
         assert_eq!(restored, unknown.replace("{not-json}\n", ""));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
         Ok(command)
     };
@@ -265,11 +313,11 @@ fn unavailable_result_record_does_not_block_the_lead() {
     let _writer = std::fs::OpenOptions::new().write(true).create_new(true).open(run.join("events.jsonl")).unwrap();
     let log = lead::thread_dir(&home, &thread).join("events.jsonl");
     writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"busy", "clean":false})).unwrap();
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let prompt = spec.stdin.as_ref().unwrap();
         assert!(prompt.contains("원문과 상태를 확인할 수 없음"));
         assert!(prompt.contains("추측하지"));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child"]);
         Ok(command)
     };
@@ -291,7 +339,7 @@ fn large_result_is_paged_for_the_read_only_lead() {
     let log = lead::thread_dir(&home, &thread).join("events.jsonl");
     writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"large", "clean":false})).unwrap();
     let expected = source.clone();
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let prompt = spec.stdin.as_ref().unwrap();
         assert!(prompt.contains("json-string-lines"));
         assert!(prompt.contains("추측하지"));
@@ -307,7 +355,7 @@ fn large_result_is_paged_for_the_read_only_lead() {
         let reconstructed: String = pages.lines().skip(start).take(count).map(|line| serde_json::from_str::<String>(line).unwrap()).collect();
         assert_eq!(reconstructed, expected);
         assert_eq!(index["sha256"], o_core::run::result::digest(&expected));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
         Ok(command)
     };
@@ -346,7 +394,7 @@ fn very_large_card_result_streams_without_tool_or_team_events() {
     let expected = format!("{:x}", digest.finalize());
     let log = lead::thread_dir(&home, &thread).join("events.jsonl");
     writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"huge","clean":false})).unwrap();
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         assert!(spec.stdin.as_ref().unwrap().contains("json-string-lines"), "{}", spec.stdin.as_ref().unwrap());
         let at = spec.args.iter().position(|a| a == "--add-dir").unwrap();
         let dir = PathBuf::from(&spec.args[at + 1]);
@@ -372,7 +420,7 @@ fn very_large_card_result_streams_without_tool_or_team_events() {
         }
         assert_eq!(actual_count, count);
         assert_eq!(format!("{:x}", hash.finalize()), expected);
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index_path).env("O_STREAM_SHA", &expected);
         Ok(command)
     };
@@ -411,7 +459,7 @@ fn both_sides_of_the_previous_four_mib_boundary_stream() {
         expected.push((id.to_owned(), format!("{:x}", hash.finalize())));
         writeln!(std::fs::OpenOptions::new().append(true).open(&thread_log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":id,"clean":false})).unwrap();
     }
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let at = spec.args.iter().position(|a| a == "--add-dir").unwrap();
         let paths = std::fs::read_dir(&spec.args[at + 1])?.map(|entry| entry.unwrap().path()).collect::<Vec<_>>();
         let (index_path, rows) = paths.iter().find_map(|path| {
@@ -430,7 +478,7 @@ fn both_sides_of_the_previous_four_mib_boundary_stream() {
             }
             assert_eq!(format!("{:x}", hash.finalize()), *digest);
         }
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index_path).env("O_STREAM_SHA", &expected[0].1);
         Ok(command)
     };
@@ -460,11 +508,11 @@ fn truncated_large_record_is_unavailable_and_partial_pages_are_removed() {
     std::fs::write(good.join("events.jsonl"), &event).unwrap();
     writeln!(std::fs::OpenOptions::new().append(true).open(&log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"good","clean":false})).unwrap();
     let hash = o_core::run::result::digest(&event);
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         assert!(spec.stdin.as_ref().unwrap().contains("잘렸"));
         let at = spec.args.iter().position(|a| a == "--add-dir").unwrap();
         let index = std::fs::read_dir(&spec.args[at + 1])?.filter_map(|entry| entry.ok()).map(|entry| entry.path()).find(|path| std::fs::read_to_string(path).is_ok_and(|text| text.contains("unavailable") && text.contains("card.end"))).unwrap();
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index).env("O_STREAM_SHA", &hash);
         Ok(command)
     };
@@ -490,10 +538,10 @@ fn many_short_events_stream_before_the_preview_is_loaded() {
     let thread_log = lead::thread_dir(&home, &thread).join("events.jsonl");
     writeln!(std::fs::OpenOptions::new().append(true).open(thread_log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"many","clean":false})).unwrap();
     let hash = o_core::run::result::digest(&event);
-    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let at = spec.args.iter().position(|arg| arg == "--add-dir").unwrap();
         let index = std::fs::read_dir(&spec.args[at + 1])?.filter_map(|entry| entry.ok()).map(|entry| entry.path()).find(|path| std::fs::read_to_string(path).is_ok_and(|text| text.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).any(|row| row["type"] == "card.end"))).unwrap();
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index).env("O_STREAM_SHA", &hash);
         Ok(command)
     };
@@ -519,9 +567,9 @@ fn unsafe_output_folder_is_reported_without_blocking_the_lead() {
     let mut junction = Command::new("cmd");
     junction.args(["/C", "mklink", "/J"]).arg(root).arg(&target).stdout(Stdio::null()).stderr(Stdio::null());
     assert!(o_core::sys::proc::hide_window(&mut junction).status().unwrap().success());
-    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         assert!(spec.stdin.as_ref().unwrap().contains("원문을 안전하게 제공할 수 없습니다"));
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "fake_child"]);
         Ok(command)
     };
@@ -529,3 +577,5 @@ fn unsafe_output_folder_is_reported_without_blocking_the_lead() {
     assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("안전하게 제공할 수 없습니다"))));
     assert_eq!(std::fs::read_dir(target).unwrap().count(), 0);
 }
+
+mod support;

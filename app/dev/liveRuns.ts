@@ -1,6 +1,7 @@
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Plugin } from "vite";
@@ -8,13 +9,20 @@ import { MODEL_ID } from "../../src/core/lead.ts";
 import { DESKTOP_UPDATES_ONLY } from "../src/platform/updates.ts";
 
 /**
- * The `o` this checkout builds (`cargo build --release`), else the one on PATH.
+ * Prefer the `o` built for this development server, else the one on PATH.
  * The dev server reads runs and usage only through `o`, the same code the CLI
  * and the desktop shell use; it never opens O's folder itself.
  */
-function oBinary(): string {
-  const built = fileURLToPath(new URL(`../../target/release/o${process.platform === "win32" ? ".exe" : ""}`, import.meta.url));
-  return existsSync(built) ? built : "o";
+export function oBinary(): string {
+  const root = fileURLToPath(new URL("../../", import.meta.url));
+  const targetDir = process.env.CARGO_TARGET_DIR
+    ? (isAbsolute(process.env.CARGO_TARGET_DIR) ? process.env.CARGO_TARGET_DIR : resolve(root, process.env.CARGO_TARGET_DIR))
+    : join(root, "target");
+  const target = process.env.TAURI_ENV_TARGET_TRIPLE || process.env.CARGO_BUILD_TARGET;
+  const profile = process.env.TAURI_ENV_TARGET_TRIPLE && process.env.TAURI_ENV_DEBUG !== "true" ? "release" : "debug";
+  const exe = `o${process.platform === "win32" ? ".exe" : ""}`;
+  const candidates = [target && join(targetDir, target, profile, exe), join(targetDir, profile, exe), join(targetDir, "release", exe)];
+  return candidates.find((path): path is string => !!path && existsSync(path)) ?? "o";
 }
 
 /**

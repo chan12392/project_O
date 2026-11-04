@@ -3,6 +3,10 @@
 //! and the mirror checkout sync.
 
 pub mod js;
+pub mod launch;
 pub mod mirror;
 pub mod proc;
 pub mod resolve;
+pub mod worker;
+#[cfg(windows)]
+pub mod win_launch;

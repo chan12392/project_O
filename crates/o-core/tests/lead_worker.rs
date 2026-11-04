@@ -1,4 +1,4 @@
-use std::{fs, io::Write, path::PathBuf, process::Command, sync::{Arc, Mutex}};
+use std::{fs, io::Write, path::PathBuf, sync::{Arc, Mutex}};
 
 use o_core::{lead::{self, LeadEvent}, providers::LaunchSpec, run::{runner::Spawner, team::{self, Speaker}}};
 use serde_json::json;
@@ -35,7 +35,7 @@ fn missing_raw_log_is_reported_without_losing_the_answer() {
     let thread = lead::current_thread(&home, &project).unwrap();
     fs::create_dir(lead::thread_dir(&home, &thread).join("turn.raw.jsonl")).unwrap();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
         Ok(command)
     });
@@ -77,7 +77,7 @@ fn reading_a_long_answer_waits_for_the_current_event_write() {
 fn failed_answer_is_not_silently_retried() {
     let (home, project, card) = fixture();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_FAIL", "1");
         Ok(command)
     });
@@ -101,7 +101,7 @@ fn long_answer_is_delivered_by_verified_complete_chunks() {
     let answer = "가".repeat(4001);
     let fake_answer = answer.clone();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_ANSWER", &fake_answer);
         Ok(command)
     });
@@ -132,7 +132,7 @@ fn long_answer_is_not_referenced_when_the_card_cannot_read_context() {
     let (home, project, card) = fixture();
     fs::write(home.join("runs/run-1/plan.json"), json!({"title":"작업","project":project,"cards":[{"id":"a","provider":"devin","task":"질문","depends_on":[]}]}).to_string()).unwrap();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_ANSWER", "x".repeat(4001));
         Ok(command)
     });
@@ -150,7 +150,7 @@ fn replacing_thread_during_turn_is_refused_and_answer_is_delivered() {
     let (started, ready) = std::sync::mpsc::channel();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
         started.send(()).unwrap();
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_SLOW", "1");
         Ok(command)
     });
@@ -174,7 +174,7 @@ fn runner_wakes_lead_while_card_waits() {
     store::create_run(&home, "run-1", &plan).unwrap();
     let fake_home = home.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
         if spec.env.contains_key("O_CARD_ID") { command.env("O_TEST_CARD_HOME", &fake_home); }
         Ok(command)
@@ -199,7 +199,7 @@ fn restarted_monitor_delivers_only_stored_messages_and_respects_stop() {
     let count = calls.clone();
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
         count.fetch_add(1, Ordering::SeqCst);
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
         Ok(command)
     });
@@ -301,7 +301,7 @@ fn card_question_is_untrusted_and_answered_without_resuming_yolo_or_dispatching(
     let capture = seen.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
         capture.lock().unwrap().push(spec.clone());
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
         Ok(command)
     });
@@ -336,7 +336,7 @@ fn card_questions_resume_only_their_read_only_session_and_receive_missed_turns()
     let capture = seen.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
         capture.lock().unwrap().push(spec.clone());
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
         Ok(command)
     });
@@ -389,7 +389,7 @@ fn a_resumed_session_returning_another_id_never_delivers_the_answer() {
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
         let mut count = capture.lock().unwrap();
         *count += 1;
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
         if *count > 1 { command.env("O_TEST_SESSION", "unexpected"); }
         Ok(command)
@@ -414,7 +414,7 @@ fn missing_session_and_truncated_history_are_disclosed_to_the_card() {
     }
     drop(events);
     let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_NO_SESSION", "1");
         Ok(command)
     });
@@ -438,7 +438,7 @@ fn unspecified_default_model_is_never_resumed() {
     let capture = seen.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
         capture.lock().unwrap().push(spec.clone());
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1");
         Ok(command)
     });
@@ -451,3 +451,5 @@ fn unspecified_default_model_is_never_resumed() {
     assert!(!lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::WorkerSession { .. })));
     cleanup(&home);
 }
+
+mod support;

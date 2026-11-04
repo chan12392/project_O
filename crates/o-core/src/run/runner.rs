@@ -8,7 +8,8 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+#[cfg(not(windows))]
+use std::process::Stdio;
 use std::sync::{mpsc, Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
@@ -26,7 +27,7 @@ use crate::run::plan::{Card, Plan, ProviderId};
 use crate::policy::{check_plan_for, Violation, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
-use crate::providers::{launch_spec_for, remove_inherited, LaunchSpec, StreamReader, TeamChannel};
+use crate::providers::{launch_spec_for, LaunchSpec, StreamReader, TeamChannel};
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
     append_event, clear_active, cooldown_times, is_clean, is_yolo, link_slot, mark_runner, mark_active, policy_context, read_events, read_plan, release_slot,
@@ -35,7 +36,7 @@ use crate::run::store::{
 
 /// Builds the command for a card's CLI. The runner adds the environment, pipes,
 /// the hidden window and the kill-on-close job; tests swap in a fake CLI here.
-pub type Spawner = dyn Fn(&LaunchSpec, &str) -> io::Result<Command> + Send + Sync;
+pub type Spawner = dyn Fn(&LaunchSpec, &str) -> io::Result<crate::sys::launch::Launch> + Send + Sync;
 
 /// Prepare a regular dispatch with the same isolation as a lead's plan.
 pub fn prepare_isolated(home: &Path, run_id: &str, plan: &Plan, mode: &RunMode) -> io::Result<()> {
@@ -451,7 +452,7 @@ impl Drop for Slot<'_> {
 
 /// An early I/O error must not leave a worker running after its slot is released.
 struct RunningChild {
-    child: Child,
+    child: crate::sys::worker::Child,
     _tree: Option<Arc<Mutex<proc::KillOnClose>>>,
     stop_watch: Option<(mpsc::Sender<()>, thread::JoinHandle<()>)>,
     exited: Arc<AtomicBool>,
@@ -465,10 +466,10 @@ impl Drop for RunningChild {
         }
         let tree_exited = self._tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|mut tree| tree.stop_and_confirm()));
         #[cfg(windows)]
-        if !matches!(self.child.try_wait(), Ok(Some(_))) {
+        if !matches!(self.child.try_wait(&self._tree), Ok(Some(_))) {
             let _ = self.child.kill();
         }
-        let exited = proc::wait_worker(&mut self.child, &self._tree).is_ok();
+        let exited = self.child.wait(&self._tree).is_ok();
         self.exited.store(exited && tree_exited, Ordering::Release);
     }
 }
@@ -579,22 +580,45 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         } else if card.provider == ProviderId::OpenCode {
             command.env_clear().envs(clean::own_profile_environment());
         }
-        remove_inherited(&mut command, &spec.env_remove);
+        for name in crate::providers::names_to_remove(&spec.env_remove, std::env::vars_os().map(|(key, _)| key)) { command.env_remove(name); }
         command.envs(&spec.env);
-        crate::run::store::mark_spawning(home, &slot.reservation)?;
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        proc::spawn_worker(&mut command)
+        #[cfg(windows)]
+        {
+            let native = command.native(std::env::vars_os())?;
+            let owner_executable = match command.handle_owner_executable { Some(path) => path, None => std::env::current_exe()? };
+            let owner = crate::sys::win_launch::HandleOwner::start(owner_executable, "--o-handle-owner")?;
+            if stop_requested(home, run_id) { return Err(io::Error::new(io::ErrorKind::Interrupted, "작업이 중지되었습니다")); }
+            crate::run::store::mark_spawning(home, &slot.reservation)?;
+            // A panic after the durable spawn marker must keep the reservation unknown.
+            slot.started = true;
+            match native.spawn(&owner) {
+                Ok((child, tree)) => Ok((crate::sys::worker::Child::native(child), Some(Arc::new(Mutex::new(tree))))),
+                Err(error) => { slot.started = false; Err(error) }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            crate::run::store::mark_spawning(home, &slot.reservation)?;
+            let mut command = command.command();
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let child = proc::spawn_worker(&mut command)?;
+            let tree = proc::contain(&child).map(|tree| Arc::new(Mutex::new(tree)));
+            Ok((crate::sys::worker::Child::standard(child), tree))
+        }
     });
-    let child = match spawned {
+    let (child, tree) = match spawned {
         Ok(child) => child,
         Err(error) => {
             drop(slot);
+            if stop_requested(home, run_id) {
+                emit(end(CardStatus::Stopped, None, None))?;
+                return Ok(CardStatus::Stopped);
+            }
             emit(end(CardStatus::Failed, Some(format!("실행 실패: {error}")), None))?;
             return Ok(CardStatus::Failed);
         }
     };
     slot.started = true;
-    let tree = proc::contain(&child).map(|tree| Arc::new(Mutex::new(tree)));
     let stop_watch = tree.as_ref().map(|tree| {
         let tree = Arc::clone(tree);
         let stop = run_dir(home, run_id).join("stop");
@@ -620,7 +644,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
     emit(OEvent::CardStart { at: now_iso(), card_id: card.id.clone(), pid: Some(pid) })?;
     #[cfg(windows)]
     if running_child._tree.is_none() { return Err(io::Error::other("프로세스 격리를 확인하지 못해 시작하지 않았습니다")); }
-    if let Err(error) = proc::resume_worker(pid) {
+    if let Err(error) = child.resume() {
         if stop_requested(home, run_id) {
             drop(running_child);
             drop(slot);
@@ -711,7 +735,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         Some(handle) => handle.join().map_err(|_| io::Error::other("표준 오류 기록 중 내부 오류"))??,
         None => String::new(),
     };
-    let (exit_code, error) = match proc::wait_worker(child, &running_child._tree) {
+    let (exit_code, error) = match child.wait(&running_child._tree) {
         Ok(status) => (proc::exit_code(status), None),
         Err(error) => (None, Some(format!("실행 실패: {error}"))),
     };
@@ -744,13 +768,24 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
 }
 
 /// Launches the official CLI found on PATH, never through a shell (see `resolve`).
-pub fn official_command(spec: &LaunchSpec, cwd: &str) -> io::Result<Command> {
+pub fn official_command(spec: &LaunchSpec, cwd: &str) -> io::Result<crate::sys::launch::Launch> {
+    official_launch(spec, cwd)
+}
+
+/// Resolve the executable and argv before any environment is applied.
+pub fn official_launch(spec: &LaunchSpec, cwd: &str) -> io::Result<crate::sys::launch::Launch> {
     crate::sys::resolve::ensure_paths();
     let cli = resolve_cli(&spec.bin)
         .ok_or_else(|| io::Error::other(format!("{} CLI를 PATH에서 찾지 못했거나 셸 없이 실행할 수 없습니다", spec.bin)))?;
-    let mut command = Command::new(&cli.command);
-    command.args(&cli.prefix).args(&spec.args).current_dir(cwd);
-    Ok(command)
+    Ok(crate::sys::launch::Launch {
+        executable: cli.command,
+        args: cli.prefix.iter().chain(&spec.args).map(Into::into).collect(),
+        cwd: cwd.into(),
+        environment_base: crate::sys::launch::EnvironmentBase::Inherit,
+        environment_changes: Vec::new(),
+        #[cfg(windows)]
+        handle_owner_executable: None,
+    })
 }
 
 /// `o stop`: ask the owning runner to stop. `false` when there is no such run.

@@ -31,6 +31,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
+#[cfg(not(windows))]
 use std::process::Stdio;
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -385,9 +386,9 @@ impl TurnSlot {
         fs::rename(&temp, &self.path)
     }
 
-    fn set_child(&mut self, pid: u32) {
+    fn set_child(&mut self, pid: u32) -> io::Result<()> {
         self.marker.child = Some(ChildMark { pid, started: proc::started_at(pid) });
-        let _ = self.write();
+        self.write()
     }
 
     /// Whether this turn was asked to stop: the stop file names its token, or is empty (written
@@ -796,7 +797,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     if let Some(error) = &status_error { emit(LeadEvent::Warning { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
     let app_server = req.provider == ProviderId::Codex
         && !req.yolo
-        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(providers::codex::supports_app_server);
+        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(|launch| providers::codex::supports_app_server(launch.command()));
     let migrate = app_server && status_file.is_some() && previous_session.as_ref().is_some_and(|(_, tools)| *tools != Some(true));
     if migrate {
         emit(LeadEvent::Warning { at: now_iso(), text: "결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작합니다. 이전 대화는 최근 일부만 전달되며 캐시가 초기화될 수 있습니다.".into() })?;
@@ -861,7 +862,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             command.env_clear().envs(env);
         }
         // An inherited API key would bill the API instead of the subscription the CLI signed in with.
-        providers::remove_inherited(&mut command, &spec.env_remove);
+        for name in providers::names_to_remove(&spec.env_remove, std::env::vars_os().map(|(key, _)| key)) { command.env_remove(name); }
         command.envs(&spec.env);
         command.env("O_AGENT_ROLE", "lead");
         Ok(command)
@@ -872,29 +873,55 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         emit(stopped())?;
         return Ok(added);
     }
-    let spawned = command.and_then(|mut command| {
-        command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
-        proc::spawn_worker(&mut command)
+    let spawned = command.and_then(|command| {
+        #[cfg(windows)]
+        {
+            let native = command.native(std::env::vars_os())?;
+            let owner_executable = match command.handle_owner_executable {
+                Some(path) => path,
+                None => {
+                    let current = std::env::current_exe()?;
+                    if current.file_name().is_some_and(|name| name.eq_ignore_ascii_case("o.exe")) { current }
+                    else { current.parent().ok_or_else(|| io::Error::other("총괄 도우미 위치를 찾지 못했습니다"))?.join("o.exe") }
+                }
+            };
+            let owner = crate::sys::win_launch::HandleOwner::start(owner_executable, "--o-handle-owner")?;
+            if slot.stop_asked() { return Err(io::Error::new(ErrorKind::Interrupted, "총괄이 중지되었습니다")); }
+            // A panic during creation leaves the turn explicitly unresolved.
+            slot.preserve = true;
+            match native.spawn(&owner) {
+                Ok((child, tree)) => Ok((crate::sys::worker::Child::native(child), Some(Arc::new(Mutex::new(tree))))),
+                Err(error) => { slot.preserve = false; Err(error) }
+            }
+        }
+        #[cfg(not(windows))]
+        {
+            let mut command = command.command();
+            command.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped());
+            let child = proc::spawn_worker(&mut command)?;
+            let tree = proc::contain(&child).map(|tree| Arc::new(Mutex::new(tree)));
+            Ok((crate::sys::worker::Child::standard(child), tree))
+        }
     });
-    let mut child = match spawned {
+    let (mut child, tree) = match spawned {
         Ok(child) => child,
         Err(error) => {
+            if slot.stop_asked() { emit(stopped())?; return Ok(added); }
             emit(LeadEvent::Error { at: now_iso(), text: format!("총괄 CLI를 시작하지 못했습니다: {error}") })?;
             return Ok(added);
         }
     };
     slot.preserve = true;
-    let tree = proc::contain(&child).map(|tree| Arc::new(Mutex::new(tree)));
-    slot.set_child(child.id());
+    slot.set_child(child.id()).map_err(|error| format!("총괄 프로세스 상태를 기록하지 못해 종료 상태를 확인해야 합니다: {error}"))?;
     #[cfg(windows)]
     if tree.is_none() {
         let _ = child.kill();
-        let _ = child.wait();
+        let _ = child.wait(&tree);
         return Err(UNKNOWN.into());
     }
-    if proc::resume_worker(child.id()).is_err() {
+    if child.resume().is_err() {
         #[cfg(windows)]
-        { let _ = child.kill(); let _ = child.wait(); }
+        { let _ = child.kill(); let _ = child.wait(&tree); }
         return Err(UNKNOWN.into());
     }
     // The owner handles stop and timeout through its job handle, never a recorded PID.
@@ -1097,7 +1124,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     let _ = fs::write(&progress_path, "[]");
     // The turn ends with an error below; the CLI must not outlive it.
-    if fatal.is_some() && matches!(proc::try_wait_worker(&mut child, &tree), Ok(None)) {
+    if fatal.is_some() && matches!(child.try_wait(&tree), Ok(None)) {
         if let Some(tree) = &tree { if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); } }
     }
     // app-server is a long-lived process; do not let a stuck shutdown keep the turn open forever.
@@ -1105,7 +1132,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     if app_server && fatal.is_none() {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if !matches!(proc::try_wait_worker(&mut child, &tree), Ok(None)) { break; }
+            if !matches!(child.try_wait(&tree), Ok(None)) { break; }
             if Instant::now() >= deadline {
                 if let Some(tree) = &tree { if let Ok(mut tree) = tree.lock() { tree.stop_and_confirm(); } }
                 if !finished {
@@ -1120,7 +1147,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     drop(done);
     let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    let status = proc::wait_worker(&mut child, &tree);
+    let status = child.wait(&tree);
     let tree_exited = tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|mut tree| tree.stop_and_confirm()));
     if status.is_ok() && tree_exited { slot.preserve = false; }
     let exit = status.ok().and_then(proc::exit_code);

@@ -96,7 +96,7 @@ pub fn spawn_detached(command: &mut Command) -> std::io::Result<Child> {
 /// Windows holds a kill-on-close job; Linux only tracks the directly owned child.
 pub struct KillOnClose {
     #[cfg(windows)]
-    job: windows_sys::Win32::Foundation::HANDLE,
+    pub(crate) job: windows_sys::Win32::Foundation::HANDLE,
     #[cfg(target_os = "linux")]
     pid: u32,
     #[cfg(target_os = "linux")]
@@ -311,7 +311,35 @@ pub fn definitely_exited(pid: u32, expected: u64) -> bool {
     unsafe { kill(pid as i32, 0) == -1 && io::Error::last_os_error().raw_os_error() == Some(ESRCH) }
 }
 
-#[cfg(not(any(windows, target_os = "linux")))]
+#[cfg(target_os = "macos")]
+fn mac_process_start(pid: u32) -> io::Result<u64> {
+    let pid = i32::try_from(pid).ok().filter(|pid| *pid > 0).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "invalid pid"))?;
+    let mut info: libc::proc_bsdinfo = unsafe { std::mem::zeroed() };
+    let size = std::mem::size_of::<libc::proc_bsdinfo>();
+    unsafe { *libc::__error() = 0; }
+    let read = unsafe { libc::proc_pidinfo(pid, libc::PROC_PIDTBSDINFO, 0, (&mut info as *mut libc::proc_bsdinfo).cast(), size as i32) };
+    if read == 0 { return Err(io::Error::last_os_error()); }
+    if read != size as i32 || info.pbi_pid != pid as u32 || info.pbi_start_tvusec >= 1_000_000 {
+        return Err(io::Error::other("invalid process identity"));
+    }
+    info.pbi_start_tvsec.checked_mul(1_000_000).and_then(|s| s.checked_add(info.pbi_start_tvusec))
+        .ok_or_else(|| io::Error::other("invalid process start time"))
+}
+
+#[cfg(target_os = "macos")]
+pub fn definitely_exited(pid: u32, expected: u64) -> bool {
+    let Ok(native_pid) = i32::try_from(pid) else { return false };
+    if native_pid <= 0 { return false; }
+    match mac_process_start(pid) {
+        Ok(actual) => actual != expected,
+        Err(error) if error.raw_os_error() == Some(libc::ESRCH) => {
+            unsafe { libc::kill(native_pid, 0) == -1 && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH) }
+        }
+        Err(_) => false,
+    }
+}
+
+#[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn definitely_exited(_pid: u32, _expected: u64) -> bool { false }
 
 #[cfg(not(windows))]
@@ -339,13 +367,48 @@ pub fn started_at(pid: u32) -> Option<u64> {
     }
 }
 
-#[cfg(not(windows))]
+#[cfg(target_os = "macos")]
+pub fn started_at(pid: u32) -> Option<u64> { mac_process_start(pid).ok() }
+
+#[cfg(not(any(windows, target_os = "macos")))]
 pub fn started_at(pid: u32) -> Option<u64> {
     #[cfg(target_os = "linux")]
     if !proc_self_matches() { return None; }
     // Field 22 of /proc/<pid>/stat, counted after the parenthesized command name.
     let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
     stat.rsplit_once(')')?.1.split_whitespace().nth(19)?.parse().ok()
+}
+
+#[cfg(target_os = "macos")]
+pub fn process_scope() -> Option<String> {
+    let mut bytes = [0u8; 64];
+    let mut len = bytes.len();
+    let result = unsafe { libc::sysctlbyname(c"kern.bootsessionuuid".as_ptr(), bytes.as_mut_ptr().cast(), &mut len, std::ptr::null_mut(), 0) };
+    if result != 0 || len > bytes.len() { return None; }
+    mac_boot_scope(&bytes[..len])
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn mac_boot_scope(bytes: &[u8]) -> Option<String> {
+    if bytes.len() != 37 || bytes[36] != 0 { return None; }
+    let uuid = std::str::from_utf8(&bytes[..36]).ok()?;
+    if !uuid.bytes().enumerate().all(|(i, b)| if matches!(i, 8 | 13 | 18 | 23) { b == b'-' } else { b.is_ascii_hexdigit() }) { return None; }
+    if uuid.bytes().all(|b| b == b'0' || b == b'-') { return None; }
+    Some(format!("macos-boot:{}", uuid.to_ascii_lowercase()))
+}
+
+#[cfg(test)]
+mod mac_owner_scope_tests {
+    use super::mac_boot_scope;
+
+    #[test]
+    fn only_complete_nonzero_boot_uuids_are_accepted() {
+        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890ab\0").as_deref(), Some("macos-boot:12345678-abcd-1234-abcd-1234567890ab"));
+        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890ab"), None);
+        assert_eq!(mac_boot_scope(b"00000000-0000-0000-0000-000000000000\0"), None);
+        assert_eq!(mac_boot_scope(b"12345678_ABCD-1234-abcd-1234567890ab\0"), None);
+        assert_eq!(mac_boot_scope(b"12345678-ABCD-1234-abcd-1234567890az\0"), None);
+    }
 }
 
 #[cfg(target_os = "linux")]

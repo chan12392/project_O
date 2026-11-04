@@ -380,7 +380,11 @@ pub fn reserve_slot(home: &Path, run_id: &str, card: &crate::run::plan::Card, pr
     .map_err(sql)?;
     let slot_row = tx.last_insert_rowid();
     let owner_started = proc::started_at(std::process::id()).and_then(|at| i64::try_from(at).ok());
-    tx.execute("INSERT INTO resource_leases (slot_id, run_id, card_id, resources, owner_pid, owner_started, spawn_intent) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0)", params![slot_row, run_id, card_id, serde_json::to_string(&resources).map_err(io::Error::other)?, std::process::id(), owner_started]).map_err(sql)?;
+    #[cfg(target_os = "macos")]
+    let owner_scope = proc::process_scope();
+    #[cfg(not(target_os = "macos"))]
+    let owner_scope: Option<String> = None;
+    tx.execute("INSERT INTO resource_leases (slot_id, run_id, card_id, resources, owner_pid, owner_started, spawn_intent, owner_scope) VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, ?7)", params![slot_row, run_id, card_id, serde_json::to_string(&resources).map_err(io::Error::other)?, std::process::id(), owner_started, owner_scope]).map_err(sql)?;
     tx.execute("INSERT INTO starts (run_id, card_id, provider, at) VALUES (?1, ?2, ?3, ?4)", params![run_id, card_id, provider.as_str(), iso(now)])
         .map_err(sql)?;
     let start_row = tx.last_insert_rowid();
@@ -448,17 +452,24 @@ pub struct ResourceLease {
     pub state: &'static str,
 }
 
+fn owner_scope_matches(scope: Option<&str>) -> bool {
+    #[cfg(target_os = "macos")]
+    { scope.is_some() && scope == proc::process_scope().as_deref() }
+    #[cfg(not(target_os = "macos"))]
+    { let _ = scope; true }
+}
+
 pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
     let conn = index::open(home)?;
-    let mut stmt = conn.prepare("SELECT slot_id, run_id, card_id, resources, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id FROM resource_leases ORDER BY slot_id").map_err(sql)?;
+    let mut stmt = conn.prepare("SELECT slot_id, run_id, card_id, resources, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id, owner_scope FROM resource_leases ORDER BY slot_id").map_err(sql)?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, Option<i64>>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Option<bool>>(8)?, row.get::<_, Option<bool>>(9)?, row.get::<_, Option<i64>>(10)?))
+        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, Option<i64>>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Option<bool>>(8)?, row.get::<_, Option<bool>>(9)?, row.get::<_, Option<i64>>(10)?, row.get::<_, Option<String>>(11)?))
     }).map_err(sql)?;
     rows.map(|row| {
-        let (id, run_id, card_id, raw, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id) = row.map_err(sql)?;
+        let (id, run_id, card_id, raw, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id, owner_scope) = row.map_err(sql)?;
         let resources = serde_json::from_str(&raw).map_err(io::Error::other)?;
         let evidence = (spawn_intent == Some(false) && worker_pid.is_none() && start_id.is_some()) || (spawn_intent == Some(true) && exit_confirmed == Some(true));
-        let owner_gone = owner_pid.zip(owner_started.and_then(|v| u64::try_from(v).ok())).is_some_and(|(pid, started)| proc::definitely_exited(pid, started));
+        let owner_gone = owner_scope_matches(owner_scope.as_deref()) && owner_pid.zip(owner_started.and_then(|v| u64::try_from(v).ok())).is_some_and(|(pid, started)| proc::definitely_exited(pid, started));
         let state = if evidence && owner_gone { "recoverable" } else { "unknown" };
         Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent, exit_confirmed, state })
     }).collect()
@@ -469,10 +480,10 @@ pub fn recover_resource(home: &Path, id: i64) -> io::Result<()> {
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
     let row = tx.query_row(
-        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid, exit_confirmed FROM resource_leases WHERE slot_id = ?1",
-        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<bool>>(7)?)),
+        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid, exit_confirmed, owner_scope FROM resource_leases WHERE slot_id = ?1",
+        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<bool>>(7)?, row.get::<_, Option<String>>(8)?)),
     ).optional().map_err(sql)?;
-    let (owner, started, phase, start_id, run_id, card_id, worker_pid, exited) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
+    let (owner, started, phase, start_id, run_id, card_id, worker_pid, exited, owner_scope) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
     let unstarted = phase == Some(false) && worker_pid.is_none() && start_id.is_some();
     let finished = phase == Some(true) && exited == Some(true);
     if !unstarted && !finished { return Err(io::Error::other("프로세스 종료 여부가 불명확해 예약을 복구할 수 없습니다")); }
@@ -480,7 +491,7 @@ pub fn recover_resource(home: &Path, id: i64) -> io::Result<()> {
         return Err(io::Error::other("예약 소유자를 확인할 수 없습니다"));
     };
     let started = u64::try_from(started).map_err(|_| io::Error::other("소유자 생성 시각이 올바르지 않습니다"))?;
-    if !proc::definitely_exited(owner, started) {
+    if !owner_scope_matches(owner_scope.as_deref()) || !proc::definitely_exited(owner, started) {
         return Err(io::Error::other("예약 소유자가 살아 있거나 종료 여부를 확인할 수 없습니다"));
     }
     tx.execute("DELETE FROM slots WHERE id = ?1", [id]).map_err(sql)?;

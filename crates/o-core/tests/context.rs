@@ -5,7 +5,6 @@
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -265,7 +264,7 @@ fn the_runner_hands_each_card_its_section() {
     // Any program that exits will do: only what the runner hands it matters here.
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
         record.lock().unwrap().push(spec.clone());
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).arg("--list");
         Ok(command)
     });
@@ -433,3 +432,5 @@ fn tokens_are_grouped_by_mode_and_context_with_averages_per_card_and_provider() 
     assert_eq!(since.runs.len(), 2);
     assert!(since.compare.baseline.as_ref().is_some_and(|g| g.cards == 1), "only o1 is a normal run since then");
 }
+
+mod support;

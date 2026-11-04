@@ -46,13 +46,13 @@ fn fake_card() {
 #[cfg(windows)]
 #[test]
 fn normal_dispatch_preparation_runs_a_card_in_an_isolated_non_git_copy() {
-    use std::{process::Command, sync::Arc};
+    use std::sync::Arc;
     use o_core::run::events::{CardStatus, OEvent};
     let (home, project, plan) = fixture();
     runner::prepare_isolated(&home, "run-1", &plan, &RunMode::of(Profile::Own)).unwrap();
     assert!(store::run_dir(&home, "run-1").join("isolated-worktrees").is_file());
     let spawner: Arc<runner::Spawner> = Arc::new(|_, cwd| {
-        let mut command = Command::new(std::env::current_exe()?);
+        let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).args(["--exact", "fake_card", "--nocapture"]).env("O_DISPATCH_ISOLATION_FAKE", "1");
         Ok(command)
     });
@@ -88,3 +88,5 @@ fn normal_dispatch_preparation_runs_a_card_in_an_isolated_non_git_copy() {
     store::append_event(&home, "follow-2", &OEvent::CardTool { at: "2026-01-01T00:00:05Z".into(), card_id: "a".into(), name: "O 작업 폴더".into(), summary: project.to_string_lossy().into_owned() }).unwrap();
     assert!(o_core::run::review_changes(&home, "follow-2", "a").is_err());
 }
+
+mod support;

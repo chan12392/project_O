@@ -6,6 +6,14 @@ use chrono::Utc;
 use o_core::run::plan::{Card, ProviderId, Resource, ResourceKind, ResourceMode};
 use o_core::run::store::{link_slot, release_slot, reserve_slot, resource_held, Reservation, Reserved};
 
+fn fake_worker_launch() -> std::io::Result<o_core::sys::launch::Launch> {
+    let launch = o_core::sys::launch::Launch::new(std::env::current_exe()?);
+    #[cfg(windows)]
+    { let mut launch = launch; launch.handle_owner_executable = Some(PathBuf::from(env!("CARGO_BIN_EXE_o-handle-owner"))); Ok(launch) }
+    #[cfg(not(windows))]
+    { Ok(launch) }
+}
+
 fn fixture() -> (PathBuf, PathBuf) {
     let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
     let base = std::env::temp_dir().join(format!("o-resource-{}-{unique}", std::process::id()));
@@ -104,6 +112,24 @@ fn simultaneous_runs_cannot_both_reserve_a_write() {
 #[test]
 #[allow(clippy::zombie_processes)] // The fixture deliberately leaves a descendant for the job to stop.
 fn process_fixture() {
+    if let Some(path) = std::env::var_os("O_RESOURCE_PARALLEL") {
+        let path = PathBuf::from(path);
+        let id = std::env::var("O_RESOURCE_PARALLEL_ID").unwrap();
+        std::fs::write(path.join(&id), "ready").unwrap();
+        let until = std::time::Instant::now() + Duration::from_secs(10);
+        while !(path.join("one").exists() && path.join("two").exists()) {
+            assert!(std::time::Instant::now() < until, "both cards must overlap");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        println!("{}", serde_json::json!({"type":"result", "subtype":"success", "is_error":false, "result":id}));
+        return;
+    }
+    if let Some(path) = std::env::var_os("O_RESOURCE_AUDIT") {
+        let report = serde_json::json!({"api_key_present": std::env::var_os("ANTHROPIC_API_KEY").is_some(), "custom": std::env::var("O_RESOURCE_CUSTOM").ok()});
+        std::fs::write(path, report.to_string()).unwrap();
+        println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}"#);
+        return;
+    }
     if let Some(home) = std::env::var_os("O_RESOURCE_HOME") {
         let home = PathBuf::from(home);
         let project = PathBuf::from(std::env::var_os("O_RESOURCE_PROJECT").unwrap());
@@ -151,6 +177,160 @@ fn process_fixture() {
         println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}"#);
     } else if let Ok(ms) = std::env::var("O_RESOURCE_CHILD_MS") { std::thread::sleep(Duration::from_millis(ms.parse().unwrap())); }
     else if std::env::var_os("O_RESOURCE_FAKE").is_some() { std::thread::sleep(Duration::from_secs(30)); }
+}
+
+#[cfg(windows)]
+#[test]
+fn independent_cards_run_concurrently_with_separate_outputs() {
+    use o_core::run::events::{CardStatus, OEvent};
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, Spawner};
+    use o_core::run::store::{create_run, read_events};
+    let (home, project) = fixture();
+    let cards = ["one", "two"].into_iter().map(|id| card(id, vec![res(ResourceKind::External, id, ResourceMode::Write)])).collect();
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards };
+    create_run(&home, "run", &plan).unwrap();
+    let directory = project.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |spec, _| {
+        let mut launch = fake_worker_launch()?;
+        launch.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_PARALLEL", &directory).env("O_RESOURCE_PARALLEL_ID", &spec.env["O_CARD_ID"]);
+        Ok(launch)
+    });
+    assert_eq!(run_plan(&home, "run", &plan, None, spawner).unwrap(), CardStatus::Done);
+    let events = read_events(&home, "run");
+    for id in ["one", "two"] {
+        assert!(events.iter().any(|event| matches!(event, OEvent::CardEnd { card_id, status: CardStatus::Done, result: Some(text), .. } if card_id == id && text == id)));
+        assert!(!resource_held(&home, "run", id).unwrap());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn card_spawner_respects_explicit_environment_and_removes_fake_api_key() {
+    use o_core::run::events::CardStatus;
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, Spawner};
+    use o_core::run::store::create_run;
+    for replace in [false, true] {
+        let (home, project) = fixture();
+        let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card("one", vec![res(ResourceKind::External, "audit", ResourceMode::Write)])] };
+        create_run(&home, "one", &plan).unwrap();
+        let report = project.join("audit.json");
+        let output = report.clone();
+        let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+            let mut launch = fake_worker_launch()?;
+            if replace { launch.env_clear(); }
+            if let Some(root) = std::env::var_os("SystemRoot") { launch.env("SystemRoot", root); }
+            launch.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_AUDIT", &output)
+                .env("O_RESOURCE_CUSTOM", "fixture").env("ANTHROPIC_API_KEY", "fake-only");
+            Ok(launch)
+        });
+        assert_eq!(run_plan(&home, "one", &plan, None, spawner).unwrap(), CardStatus::Done);
+        let audit: serde_json::Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
+        assert_eq!(audit["api_key_present"], false);
+        assert_eq!(audit["custom"], "fixture");
+        assert!(!resource_held(&home, "one", "one").unwrap());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn marker_failure_stops_suspended_card_before_releasing_its_reservation() {
+    use o_core::run::events::CardStatus;
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, Spawner};
+    use o_core::run::store::{create_run, started_on};
+    let (home, project) = fixture();
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card("one", vec![res(ResourceKind::External, "marker-failure", ResourceMode::Write)])] };
+    create_run(&home, "one", &plan).unwrap();
+    std::fs::write(home.join("active"), "not a directory").unwrap();
+    let marker = project.join("must-not-run");
+    let output = marker.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+        let mut launch = fake_worker_launch()?;
+        launch.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_AUDIT", &output);
+        Ok(launch)
+    });
+    assert_eq!(run_plan(&home, "one", &plan, None, spawner).unwrap(), CardStatus::Failed);
+    assert!(!marker.exists());
+    assert!(!resource_held(&home, "one", "one").unwrap());
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 1);
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_exit_confirmation_keeps_card_reservation() {
+    use o_core::run::events::CardStatus;
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, Spawner};
+    use o_core::run::store::create_run;
+    let (home, project) = fixture();
+    let card = card("one", vec![res(ResourceKind::External, "exit-confirmation", ResourceMode::Write)]);
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card.clone()] };
+    create_run(&home, "one", &plan).unwrap();
+    assert!(!resource_held(&home, "one", "one").unwrap());
+    let db = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_exit BEFORE UPDATE OF exit_confirmed ON resource_leases WHEN NEW.exit_confirmed=1 BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
+    drop(db);
+    let marker = project.join("ran");
+    let output = marker.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+        let mut launch = fake_worker_launch()?;
+        launch.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_AUDIT", &output);
+        Ok(launch)
+    });
+    assert_eq!(run_plan(&home, "one", &plan, None, spawner).unwrap(), CardStatus::Done);
+    assert!(marker.exists());
+    assert!(resource_held(&home, "one", "one").unwrap());
+    assert!(matches!(reserve(&home, &project, "two", &card), Reserved::Busy(_)));
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_spawn_marker_never_starts_card_and_refunds_reservation() {
+    use o_core::run::events::CardStatus;
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, Spawner};
+    use o_core::run::store::{create_run, started_on};
+    let (home, project) = fixture();
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card("one", vec![res(ResourceKind::External, "spawn-marker", ResourceMode::Write)])] };
+    create_run(&home, "one", &plan).unwrap();
+    assert!(!resource_held(&home, "one", "one").unwrap());
+    let db = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    db.execute_batch("CREATE TRIGGER fail_spawn BEFORE UPDATE OF spawn_intent ON resource_leases WHEN NEW.spawn_intent=1 BEGIN SELECT RAISE(FAIL,'injected'); END;").unwrap();
+    drop(db);
+    let marker = project.join("must-not-run");
+    let output = marker.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+        let mut launch = fake_worker_launch()?;
+        launch.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_AUDIT", &output);
+        Ok(launch)
+    });
+    assert_eq!(run_plan(&home, "one", &plan, None, spawner).unwrap(), CardStatus::Failed);
+    assert!(!marker.exists());
+    assert!(!resource_held(&home, "one", "one").unwrap());
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn failed_native_process_creation_refunds_card_start() {
+    use o_core::run::events::CardStatus;
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, Spawner};
+    use o_core::run::store::{create_run, started_on};
+    let (home, project) = fixture();
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card("one", vec![res(ResourceKind::External, "missing-exe", ResourceMode::Write)])] };
+    create_run(&home, "one", &plan).unwrap();
+    let executable = project.join("missing.exe");
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+        let mut launch = fake_worker_launch()?;
+        launch.executable = executable.clone();
+        Ok(launch)
+    });
+    assert_eq!(run_plan(&home, "one", &plan, None, spawner).unwrap(), CardStatus::Failed);
+    assert!(!resource_held(&home, "one", "one").unwrap());
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
 }
 
 #[test]
@@ -339,7 +519,7 @@ fn linux_lead_timeout_stops_owned_child_and_preserves_unknown_marker() {
     let project = project.to_string_lossy().into_owned();
     let req = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
     let spawner = |_: &o_core::providers::LaunchSpec, _: &str| {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
+        let mut command = fake_worker_launch()?;
         command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1");
         Ok(command)
     };
@@ -358,7 +538,7 @@ fn windows_lead_can_start_another_turn_after_exit() {
     let project_text = project.to_string_lossy().into_owned();
     let req = SendRequest { project: &project_text, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
     let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
+        let mut command = fake_worker_launch()?;
         command.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_LOCK", project.join("running"));
         Ok(command)
     };
@@ -384,7 +564,7 @@ fn linux_worker_completes_or_stops_but_keeps_unverified_reservations() {
         let child_pid_file = descendant.clone();
         let worker = std::thread::spawn(move || {
             let spawner: Arc<Spawner> = Arc::new(move |_, _| {
-                let mut command = std::process::Command::new(std::env::current_exe()?);
+                let mut command = fake_worker_launch()?;
                 command.args(["--exact", "process_fixture", "--nocapture"]);
                 if stop { command.env("O_RESOURCE_FAKE", "1"); }
                 else { command.env("O_RESOURCE_DESCENDANT", &child_pid_file); }
@@ -427,7 +607,7 @@ fn simultaneous_runners_serialize_a_shared_writer() {
         let (home, lock, barrier) = (home.clone(), lock.clone(), Arc::clone(&barrier));
         threads.push(std::thread::spawn(move || {
             let spawner: Arc<Spawner> = Arc::new(move |_, _| {
-                let mut command = std::process::Command::new(std::env::current_exe()?);
+                let mut command = fake_worker_launch()?;
                 command.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_LOCK", &lock);
                 Ok(command)
             });
@@ -454,7 +634,7 @@ fn stopping_a_worker_releases_after_the_job_exits() {
     let worker_home = home.clone();
     let worker = std::thread::spawn(move || {
         let spawner: Arc<Spawner> = Arc::new(|_, _| {
-            let mut command = std::process::Command::new(std::env::current_exe()?);
+            let mut command = fake_worker_launch()?;
             command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1");
             Ok(command)
         });
@@ -515,7 +695,7 @@ fn stop_requested_during_start_is_handled_by_the_owner() {
     let stopping = home.clone();
     let spawner: Arc<Spawner> = Arc::new(move |_, _| {
         assert!(stop_run(&stopping, "one").unwrap());
-        let mut command = std::process::Command::new(std::env::current_exe()?);
+        let mut command = fake_worker_launch()?;
         command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1");
         Ok(command)
     });
@@ -539,7 +719,7 @@ fn worker_descendant_exits_before_resources_are_released() {
     create_run(&home, "one", &plan).unwrap();
     let child_pid_file = pid_file.clone();
     let spawner: Arc<Spawner> = Arc::new(move |_, _| {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
+        let mut command = fake_worker_launch()?;
         command.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_DESCENDANT", &child_pid_file);
         Ok(command)
     });
@@ -562,7 +742,7 @@ fn failed_worker_releases_only_after_exit() {
     let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card.clone()] };
     create_run(&home, "one", &plan).unwrap();
     let spawner: Arc<Spawner> = Arc::new(|_, _| {
-        let mut command = std::process::Command::new(std::env::current_exe()?);
+        let mut command = fake_worker_launch()?;
         command.args(["--exact", "process_fixture"]);
         Ok(command)
     });
