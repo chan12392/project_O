@@ -90,6 +90,40 @@ pub fn store_lead(home: &Path, run: &str, text: &str) -> Result<String, String> 
     Ok(hash)
 }
 
+/// Keep a complete CLI prompt stable until the child has read it.
+pub(crate) struct PromptFile {
+    path: PathBuf,
+    file: Option<fs::File>,
+    _directories: Vec<fs::File>,
+}
+
+impl PromptFile {
+    pub(crate) fn path(&self) -> &Path { &self.path }
+}
+
+impl Drop for PromptFile {
+    fn drop(&mut self) {
+        self.file.take();
+        let _ = fs::remove_file(&self.path);
+    }
+}
+
+pub(crate) fn prompt_file(home: &Path, run: &str, text: &str) -> Result<PromptFile, String> {
+    let (dir, directories) = lead_dir(home, run, true)?;
+    let path = dir.join(format!(".prompt-{}", super::store::new_run_id(chrono::Utc::now())));
+    let file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| e.to_string())?;
+    let mut prompt = PromptFile { path, file: Some(file), _directories: directories };
+    let file = prompt.file.as_mut().expect("newly created prompt file");
+    file.write_all(text.as_bytes()).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
+    prompt.file.take();
+    let mut file = super::workspaces::open_plain(&prompt.path).map_err(|e| e.to_string())?;
+    let mut actual = Vec::new();
+    file.read_to_end(&mut actual).map_err(|e| e.to_string())?;
+    if actual != text.as_bytes() { return Err("저장된 프롬프트가 일치하지 않습니다".into()); }
+    prompt.file = Some(file);
+    Ok(prompt)
+}
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Chunk {
@@ -172,6 +206,21 @@ pub fn read(home: &Path, run_id: &str, recipient: &str, source: &str, expected: 
 #[cfg(all(test, windows))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn prompt_file_stays_readable_and_immutable_until_dropped() {
+        let base = std::env::temp_dir().join(format!("o-prompt-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let home = base.join("state");
+        fs::create_dir_all(home.join("runs/run")).unwrap();
+        let text = format!("start{}끝", "data".repeat(12_000));
+        let prompt = prompt_file(&home, "run", &text).unwrap();
+        let path = prompt.path().to_path_buf();
+        assert_eq!(fs::read_to_string(&path).unwrap(), text);
+        assert!(fs::write(&path, "changed").is_err());
+        assert!(fs::remove_file(&path).is_err());
+        drop(prompt);
+        assert!(!path.exists());
+    }
 
     #[test]
     fn lead_result_storage_refuses_a_junction_and_an_existing_hard_link() {

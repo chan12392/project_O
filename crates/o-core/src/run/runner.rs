@@ -249,6 +249,15 @@ pub fn run_plan_with(
             let prior = prior.and_then(|items| {
                 let full = serde_json::to_string(&items).ok()?;
                 if full.len() <= 12_000 { return Some(full); }
+                if card.provider == ProviderId::Devin {
+                    for item in &items {
+                        let source = item["id"].as_str()?;
+                        let text = item["result"].as_str()?;
+                        let hash = super::result::digest(text);
+                        super::result::read(home, run_id, &card.id, source, &hash, 0).ok()?;
+                    }
+                    return Some(full);
+                }
                 if !crate::providers::get(card.provider).searches_context() { return None; }
                 let mut references = Vec::new();
                 for item in &items {
@@ -552,6 +561,14 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "O 작업 폴더".into(), summary: cwd.to_string() })?;
         emit(OEvent::CardSession { at: now_iso(), card_id: card.id.clone(), session_id: target.session.clone() })?;
     }
+    let _prompt = if card.provider == ProviderId::Devin && spec.args.last().is_some_and(|text| text.len() > 12_000) {
+        let text = spec.args.pop().ok_or_else(|| io::Error::other("Devin 프롬프트가 없습니다"))?;
+        if spec.args.pop().as_deref() != Some("--") { return Err(io::Error::other("Devin 인자 형식이 올바르지 않습니다")); }
+        let prompt = super::result::prompt_file(home, run_id, &text).map_err(io::Error::other)?;
+        let path = prompt.path().to_str().ok_or_else(|| io::Error::other("Devin 프롬프트 경로를 표현할 수 없습니다"))?;
+        spec.args.extend(["--prompt-file".into(), path.into()]);
+        Some(prompt)
+    } else { None };
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
     let spawned = spawner(&spec, cwd).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
