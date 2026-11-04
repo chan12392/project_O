@@ -101,6 +101,11 @@ fn a_card_reads_its_long_lead_reply_through_the_cli() {
     assert!(!read("b", &hash, 0).status.success());
     assert!(!read("", &hash, 0).status.success());
     assert!(!read("a", &hash, 1).status.success());
+    let alias = base.join("result-alias");
+    fs::hard_link(dir.join("lead-results").join(&hash), &alias).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    fs::remove_file(alias).unwrap();
+    assert!(read("a", &hash, 0).status.success());
     fs::write(dir.join("lead-results").join(&hash), "tampered").unwrap();
     assert!(!read("a", &hash, 0).status.success());
     let target = base.canonicalize().unwrap();

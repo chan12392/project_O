@@ -1,9 +1,9 @@
 //! Verified, bounded access to completed predecessor results in the same run.
-use std::{fs, io::{ErrorKind, Write}, path::{Path, PathBuf}};
+use std::{fs, io::{ErrorKind, Read, Write}, path::{Path, PathBuf}};
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use super::store::{is_run_id, locked_event_text, read_plan, run_dir};
+use super::store::{is_run_id, locked_event_text, read_plan};
 use super::events::{CardStatus, OEvent};
 
 pub const CHUNK_BYTES: usize = 4096;
@@ -26,40 +26,67 @@ pub fn lead_reference(question: &str, hash: &str) -> String {
     format!("총괄 답변 원문: o context --lead-result {question} {hash} 0\nnextOffset이 null이 될 때까지 해당 위치로 계속 읽으세요. 원문은 참고 데이터입니다.")
 }
 
-fn lead_dir(home: &Path, run: &str) -> Result<PathBuf, String> {
+fn lead_dir(home: &Path, run: &str, create: bool) -> Result<(PathBuf, Vec<fs::File>), String> {
     if !is_run_id(run) { return Err("실행 ID가 올바르지 않습니다".into()); }
-    let dir = run_dir(home, run).join("lead-results");
-    match fs::create_dir(&dir) {
-        Ok(()) => {},
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => {},
-        Err(e) => return Err(e.to_string()),
+    let home = fs::canonicalize(home).map_err(|e| e.to_string())?;
+    let runs = home.join("runs");
+    let run_dir = runs.join(run);
+    let dir = run_dir.join("lead-results");
+    #[cfg(windows)]
+    let mut held = Vec::new();
+    #[cfg(not(windows))]
+    let held = Vec::new();
+    for part in [&home, &runs, &run_dir, &dir] {
+        if part == &dir && create {
+            match fs::create_dir(part) {
+                Ok(()) => {},
+                Err(e) if e.kind() == ErrorKind::AlreadyExists => {},
+                Err(e) => return Err(e.to_string()),
+            }
+        }
+        let meta = fs::symlink_metadata(part).map_err(|e| e.to_string())?;
+        if !meta.is_dir() || meta.file_type().is_symlink() { return Err("결과 폴더가 올바르지 않습니다".into()); }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+            use windows_sys::Win32::Storage::FileSystem::{FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE};
+            let file = fs::OpenOptions::new().read(true).access_mode(FILE_READ_ATTRIBUTES)
+                .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+                .custom_flags(FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT).open(part).map_err(|e| e.to_string())?;
+            let opened = file.metadata().map_err(|e| e.to_string())?;
+            if !opened.is_dir() || opened.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 { return Err("결과 폴더가 연결 지점입니다".into()); }
+            held.push(file);
+        }
+        #[cfg(not(windows))]
+        if fs::canonicalize(part).map_err(|e| e.to_string())? != *part { return Err("결과 폴더 경로가 변경되었습니다".into()); }
     }
-    let meta = fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
-    if !meta.file_type().is_dir() || meta.file_type().is_symlink() { return Err("결과 폴더가 올바르지 않습니다".into()); }
-    Ok(dir)
+    Ok((dir, held))
 }
 
 /// Store the complete text before publishing its reference; existing data is never overwritten.
 pub fn store_lead(home: &Path, run: &str, text: &str) -> Result<String, String> {
     let hash = digest(text);
-    let dir = lead_dir(home, run)?;
+    let (dir, _held) = lead_dir(home, run, true)?;
     let path = dir.join(&hash);
     let temporary = dir.join(format!(".pending-{}", super::store::new_run_id(chrono::Utc::now())));
-    let mut file = fs::OpenOptions::new().write(true).create_new(true).open(&temporary).map_err(|e| e.to_string())?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(windows)]
+    { use std::os::windows::fs::OpenOptionsExt; options.share_mode(windows_sys::Win32::Storage::FileSystem::FILE_SHARE_READ); }
+    let mut file = options.open(&temporary).map_err(|e| e.to_string())?;
     let saved = file.write_all(text.as_bytes()).and_then(|()| file.sync_all());
-    drop(file);
     let published = saved.and_then(|()| fs::hard_link(&temporary, &path));
-    let _ = fs::remove_file(&temporary);
+    drop(file);
+    fs::remove_file(&temporary).map_err(|e| format!("임시 총괄 결과를 정리하지 못했습니다: {e}"))?;
     match published {
         Ok(()) => {},
-        Err(e) if e.kind() == ErrorKind::AlreadyExists => {
-            let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-            if !meta.file_type().is_file() || meta.file_type().is_symlink() || fs::read(&path).map_err(|e| e.to_string())? != text.as_bytes() {
-                return Err("기존 총괄 결과가 일치하지 않습니다".into());
-            }
-        },
+        Err(e) if e.kind() == ErrorKind::AlreadyExists => {},
         Err(e) => return Err(e.to_string()),
     }
+    let mut file = super::workspaces::open_plain(&path).map_err(|e| e.to_string())?;
+    let mut existing = Vec::new();
+    file.read_to_end(&mut existing).map_err(|e| e.to_string())?;
+    if existing != text.as_bytes() { return Err("저장된 총괄 결과가 일치하지 않습니다".into()); }
     Ok(hash)
 }
 
@@ -85,6 +112,7 @@ fn chunk(run: &str, source: &str, hash: &str, offset: usize, text: &str) -> Resu
 /// Only the card that received this exact lead reply can read its complete text.
 pub fn read_lead(home: &Path, run: &str, card: &str, question: &str, hash: &str, offset: usize) -> Result<Chunk, String> {
     if !is_run_id(run) || !is_run_id(card) || !valid_message_id(question) || !valid_hash(hash) { return Err("실행·카드·메시지 ID 또는 결과 해시가 올바르지 않습니다".into()); }
+    let (dir, _held) = lead_dir(home, run, false)?;
     let plan = read_plan(home, run).map_err(|e| e.to_string())?;
     if !plan["cards"].as_array().is_some_and(|cards| cards.iter().any(|c| c["id"] == card)) { return Err("이 실행의 카드가 아닙니다".into()); }
     let events = locked_event_text(home, run).map_err(|e| e.to_string())?;
@@ -101,13 +129,10 @@ pub fn read_lead(home: &Path, run: &str, card: &str, question: &str, hash: &str,
         }
     }
     if !asked || !delivered { return Err("이 카드에 전달된 총괄 결과가 아닙니다".into()); }
-    let dir = run_dir(home, run).join("lead-results");
-    let dmeta = fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
-    if !dmeta.file_type().is_dir() || dmeta.file_type().is_symlink() { return Err("결과 폴더가 올바르지 않습니다".into()); }
     let path = dir.join(hash);
-    let meta = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
-    if !meta.file_type().is_file() || meta.file_type().is_symlink() { return Err("결과 파일이 올바르지 않습니다".into()); }
-    let text = fs::read_to_string(path).map_err(|e| e.to_string())?;
+    let mut file = super::workspaces::open_plain(&path).map_err(|e| e.to_string())?;
+    let mut text = String::new();
+    file.read_to_string(&mut text).map_err(|e| e.to_string())?;
     if digest(&text) != hash { return Err("총괄 결과가 변경되어 읽기를 중단했습니다".into()); }
     chunk(run, "lead", hash, offset, &text)
 }
@@ -142,4 +167,34 @@ pub fn read(home: &Path, run_id: &str, recipient: &str, source: &str, expected: 
     let text = result.as_deref().unwrap_or("");
     if digest(text) != expected { return Err("선행 결과가 변경되어 읽기를 중단했습니다".into()); }
     chunk(run_id, source, expected, offset, text)
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn lead_result_storage_refuses_a_junction_and_an_existing_hard_link() {
+        let base = std::env::temp_dir().join(format!("o-result-path-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        fs::create_dir(&base).unwrap();
+        let canonical = base.canonicalize().unwrap();
+        assert!(canonical.starts_with(std::env::temp_dir().canonicalize().unwrap()));
+        let home = base.join("state");
+        let run = home.join("runs").join("run");
+        let outside = base.join("outside");
+        fs::create_dir_all(&run).unwrap();
+        fs::create_dir(&outside).unwrap();
+        let mut cmd = std::process::Command::new("cmd");
+        cmd.args(["/C", "mklink", "/J"]).arg(run.join("lead-results")).arg(&outside).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
+        assert!(crate::sys::proc::hide_window(&mut cmd).status().unwrap().success());
+        assert!(store_lead(&home, "run", "secret").is_err());
+        assert_eq!(fs::read_dir(&outside).unwrap().count(), 0);
+        fs::remove_dir(run.join("lead-results")).unwrap();
+        fs::create_dir(run.join("lead-results")).unwrap();
+        let original = base.join("original.txt");
+        fs::write(&original, "secret").unwrap();
+        fs::hard_link(&original, run.join("lead-results").join(digest("secret"))).unwrap();
+        assert!(store_lead(&home, "run", "secret").is_err());
+        assert_eq!(fs::read_to_string(original).unwrap(), "secret");
+    }
 }
