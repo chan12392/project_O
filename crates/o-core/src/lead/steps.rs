@@ -54,8 +54,10 @@ fn text_lines(text: &str) -> u64 {
 /// `+`/`−` lines of a unified diff, headers left out.
 pub fn diff_counts(diff: &str) -> (u64, u64) {
     let (mut added, mut removed) = (0, 0);
+    let mut in_hunk = false;
     for line in diff.lines() {
-        if line.starts_with("+++ ") || line.starts_with("--- ") { continue; }
+        if line.starts_with("@@") { in_hunk = true; continue; }
+        if !in_hunk && (line.starts_with("+++ ") || line.starts_with("--- ")) { continue; }
         if line.starts_with('+') { added += 1; } else if line.starts_with('-') { removed += 1; }
     }
     (added, removed)
@@ -241,6 +243,11 @@ fn claude_counts(result: &Value, step: Option<&Step>) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diff_content_that_looks_like_a_header_is_counted() {
+        assert_eq!(diff_counts("--- a/file\n+++ b/file\n@@ -1 +1 @@\n--- old\n+++ new\n"), (1, 1));
+    }
     use serde_json::json;
 
     #[test]

@@ -214,12 +214,16 @@ pub fn close_left(home: &Path, thread_id: &str) {
 /// any MCP tool (the only server is this approval one).
 pub fn refusals(home: &Path, project: &str, request: &Request) -> Vec<String> {
     let mut reasons = Vec::new();
+    if (request.files.is_empty() && js_len(&request.detail) > DETAIL_CHARS)
+        || request.files.len() > 50 || request.files.iter().any(|file| js_len(&file.diff) > DETAIL_CHARS) {
+        reasons.push("승인 화면에 작업 전체를 표시할 수 없습니다. 작업을 나누어 요청하세요".to_string());
+    }
     if request.tool.starts_with("mcp__") {
         reasons.push("총괄은 MCP 도구를 쓸 수 없습니다".to_string());
     }
     for call in &request.review {
         let mut input = call.clone();
-        input["cwd"] = json!(project);
+        input["cwd"] = json!(request.cwd.as_deref().unwrap_or(project));
         reasons.extend(o_guard::hook::review(&input, &o_guard::hook::RealGit));
     }
     let state = home.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -228,6 +232,7 @@ pub fn refusals(home: &Path, project: &str, request: &Request) -> Vec<String> {
         .flat_map(|call| ["command", "file_path", "notebook_path", "path"].map(|key| call["tool_input"][key].as_str().unwrap_or("").to_string()))
         .collect();
     words.extend(request.files.iter().map(|f| f.path.clone()));
+    if let Some(cwd) = &request.cwd { words.push(cwd.clone()); }
     let names_state = words.iter().map(|w| w.replace('\\', "/").to_lowercase()).any(|w| {
         (!state.is_empty() && w.contains(&state)) || (w.contains("localappdata") && w.contains("/project_o") && !w.contains("/project_o-"))
     });
@@ -249,7 +254,9 @@ pub fn ask(home: &Path, thread_id: &str, token: &str, project: &str, request: Re
     let pending = {
         // The number is taken and the request recorded under one lock: ids never repeat in a thread.
         let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(folder.join(".lock"));
-        let _held = lock.as_ref().ok().filter(|file| file.lock().is_ok());
+        let Ok(_held) = lock.and_then(|file| { file.lock()?; Ok(file) }) else {
+            return Outcome { allowed: false, decision: "deny", message: "승인 요청 잠금을 잡지 못해 거부했습니다.".into() };
+        };
         let n = super::read_thread(home, thread_id).iter().filter(|e| matches!(e, LeadEvent::Approval { .. })).count() + 1;
         let pending = Pending {
             id: format!("{thread_id}-a{n}"),
@@ -294,13 +301,13 @@ pub fn ask(home: &Path, thread_id: &str, token: &str, project: &str, request: Re
     let (decision, by) = loop {
         // A stop wins over an answer that came with it.
         if fs::read_to_string(stop_path(home, thread_id)).is_ok_and(|t| t.is_empty() || t == token) { break ("stopped", "stop"); }
+        if started.elapsed() >= wait { break ("timeout", "timeout"); }
         match fs::read_to_string(&answer).as_deref() {
             Ok("allow") => break ("allow", "user"),
             Ok("deny") => break ("deny", "user"),
             _ => {}
         }
         if !file.exists() { break ("stopped", "o"); }
-        if started.elapsed() >= wait { break ("timeout", "timeout"); }
         if ticked.elapsed() >= TICK { tick(); ticked = Instant::now(); }
         thread::sleep(POLL);
     };
@@ -336,10 +343,8 @@ pub fn from_claude(tool: &str, input: &Value, project: &str) -> Request {
         "Write" => {
             let path = text("file_path");
             let content = text("content");
-            // What a whole-file write replaces: the file there now, when it can be read.
-            let before = fs::metadata(&path).ok().filter(|m| m.is_file() && m.len() <= 4 * 1024 * 1024).and_then(|_| fs::read_to_string(&path).ok());
             let diff = content.lines().map(|l| format!("+{l}")).collect::<Vec<_>>().join("\n");
-            let file = FileDelta { path: path.clone(), added: Some(lines(&content)), removed: Some(before.as_deref().map_or(0, lines)), diff: diff.clone() };
+            let file = FileDelta { path: path.clone(), added: Some(lines(&content)), removed: None, diff: diff.clone() };
             Request { kind: Kind::File, summary: path, detail: diff, files: vec![file], ..base }
         }
         "Edit" | "MultiEdit" => {
@@ -360,8 +365,8 @@ pub fn from_claude(tool: &str, input: &Value, project: &str) -> Request {
             let path = text("notebook_path");
             Request { kind: Kind::File, summary: path.clone(), files: vec![FileDelta { path, ..FileDelta::default() }], ..base }
         }
-        "WebFetch" => Request { kind: Kind::Web, summary: text("url"), detail: text("prompt"), ..base },
-        "WebSearch" => Request { kind: Kind::Web, summary: text("query"), detail: String::new(), ..base },
+        "WebFetch" => Request { kind: Kind::Web, summary: text("url"), detail: format!("{}\n{}", text("url"), text("prompt")), ..base },
+        "WebSearch" => Request { kind: Kind::Web, summary: text("query"), detail: text("query"), ..base },
         _ => base,
     }
 }
@@ -560,6 +565,25 @@ mod tests {
     }
 
     #[test]
+    fn expired_request_never_accepts_a_waiting_answer() {
+        let (home, thread, project, slot) = setup("expired-answer");
+        let folder = folder(&home, &thread);
+        fs::create_dir_all(&folder).unwrap();
+        fs::write(folder.join(format!("{thread}-a1.decision")), "allow").unwrap();
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request("C:/p/a.txt"), Duration::ZERO, &mut || {});
+        assert_eq!(outcome.decision, "timeout");
+    }
+
+    #[test]
+    fn request_is_refused_if_its_number_cannot_be_locked() {
+        let (home, thread, project, slot) = setup("lock-failure");
+        fs::create_dir_all(folder(&home, &thread).join(".lock")).unwrap();
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request("C:/p/a.txt"), Duration::from_secs(5), &mut || {});
+        assert_eq!(outcome.decision, "deny");
+        assert!(pending(&home, &thread).is_empty());
+    }
+
+    #[test]
     fn guard_rules_and_the_state_folder_refuse_before_anyone_is_asked() {
         let (home, thread, project, slot) = setup("guard");
         for request in [
@@ -567,16 +591,43 @@ mod tests {
             from_claude("Write", &json!({"file_path": home.join("leads").join("x.decision").to_string_lossy(), "content": "allow"}), &project),
             from_claude("mcp__o_lead__decide", &json!({}), &project),
             from_codex_command(&json!({"command": "Remove-Item $env:LOCALAPPDATA\\project_O\\leads -Recurse"})),
+            from_codex_command(&json!({"command": "touch x", "cwd": home.join("leads").to_string_lossy()})),
         ] {
             let outcome = ask(&home, &thread, &slot.marker.token, &project, request, Duration::from_secs(5), &mut || panic!("asked the person"));
             assert_eq!(outcome.decision, "deny");
             assert!(outcome.message.contains("O 정책"), "{}", outcome.message);
         }
         let refused = decisions(&home, &thread);
-        assert_eq!(refused.len(), 4);
+        assert_eq!(refused.len(), 5);
         assert!(refused.iter().all(|(d, by)| d == "deny" && by == "guard"));
         assert!(pending(&home, &thread).is_empty());
         drop(slot);
+    }
+
+    #[test]
+    fn requests_that_cannot_be_shown_in_full_are_refused() {
+        let (home, _thread, project, _slot) = setup("oversize");
+        let command = from_codex_command(&json!({"command": "x".repeat(DETAIL_CHARS + 1)}));
+        assert!(!refusals(&home, &project, &command).is_empty());
+        let mut files = from_codex_files(&json!({}), &[]);
+        files.files = vec![FileDelta::default(); 51];
+        assert!(!refusals(&home, &project, &files).is_empty());
+        files.files = vec![FileDelta { diff: "x".repeat(DETAIL_CHARS + 1), ..FileDelta::default() }];
+        assert!(!refusals(&home, &project, &files).is_empty());
+        let query = "q".repeat(400);
+        assert_eq!(from_claude("WebSearch", &json!({"query": query}), &project).detail, query);
+        let url = format!("https://example.com/{}", "x".repeat(400));
+        assert!(from_claude("WebFetch", &json!({"url": url, "prompt": "read"}), &project).detail.contains(&url));
+    }
+
+    #[test]
+    fn write_request_does_not_read_the_target_before_guard_review() {
+        let (home, _thread, _project, _slot) = setup("write-before-guard");
+        let path = home.join("secret.txt");
+        fs::write(&path, "private\ncontent\n").unwrap();
+        let request = write_request(&path.to_string_lossy());
+        assert_eq!(request.files[0].removed, None);
+        assert!(!refusals(&home, "C:/p", &request).is_empty());
     }
 
     #[test]

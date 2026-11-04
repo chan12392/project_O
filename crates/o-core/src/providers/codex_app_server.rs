@@ -204,10 +204,14 @@ fn drive(
                     continue;
                 }
                 if matches!(method, "item/commandExecution/requestApproval" | "item/fileChange/requestApproval") {
+                    if *phase == 3 {
+                        if pending.len() >= 10_000 { return Err("Codex 응답 대기열이 너무 큽니다".into()); }
+                        pending.push_back(message);
+                        continue;
+                    }
                     let same_thread = message.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id.as_str());
-                    let request_turn = message.pointer("/params/turnId").and_then(Value::as_str).filter(|id| !id.is_empty());
-                    let same_turn = request_turn.is_some() && (*phase == 3 || request_turn == Some(turn_id.as_str()));
-                    if !(*phase == 3 || *phase == 4) || !same_thread || !same_turn || !(id.is_string() || id.is_i64() || id.is_u64()) {
+                    let same_turn = message.pointer("/params/turnId").and_then(Value::as_str) == Some(turn_id.as_str());
+                    if *phase != 4 || !same_thread || !same_turn || !(id.is_string() || id.is_i64() || id.is_u64()) {
                         return Err("Codex 승인 요청의 세션 정보가 올바르지 않습니다".into());
                     }
                     let decision = match approve.as_mut() {
@@ -215,7 +219,12 @@ fn drive(
                         Some(approve) if method == "item/commandExecution/requestApproval" => approve(Approval::Command(message["params"].clone())),
                         Some(approve) => {
                             let item = message.pointer("/params/itemId").and_then(Value::as_str).unwrap_or("");
-                            approve(Approval::Files(message["params"].clone(), changes.get(item).cloned().unwrap_or_default()))
+                            match changes.get(item).filter(|files| !files.is_empty() && files.iter().all(|file| {
+                                file["path"].as_str().is_some_and(|path| !path.is_empty()) && file["diff"].is_string()
+                            })) {
+                                Some(files) => approve(Approval::Files(message["params"].clone(), files.clone())),
+                                None => "decline",
+                            }
                         }
                     };
                     // Only these three: never a session-wide accept or a policy change.
@@ -232,16 +241,6 @@ fn drive(
                 emit(Event::ApprovalDenied);
                 continue;
             }
-            if method == "item/started" {
-                if let Some(item) = message.pointer("/params/item").filter(|item| item["type"] == "fileChange") {
-                    if let (Some(id), Some(list)) = (item["id"].as_str(), item["changes"].as_array()) { changes.insert(id.to_string(), list.clone()); }
-                }
-            }
-            if method == "item/fileChange/patchUpdated" {
-                if let (Some(id), Some(list)) = (message.pointer("/params/itemId").and_then(Value::as_str), message.pointer("/params/changes").and_then(Value::as_array)) {
-                    changes.insert(id.to_string(), list.clone());
-                }
-            }
             if matches!(method, "item/agentMessage/delta" | "item/started" | "item/fileChange/patchUpdated" | "item/completed" | "thread/tokenUsage/updated" | "turn/completed") {
                 if *phase == 3 {
                     if pending.len() >= 10_000 { return Err("Codex 응답 대기열이 너무 큽니다".into()); }
@@ -251,6 +250,16 @@ fn drive(
                 let same_thread = message.pointer("/params/threadId").and_then(Value::as_str) == Some(thread_id.as_str());
                 let event_turn = if method == "turn/completed" { message.pointer("/params/turn/id") } else { message.pointer("/params/turnId") };
                 if *phase != 4 || !same_thread || event_turn.and_then(Value::as_str) != Some(turn_id.as_str()) { continue; }
+            }
+            if method == "item/started" {
+                if let Some(item) = message.pointer("/params/item").filter(|item| item["type"] == "fileChange") {
+                    if let (Some(id), Some(list)) = (item["id"].as_str(), item["changes"].as_array()) { changes.insert(id.to_string(), list.clone()); }
+                }
+            }
+            if method == "item/fileChange/patchUpdated" {
+                if let (Some(id), Some(list)) = (message.pointer("/params/itemId").and_then(Value::as_str), message.pointer("/params/changes").and_then(Value::as_array)) {
+                    changes.insert(id.to_string(), list.clone());
+                }
             }
             match method {
                 "item/agentMessage/delta" => {
@@ -765,5 +774,32 @@ mod tests {
         let lines: Vec<String> = events.into_iter().filter_map(stream_line).collect();
         assert!(lines.iter().any(|l| l.contains("\"item.started\"") && l.contains("file_change")));
         assert!(lines.iter().any(|l| l.contains("\"o.patch\"") && l.contains("\"f1\"")));
+    }
+
+    #[test]
+    fn approvals_are_scoped_to_the_started_turn_and_its_file_changes() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), ..Default::default() };
+        let prefix = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}})];
+        let early_wrong = prefix.iter().cloned().chain([
+            json!({"id":20,"method":"item/commandExecution/requestApproval","params":{"threadId":"s","turnId":"old"}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+        ]).map(|v| format!("{v}\n")).collect::<String>();
+        let mut asked = 0;
+        let mut approve = |_: Approval| { asked += 1; "accept" };
+        assert!(run_turn(&turn, Cursor::new(early_wrong), Vec::new(), |_| {}, None, Some(&mut approve), false).is_err());
+        assert_eq!(asked, 0);
+
+        let input = prefix.into_iter().chain([
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            json!({"method":"item/started","params":{"threadId":"other","turnId":"old","item":{"type":"fileChange","id":"f1","changes":[{"path":"/wrong"}]}}}),
+            json!({"id":21,"method":"item/fileChange/requestApproval","params":{"threadId":"s","turnId":"t","itemId":"f1"}}),
+            json!({"method":"turn/completed","params":{"threadId":"s","turn":{"id":"t","status":"completed"}}}),
+        ]).map(|v| format!("{v}\n")).collect::<String>();
+        let mut output = Vec::new();
+        let mut asked = 0;
+        let mut approve = |_: Approval| { asked += 1; "accept" };
+        run_turn(&turn, Cursor::new(input), &mut output, |_| {}, None, Some(&mut approve), false).unwrap();
+        assert_eq!(asked, 0);
+        assert!(String::from_utf8(output).unwrap().contains("\"decision\":\"decline\""));
     }
 }
