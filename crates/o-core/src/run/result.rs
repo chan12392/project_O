@@ -4,6 +4,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use super::store::{is_run_id, locked_event_text, read_plan, run_dir};
+use super::events::{CardStatus, OEvent};
 
 pub const CHUNK_BYTES: usize = 4096;
 
@@ -13,6 +14,11 @@ fn valid_hash(hash: &str) -> bool { hash.len() == 64 && hash.bytes().all(|b| b.i
 
 fn valid_message_id(id: &str) -> bool {
     !id.is_empty() && id.len() <= 160 && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
+fn framed(text: &str) -> Result<(), String> {
+    if !text.is_empty() && !text.ends_with('\n') { return Err("실행 기록이 불완전합니다".into()); }
+    Ok(())
 }
 
 /// This exact reference binds a delivered answer to the question and verified bytes.
@@ -82,9 +88,18 @@ pub fn read_lead(home: &Path, run: &str, card: &str, question: &str, hash: &str,
     let plan = read_plan(home, run).map_err(|e| e.to_string())?;
     if !plan["cards"].as_array().is_some_and(|cards| cards.iter().any(|c| c["id"] == card)) { return Err("이 실행의 카드가 아닙니다".into()); }
     let events = locked_event_text(home, run).map_err(|e| e.to_string())?;
-    let values = events.lines().map(|line| serde_json::from_str::<Value>(line).map_err(|_| "실행 기록이 손상되었습니다".to_string())).collect::<Result<Vec<_>, _>>()?;
-    let asked = values.iter().any(|v| v["t"] == "msg" && v["id"] == question && v["from"] == card && (v["to"] == "lead" || v["to"] == "all") && v["kind"] == "question");
-    let delivered = values.iter().any(|v| v["t"] == "msg" && v["from"] == "lead" && v["to"] == card && v["replyTo"] == question && v["text"] == lead_reference(question, hash));
+    framed(&events)?;
+    let mut asked = false;
+    let mut delivered = false;
+    for line in events.lines().filter(|line| !line.trim().is_empty()) {
+        let value: Value = serde_json::from_str(line).map_err(|_| "실행 기록이 손상되었습니다")?;
+        let kind = value.get("t").and_then(Value::as_str).ok_or("실행 기록이 손상되었습니다")?;
+        if kind == "msg" {
+            let OEvent::Msg { from, to, text, id, kind, reply_to, .. } = serde_json::from_value(value).map_err(|_| "실행 기록이 손상되었습니다")? else { unreachable!() };
+            if id.as_deref() == Some(question) && from == card && (to == "lead" || to == "all") && kind.as_deref() == Some("question") { asked = true; }
+            if asked && from == "lead" && to == card && reply_to.as_deref() == Some(question) && text == lead_reference(question, hash) { delivered = true; }
+        }
+    }
     if !asked || !delivered { return Err("이 카드에 전달된 총괄 결과가 아닙니다".into()); }
     let dir = run_dir(home, run).join("lead-results");
     let dmeta = fs::symlink_metadata(&dir).map_err(|e| e.to_string())?;
@@ -109,14 +124,22 @@ pub fn read(home: &Path, run_id: &str, recipient: &str, source: &str, expected: 
         .is_some_and(|dependencies| dependencies.iter().any(|id| id == source));
     if !allowed { return Err("이 카드가 의존하는 선행 결과만 읽을 수 있습니다".into()); }
     let events = locked_event_text(home, run_id).map_err(|e| format!("실행 기록을 읽지 못했습니다: {e}"))?;
-    let mut found: Option<Value> = None;
-    for line in events.lines() {
+    framed(&events)?;
+    let mut found: Option<(CardStatus, Option<String>)> = None;
+    for line in events.lines().filter(|line| !line.trim().is_empty()) {
         let event: Value = serde_json::from_str(line).map_err(|_| "실행 기록이 불완전하거나 손상되었습니다")?;
-        if event["t"] == "card.end" && event["cardId"] == source { found = Some(event); }
+        let kind = event.get("t").and_then(Value::as_str).ok_or("실행 기록이 손상되었습니다")?;
+        if matches!(kind, "card.start" | "card.queued" | "card.end") {
+            match serde_json::from_value::<OEvent>(event).map_err(|_| "실행 기록이 손상되었습니다")? {
+                OEvent::CardEnd { card_id, status, result, .. } if card_id == source => found = Some((status, result)),
+                OEvent::CardStart { card_id, .. } | OEvent::CardQueued { card_id, .. } if card_id == source => found = None,
+                _ => (),
+            }
+        }
     }
-    let event = found.ok_or("선행 결과를 찾지 못했습니다")?;
-    if event["status"] != "done" { return Err("선행 작업이 성공하지 않았습니다".into()); }
-    let text = match &event["result"] { Value::Null => "", Value::String(value) => value, _ => return Err("선행 결과 형식이 올바르지 않습니다".into()) };
+    let (status, result) = found.ok_or("완료된 선행 결과를 찾지 못했습니다")?;
+    if status != CardStatus::Done { return Err("선행 작업이 성공하지 않았습니다".into()); }
+    let text = result.as_deref().unwrap_or("");
     if digest(text) != expected { return Err("선행 결과가 변경되어 읽기를 중단했습니다".into()); }
     chunk(run_id, source, expected, offset, text)
 }

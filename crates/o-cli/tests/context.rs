@@ -42,6 +42,15 @@ fn a_card_reads_only_its_verified_predecessor_in_complete_utf8_chunks() {
     assert_eq!(combined, original);
     assert!(!o_in(&base, &project, "other", &["context", "--result", "first", &hash, "0"]).status.success());
     assert!(!o_in(&base, &project, "next", &["context", "--result", "first", &hash, "1"]).status.success());
+    let read = || o_in(&base, &project, "next", &["context", "--result", "first", &hash, "0"]);
+    for later in [json!({"t":"card.start","at":"now","cardId":"first"}), json!({"t":"card.queued","at":"now","cardId":"first","reason":"retry"}), json!({"t":"card.start","cardId":"first"})] {
+        fs::write(dir.join("events.jsonl"), format!("{}{later}\n", event(&original))).unwrap();
+        assert!(!read().status.success());
+    }
+    fs::write(dir.join("events.jsonl"), event(&original).trim_end_matches('\n')).unwrap();
+    assert!(!read().status.success());
+    fs::write(dir.join("events.jsonl"), format!("{}{}\n", event(&original), json!({"t":"card.start","at":"now","cardId":"other"}))).unwrap();
+    assert!(read().status.success());
     fs::write(dir.join("events.jsonl"), event("바뀐 결과")).unwrap();
     assert!(!o_in(&base, &project, "next", &["context", "--result", "first", &hash, "0"]).status.success());
 }
@@ -76,6 +85,19 @@ fn a_card_reads_its_long_lead_reply_through_the_cli() {
         match page["nextOffset"].as_u64() { Some(next) => offset = next as usize, None => break }
     }
     assert_eq!(combined, text);
+    let events_path = dir.join("events.jsonl");
+    let events = fs::read_to_string(&events_path).unwrap();
+    fs::write(&events_path, events.trim_end_matches('\n')).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    fs::write(&events_path, format!("{events}{}\n", json!({"t":"msg","id":"bad"}))).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    let mut reordered: Vec<&str> = events.lines().collect();
+    let question_at = reordered.iter().position(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["id"] == id)).unwrap();
+    let reply_at = reordered.iter().position(|line| serde_json::from_str::<Value>(line).is_ok_and(|v| v["replyTo"] == id)).unwrap();
+    reordered.swap(question_at, reply_at);
+    fs::write(&events_path, format!("{}\n", reordered.join("\n"))).unwrap();
+    assert!(!read("a", &hash, 0).status.success());
+    fs::write(&events_path, &events).unwrap();
     assert!(!read("b", &hash, 0).status.success());
     assert!(!read("", &hash, 0).status.success());
     assert!(!read("a", &hash, 1).status.success());
