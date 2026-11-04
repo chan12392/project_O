@@ -762,6 +762,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     // An error that ends the turn after cleanup, and whether app-server finished the turn successfully.
     let mut fatal = None::<String>;
     let mut finished = false;
+    let mut provider_finished = false;
     let mut raw_issue = None::<String>;
     if let Some(stdout) = child.stdout.take() {
         let mut raw = match OpenOptions::new().create(true).append(true).open(dir.join("turn.raw.jsonl")) {
@@ -853,6 +854,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                 Some(stdin) => {
                     let result = providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, |event| {
                         if fatal.is_none() {
+                            provider_finished |= matches!(event, providers::codex_app_server::Event::Finished { .. });
                             finished |= matches!(event, providers::codex_app_server::Event::Finished { ok: true, .. });
                             if let Some(line) = providers::codex_app_server::stream_line(event) {
                                 fatal = process_line(&line).err();
@@ -907,6 +909,9 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let timed_out = watcher.join().unwrap_or(false);
     let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
     let exit = child.wait().ok().and_then(proc::exit_code);
+    if used {
+        emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output, complete: Some(usage_complete && (!app_server || provider_finished)) })?;
+    }
     if let Some(error) = fatal { return Err(error); }
     if let Some(error) = raw_issue {
         emit(LeadEvent::Error { at: now_iso(), text: format!("총괄 원시 출력 기록이 불완전합니다: {error}") })?;
@@ -919,10 +924,6 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             emit(LeadEvent::Error { at: now_iso(), text: "주석은 전달했지만 전달 상태를 저장하지 못했습니다. 다시 보내기 전에 주석을 확인하세요".into() })?;
         }
     }
-    if used {
-        emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output, complete: Some(usage_complete) })?;
-    }
-
     if slot.stop_asked() {
         emit(stopped())?;
         return Ok(added);
