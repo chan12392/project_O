@@ -724,7 +724,7 @@ fn windows_lead_can_start_another_turn_after_exit() {
 
 #[cfg(target_os = "linux")]
 #[test]
-fn linux_worker_completes_or_stops_but_keeps_unverified_reservations() {
+fn linux_worker_completes_or_stops_and_releases_with_warning() {
     use o_core::run::events::CardStatus;
     use o_core::run::plan::Plan;
     use o_core::run::runner::{run_plan, stop_run, Spawner};
@@ -757,16 +757,41 @@ fn linux_worker_completes_or_stops_but_keeps_unverified_reservations() {
             stop_run(&home, id).unwrap();
         }
         assert_eq!(worker.join().unwrap(), if stop { CardStatus::Stopped } else { CardStatus::Done });
-        assert!(resource_held(&home, id, id).unwrap());
+        assert!(!resource_held(&home, id, id).unwrap());
         assert!(o_core::run::store::read_events(&home, id).iter().any(|event| matches!(event,
-            o_core::run::events::OEvent::CardTool { name, summary, .. } if name == "자원 예약" && summary.contains("종료를 확인하지 못해")
+            o_core::run::events::OEvent::CardTool { name, summary, .. } if name == "자원 예약" && summary.contains("자손 종료를 확인할 수 없어 예약을 해제")
         )));
-        assert!(matches!(reserve(&home, &project, "next", &card), Reserved::Busy(_)));
+        let next = granted(reserve(&home, &project, "next", &card));
+        release_slot(&home, &next, false).unwrap();
         if !stop {
             let pid = std::fs::read_to_string(descendant).unwrap().parse().unwrap();
             assert!(o_core::sys::proc::is_alive(pid));
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn linux_inherited_pipe_warns_and_releases_reservation_after_cli_success() {
+    use o_core::run::events::{CardStatus, OEvent};
+    use o_core::run::plan::Plan;
+    use o_core::run::runner::{run_plan, Spawner};
+    use o_core::run::store::{create_run, read_events};
+    let (home, project) = fixture();
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card("one", vec![])] };
+    create_run(&home, "run", &plan).unwrap();
+    let marker = project.join("child");
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| {
+        let mut launch = support::fake_worker_launch()?;
+        launch.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_PIPE_PARENT", &marker);
+        Ok(launch)
+    });
+    let started = std::time::Instant::now();
+    assert_eq!(run_plan(&home, "run", &plan, None, spawner).unwrap(), CardStatus::Done);
+    assert!(started.elapsed() < Duration::from_secs(15));
+    assert!(!resource_held(&home, "run", "one").unwrap());
+    assert!(read_events(&home, "run").iter().any(|event| matches!(event, OEvent::CardTool { summary, .. } if summary.contains("자손 종료를 확인할 수 없어 예약을 해제"))));
+    assert!(read_events(&home, "run").iter().any(|event| matches!(event, OEvent::CardEnd { result: Some(text), .. } if text.contains("출력"))));
 }
 
 #[cfg(windows)]

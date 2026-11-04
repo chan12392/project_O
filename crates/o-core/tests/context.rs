@@ -256,9 +256,13 @@ fn dispatch_injects_a_capped_section_per_card_and_records_it() {
 #[test]
 fn the_runner_hands_each_card_its_section() {
     let home = temp_home();
-    let project = std::env::temp_dir().to_string_lossy().into_owned();
+    let project_dir = temp_home();
+    let project = project_dir.to_string_lossy().into_owned();
     append(&home, "r1", &[start("r1", "2026-11-01T10:00:00.000Z", &project, &[("art", "claude")]), end("art", "done", "캐릭터 스프라이트를 32px로 바꿨습니다")]);
-    let p = plan(&project, vec![card("c", ProviderId::Claude, "캐릭터 스프라이트 키우기"), card("x", ProviderId::Codex, "배포 정리")]);
+    let mut p = plan(&project, vec![card("c", ProviderId::Claude, "캐릭터 스프라이트 키우기"), card("x", ProviderId::Codex, "배포 정리")]);
+    for card in &mut p.cards {
+        card.resources.push(o_core::run::plan::Resource { kind: o_core::run::plan::ResourceKind::External, key: card.id.clone(), mode: o_core::run::plan::ResourceMode::Write });
+    }
     create_run(&home, "now", &p).unwrap();
     let seen: Arc<Mutex<Vec<LaunchSpec>>> = Arc::default();
     let record = Arc::clone(&seen);

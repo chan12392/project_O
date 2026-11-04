@@ -641,7 +641,7 @@ fn card(id: &str, provider: ProviderId, task: &str) -> Card {
 }
 
 fn plan(cards: Vec<Card>) -> Plan {
-    Plan { title: "t".into(), project: std::env::temp_dir().to_string_lossy().into_owned(), cards }
+    Plan { title: "t".into(), project: temp_home().to_string_lossy().into_owned(), cards }
 }
 
 fn ends_of(home: &std::path::Path, run_id: &str) -> BTreeMap<String, CardStatus> {
