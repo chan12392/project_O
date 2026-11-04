@@ -74,6 +74,9 @@ Usage: codex [OPTIONS] [PROMPT]
     if let Ok(job) = std::env::var(OWNER) {
         return owner_process(&job);
     }
+    // Normal-mode turns find `o` beside the running program for their approvals; whether a
+    // built `o` happens to sit beside this test binary differs by OS, so name one for every test.
+    lead::approvals::set_program(Some(std::env::current_exe().unwrap()));
     let tests: [(&str, fn()); 34] = [
         ("follow-ups only target cards dispatched by this thread", followup_routing),
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
