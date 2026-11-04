@@ -88,7 +88,6 @@ fn drive(
 
     let mut thread_id = String::new();
     let mut turn_id = String::new();
-    let mut usage_base: Option<Value> = None;
     let mut usage_total: Option<Value> = None;
     let mut pending = VecDeque::new();
     let mut lines = input.lines();
@@ -142,34 +141,21 @@ fn drive(
                 }
                 "thread/tokenUsage/updated" => {
                     let usage = &message["params"]["tokenUsage"];
-                    if usage_base.is_none() {
-                        let mut base = json!({});
-                        for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
-                            let total = usage["total"][key].as_u64();
-                            let last = usage["last"][key].as_u64();
-                            base[key] = json!(total.zip(last).and_then(|(total, last)| total.checked_sub(last)));
-                        }
-                        usage_base = Some(base);
-                    }
                     let mut total = json!({});
+                    let mut delta = json!({});
                     for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
                         let current = usage["total"][key].as_u64();
-                        let value = match &usage_total {
-                            Some(previous) => previous[key].as_u64().zip(current).and_then(|(old, new)| (new >= old).then_some(new)),
-                            None => current,
+                        let change = match &usage_total {
+                            Some(previous) => current.zip(previous[key].as_u64()).and_then(|(new, old)| new.checked_sub(old)),
+                            None => current.zip(usage["last"][key].as_u64()).and_then(|(total, last)| total.checked_sub(last).map(|_| last)),
                         };
-                        total[key] = json!(value);
+                        delta[key] = json!(change);
+                        total[key] = json!(change.and(current));
                     }
                     usage_total = Some(total);
+                    emit(Event::Usage(delta));
                 }
                 "turn/completed" => {
-                    if let (Some(base), Some(total)) = (&usage_base, &usage_total) {
-                        let mut usage = json!({});
-                        for key in ["inputTokens", "cachedInputTokens", "outputTokens"] {
-                            usage[key] = json!(total[key].as_u64().zip(base[key].as_u64()).and_then(|(total, base)| total.checked_sub(base)));
-                        }
-                        emit(Event::Usage(usage));
-                    }
                     let turn = &message["params"]["turn"];
                     let status = turn["status"].as_str().unwrap_or("");
                     let ok = status == "completed";
@@ -405,7 +391,8 @@ mod tests {
         let mut events = Vec::new();
         run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).unwrap();
         let usage: Vec<_> = events.into_iter().filter_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).collect();
-        assert_eq!(usage, [json!({"inputTokens":300,"cachedInputTokens":120,"outputTokens":30})]);
+        assert_eq!(usage, [json!({"inputTokens":100,"cachedInputTokens":40,"outputTokens":10}),
+            json!({"inputTokens":200,"cachedInputTokens":80,"outputTokens":20})]);
     }
 
     #[test]
@@ -423,9 +410,11 @@ mod tests {
             .into_iter().map(|v| format!("{v}\n")).collect::<String>();
         let mut events = Vec::new();
         run(&turn, Cursor::new(&input), Vec::new(), |e| events.push(e)).unwrap();
-        let usage = events.into_iter().find_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).unwrap();
-        assert_eq!(usage, json!({"inputTokens":60,"cachedInputTokens":null,"outputTokens":null}));
-        let line = stream_line(Event::Usage(usage)).unwrap();
+        let usage: Vec<_> = events.into_iter().filter_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).collect();
+        assert_eq!(usage, [json!({"inputTokens":10,"cachedInputTokens":null,"outputTokens":3}),
+            json!({"inputTokens":20,"cachedInputTokens":null,"outputTokens":null}),
+            json!({"inputTokens":30,"cachedInputTokens":null,"outputTokens":null})]);
+        let line = stream_line(Event::Usage(usage[0].clone())).unwrap();
         let mut reader = crate::providers::StreamReader::new(crate::run::plan::ProviderId::Codex);
         assert!(reader.read(&line).iter().any(|signal| matches!(signal, crate::providers::StreamSignal::Usage { complete: false, .. })));
 
@@ -436,6 +425,20 @@ mod tests {
         run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).unwrap();
         let usage = events.into_iter().find_map(|e| if let Event::Usage(u) = e { Some(u) } else { None }).unwrap();
         assert!(usage["inputTokens"].is_null(), "a last value above the total has no valid baseline");
+    }
+
+    #[test]
+    fn usage_is_delivered_even_if_the_server_disconnects_before_completion() {
+        let turn = LeadTurn { project: "/project", prompt: "hello".into(), session: Some("s"), ..Default::default() };
+        let input = [json!({"id":1,"result":{}}), json!({"id":2,"result":{"thread":{"id":"s"}}}),
+            json!({"id":3,"result":{"turn":{"id":"t"}}}),
+            json!({"method":"thread/tokenUsage/updated","params":{"threadId":"s","turnId":"t","tokenUsage":{
+                "last":{"inputTokens":10,"cachedInputTokens":4,"outputTokens":3},
+                "total":{"inputTokens":110,"cachedInputTokens":54,"outputTokens":13}}}})]
+            .into_iter().map(|v| format!("{v}\n")).collect::<String>();
+        let mut events = Vec::new();
+        assert!(run(&turn, Cursor::new(input), Vec::new(), |e| events.push(e)).is_err());
+        assert!(events.contains(&Event::Usage(json!({"inputTokens":10,"cachedInputTokens":4,"outputTokens":3}))));
     }
 
     #[test]
