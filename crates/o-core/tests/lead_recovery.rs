@@ -24,6 +24,20 @@ fn fake_child() {
 }
 
 #[test]
+fn a_finished_turn_allows_the_next_turn() {
+    let (home, project) = fixture();
+    let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        let mut cmd = Command::new(std::env::current_exe()?);
+        cmd.args(["--exact", "fake_child"]).env("O_LEAD_RECOVERY_SHORT", "1");
+        Ok(cmd)
+    };
+    lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+}
+
+#[test]
 fn orphan_and_legacy_markers_never_authorize_a_kill_or_new_turn() {
     let (home, project) = fixture();
     let thread = lead::thread_for(&home, &project, false).unwrap();
