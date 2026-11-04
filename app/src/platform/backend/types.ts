@@ -159,11 +159,17 @@ export interface ResourceLease {
   state: "recoverable" | "unknown";
 }
 
+export type WorkspaceChanges = { workspace: string; note: string } & (
+  | { gitCommit: string; changes: { changed: string[]; staged: string[]; unstaged: string[]; unmerged: string[]; untracked: string[]; ignored: string[] } }
+  | { copyBase: string; changes: { path: string; kind: "added" | "deleted" | "modified" }[] }
+);
+
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
   resources(): Promise<ResourceLease[]>;
   recoverResource(id: string): Promise<void>;
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
+  changes(run: string, card: string): Promise<WorkspaceChanges>;
   /** Agent status with the clean test profiles (`clean: true`) or the normal sign-in. */
   agents(clean: boolean): Promise<AgentStatus[]>;
   agentsCatalog(refresh?: boolean): Promise<AgentCatalogEntry[]>;

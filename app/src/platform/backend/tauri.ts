@@ -17,6 +17,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     resources: () => invoke("resource_leases") as ReturnType<Backend["resources"]>,
     recoverResource: (id) => invoke("resource_recover", { id }) as Promise<void>,
     followup: (run, card, text) => invoke("run_followup", { run, card, text }) as Promise<{ runId: string }>,
+    changes: (run, card) => invoke("run_changes", { run, card }) as ReturnType<Backend["changes"]>,
     imageRead: (project, path, run, card) => invoke("image_read", { project, path, run: run ?? null, card: card ?? null }) as ReturnType<Backend["imageRead"]>,
     imageOpen: (project, path, folder, run, card) => invoke("image_open", { project, path, folder, run: run ?? null, card: card ?? null }) as Promise<void>,
     schedules: () => invoke("schedule_list") as ReturnType<Backend["schedules"]>,

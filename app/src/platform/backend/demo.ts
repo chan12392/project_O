@@ -132,6 +132,7 @@ export const demoBackend: Backend = {
   review: async () => ({ ok: false, message: "미리보기에서는 검토를 요청하지 않습니다" }),
   issuesSearch: async () => { throw new Error("미리보기에서는 이슈를 조회할 수 없습니다"); },
   issuesList: async () => [],
+  changes: async () => { throw new Error("미리보기에서는 작업 폴더 변경을 조회할 수 없습니다"); },
   issuesRecord: async () => { throw new Error("미리보기에서는 발견을 저장할 수 없습니다"); },
   issuesClassify: async () => { throw new Error("미리보기에서는 분류를 저장할 수 없습니다"); },
   issuesResolve: async () => { throw new Error("미리보기에서는 검증 결과를 저장할 수 없습니다"); },
