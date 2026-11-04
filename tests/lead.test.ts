@@ -85,12 +85,13 @@ test("a thread folds into messages, replies, plan cards with their run, and erro
     { t: "lead.reply", at: "5", provider: "claude", text: "카드 한 장" },
     { t: "lead.plan", at: "6", planId: "th-p1", plan: { title: "README", cards: [{ id: "docs", provider: "claude", task: "한 줄" }] }, ok: true, violations: [] },
     { t: "lead.dispatch", at: "7", planId: "th-p1", runId: "r1", clean: true },
+    { t: "lead.warning", at: "7", text: "실행 상태 불명" },
     { t: "lead.error", at: "8", text: "총괄을 중지했습니다" },
   ];
   const items = leadItems([...events, { t: "lead.future" }]);
   assert.deepEqual(
     items.map((i) => i.kind),
-    ["user", "reply", "plan", "error"],
+    ["user", "reply", "plan", "warning", "error"],
   );
   const plan = items[2];
   assert.ok(plan.kind === "plan");

@@ -66,7 +66,7 @@ export type LeadEvent =
   | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
   | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
-  | { t: "lead.error"; at: string; text: string }
+  | { t: "lead.warning" | "lead.error"; at: string; text: string }
   /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
   | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number };
 
@@ -130,7 +130,7 @@ export type LeadItem =
       runId?: string;
       autoRunReason?: string;
     }
-  | { kind: "error"; at: string; text: string };
+  | { kind: "warning" | "error"; at: string; text: string };
 
 /** Folds a thread's events into chat items; a dispatch marks its plan with the run it started. */
 export function leadItems(events: readonly { t: string }[]): LeadItem[] {
@@ -161,6 +161,9 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         break;
       case "lead.error":
         items.push({ kind: "error", at: e.at, text: e.text });
+        break;
+      case "lead.warning":
+        items.push({ kind: "warning", at: e.at, text: e.text });
         break;
       default:
         // lead.start, lead.session, lead.usage, lead.seen and kinds this build does not know draw nothing.

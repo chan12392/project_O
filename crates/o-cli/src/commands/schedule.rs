@@ -45,9 +45,25 @@ fn run(home: &Path, id: &str) -> Result<(), String> {
     let request = SendRequest { project: &req.project, provider, model: None, effort: None, text: &req.text, attach: &[], fresh: false, clean: root.as_deref(), yolo: false };
     let start = |run_id: &str| -> std::io::Result<()> { o_core::sys::proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ()) };
     let events = if req.auto_dispatch { lead::send_with_scheduled_autorun(home, &request, &official_command, &start)? } else { lead::send(home, &request, &official_command)? };
+    check_result(&events, req.auto_dispatch)
+}
+
+fn check_result(events: &[LeadEvent], auto_dispatch: bool) -> Result<(), String> {
     if let Some(error) = events.iter().find_map(|event| match event { LeadEvent::Error { text, .. } => Some(text), _ => None }) { return Err(error.clone()); }
-    if req.auto_dispatch && !events.iter().any(|event| matches!(event, LeadEvent::Dispatch { .. })) {
+    if auto_dispatch && !events.iter().any(|event| matches!(event, LeadEvent::Dispatch { .. })) {
         return Err(events.iter().rev().find_map(|event| match event { LeadEvent::AutoRun { reason, .. } => reason.clone(), _ => None }).unwrap_or_else(|| "분배할 설계가 생성되지 않았습니다".into()));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn warning_does_not_turn_a_successful_scheduled_reply_into_an_error() {
+        let events = [LeadEvent::Warning { at: "now".into(), text: "상태 불명".into() }, LeadEvent::Reply { at: "now".into(), provider: ProviderId::Claude, text: "답변".into(), reported_files: vec![] }];
+        assert_eq!(check_result(&events, false), Ok(()));
+        assert!(check_result(&events, true).is_err());
+        assert!(check_result(&[LeadEvent::Error { at: "now".into(), text: "실패".into() }], false).is_err());
+    }
 }
