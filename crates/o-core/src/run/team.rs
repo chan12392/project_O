@@ -72,6 +72,25 @@ pub fn send_tracked(home: &Path, speaker: &Speaker, to: &str, text: &str, questi
     send_reply(home, speaker, to, text, question, key, None)
 }
 
+/// Last recorded card state; a damaged record makes the observation inconclusive.
+pub fn recipient_state(home: &Path, speaker: &Speaker, to: &str) -> io::Result<Option<&'static str>> {
+    if !speaker.cards.iter().any(|card| card == to) { return Ok(None); }
+    let text = crate::run::store::locked_event_text(home, &speaker.run_id)?;
+    if !text.is_empty() && !text.ends_with('\n') { return Ok(Some("불명")); }
+    let mut state = "불명";
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let Ok(event) = serde_json::from_str::<Value>(line) else { return Ok(Some("불명")); };
+        if event.get("cardId").and_then(Value::as_str) != Some(to) { continue; }
+        state = match event.get("t").and_then(Value::as_str) {
+            Some("card.queued") => "대기",
+            Some("card.start") => "실행",
+            Some("card.end") => "종료",
+            _ => state,
+        };
+    }
+    Ok(Some(state))
+}
+
 /// An answer names a question in the same run and may only be sent back to its author.
 pub fn send_reply(home: &Path, speaker: &Speaker, to: &str, text: &str, question: bool, key: Option<&str>, reply_to: Option<&str>) -> Result<String, Refused> {
     send_kind(home, speaker, to, text, if question { "question" } else { "message" }, key, reply_to)

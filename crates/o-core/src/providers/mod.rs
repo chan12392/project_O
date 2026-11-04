@@ -59,7 +59,7 @@ pub trait Provider: Sync {
     fn tool_note(&self) -> Option<String>;
     /// How a card of this CLI sends and reads team messages.
     fn team_how_to(&self, _card: &Card, _team: &TeamChannel) -> Vec<String> {
-        vec![format!("보내기: {TEAM_COMMAND} send --to <카드 id|lead|all> \"내용\"   받기: {TEAM_COMMAND} read"), format!("일반 질문은 {TEAM_COMMAND} send --to lead --question --id <재시도키> \"내용\". 사람의 승인이나 권한 결정은 --question 대신 --approval로 요청하세요. 승인 요청에는 총괄이 자동으로 답하지 않습니다. 답을 기다릴 때는 {TEAM_COMMAND} wait를 사용하세요."), format!("받은 메시지는 처리한 뒤 {TEAM_COMMAND} ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.")]
+        vec![format!("보내기: {TEAM_COMMAND} send --to <카드 id|lead|all> \"내용\"   받기: {TEAM_COMMAND} read"), format!("일반 질문은 {TEAM_COMMAND} send --to <카드 id|lead> --question --id <재시도키> \"내용\". 사람의 승인이나 권한 결정은 --question 대신 --approval로 요청하세요. 승인 요청에는 총괄이 자동으로 답하지 않습니다. 답을 기다릴 때는 {TEAM_COMMAND} wait를 사용하세요."), format!("받은 메시지는 처리한 뒤 {TEAM_COMMAND} ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.")]
     }
     /// Whether a card may run `o context` itself (ADR-0005); otherwise it only gets the injected section.
     fn searches_context(&self) -> bool;
@@ -362,7 +362,7 @@ fn prompt_text(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&st
     let talks = how.iter().any(|line| line.contains(TEAM_COMMAND));
     lines.extend(how);
     if !others.is_empty() {
-        lines.push("다른 카드가 동시에 일합니다. 작업 폴더가 분리될 수 있으니 다른 카드의 변경은 인계 후 확인하세요. 맡은 파일 밖은 수정하지 말고 공용 파일·포트·서비스는 조율하세요.".into());
+        lines.push("다른 카드는 자원·실행 한도로 대기할 수 있습니다. 작업 폴더가 분리될 수 있으니 다른 카드의 변경은 인계 후 확인하세요. 맡은 파일 밖은 수정하지 말고 공용 파일·포트·서비스는 조율하세요.".into());
     }
     lines.push(format!("작업: {}{role}", plan.title));
     lines.push(format!("프로젝트: {}", plan.project));
@@ -380,7 +380,7 @@ fn prompt_text(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&st
     }
     lines.push("- lead: 총괄".into());
     if talks {
-        lines.push("시작할 때 한 번 받아 보고, 다른 카드가 알아야 할 결과나 막힌 점이 생기면 짧게 보내세요.".into());
+        lines.push("시작할 때 한 번 받아 보고, 다른 카드가 알아야 할 결과나 막힌 점이 생기면 짧게 보내세요. 상대가 대기 중이거나 상태가 불명이면 답을 기다리며 자원을 점유하지 말고 총괄에 알리세요. 미완료 작업을 완료로 보고하지 마세요.".into());
     }
     lines.join("\n")
 }

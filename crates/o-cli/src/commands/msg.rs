@@ -71,6 +71,12 @@ fn message(home: &Path, args: &[String]) -> i32 {
                 }
             }
             println!("저장됨: {} → {to} (id: {id})", speaker.me);
+            if flags.contains_key("question") && speaker.cards.iter().any(|card| card == to) {
+                let state = team::recipient_state(home, &speaker, to).ok().flatten().unwrap_or("불명");
+                if state != "실행" {
+                    println!("상대 카드의 마지막 기록: {state}. 답을 기다리며 자원을 점유하면 진행이 막힐 수 있습니다. 총괄에 알리고 가능한 독립 작업을 진행하세요.");
+                }
+            }
             0
         }
         Err(Refused::Policy(violations)) => {

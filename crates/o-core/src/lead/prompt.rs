@@ -61,6 +61,7 @@ fn role(yolo: bool) -> String {
         format!("- 카드마다 provider({providers})·model·effort({})를 일에 맞게 고릅니다. 모델이 확실하지 않으면 model을 비웁니다.", EFFORTS.join("|")),
         format!("- 동시 실행 상한: {}. 한도·예산에 걸린 서비스는 피합니다.", caps.join(", ")),
         format!("- 허용 필드: {}. id는 영문 소문자·숫자·하이픈. 실행 파일·인자·환경변수·계정은 넣지 않습니다.", CARD_FIELDS.join(", ")),
+        "- 서로 답변을 기다려야 하는 카드는 충돌하는 자원을 점유한 채 대기하지 않도록 나누세요. 선행 결과가 필요하면 depends_on으로 순서를 정하고, 답변이 막히면 총괄에 알리게 하세요.".to_string(),
     ];
     lines.extend([
         String::new(),
