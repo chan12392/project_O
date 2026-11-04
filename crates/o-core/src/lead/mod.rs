@@ -96,6 +96,8 @@ pub enum LeadEvent {
         session_id: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         clean: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result_tools: Option<bool>,
     },
     /// The lead's answer as Markdown, without its plan block.
     #[serde(rename = "lead.reply")]
@@ -643,9 +645,9 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         yolo: req.yolo,
     })?; }
 
-    let session = if worker.is_some() { None } else { before.iter().rev().find_map(|e| match e {
-        LeadEvent::Session { provider, session_id, clean, .. } if *provider == req.provider && clean.is_none_or(|c| c == req.clean.is_some()) => {
-            Some(session_id.clone())
+    let previous_session = if worker.is_some() { None } else { before.iter().rev().find_map(|e| match e {
+        LeadEvent::Session { provider, session_id, clean, result_tools, .. } if *provider == req.provider && clean.is_none_or(|c| c == req.clean.is_some()) => {
+            Some((session_id.clone(), *result_tools))
         }
         _ => None,
     }) };
@@ -658,7 +660,6 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             _ => None,
         })
         .collect();
-    let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
     let (ids, invalid) = dispatched_runs(&before);
     let mut runs = if invalid { vec!["- 실행 ID 또는 실행 수가 올바르지 않아 일부 상태 불명".to_string()] } else { Vec::new() };
     let mut status_error = invalid.then(|| "일부 실행의 ID 또는 실행 수를 확인할 수 없습니다".to_string());
@@ -687,6 +688,16 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         None
     };
     if let Some(error) = &status_error { emit(LeadEvent::Warning { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
+    let app_server = req.provider == ProviderId::Codex
+        && !req.yolo
+        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(providers::codex::supports_app_server);
+    let migrate = app_server && status_file.is_some() && previous_session.as_ref().is_some_and(|(_, tools)| *tools != Some(true));
+    if migrate {
+        emit(LeadEvent::Warning { at: now_iso(), text: "결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작합니다. 이전 대화는 최근 일부만 전달되며 캐시가 초기화될 수 있습니다.".into() })?;
+    }
+    let result_tools = cfg!(windows) && app_server && (previous_session.is_none() || migrate || previous_session.as_ref().is_some_and(|(_, tools)| *tools == Some(true)));
+    let session = if migrate { None } else { previous_session.map(|(id, _)| id) };
+    let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
     let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
@@ -698,6 +709,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         runs: &runs,
         runs_file: status_path.as_deref(),
         runs_error: status_error.as_deref(),
+        result_tools,
         resumed: session.is_some(),
         history: &history,
         missed: &missed,
@@ -708,11 +720,6 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let files_dir = status_file.as_ref().and_then(|f| f.path.parent()).map(Path::to_path_buf).unwrap_or_else(|| files::thread_files(home, &thread_id));
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
     let images: Vec<String> = attachments.iter().filter(|a| a.image).map(|a| a.path.clone()).collect();
-    // The read-only Codex lead runs on app-server when the CLI has it, else on `codex exec`
-    // (ADR-0023). Decided here, before the turn starts; the result is kept per CLI.
-    let app_server = req.provider == ProviderId::Codex
-        && !req.yolo
-        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(providers::codex::supports_app_server);
     let turn = LeadTurn {
         project: req.project,
         prompt: text,
@@ -869,7 +876,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                 match signal {
                     StreamSignal::Session { session_id } => {
                         if worker.is_none() && session.as_deref() != Some(session_id.as_str()) {
-                            emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone(), clean: Some(req.clean.is_some()) })?;
+                            emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone(), clean: Some(req.clean.is_some()), result_tools: result_tools.then_some(true) })?;
                             index_session(home, &thread_id, &session_id);
                         }
                         if worker.is_some() { index_session(home, &thread_id, &session_id); }
@@ -912,7 +919,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             match child.stdin.take() {
                 None => fatal = Some("Codex app-server 입력을 열지 못했습니다".into()),
                 Some(stdin) => {
-                    let result = providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, |event| {
+                    let on_event = |event| {
                         if fatal.is_none() {
                             provider_finished |= matches!(event, providers::codex_app_server::Event::Finished { .. });
                             finished |= matches!(event, providers::codex_app_server::Event::Finished { ok: true, .. });
@@ -920,7 +927,19 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                                 fatal = process_line(&line).err();
                             }
                         }
-                    });
+                    };
+                    #[cfg(windows)]
+                    let result = if result_tools {
+                        providers::codex_app_server::run_with_card_results(&turn, BufReader::new(stdout), stdin, on_event, |request| {
+                            let guard = status_file.as_ref().ok_or("현재 실행 결과가 없습니다")?;
+                            stream_status::read_card_result(guard, &request.run_id, &request.card_id, request.line, request.offset.unwrap_or(0))
+                                .map(|value| value.to_string()).map_err(|error| error.to_string())
+                        })
+                    } else {
+                        providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, on_event)
+                    };
+                    #[cfg(not(windows))]
+                    let result = providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, on_event);
                     protocol_error = result.err();
                 }
             }
@@ -1047,6 +1066,9 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let (prose, plan) = prompt::split_plan(&answer);
     let (prose, design) = prompt::split_design(&prose);
     let (prose, followups) = prompt::split_followups(&prose);
+    let prose = if migrate {
+        format!("결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작했습니다. 이전 대화는 최근 일부만 전달되었으며 캐시가 초기화될 수 있습니다.\n\n{prose}")
+    } else { prose };
     if !prose.is_empty() {
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
     }

@@ -241,7 +241,6 @@ pub(super) fn write(home: &Path, thread: &str, runs: &[String]) -> io::Result<(s
 }
 
 // The index header is written by `write`, under the same immutable guard as its pages.
-#[allow(dead_code)] // The app-server tool connects this accessor separately.
 pub(super) fn read_card_result(guard: &status_file::StatusFile, run_id: &str, card_id: &str, line: Option<u64>, offset: u64) -> io::Result<Value> {
     use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
     use std::os::windows::io::AsRawHandle;

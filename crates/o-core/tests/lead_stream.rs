@@ -101,3 +101,58 @@ fn official_codex_reads_the_last_part_of_a_result() {
     let answer = events.iter().find_map(|event| match event { LeadEvent::Reply { text, .. } => Some(text.as_str()), _ => None });
     assert!(answer.is_some_and(|text| text.contains(&marker)), "실제 응답이 결과 끝을 확인하지 못했습니다: {events:?}");
 }
+
+#[test]
+fn old_codex_session_migrates_once_and_new_session_resumes() {
+    let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("o-codex-migrate-{}-{stamp}", std::process::id()));
+    let home = base.join("state");
+    let project = base.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let thread = lead::thread_for(&home, project.to_str().unwrap(), false).unwrap();
+    let mut events = fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap();
+    writeln!(events, "{}", json!({"t":"lead.session","at":"now","provider":"codex","sessionId":"old","clean":false})).unwrap();
+    writeln!(events, "{}", json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"missing","clean":false})).unwrap();
+    let source = base.join("fake.rs");
+    let binary = base.join("fake.exe");
+    fs::write(&source, r####"
+use std::io::{self, BufRead, Write};
+fn main() {
+    if std::env::args().any(|arg| arg == "--help") { println!("Usage: codex app-server"); return; }
+    let mut log = std::fs::OpenOptions::new().create(true).append(true).open(std::env::var("TEST_LOG").unwrap()).unwrap();
+    for line in io::stdin().lock().lines() {
+        let line = line.unwrap();
+        writeln!(log, "{line}").unwrap();
+        if line.contains("\"id\":1") { println!("{}", r#"{"id":1,"result":{}}"#); }
+        if line.contains("\"id\":2") { println!("{}", r#"{"id":2,"result":{"thread":{"id":"new"}}}"#); }
+        if line.contains("\"id\":3") {
+            println!("{}", r#"{"id":3,"result":{"turn":{"id":"t"}}}"#);
+            println!("{}", r#"{"method":"item/completed","params":{"threadId":"new","turnId":"t","item":{"type":"agentMessage","text":"확인"}}}"#);
+            println!("{}", r#"{"method":"turn/completed","params":{"threadId":"new","turn":{"id":"t","status":"completed"}}}"#);
+            io::stdout().flush().unwrap(); return;
+        }
+        io::stdout().flush().unwrap();
+    }
+}
+"####).unwrap();
+    let mut compiler = Command::new("rustc");
+    compiler.arg(&source).arg("-o").arg(&binary);
+    assert!(o_core::sys::proc::hide_window(&mut compiler).status().unwrap().success());
+    let log = base.join("requests.jsonl");
+    let child_log = log.clone();
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        let mut command = Command::new(&binary);
+        if spec.args.iter().any(|arg| arg == "--help") { command.arg("--help"); }
+        command.env("TEST_LOG", &child_log);
+        Ok(command)
+    };
+    let request = SendRequest { project: project.to_str().unwrap(), provider: ProviderId::Codex, model: None, effort: None, text: "결과 확인", attach: &[], fresh: false, clean: None, yolo: false };
+    let first = lead::send(&home, &request, &spawner).unwrap();
+    assert!(first.iter().any(|event| matches!(event, LeadEvent::Session { session_id, result_tools: Some(true), .. } if session_id == "new")));
+    assert!(first.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text.contains("최근 일부만 전달"))));
+    let second = lead::send(&home, &request, &spawner).unwrap();
+    assert!(!second.iter().any(|event| matches!(event, LeadEvent::Warning { text, .. } if text.contains("세션을 새로"))));
+    let calls: Vec<Value> = fs::read_to_string(log).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+    assert_eq!(calls.iter().filter(|v| v["method"] == "thread/start" && v["params"]["dynamicTools"].is_array()).count(), 1);
+    assert_eq!(calls.iter().filter(|v| v["method"] == "thread/resume" && v["params"]["threadId"] == "new").count(), 1);
+}
