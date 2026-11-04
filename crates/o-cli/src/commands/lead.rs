@@ -201,6 +201,7 @@ fn show(home: &Path, args: &[String]) -> i32 {
                 if event["ok"] == true { "정책 통과" } else { "정책 차단" }
             ),
             "lead.dispatch" => println!("[실행] {} → {}", text("planId"), text("runId")),
+            "lead.warning" => println!("\n[주의] {}", text("text")),
             "lead.error" => println!("\n[오류] {}", text("text")),
             _ => {}
         }

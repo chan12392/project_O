@@ -5,7 +5,7 @@
 //! ```text
 //! leads/current.json                 project (normalized) → its current thread id
 //! leads/<threadId>/events.jsonl      the thread: lead.start · lead.user · lead.session · lead.reply
-//!                                    · lead.plan · lead.dispatch · lead.usage · lead.error · lead.seen
+//!                                    · lead.plan · lead.dispatch · lead.usage · lead.warning · lead.error · lead.seen
 //! leads/<threadId>/turn.raw.jsonl    the CLIs' stdout, for reading back a turn
 //! leads/<threadId>/sessions.txt      the CLI session ids it used, one per line (`o runs --sessions` reads these)
 //! leads/<threadId>/turn.lock         held (OS lock) by the turn in progress, for as long as it runs
@@ -116,6 +116,8 @@ pub enum LeadEvent {
     /// Tokens one lead turn spent (`o tokens` counts them as planning overhead).
     #[serde(rename = "lead.usage")]
     Usage { at: String, provider: ProviderId, input: f64, cached: f64, output: f64 },
+    #[serde(rename = "lead.warning")]
+    Warning { at: String, text: String },
     #[serde(rename = "lead.error")]
     Error { at: String, text: String },
     /// A CLI session got the turn whose `lead.user` is event `through` of the thread (as
@@ -433,17 +435,28 @@ struct StatusRecord {
     raw: Option<String>,
 }
 
+// shortcut: large histories are unavailable as a whole; upgrade to bounded on-demand paging.
+const MAX_STATUS_RUNS: usize = 128;
+const MAX_STATUS_BYTES: usize = 8 * 1024 * 1024;
+const MAX_STATUS_LINES: usize = 4096;
+const MAX_STATUS_RECORDS: usize = 512;
+const MAX_STATUS_PARTS: usize = 256;
+
 fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str) -> io::Result<Option<String>>) -> (Vec<String>, Vec<StatusRecord>, usize) {
     let mut seen = BTreeSet::new();
     let mut summaries = Vec::new();
     let mut originals = Vec::new();
     let mut unavailable = 0;
+    let mut bytes = 0usize;
+    let mut lines = 0usize;
+    let limit = || (vec!["- 실행 기록 조회 안전 상한 초과: 모든 실행 상태와 원문을 확인할 수 없음".to_string()], Vec::new(), 1);
     for event in events {
         let run_id = match event {
             LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => run_id,
             _ => continue,
         };
         if !seen.insert(run_id) { continue; }
+        if seen.len() > MAX_STATUS_RUNS { return limit(); }
         if !is_run_id(run_id) {
             unavailable += 1;
             summaries.push("- 실행 ID가 올바르지 않아 상태와 원문을 확인할 수 없음".into());
@@ -465,9 +478,13 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str)
                 continue;
             }
         };
+        bytes = bytes.saturating_add(text.len());
+        if bytes > MAX_STATUS_BYTES { return limit(); }
         let mut typed = Vec::new();
         let mut unknown = 0;
         for (line_no, raw) in text.split_inclusive('\n').enumerate().filter(|(_, s)| !s.trim().is_empty()) {
+            lines += 1;
+            if lines > MAX_STATUS_LINES || originals.len() >= MAX_STATUS_RECORDS { return limit(); }
             let value = serde_json::from_str::<Value>(raw).ok();
             let parsed = if raw.ends_with('\n') { value.clone().and_then(|v| serde_json::from_value::<crate::run::events::OEvent>(v).ok()) } else { None };
             let kind = value.as_ref().and_then(|v| v.get("t")).and_then(Value::as_str).unwrap_or("unknown");
@@ -489,11 +506,20 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str)
         if unknown > 0 { unavailable += 1; }
         summaries.push(if unknown > 0 { format!("{summary}\n  - 해석하지 못한 기록 {unknown}개: 상태를 단정하지 말고 색인의 원문을 확인") } else { summary });
         originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"run-summary","unrecognized":unknown}), raw: None });
+        if originals.len() > MAX_STATUS_RECORDS { return limit(); }
     }
     (summaries, originals, unavailable)
 }
 
 fn write_status_index(home: &Path, thread: &str, records: Vec<StatusRecord>) -> io::Result<status_file::StatusFile> {
+    if records.len() > MAX_STATUS_RECORDS { return Err(io::Error::other("실행 색인 항목 수가 안전 상한을 초과했습니다")); }
+    let mut parts = 0usize;
+    for record in &records {
+        if let Some(raw) = &record.raw {
+            parts = parts.saturating_add(raw.chars().count().div_ceil(512).max(1));
+            if parts > MAX_STATUS_PARTS { return Err(io::Error::other("실행 결과 원문 조각 수가 안전 상한을 초과하여 제공할 수 없습니다")); }
+        }
+    }
     let mut guard = status_file::create(home, thread)?;
     let mut index = String::new();
     for record in records {
@@ -580,6 +606,27 @@ mod status_tests {
         assert!(text.contains("추측하지"));
         assert!(text.contains("질문"));
     }
+
+    #[test]
+    fn oversized_histories_are_not_partially_reported() {
+        let dispatch = LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: "run".into(), clean: false, profile: None, yolo: false };
+        let (summaries, records, unknown) = dispatched_runs(Path::new("unused"), &[dispatch.clone()], |_, _| Ok(Some("{}\n".repeat(MAX_STATUS_LINES + 1))));
+        assert_eq!(unknown, 1);
+        assert!(records.is_empty());
+        assert!(summaries[0].contains("상한"));
+        let (summaries, records, unknown) = dispatched_runs(Path::new("unused"), &[dispatch], |_, _| Ok(Some("x".repeat(MAX_STATUS_BYTES + 1))));
+        assert_eq!(unknown, 1);
+        assert!(records.is_empty());
+        assert!(summaries[0].contains("상한"));
+    }
+
+    #[test]
+    fn too_many_result_parts_are_refused_before_creating_files() {
+        let home = std::env::temp_dir().join(format!("o-limit-{}-{}", std::process::id(), now_iso().replace(':', "-")));
+        let records = vec![StatusRecord { meta: json!({"type":"unknown"}), raw: Some("가".repeat(512 * MAX_STATUS_PARTS + 1)) }];
+        assert!(write_status_index(&home, "thread", records).err().unwrap().to_string().contains("상한"));
+        assert!(!super::files::files_root(&home).exists());
+    }
 }
 
 /// Sends one message: saves it and its attachments, runs the lead CLI read-only in the
@@ -660,14 +707,14 @@ fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limi
         .collect();
     let missed = session.as_deref().map(|id| missed_turns(&before, req.provider, id)).unwrap_or_default();
     let (runs, originals, uncertain) = dispatched_runs(home, &before, status_file::read_events);
-    let mut status_error = (uncertain > 0).then(|| format!("{uncertain}개 실행은 원문을 읽지 못했거나 해석할 수 없는 기록이 있어 상태가 불명입니다"));
+    let mut status_error = (uncertain > 0).then(|| "일부 실행은 기록 접근 실패, 안전 상한 초과 또는 해석할 수 없는 기록으로 상태가 불명입니다".to_string());
     let status_file = if originals.is_empty() { None } else {
         match write_status_index(home, &thread_id, originals) {
             Ok(file) => Some(file),
             Err(e) => { status_error = Some(format!("실행 결과 원문을 안전하게 제공할 수 없습니다: {e}")); None }
         }
     };
-    if let Some(error) = &status_error { emit(LeadEvent::Error { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
+    if let Some(error) = &status_error { emit(LeadEvent::Warning { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
     let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });

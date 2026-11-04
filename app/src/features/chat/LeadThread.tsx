@@ -125,6 +125,8 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           <ReplyText text={item.text} animate={animate} />
         </article>
       );
+    case "warning":
+      return <p role="status" className="whitespace-pre-wrap text-sm text-status-warning-text">{item.text}</p>;
     case "error":
       return (
         <p role="alert" className="flex items-start gap-2 rounded-lg border border-destructive/40 px-3.5 py-2.5 text-sm">

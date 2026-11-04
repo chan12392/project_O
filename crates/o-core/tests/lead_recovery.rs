@@ -19,6 +19,7 @@ fn request(project: &str) -> SendRequest<'_> {
 
 #[test]
 fn fake_child() {
+    if std::env::var_os("O_LEAD_SUCCESS_REPLY").is_some() { println!("\n{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"확인했습니다\"}}"); }
     if std::env::var_os("O_LEAD_RECOVERY_WAIT").is_some() { std::thread::sleep(Duration::from_secs(30)); }
     if std::env::var_os("O_LEAD_RECOVERY_SHORT").is_some() { std::thread::sleep(Duration::from_millis(500)); }
     if let Some(path) = std::env::var_os("O_LEAD_STATUS_PATH") {
@@ -208,11 +209,13 @@ fn unknown_result_record_is_preserved_and_does_not_block_the_lead() {
         let restored: String = unknown_entries.iter().map(|v| std::fs::read_to_string(v["file"].as_str().unwrap()).unwrap()).collect();
         assert_eq!(restored, unknown);
         let mut command = Command::new(std::env::current_exe()?);
-        command.args(["--exact", "fake_child"]);
+        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
         Ok(command)
     };
     let events = lead::send(&home, &request(&project), &spawner).unwrap();
-    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Error { text, .. } if text.contains("실행 상태 확인 불가"))));
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("실행 상태 확인 불가"))));
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Reply { text, .. } if text.contains("확인했습니다"))));
+    assert!(!events.iter().any(|e| matches!(e, lead::LeadEvent::Error { .. })));
 }
 
 #[cfg(windows)]
@@ -235,7 +238,36 @@ fn unavailable_result_record_does_not_block_the_lead() {
         Ok(command)
     };
     let events = lead::send(&home, &request(&project), &spawner).unwrap();
-    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Error { text, .. } if text.contains("실행 상태 확인 불가"))));
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("실행 상태 확인 불가"))));
+}
+
+#[cfg(windows)]
+#[test]
+fn oversized_result_warns_and_keeps_the_successful_reply() {
+    use std::io::Write;
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let run = o_core::run::store::run_dir(&home, "large");
+    std::fs::create_dir_all(&run).unwrap();
+    let source = format!("{{\"t\":\"future.result\",\"result\":\"{}\"}}\n", "A".repeat(512 * 257));
+    let source_path = run.join("events.jsonl");
+    std::fs::write(&source_path, &source).unwrap();
+    let log = lead::thread_dir(&home, &thread).join("events.jsonl");
+    writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch", "at":"now", "planId":"p", "runId":"large", "clean":false})).unwrap();
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        let prompt = spec.stdin.as_ref().unwrap();
+        assert!(prompt.contains("상한"));
+        assert!(prompt.contains("추측하지"));
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("상한"))));
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Reply { text, .. } if text.contains("확인했습니다"))));
+    assert!(!events.iter().any(|e| matches!(e, lead::LeadEvent::Error { .. })));
+    assert_eq!(std::fs::read_to_string(source_path).unwrap(), source);
+    assert!(!lead::files::files_root(&home).exists());
 }
 
 #[cfg(windows)]
@@ -262,6 +294,6 @@ fn unsafe_output_folder_is_reported_without_blocking_the_lead() {
         Ok(command)
     };
     let events = lead::send(&home, &request(&project), &spawner).unwrap();
-    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Error { text, .. } if text.contains("안전하게 제공할 수 없습니다"))));
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("안전하게 제공할 수 없습니다"))));
     assert_eq!(std::fs::read_dir(target).unwrap().count(), 0);
 }

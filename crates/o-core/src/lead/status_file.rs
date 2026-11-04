@@ -3,6 +3,9 @@
 use std::io;
 use std::path::{Path, PathBuf};
 
+#[cfg(windows)]
+const MAX_LOG_BYTES: u64 = 4 * 1024 * 1024;
+
 pub struct StatusFile {
     pub path: PathBuf,
     #[cfg(windows)]
@@ -58,7 +61,7 @@ pub fn read_events(home: &Path, run_id: &str) -> io::Result<Option<String>> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
     };
-    let mut file = match std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(dir.join("events.jsonl")) {
+    let file = match std::fs::OpenOptions::new().read(true).share_mode(FILE_SHARE_READ).custom_flags(FILE_FLAG_OPEN_REPARSE_POINT).open(dir.join("events.jsonl")) {
         Ok(file) => file,
         Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e),
@@ -66,8 +69,11 @@ pub fn read_events(home: &Path, run_id: &str) -> io::Result<Option<String>> {
     if !plain_file(&file)? {
         return Err(io::Error::other("실행 기록이 링크이거나 파일 소유를 확인하지 못했습니다"));
     }
-    let mut text = String::new();
-    file.read_to_string(&mut text)?;
+    if file.metadata()?.len() > MAX_LOG_BYTES { return Err(io::Error::other("실행 기록이 안전한 읽기 상한을 초과했습니다")); }
+    let mut bytes = Vec::new();
+    file.take(MAX_LOG_BYTES + 1).read_to_end(&mut bytes)?;
+    if bytes.len() as u64 > MAX_LOG_BYTES { return Err(io::Error::other("실행 기록이 안전한 읽기 상한을 초과했습니다")); }
+    let text = String::from_utf8(bytes).map_err(io::Error::other)?;
     Ok(Some(text))
 }
 
@@ -242,6 +248,19 @@ mod tests {
         assert!(read_events(&home, "run").is_err());
         drop(writer);
         assert_eq!(read_events(&home, "run").unwrap().as_deref(), Some(""));
+    }
+
+    #[test]
+    fn oversized_record_is_rejected_without_reading_a_prefix() {
+        let home = home();
+        let run = crate::run::store::run_dir(&home, "run");
+        std::fs::create_dir_all(&run).unwrap();
+        let path = run.join("events.jsonl");
+        let file = std::fs::File::create(&path).unwrap();
+        file.set_len(MAX_LOG_BYTES + 1).unwrap();
+        drop(file);
+        assert!(read_events(&home, "run").unwrap_err().to_string().contains("상한"));
+        assert_eq!(std::fs::metadata(path).unwrap().len(), MAX_LOG_BYTES + 1);
     }
 
     #[test]
