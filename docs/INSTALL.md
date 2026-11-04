@@ -79,7 +79,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 | 항목 | 값 |
 |---|---|
 | Tauri 설정 | `app/src-tauri/tauri.conf.json`의 `bundle`(NSIS만, `installMode: currentUser`, 한국어, 게시자·저작권 `Project O`) + 설치 빌드에서만 합치는 `scripts/installer/tauri.installer.json`(`externalBin: binaries/o`, 사이드카 준비) |
-| 사이드카 | `scripts/prepare-sidecar.mjs`(`npm --prefix app run sidecar`)가 release `o.exe`를 `app/src-tauri/binaries/o-<triple>.exe`로 복사(gitignore). 일반 `cargo build`·`tauri dev`에는 필요 없다 |
+| 사이드카 | `scripts/prepare-sidecar.mjs`(`npm --prefix app run sidecar`)가 release `o.exe`를 `app/src-tauri/binaries/o-<triple>.exe`로 복사(gitignore). `tauri dev`와 `--no-bundle` 빌드는 대신 같은 출력 폴더의 CLI를 빌드한다. |
 | NSIS 훅 | `scripts/installer/hooks.nsh` — 기본 폴더를 상태 폴더 밖으로 옮긴다 |
 | 설치 폴더 | `%LOCALAPPDATA%\Programs\project_O` (`/D=`로 바꾼 경우 그 폴더) |
 | 제거 레지스트리 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\project_O` — `UninstallString` = `"<설치 폴더>\uninstall.exe"`, `InstallLocation`, `DisplayVersion` |
