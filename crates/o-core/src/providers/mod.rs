@@ -243,6 +243,10 @@ pub struct LeadTurn<'a> {
     /// Codex only: the CLI has `app-server` (`codex::supports_app_server`); without it the
     /// read-only lead runs through `codex exec` as before (ADR-0023).
     pub app_server: bool,
+    /// Normal mode with the person approving each action (ADR-0008 개정 3): the command of O's
+    /// approval server (`o _lead-approve …`) for CLIs that ask through one (Claude Code). `None`
+    /// keeps the lead read-only. YOLO launches ignore it.
+    pub approver: Option<Vec<String>>,
 }
 
 /// Whether a provider can be the lead (`Provider::lead_efforts` is not empty).

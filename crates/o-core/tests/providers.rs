@@ -299,6 +299,7 @@ fn lead_spec_on(provider: ProviderId, session: Option<&str>, effort: Option<&str
         files_dir: Some("C:/o-lead/t1"),
         images,
         app_server,
+        approver: None,
     })
 }
 
@@ -315,6 +316,50 @@ fn the_claude_lead_reads_only_and_resumes_its_session() {
     let next = lead_spec(ProviderId::Claude, Some("s-1"), None, &[]).unwrap();
     assert_eq!(after(&next.args, "--resume"), "s-1");
     assert!(!has(&next.args, "--effort"));
+}
+
+/// Normal mode with a person to ask (ADR-0008 개정 3): reads stay the only free tools, every
+/// other one goes to O's approval server, which is the only MCP server, and the run's own
+/// settings ask for each of them so the person's allow rules cannot answer first.
+#[test]
+fn the_claude_lead_asks_o_before_any_write_command_or_web_call() {
+    let approver = vec!["C:/o/o.exe".to_string(), "_lead-approve".into(), "C:/state".into(), "t1".into(), "tok".into(), "C:/work/demo".into()];
+    let turn = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session: Some("s-1"), model: None, effort: Some("low"), files_dir: None, images: &[], app_server: false, approver: Some(approver.clone()) };
+    let spec = o_core::providers::lead_spec(ProviderId::Claude, &turn, false).unwrap();
+    let tools = if cfg!(windows) { "Read,Grep,Glob,Edit,Write,Bash,PowerShell,WebSearch,WebFetch" } else { "Read,Grep,Glob,Edit,Write,Bash,WebSearch,WebFetch" };
+    assert_eq!(after(&spec.args, "--permission-mode"), "default");
+    assert_eq!(after(&spec.args, "--tools"), tools);
+    assert_eq!(after(&spec.args, "--allowedTools"), "Read,Grep,Glob");
+    assert_eq!(after(&spec.args, "--permission-prompt-tool"), "mcp__o_lead__decide");
+    assert!(has(&spec.args, "--strict-mcp-config"));
+    assert_eq!(after(&spec.args, "--setting-sources"), "user");
+    let servers: Value = serde_json::from_str(after(&spec.args, "--mcp-config")).unwrap();
+    assert_eq!(servers, json!({"mcpServers":{"o_lead":{"type":"stdio","command":"C:/o/o.exe","args":approver[1..]}}}));
+    let settings: Value = serde_json::from_str(after(&spec.args, "--settings")).unwrap();
+    assert_eq!(settings["disableAllHooks"], true);
+    assert!(settings["permissions"].get("allow").is_none());
+    for tool in ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"] {
+        assert!(settings["permissions"]["ask"].as_array().unwrap().iter().any(|t| t == tool), "{tool}");
+    }
+    let start = spec.args.iter().position(|a| a == "--disallowedTools").unwrap();
+    for rule in CLAUDE_DENY { assert!(spec.args[start..].contains(&rule.to_string()), "{rule}"); }
+    if cfg!(windows) { assert!(spec.args.contains(&"PowerShell(o lead*)".to_string())); }
+    assert!(find_hits(&spec.args.join(" "), code_rules()).is_empty());
+    for word in ["acceptEdits", "auto"] { assert!(!has(&spec.args, word), "{word}"); }
+    assert_eq!(after(&spec.args, "--resume"), "s-1");
+    assert_eq!(spec.stdin.as_deref(), Some("고쳐 줘"));
+}
+
+/// YOLO stays as it was (ADR-0014): an approver changes no YOLO launch of any lead.
+#[test]
+fn yolo_leads_ignore_the_approver() {
+    for provider in ProviderId::ALL.into_iter().filter(|p| o_core::providers::can_lead(*p)) {
+        for session in [None, Some("s-1")] {
+            let plain = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session, model: None, effort: Some("low"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server: false, approver: None };
+            let asking = LeadTurn { approver: Some(vec!["C:/o/o.exe".into(), "_lead-approve".into()]), ..plain.clone() };
+            assert_eq!(o_core::providers::lead_spec(provider, &asking, true), o_core::providers::lead_spec(provider, &plain, true), "{provider}");
+        }
+    }
 }
 
 #[test]
@@ -359,7 +404,7 @@ fn the_agy_lead_plans_with_every_change_denied_and_resumes_its_conversation() {
     assert!(first.stdin.is_none());
     assert_eq!(first.env.get("AGY_CLI_DISABLE_AUTO_UPDATE").map(String::as_str), Some("true"));
     let next = o_core::providers::get(ProviderId::Agy)
-        .lead(&LeadTurn { project: "C:/work/demo", prompt: "또".into(), session: Some("c-1"), model: Some("gemini-3.8-flash-high"), effort: None, files_dir: None, images: &[], app_server: false })
+        .lead(&LeadTurn { project: "C:/work/demo", prompt: "또".into(), session: Some("c-1"), model: Some("gemini-3.8-flash-high"), effort: None, files_dir: None, images: &[], app_server: false, approver: None })
         .unwrap();
     assert_eq!(after(&next.args, "--conversation"), "c-1");
     assert_eq!(after(&next.args, "--model"), "gemini-3.8-flash-high");
@@ -371,7 +416,7 @@ fn the_agy_lead_plans_with_every_change_denied_and_resumes_its_conversation() {
 fn every_lead_takes_the_model_it_is_given() {
     for (provider, flag) in [(ProviderId::Claude, "--model"), (ProviderId::Agy, "--model")] {
         for session in [None, Some("s")] {
-            let turn = LeadTurn { project: "C:/work/demo", prompt: "p".into(), session, model: Some("m-1"), effort: None, files_dir: None, images: &[], app_server: false };
+            let turn = LeadTurn { project: "C:/work/demo", prompt: "p".into(), session, model: Some("m-1"), effort: None, files_dir: None, images: &[], app_server: false, approver: None };
             let spec = o_core::providers::get(provider).lead(&turn).unwrap();
             assert_eq!(after(&spec.args, flag), "m-1", "{provider} {session:?}");
         }
@@ -385,7 +430,7 @@ fn lead_launches_never_write_and_never_turn_approvals_off() {
     for provider in ProviderId::ALL.into_iter().filter(|p| o_core::providers::can_lead(*p)) {
         for (session, app_server) in [(None, false), (Some("s"), false), (None, true), (Some("s"), true)] {
             let spec = lead_spec_on(provider, session, Some("high"), &[], app_server).unwrap_or_else(|| panic!("{provider} cannot lead"));
-            let turn = LeadTurn { project: "C:/work/demo", prompt: "계획해 줘".into(), session, model: None, effort: Some("high"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server };
+            let turn = LeadTurn { project: "C:/work/demo", prompt: "계획해 줘".into(), session, model: None, effort: Some("high"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server, approver: None };
             assert_eq!(o_core::providers::lead_spec(provider, &turn, false).as_ref(), Some(&spec), "{provider}: YOLO off is the read-only lead");
             let line = spec.args.join(" ");
             assert!(find_hits(&line, code_rules()).is_empty(), "{provider}: {line}");
@@ -523,7 +568,7 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
 }
 
 fn yolo_lead(provider: ProviderId, session: Option<&str>) -> LaunchSpec {
-    let turn = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session, model: None, effort: Some("low"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server: false };
+    let turn = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session, model: None, effort: Some("low"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server: false, approver: None };
     o_core::providers::lead_spec(provider, &turn, true).unwrap()
 }
 

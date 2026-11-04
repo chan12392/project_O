@@ -32,16 +32,22 @@ pub(super) struct TurnProcess {
 }
 
 impl TurnProcess {
-    pub(super) fn start(child: crate::sys::worker::Child, tree: Option<Arc<Mutex<KillOnClose>>>, stop: PathBuf, token: String, limit: Duration) -> Self {
+    /// `pause`: an approvals folder (`approvals::waiting`); the time limit does not run while
+    /// a request in it waits for the person, who has a time limit of their own per request.
+    pub(super) fn start(child: crate::sys::worker::Child, tree: Option<Arc<Mutex<KillOnClose>>>, stop: PathBuf, token: String, limit: Duration, pause: Option<PathBuf>) -> Self {
         let state = Arc::new(Mutex::new(State { child, tree: tree.clone(), status: None, unknown: false }));
         let cancelled = Arc::new(AtomicBool::new(false));
         let (signal, events) = mpsc::channel();
         let (watched, interrupted) = (Arc::clone(&state), Arc::clone(&cancelled));
         let watched_tree = tree.clone();
         let watcher = thread::spawn(move || {
-            let deadline = Instant::now() + limit;
+            let mut deadline = Instant::now() + limit;
+            let mut checked = Instant::now();
             let reason = loop {
                 if fs::read_to_string(&stop).is_ok_and(|t| t.is_empty() || t == token) { break End::Stop; }
+                let now = Instant::now();
+                if pause.as_deref().is_some_and(super::approvals::waiting) { deadline += now - checked; }
+                checked = now;
                 if Instant::now() >= deadline { break End::Timeout; }
                 match events.recv_timeout(STOP_POLL.min(deadline.saturating_duration_since(Instant::now()))) {
                     Ok(reason) => break reason,
@@ -223,7 +229,7 @@ mod tests {
     fn no_job_pipe_is_interruptible_and_remains_unfinished_until_descendant_exits() {
         let mut child = child("parent");
         let stdout = child.stdout.take().unwrap();
-        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_millis(600));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_millis(600), None);
         let (mut reader, worker) = process.reader(stdout);
         let mut output = Vec::new();
         reader.read_to_end(&mut output).unwrap();
@@ -239,7 +245,7 @@ mod tests {
     #[test]
     fn unknown_process_is_not_killed_by_watcher() {
         let child = child("idle");
-        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_secs(5));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_secs(5), None);
         process.state.lock().unwrap().unknown = true;
         process.kill();
         let (end, reap, _) = process.finish();
@@ -253,7 +259,7 @@ mod tests {
     #[test]
     fn watcher_does_not_signal_after_child_is_reaped() {
         let exited = child("exit");
-        let process = TurnProcess::start(crate::sys::worker::Child::standard(exited), None, PathBuf::new(), String::new(), Duration::from_secs(5));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(exited), None, PathBuf::new(), String::new(), Duration::from_secs(5), None);
         let deadline = Instant::now() + Duration::from_secs(3);
         while process.poll().is_none() {
             assert!(Instant::now() < deadline);
@@ -275,7 +281,7 @@ mod tests {
             .env("O_TEST_TURN_PROCESS", "idle").stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::null());
         let mut child = crate::sys::proc::hide_window(&mut command).spawn().unwrap();
         let stdin = child.stdin.take().unwrap();
-        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_millis(500));
+        let process = TurnProcess::start(crate::sys::worker::Child::standard(child), None, PathBuf::new(), String::new(), Duration::from_millis(500), None);
         let (mut writer, worker) = process.writer(stdin);
         let started = Instant::now();
         assert!(writer.write_all(&vec![b'x'; 1024 * 1024]).is_err());

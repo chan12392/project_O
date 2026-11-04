@@ -114,7 +114,7 @@ Usage: codex [OPTIONS] [PROMPT]
         ("questions stand in for the answer; the next turn carries the picks", ask_questions),
         ("a Codex CLI without app-server leads through read-only exec, probed once, resuming across transports", codex_exec_fallback),
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
-        ("Codex declines read-only approval requests and continues", codex_approval),
+        ("Codex asks the person, declines what they refuse and continues", codex_approval),
         ("Codex shows partial prose while keeping the plan hidden", codex_partial),
         ("Codex refuses other server requests and the turn continues", codex_other_requests),
         ("a finished Codex turn survives a slow app-server shutdown", codex_slow_shutdown),
@@ -504,6 +504,8 @@ fn codex_approval() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
         let view = lead::show(&home, Some(&project));
+        // Normal mode asks the person (ADR-0008 개정 3); here they refuse.
+        if let Some(id) = view["thread"]["approvals"][0]["id"].as_str() { let _ = lead::decide(&home, id, false); }
         if view["thread"]["progress"].as_array().is_some_and(|steps| steps.iter().any(|step| step["name"] == "권한" && step["summary"].as_str().is_some_and(|text| text.contains("거절")))) { break; }
         assert!(std::time::Instant::now() < deadline, "approval refusal was not visible: {view}");
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -811,7 +813,7 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false };
     let first = build(&input);
     for part in ["[O 총괄]", "프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");
@@ -936,10 +938,12 @@ fn resumes_session() {
     assert_eq!(spec.args[0], "app-server");
     let sent: Value = serde_json::from_slice(&std::fs::read(Path::new(&project).join("fake-codex-input.json")).unwrap()).unwrap();
     assert_eq!(sent["thread"]["method"], "thread/start");
+    // Normal mode: Codex asks the person before anything outside its read-only sandbox (ADR-0023 개정).
     for at in ["thread", "turn"] {
-        assert_eq!(sent[at]["params"]["approvalPolicy"], "never");
+        assert_eq!(sent[at]["params"]["approvalPolicy"], "on-request");
         assert_eq!(sent[at]["params"]["approvalsReviewer"], "user");
     }
+    assert_eq!(sent["turn"]["params"]["sandboxPolicy"]["type"], "readOnly");
     assert!(sent["turn"]["params"]["input"][0]["text"].as_str().unwrap().contains("어느 파일인가요?"));
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "네")));
 }
@@ -1284,7 +1288,10 @@ fn project_hooks_off() {
     for spec in &specs {
         assert_eq!(arg_after(&spec.args, "--setting-sources"), Some("user"), "{:?}", spec.args);
         let settings: Value = serde_json::from_str(arg_after(&spec.args, "--settings").expect("--settings")).unwrap();
-        assert_eq!(settings, json!({ "disableAllHooks": true }));
+        // Hooks off either way; with O's approval server the asked tools come with it (ADR-0008 개정 3).
+        assert_eq!(settings["disableAllHooks"], true);
+        assert!(settings.as_object().unwrap().keys().all(|k| k == "disableAllHooks" || k == "permissions"), "{settings}");
+        assert!(settings.get("hooks").is_none() && settings["permissions"].get("allow").is_none());
     }
 
     let codex_lines = vec![

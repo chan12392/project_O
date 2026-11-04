@@ -6,10 +6,12 @@
 //! leads/current.json                 project (normalized) → its current thread id
 //! leads/<threadId>/events.jsonl      the thread: lead.start · lead.user · lead.session · lead.reply
 //!                                    · lead.plan · lead.dispatch · lead.usage · lead.warning · lead.error · lead.seen
+//!                                    · lead.approval · lead.decision · lead.step
 //! leads/<threadId>/turn.raw.jsonl    the CLIs' stdout, for reading back a turn
 //! leads/<threadId>/sessions.txt      the CLI session ids it used, one per line (`o runs --sessions` reads these)
 //! leads/<threadId>/turn.lock         held (OS lock) by the turn in progress, for as long as it runs
 //! leads/<threadId>/running.json      that turn's marker ({ provider, owner, token, child }); stop: its stop request
+//! leads/<threadId>/approvals/        requests waiting for the person and their answers (`approvals`)
 //! leads/<threadId>/dispatched/<planId>   made once, when a plan is dispatched
 //! <base>/project_O-lead/<threadId>/  attachments (`files`), outside O's state folder
 //! ```
@@ -18,11 +20,13 @@
 //! events (`run::events`) are untouched. The lead's answer is data: its plan is
 //! checked like any plan before it is stored, and again before it runs.
 
+pub mod approvals;
 pub mod files;
 pub mod log_page;
 pub mod notes;
 pub mod prompt;
 pub mod recovery;
+pub mod steps;
 mod status_file;
 mod turn_process;
 #[cfg(windows)]
@@ -58,6 +62,7 @@ use crate::sys::js::{js_len, js_tail, now_iso};
 use crate::sys::proc;
 use crate::usage::{budget, UsageWindow};
 
+pub use approvals::decide;
 pub use files::Attachment;
 type StartRun<'a> = dyn Fn(&str) -> io::Result<()> + 'a;
 
@@ -146,6 +151,57 @@ pub enum LeadEvent {
     /// [`read_thread`] counts): it has seen the thread up to that turn, its own answer included.
     #[serde(rename = "lead.seen")]
     Seen { at: String, provider: ProviderId, session_id: String, through: usize },
+    /// A normal-mode lead asks to run one action (ADR-0008 개정 3); `lead.decision` with the
+    /// same id says what became of it. `detail` is the request as the CLI sent it (data).
+    #[serde(rename = "lead.approval")]
+    Approval {
+        at: String,
+        id: String,
+        provider: ProviderId,
+        kind: approvals::Kind,
+        tool: String,
+        summary: String,
+        #[serde(default, skip_serializing_if = "String::is_empty")]
+        detail: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        cwd: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        files: Vec<approvals::FileDelta>,
+        expires: String,
+    },
+    /// `decision`: allow · deny · timeout · stopped; `by`: user · guard (O's rules) · timeout · stop · o.
+    #[serde(rename = "lead.decision")]
+    Decision {
+        at: String,
+        id: String,
+        decision: String,
+        by: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reason: Option<String>,
+    },
+    /// One finished step of a turn (`steps::Step`): what the lead read, ran, searched or changed.
+    #[serde(rename = "lead.step")]
+    Step {
+        at: String,
+        id: String,
+        kind: String,
+        label: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        file: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        added: Option<u64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        removed: Option<u64>,
+        status: String,
+    },
+}
+
+impl LeadEvent {
+    fn step(step: steps::Step) -> Self {
+        LeadEvent::Step { at: now_iso(), id: step.id, kind: step.kind, label: step.label, file: step.file, added: step.added, removed: step.removed, status: step.status }
+    }
 }
 
 fn leads_dir(home: &Path) -> PathBuf {
@@ -409,6 +465,8 @@ impl TurnSlot {
         if running_path(home, thread_id).exists() { return Err(UNKNOWN.into()); }
         // A stop file here is an older turn's: this one has no marker yet, so none was meant for it.
         let _ = fs::remove_file(stop_path(home, thread_id));
+        // So are requests on file: their turn ended without closing them.
+        approvals::close_left(home, thread_id);
         let marker = Running { provider, owner: std::process::id(), token: new_run_id(Utc::now()), child: None, unresolved: None };
         let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), stop: stop_path(home, thread_id), marker, keep_marker: false };
         slot.write().map_err(|e| format!("총괄 대화를 시작하지 못했습니다: {e}"))?;
@@ -602,15 +660,31 @@ pub const TURN_LIMIT: Duration = Duration::from_secs(15 * 60);
 
 /// [`send`] with its own time limit for the CLI.
 pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration) -> Result<Vec<LeadEvent>, String> {
-    send_within_followups(home, req, spawner, limit, None)
+    send_within_followups(home, req, spawner, limit, None, true)
 }
 
 pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
-    send_within_followups(home, req, spawner, TURN_LIMIT, Some(start))
+    send_within_followups(home, req, spawner, TURN_LIMIT, Some(start), true)
 }
 
-fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>) -> Result<Vec<LeadEvent>, String> {
-    send_turn(home, req, spawner, limit, start, None)
+/// `ask`: a person is there to approve actions (ADR-0008 개정 3); a scheduled turn has nobody
+/// to ask and stays read-only.
+fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, ask: bool) -> Result<Vec<LeadEvent>, String> {
+    send_turn(home, req, spawner, limit, start, None, ask)
+}
+
+/// `o` itself, which serves a turn's approvals (`o _lead-approve`): this program when it is
+/// `o`, else the `o` beside it (the desktop app's sidecar). `None`: the lead stays read-only.
+fn approval_program() -> Option<PathBuf> {
+    if let Some(program) = approvals::program_override() { return Some(program); }
+    let current = std::env::current_exe().ok()?;
+    if current.file_stem().is_some_and(|stem| stem.eq_ignore_ascii_case("o")) { return Some(current); }
+    let beside = current.parent()?.join(if cfg!(windows) { "o.exe" } else { "o" });
+    beside.is_file().then_some(beside)
+}
+
+fn progress_state(progress: &[Value], counts: &[u64; 4], partial: &str, steps: &[steps::Step]) -> Value {
+    json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] }, "partial": partial, "live": steps })
 }
 
 struct WorkerTurn<'a> {
@@ -644,7 +718,7 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
     if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
     let root = clean::default_root();
     let req = SendRequest { project, provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
-    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }))?;
+    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }), false)?;
     if !team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.id == message.id && m.state == "acknowledged") {
         return Err("총괄 처리 결과가 불명입니다. 대화와 메시지 상태를 확인하세요".into());
     }
@@ -682,7 +756,7 @@ pub fn retry_card(home: &Path, run_id: &str, message_id: &str) -> Result<&'stati
     Ok(if sent { "acknowledged" } else { "queued" })
 }
 
-fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>) -> Result<Vec<LeadEvent>, String> {
+fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
     check_request(home, req)?;
     let thread_id = match &worker {
@@ -740,6 +814,13 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let app_server = req.provider == ProviderId::Codex
         && !req.yolo
         && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(|launch| providers::codex::supports_app_server(launch.command()));
+    // Normal mode with someone to ask: Codex app-server asks O itself, Claude asks O's approval server.
+    let wanted = ask && !req.yolo && worker.is_none() && matches!(req.provider, ProviderId::Claude | ProviderId::Codex);
+    let program = if wanted && req.provider == ProviderId::Claude { approval_program() } else { None };
+    let ask = wanted && (if req.provider == ProviderId::Codex { app_server } else { program.is_some() });
+    if wanted && !ask {
+        emit(LeadEvent::Warning { at: now_iso(), text: "작업 승인을 받을 수 없어 이번 총괄은 읽기 전용으로 실행합니다 (O CLI를 찾지 못했거나 Codex app-server가 없음)".into() })?;
+    }
     let default_model_supported = worker.is_some() && app_server && req.model.filter(|model| !model.is_empty()).is_none()
         && spawner(&providers::codex::default_model_probe(), req.project).is_ok_and(|launch| providers::codex::supports_default_model_probe(launch.command()));
     let mut worker_notice = None;
@@ -824,6 +905,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         missed: &missed,
         design: design.as_deref(),
         yolo: req.yolo,
+        approvals: ask,
     };
     let text = if worker.is_some() { prompt::build_worker(&input) } else { prompt::build(&input) };
     let files_dir = status_file.as_ref().and_then(|f| f.path.parent()).map(Path::to_path_buf).unwrap_or_else(|| files::thread_files(home, &thread_id));
@@ -838,6 +920,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         files_dir: files_dir.as_deref(),
         images: &images,
         app_server,
+        approver: program.as_ref().filter(|_| ask).map(|program| approvals::server_command(program, home, &thread_id, &slot.marker.token, req.project)),
     };
     let Some(spec) = providers::lead_spec(req.provider, &turn, req.yolo) else {
         return Err(format!("{}는 총괄로 쓸 수 없습니다", req.provider));
@@ -942,7 +1025,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take();
     let stderr_pipe = child.stderr.take();
-    let process = turn_process::TurnProcess::start(child, tree, slot.stop.clone(), slot.marker.token.clone(), limit);
+    let token = slot.marker.token.clone();
+    let process = turn_process::TurnProcess::start(child, tree, slot.stop.clone(), slot.marker.token.clone(), limit, ask.then(|| approvals::folder(home, &thread_id)));
     let mut stdin_worker = None;
     let mut server_stdin = None;
     if app_server {
@@ -991,6 +1075,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let mut partial = String::new();
     let mut partial_written = None::<Instant>;
     let mut reported_files = BTreeSet::new();
+    let mut tracker = steps::Tracker::default();
     // An error that ends the turn after cleanup, and whether app-server finished the turn successfully.
     let mut fatal = None::<String>;
     let mut finished = false;
@@ -1011,8 +1096,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                             partial.push(ch);
                         }
                         if partial_written.is_none_or(|at| at.elapsed() >= Duration::from_millis(100)) {
-                            let shown = partial_prose(&partial);
-                            let state = json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] }, "partial": shown });
+                            let state = progress_state(&progress, &counts, partial_prose(&partial), tracker.steps());
                             if let Ok(text) = serde_json::to_string(&state) { let _ = fs::write(&progress_path, text); }
                             partial_written = Some(Instant::now());
                         }
@@ -1022,6 +1106,14 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                 if value["type"] == "item.completed" && value["item"]["type"] == "agent_message" {
                     partial.clear();
                     partial_written = None;
+                }
+                let before = tracker.total;
+                let finished = tracker.read(&value);
+                // A card question's turn keeps to its reply: its steps are not part of the person's chat.
+                if worker.is_none() { for step in finished.iter().cloned() { emit(LeadEvent::step(step))?; } }
+                if tracker.total != before || !finished.is_empty() {
+                    let state = progress_state(&progress, &counts, partial_prose(&partial), tracker.steps());
+                    if let Ok(text) = serde_json::to_string(&state) { let _ = fs::write(&progress_path, text); }
                 }
                 if req.provider == ProviderId::Codex && value["type"] == "item.completed" && value["item"]["type"] == "file_change" && value["item"]["status"] != "failed" && value["item"]["status"] != "declined" {
                     if let Some(changes) = value["item"]["changes"].as_array() {
@@ -1071,8 +1163,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                         }
                         progress.push(json!({ "name": name, "summary": summary }));
                         if progress.len() > 3 { progress.remove(0); }
-                        let shown = partial_prose(&partial);
-                        let state = json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] }, "partial": shown });
+                        let state = progress_state(&progress, &counts, partial_prose(&partial), tracker.steps());
                         if let Ok(text) = serde_json::to_string(&state) { let _ = fs::write(&progress_path, text); }
                     }
                 }
@@ -1106,20 +1197,23 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                                 .map(|value| value.to_string()).map_err(|error| error.to_string())
                     };
                     #[cfg(windows)]
-                    let result = if resolve_default_model {
-                        let reader = result_tools.then_some(&mut read_result as &mut dyn FnMut(_) -> _);
-                        providers::codex_app_server::run_with_default_model(&turn, BufReader::new(stdout), stdin, on_event, reader)
-                    } else if result_tools {
-                        providers::codex_app_server::run_with_card_results(&turn, BufReader::new(stdout), stdin, on_event, read_result)
-                    } else {
-                        providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, on_event)
-                    };
+                    let reader = result_tools.then_some(&mut read_result as &mut dyn FnMut(_) -> _);
                     #[cfg(not(windows))]
-                    let result = if resolve_default_model {
-                        providers::codex_app_server::run_with_default_model(&turn, BufReader::new(stdout), stdin, on_event, None)
-                    } else {
-                        providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, on_event)
+                    let reader = None;
+                    // Each command or file change outside the read-only sandbox waits for the person.
+                    let mut approve = |request: providers::codex_app_server::Approval| -> &'static str {
+                        let request = match &request {
+                            providers::codex_app_server::Approval::Command(params) => approvals::from_codex_command(params),
+                            providers::codex_app_server::Approval::Files(params, changes) => approvals::from_codex_files(params, changes),
+                        };
+                        match approvals::ask(home, &thread_id, &token, req.project, request, approvals::WAIT, &mut || {}).decision {
+                            "allow" => "accept",
+                            "stopped" => "cancel",
+                            _ => "decline",
+                        }
                     };
+                    let approver = ask.then_some(&mut approve as providers::codex_app_server::Approver<'_>);
+                    let result = providers::codex_app_server::run_turn(&turn, BufReader::new(stdout), stdin, on_event, reader, approver, resolve_default_model);
                     protocol_error = result.err();
                 }
             }
@@ -1144,6 +1238,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     drop(server_stdin);
     let _ = fs::write(&progress_path, "[]");
+    // Steps the turn never finished (stopped, timed out, cut off) stay on record as incomplete.
+    if worker.is_none() { for step in tracker.unfinished() { emit(LeadEvent::step(step))?; } }
     // The turn ends with an error below; the CLI must not outlive it.
     if fatal.is_some() { process.kill(); }
     // app-server is a long-lived process; do not let a stuck shutdown keep the turn open forever.
@@ -1178,6 +1274,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         || stdin_worker.as_ref().is_some_and(|h| !h.is_finished());
     let stop_asked = slot.stop_asked();
     let (reason, reap, tree_confirmed) = process.finish();
+    // Requests nobody answered are closed: the turn that asked them is over.
+    if ask { approvals::close_left(home, &thread_id); }
     let stderr_tail = stderr_tail.lock().unwrap().clone();
     let mut unknown_saved = true;
     // Without a job, closed pipes cannot prove that detached descendants have exited.
@@ -1605,7 +1703,7 @@ pub fn send_with_scheduled_autorun(home: &Path, req: &SendRequest<'_>, spawner: 
 
 fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>, resume: Option<&StartRun<'_>>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
-    let mut added = send_within_followups(home, req, spawner, TURN_LIMIT, resume)?;
+    let mut added = send_within_followups(home, req, spawner, TURN_LIMIT, resume, !scheduled)?;
     let Some((plan_id, plan, ok)) = added.iter().find_map(|e| match e {
         LeadEvent::Plan { plan_id, plan, ok, .. } => Some((plan_id.clone(), plan.clone(), *ok)),
         _ => None,
@@ -1743,6 +1841,11 @@ pub struct ThreadView {
     pub progress_counts: Value,
     /// Incomplete prose for display during a turn; never conversation history.
     pub partial: String,
+    /// This turn's steps so far, running ones included (`steps::Step`); the finished ones are
+    /// also `lead.step` events.
+    pub steps: Vec<Value>,
+    /// Requests waiting for the person's 허용/거부, oldest first (`approvals::pending`).
+    pub approvals: Vec<Value>,
     pub notes: Vec<notes::Note>,
     pub notes_error: Option<String>,
     /// Every event as written (screens ignore kinds they do not know).
@@ -1778,12 +1881,16 @@ pub fn show(home: &Path, project: Option<&str>) -> Value {
         let progress = state.get("steps").or_else(|| state.is_array().then_some(&state)).and_then(Value::as_array).cloned().unwrap_or_default();
         let progress_counts = state.get("counts").cloned().unwrap_or(Value::Null);
         let partial = state.get("partial").and_then(Value::as_str).unwrap_or_default().to_string();
+        let steps = state.get("live").and_then(Value::as_array).cloned().unwrap_or_default();
+        let approvals = if busy.is_some() { approvals::pending(home, &id) } else { Vec::new() };
         ThreadView {
             project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
             busy,
             progress,
             progress_counts,
             partial,
+            steps,
+            approvals,
             notes,
             notes_error,
             events: event_values(home, &id),

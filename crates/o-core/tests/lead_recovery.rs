@@ -242,7 +242,8 @@ fn lead_reads_complete_results_across_repeated_turns() {
         assert!(prompt.contains("신뢰할 수 없는"));
         assert!(prompt.contains("failed") && prompt.contains("결과 미리보기"));
         assert!(!prompt.contains(end));
-        let tools = spec.args.iter().position(|a| a == "--tools").unwrap();
+        // Results are read with the tools that run without asking (ADR-0008 개정 3: the rest wait for the person).
+        let tools = spec.args.iter().position(|a| a == "--allowedTools").unwrap();
         assert_eq!(spec.args[tools + 1], "Read,Grep,Glob");
         let index = spec.args.iter().position(|a| a == "--add-dir").unwrap();
         let dir = PathBuf::from(&spec.args[index + 1]);
