@@ -69,4 +69,22 @@ fn normal_dispatch_preparation_runs_a_card_in_an_isolated_non_git_copy() {
     }).expect("isolated workspace must be visible in the run");
     assert_eq!(fs::read_to_string(workspace.join("result.txt")).unwrap(), "worker result");
     assert!(workspace.canonicalize().unwrap().starts_with(home.with_file_name("state-worktrees").canonicalize().unwrap()));
+    store::append_event(&home, "run-1", &OEvent::CardSession { at: "2026-01-01T00:00:00Z".into(), card_id: "a".into(), session_id: "session-1".into() }).unwrap();
+    store::create_run(&home, "follow-1", &plan).unwrap();
+    fs::write(store::run_dir(&home, "follow-1").join("followup.json"), r#"["run-1","a"]"#).unwrap();
+    store::append_event(&home, "follow-1", &OEvent::CardTool { at: "2026-01-01T00:00:01Z".into(), card_id: "a".into(), name: "O 작업 폴더".into(), summary: workspace.to_string_lossy().into_owned() }).unwrap();
+    let initial = o_core::run::review_changes(&home, "run-1", "a").unwrap();
+    let continued = o_core::run::review_changes(&home, "follow-1", "a").unwrap();
+    assert_eq!(continued["baselineRunId"], "run-1");
+    assert_eq!(continued["changes"], initial["changes"]);
+    store::append_event(&home, "follow-1", &OEvent::CardSession { at: "2026-01-01T00:00:02Z".into(), card_id: "a".into(), session_id: "session-1".into() }).unwrap();
+    store::append_event(&home, "follow-1", &OEvent::CardEnd { at: "2026-01-01T00:00:03Z".into(), card_id: "a".into(), status: CardStatus::Done, result: None, exit_code: Some(0) }).unwrap();
+    store::create_run(&home, "follow-2", &plan).unwrap();
+    fs::write(store::run_dir(&home, "follow-2").join("followup.json"), r#"["follow-1","a"]"#).unwrap();
+    store::append_event(&home, "follow-2", &OEvent::CardTool { at: "2026-01-01T00:00:04Z".into(), card_id: "a".into(), name: "O 작업 폴더".into(), summary: workspace.to_string_lossy().into_owned() }).unwrap();
+    let twice = o_core::run::review_changes(&home, "follow-2", "a").unwrap();
+    assert_eq!(twice["baselineRunId"], "run-1");
+    assert_eq!(twice["changes"], initial["changes"]);
+    store::append_event(&home, "follow-2", &OEvent::CardTool { at: "2026-01-01T00:00:05Z".into(), card_id: "a".into(), name: "O 작업 폴더".into(), summary: project.to_string_lossy().into_owned() }).unwrap();
+    assert!(o_core::run::review_changes(&home, "follow-2", "a").is_err());
 }
