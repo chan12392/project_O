@@ -4,7 +4,7 @@ import { devBackend } from "../app/src/platform/backend/dev.ts";
 import { tauriBackend } from "../app/src/platform/backend/tauri.ts";
 
 test("desktop and development adapters return the same read-only changes", async () => {
-  const expected = { workspace: "C:/temp/1", copyBase: "C:/temp/base", changes: [{ path: "a.txt", kind: "modified" }], note: "review" };
+  const expected = { workspace: "C:/temp/1", copyBase: "C:/temp/base", baselineRunId: "run-original", changes: [{ path: "a.txt", kind: "modified" }], note: "review" };
   const calls: unknown[] = [];
   const desktop = tauriBackend(async (name, args) => { calls.push([name, args]); return expected; });
   assert.deepEqual(await desktop.changes("run-1", "card-a"), expected);
