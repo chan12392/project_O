@@ -82,17 +82,19 @@ test("a card's question waits while its run goes and the lead has not answered t
   assert.equal(cardQuestions([{ ...asked, runId: `session-${asked.runId}` }]).length, 0);
 });
 
-test("tracked card questions and approvals wait for their own answer", () => {
+test("an approval waits for its own answer; a --question is left to the lead", () => {
   const asked: RunView = { ...live, messages: [
     { at: at(1000), id: "q1", kind: "approval", from: "a", to: "lead", text: "어떤 방식? [보기: A | B]" },
-    { at: at(2000), id: "q2", kind: "question", from: "a", to: "lead", text: "설정 확인" },
+    { at: at(2000), id: "q2", kind: "question", from: "a", to: "lead", text: "설정은 어디에 있나요?" },
     { at: at(3000), from: "lead", to: "a", text: "다른 안내" },
   ] };
   const pending = cardQuestions([asked]);
-  assert.equal(pending.length, 2);
+  // The lead answers q2 itself (ADR-0029); the person is not asked it as well.
+  assert.equal(pending.length, 1);
   assert.equal(pending[0].source.kind === "card" && pending[0].source.approval, true);
   assert.equal(pending[0].source.kind === "card" && pending[0].source.messageId, "q1");
   assert.equal(pending[0].questions[0].options.length, 2);
+  // An answer to another request, or a message without one, does not answer it.
   const answered: RunView = { ...asked, messages: [...asked.messages, { at: at(4000), from: "lead", to: "a", text: "답", replyTo: "q1" }] };
-  assert.deepEqual(cardQuestions([answered]).map((item) => item.source.kind === "card" && item.source.messageId), ["q2"]);
+  assert.equal(cardQuestions([answered]).length, 0);
 });
