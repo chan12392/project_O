@@ -10,6 +10,11 @@ use serde_json::json;
 use super::blocking;
 
 #[tauri::command]
+pub async fn run_changes(run: String, card: String) -> Result<serde_json::Value, String> {
+    blocking(move || o_core::run::review_changes(&store::default_home(), &run, &card).map_err(|e| e.to_string())).await?
+}
+
+#[tauri::command]
 pub async fn run_followup(run: String, card: String, text: String) -> Result<serde_json::Value, String> {
     blocking(move || {
         let id = o_core::run::followup::start(&store::default_home(), &run, &card, &text, &start_followup)?;

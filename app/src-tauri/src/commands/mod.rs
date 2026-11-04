@@ -24,6 +24,7 @@ pub(crate) mod window;
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         runs::runs,
+        runs::run_changes,
         runs::run_followup,
         usage::usage,
         usage::usage_refresh,

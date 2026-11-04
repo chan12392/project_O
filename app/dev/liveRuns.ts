@@ -387,6 +387,12 @@ export function liveRuns(): Plugin {
           return void refreshing.then((out) => send(res, 200, out), error(res));
         }
         const query = new URLSearchParams(req.url?.split("?")[1] ?? "");
+        if (req.method === "GET" && path === "/changes") {
+          const run = query.get("run") ?? "";
+          const card = query.get("card") ?? "";
+          if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(run) || !/^[a-z0-9][a-z0-9-]{0,63}$/.test(card)) return send(res, 400, JSON.stringify({ error: "실행 또는 작업 ID가 올바르지 않습니다" }));
+          return void o(["changes", run, card]).then((out) => send(res, 200, out), error(res));
+        }
         if (req.method === "GET" && path === "/budget") return void o(["budget", "--json", "--cached"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/budget/percent") {
           // `o budget` checks the range again; only these three ever reach it.
