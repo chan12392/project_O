@@ -111,7 +111,11 @@ impl Drop for PromptFile {
 pub(crate) fn prompt_file(home: &Path, run: &str, text: &str) -> Result<PromptFile, String> {
     let (dir, directories) = lead_dir(home, run, true)?;
     let path = dir.join(format!(".prompt-{}", super::store::new_run_id(chrono::Utc::now())));
-    let file = fs::OpenOptions::new().write(true).create_new(true).open(&path).map_err(|e| e.to_string())?;
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt; options.mode(0o600); }
+    let file = options.open(&path).map_err(|e| e.to_string())?;
     let mut prompt = PromptFile { path, file: Some(file), _directories: directories };
     let file = prompt.file.as_mut().expect("newly created prompt file");
     file.write_all(text.as_bytes()).and_then(|()| file.sync_all()).map_err(|e| e.to_string())?;
@@ -122,6 +126,21 @@ pub(crate) fn prompt_file(home: &Path, run: &str, text: &str) -> Result<PromptFi
     if actual != text.as_bytes() { return Err("저장된 프롬프트가 일치하지 않습니다".into()); }
     prompt.file = Some(file);
     Ok(prompt)
+}
+
+#[cfg(all(test, unix))]
+mod unix_prompt_tests {
+    use super::*;
+    use std::os::unix::fs::PermissionsExt;
+
+    #[test]
+    fn prompt_file_is_private_to_its_owner() {
+        let base = std::env::temp_dir().join(format!("o-prompt-{}-{}", std::process::id(), chrono::Utc::now().timestamp_nanos_opt().unwrap()));
+        let home = base.join("state");
+        fs::create_dir_all(home.join("runs/run")).unwrap();
+        let prompt = prompt_file(&home, "run", "private").unwrap();
+        assert_eq!(fs::metadata(prompt.path()).unwrap().permissions().mode() & 0o077, 0);
+    }
 }
 
 #[derive(Serialize)]
