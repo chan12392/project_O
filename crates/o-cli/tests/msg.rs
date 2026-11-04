@@ -6,7 +6,7 @@ use std::process::{Command, Output};
 
 use o_core::run::events::OEvent;
 use o_core::run::plan::{Card, Plan, ProviderId};
-use o_core::run::store::{create_run, read_events};
+use o_core::run::store::{append_event, create_run, read_events};
 
 fn o(base: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_o"));
@@ -48,6 +48,30 @@ fn a_card_speaks_only_as_itself_and_only_in_its_own_run() {
     let sent = o(&base, &["msg", "send", "--as", "lead", "--run", "other", "--to", "b", "hi"], &[("O_RUN_ID", "r1"), ("O_CARD_ID", "a")]);
     assert_eq!(sent.status.code(), Some(0), "{}", String::from_utf8_lossy(&sent.stderr));
     assert_eq!(senders(&home), ["a"]);
+}
+
+#[test]
+fn questions_warn_when_the_recipient_is_not_running() {
+    let (base, home) = setup("question-state");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    let ask = |id| o(&base, &["msg", "send", "--question", "--id", id, "--to", "b", "응답이 필요합니다"], &env);
+    let unknown = ask("unknown");
+    assert!(unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stdout).contains("마지막 기록: 불명"));
+    append_event(&home, "r1", &OEvent::CardQueued { at: "now".into(), card_id: "b".into(), reason: "자원 사용 중".into() }).unwrap();
+    let queued = ask("queued");
+    assert!(queued.status.success());
+    let text = String::from_utf8_lossy(&queued.stdout);
+    assert!(text.contains("마지막 기록: 대기") && text.contains("총괄에 알리고"));
+    append_event(&home, "r1", &OEvent::CardStart { at: "now".into(), card_id: "b".into(), pid: None }).unwrap();
+    let running = ask("running");
+    assert!(running.status.success());
+    assert!(!String::from_utf8_lossy(&running.stdout).contains("마지막 기록"));
+    append_event(&home, "r1", &OEvent::CardEnd { at: "now".into(), card_id: "b".into(), status: o_core::run::events::CardStatus::Done, result: None, exit_code: Some(0) }).unwrap();
+    let ended = ask("ended");
+    assert!(ended.status.success());
+    assert!(String::from_utf8_lossy(&ended.stdout).contains("마지막 기록: 종료"));
+    assert_eq!(senders(&home), ["a", "a", "a", "a"]);
 }
 
 #[test]
