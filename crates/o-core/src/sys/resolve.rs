@@ -60,6 +60,10 @@ pub fn refresh_paths() {
     for name in ["PNPM_HOME", "NVM_SYMLINK"] {
         if let Some(path) = std::env::var_os(name) { paths.push(PathBuf::from(path)); }
     }
+    #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
+    paths.push(PathBuf::from("/opt/homebrew/bin"));
+    #[cfg(target_os = "macos")]
+    paths.push(PathBuf::from("/usr/local/bin"));
     if let Some(home) = std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }) {
         let home = PathBuf::from(home);
         paths.extend([home.join(".local/bin"), home.join(".volta/bin"), home.join(".bun/bin")]);
