@@ -9,7 +9,7 @@ use rusqlite::{params, Connection};
 use serde::{Deserialize, Serialize};
 
 use crate::review::Gh;
-use crate::run::{events::{CardStatus, OEvent}, store::{is_run_id, locked_event_text, plan_card_ids, read_plan}};
+use crate::run::{events::{CardStatus, OEvent}, store::{is_run_id, with_locked_event_text, plan_card_ids, read_plan}};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -141,29 +141,18 @@ pub fn resolve(home: &Path, id: i64, resolution: Option<Resolution>) -> Result<(
     let db = open(home)?;
     let old: String = db.query_row("SELECT data FROM findings WHERE id = ?1", [id], |row| row.get(0)).map_err(|e| e.to_string())?;
     let mut finding: Finding = serde_json::from_str(&old).map_err(|e| e.to_string())?;
+    let update = |data: String| -> Result<(), String> {
+        if db.execute("UPDATE findings SET data = ?1 WHERE id = ?2 AND data = ?3", params![data, id, old]).map_err(|e| e.to_string())? != 1 {
+            return Err("다른 작업이 발견을 변경했습니다. 다시 확인하세요".into());
+        }
+        Ok(())
+    };
     if let Some(r) = &resolution {
         if !is_run_id(&r.run_id) || r.evidence.trim().is_empty() || r.evidence.len() > 4000 {
             return Err("검증 실행, 카드와 증거가 필요합니다".into());
         }
         let plan = read_plan(home, &r.run_id).map_err(|e| format!("검증 실행을 읽지 못했습니다: {e}"))?;
         let cards = plan_card_ids(&plan).map_err(|e| e.to_string())?;
-        let text = locked_event_text(home, &r.run_id).map_err(|e| format!("검증 기록을 읽지 못했습니다: {e}"))?;
-        if !text.is_empty() && !text.ends_with('\n') { return Err("검증 기록이 불완전합니다".into()); }
-        let mut success = false;
-        for line in text.lines().filter(|line| !line.trim().is_empty()) {
-            let event: serde_json::Value = serde_json::from_str(line).map_err(|_| "검증 기록이 손상되었습니다")?;
-            let kind = event.get("t").and_then(serde_json::Value::as_str).ok_or("검증 기록이 손상되었습니다")?;
-            if matches!(kind, "card.start" | "card.queued" | "card.end") {
-                match serde_json::from_value::<OEvent>(event).map_err(|_| "검증 기록이 손상되었습니다")? {
-                    OEvent::CardEnd { card_id, status, .. } if card_id == r.card_id => success = status == CardStatus::Done,
-                    OEvent::CardStart { card_id, .. } | OEvent::CardQueued { card_id, .. } if card_id == r.card_id => success = false,
-                    _ => {}
-                }
-            }
-        }
-        if !cards.contains(&r.card_id) || !success {
-            return Err("성공한 검증 카드의 종료 기록이 필요합니다".into());
-        }
         if finding.run_id != r.run_id {
             let original = read_plan(home, &finding.run_id).map_err(|e| format!("발견 실행을 읽지 못했습니다: {e}"))?;
             let projects = original["project"].as_str().zip(plan["project"].as_str());
@@ -171,13 +160,31 @@ pub fn resolve(home: &Path, id: i64, resolution: Option<Resolution>) -> Result<(
                 return Err("발견과 검증 실행이 같은 프로젝트인지 확인할 수 없습니다".into());
             }
         }
+        finding.resolution = resolution.clone();
+        let data = serde_json::to_string(&finding).map_err(|e| e.to_string())?;
+        return with_locked_event_text(home, &r.run_id, |text| -> Result<(), String> {
+            if !text.is_empty() && !text.ends_with('\n') { return Err("검증 기록이 불완전합니다".into()); }
+            let mut success = false;
+            for line in text.lines().filter(|line| !line.trim().is_empty()) {
+                let event: serde_json::Value = serde_json::from_str(line).map_err(|_| "검증 기록이 손상되었습니다")?;
+                let kind = event.get("t").and_then(serde_json::Value::as_str).ok_or("검증 기록이 손상되었습니다")?;
+                if matches!(kind, "card.start" | "card.queued" | "card.end") {
+                    match serde_json::from_value::<OEvent>(event).map_err(|_| "검증 기록이 손상되었습니다")? {
+                        OEvent::CardEnd { card_id, status, .. } if card_id == r.card_id => success = status == CardStatus::Done,
+                        OEvent::CardStart { card_id, .. } | OEvent::CardQueued { card_id, .. } if card_id == r.card_id => success = false,
+                        _ => {}
+                    }
+                }
+            }
+            if !cards.contains(&r.card_id) || !success {
+                return Err("성공한 검증 카드의 종료 기록이 필요합니다".into());
+            }
+            update(data)
+        }).map_err(|e| format!("검증 기록을 읽지 못했습니다: {e}"))?;
     }
     finding.resolution = resolution;
     let data = serde_json::to_string(&finding).map_err(|e| e.to_string())?;
-    if db.execute("UPDATE findings SET data = ?1 WHERE id = ?2 AND data = ?3", params![data, id, old]).map_err(|e| e.to_string())? != 1 {
-        return Err("다른 작업이 발견을 변경했습니다. 다시 확인하세요".into());
-    }
-    Ok(())
+    update(data)
 }
 
 /// Optimistic update: a simultaneous classification cannot silently overwrite this one.
