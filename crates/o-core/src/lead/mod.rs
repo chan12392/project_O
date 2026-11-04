@@ -239,8 +239,8 @@ fn read_complete_thread(home: &Path, thread_id: &str) -> Result<Vec<LeadEvent>, 
     text.lines().map(|line| serde_json::from_str(line).map_err(|_| "총괄 대화 기록을 완전히 해석할 수 없어 카드 질문에 답할 수 없습니다".to_string())).collect()
 }
 
-fn worker_session(events: &[LeadEvent], req: &SendRequest) -> Result<Option<(String, bool, usize)>, &'static str> {
-    if req.model.filter(|model| !model.is_empty()).is_none() {
+fn worker_session(events: &[LeadEvent], req: &SendRequest, default_model_supported: bool) -> Result<Option<(String, bool, usize)>, &'static str> {
+    if req.model.filter(|model| !model.is_empty()).is_none() && !default_model_supported {
         return Err("기본 모델의 변경 여부를 확인할 수 없어 카드 질문용 새 읽기 전용 세션을 사용합니다");
     }
     let Some((index, event)) = events.iter().enumerate().rev().find(|(_, event)| matches!(event, LeadEvent::WorkerSession { .. })) else {
@@ -599,21 +599,31 @@ mod status_tests {
         let hash = crate::run::result::digest(&serde_json::to_string(&events).unwrap());
         events.push(LeadEvent::WorkerSession { at: "now".into(), provider: ProviderId::Claude, session_id: "worker".into(), model: Some("model-a".into()), effort: Some("high".into()), profile: Profile::Own, result_tools: false, through: 1, history_hash: hash });
         let req = SendRequest { project: "p", provider: ProviderId::Claude, model: Some("model-a"), effort: Some("high"), text: "question", attach: &[], fresh: false, clean: None, yolo: false };
-        assert_eq!(worker_session(&events, &req).unwrap().unwrap().0, "worker");
-        assert!(worker_session(&events, &SendRequest { model: Some("model-b"), ..req }).is_err());
-        assert!(worker_session(&events, &SendRequest { model: None, ..req }).is_err());
-        assert!(worker_session(&events, &SendRequest { provider: ProviderId::Codex, ..req }).is_err());
-        assert!(worker_session(&events, &SendRequest { clean: Some(Path::new("other")), ..req }).is_err());
-        assert!(worker_session(&events, &SendRequest { effort: None, ..req }).is_err());
+        assert_eq!(worker_session(&events, &req, false).unwrap().unwrap().0, "worker");
+        assert!(worker_session(&events, &SendRequest { model: Some("model-b"), ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { model: None, ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { provider: ProviderId::Codex, ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { clean: Some(Path::new("other")), ..req }, false).is_err());
+        assert!(worker_session(&events, &SendRequest { effort: None, ..req }, false).is_err());
         let mut damaged = events.clone();
         damaged.remove(0);
-        assert!(worker_session(&damaged, &req).is_err());
+        assert!(worker_session(&damaged, &req, false).is_err());
         let mut interrupted = events.clone();
         interrupted.push(serde_json::from_value(json!({"t":"lead.worker","at":"now","runId":"run","cardId":"card","messageId":"m2","text":"unfinished"})).unwrap());
-        assert!(worker_session(&interrupted, &req).is_err());
+        assert!(worker_session(&interrupted, &req, false).is_err());
         let mut collision = events;
         collision.push(serde_json::from_value(json!({"t":"lead.session","at":"now","provider":"claude","sessionId":"worker","clean":false})).unwrap());
-        assert!(worker_session(&collision, &req).is_err());
+        assert!(worker_session(&collision, &req, false).is_err());
+
+        let mut default_events = collision;
+        default_events.pop();
+        if let LeadEvent::WorkerSession { provider, model, .. } = default_events.last_mut().unwrap() {
+            *provider = ProviderId::Codex;
+            *model = None;
+        }
+        let default_req = SendRequest { provider: ProviderId::Codex, model: None, ..req };
+        assert!(worker_session(&default_events, &default_req, false).is_err());
+        assert_eq!(worker_session(&default_events, &default_req, true).unwrap().unwrap().0, "worker");
     }
 }
 
@@ -764,9 +774,14 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         yolo: req.yolo,
     })?; }
 
+    let app_server = req.provider == ProviderId::Codex
+        && !req.yolo
+        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(providers::codex::supports_app_server);
+    let default_model_supported = worker.is_some() && app_server && req.model.filter(|model| !model.is_empty()).is_none()
+        && spawner(&providers::codex::default_model_probe(), req.project).is_ok_and(providers::codex::supports_default_model_probe);
     let mut worker_notice = None;
     let worker_previous = if worker.is_some() {
-        match worker_session(&before, req) {
+        match worker_session(&before, req, default_model_supported) {
             Ok(session) => session,
             Err(notice) => { worker_notice = Some(notice.to_string()); None }
         }
@@ -814,9 +829,6 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         None
     };
     if let Some(error) = &status_error { emit(LeadEvent::Warning { at: now_iso(), text: format!("실행 상태 확인 불가: {error}") })?; }
-    let app_server = req.provider == ProviderId::Codex
-        && !req.yolo
-        && spawner(&providers::codex::app_server_probe(), req.project).is_ok_and(providers::codex::supports_app_server);
     let migrate = app_server && status_file.is_some() && previous_session.as_ref().is_some_and(|(_, tools)| *tools != Some(true));
     if migrate {
         emit(LeadEvent::Warning { at: now_iso(), text: "결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작합니다. 이전 대화는 최근 일부만 전달되며 캐시가 초기화될 수 있습니다.".into() })?;
@@ -824,6 +836,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     let result_tools = cfg!(windows) && app_server && (previous_session.is_none() || migrate || previous_session.as_ref().is_some_and(|(_, tools)| *tools == Some(true)));
     let session = if migrate { None } else { previous_session.map(|(id, _)| id) };
+    let resolve_default_model = default_model_supported && session.is_some();
     let missed = if let Some((_, _, checkpoint)) = worker_previous.as_ref().filter(|_| session.is_some()) {
         worker_history(&before[checkpoint + 1..])
     } else {
@@ -1062,8 +1075,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                         }
                     };
                     #[cfg(windows)]
-                    let result = if result_tools {
-                        providers::codex_app_server::run_with_card_results(&turn, BufReader::new(stdout), stdin, on_event, |request| {
+                    let mut read_result = |request: providers::codex_app_server::CardResultRequest| {
                             let guard = status_file.as_ref().ok_or("현재 실행 결과가 없습니다")?;
                             let result = if request.run_id == "*" && request.card_id == "*" && request.line.is_none() {
                                 stream_status::list_results(guard, request.offset.unwrap_or(0))
@@ -1072,12 +1084,22 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                             };
                             result
                                 .map(|value| value.to_string()).map_err(|error| error.to_string())
-                        })
+                    };
+                    #[cfg(windows)]
+                    let result = if resolve_default_model {
+                        let reader = result_tools.then_some(&mut read_result as &mut dyn FnMut(_) -> _);
+                        providers::codex_app_server::run_with_default_model(&turn, BufReader::new(stdout), stdin, on_event, reader)
+                    } else if result_tools {
+                        providers::codex_app_server::run_with_card_results(&turn, BufReader::new(stdout), stdin, on_event, read_result)
                     } else {
                         providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, on_event)
                     };
                     #[cfg(not(windows))]
-                    let result = providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, on_event);
+                    let result = if resolve_default_model {
+                        providers::codex_app_server::run_with_default_model(&turn, BufReader::new(stdout), stdin, on_event, None)
+                    } else {
+                        providers::codex_app_server::run(&turn, BufReader::new(stdout), stdin, on_event)
+                    };
                     protocol_error = result.err();
                 }
             }
@@ -1230,7 +1252,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             emit(LeadEvent::Error { at: now_iso(), text: "카드 질문의 읽기 전용 세션을 확인할 수 없어 답변을 전달하지 않았습니다".into() })?;
             return Ok(added);
         }
-        let reusable_session = used_session.as_ref().filter(|_| req.model.filter(|model| !model.is_empty()).is_some());
+        let reusable_session = used_session.as_ref().filter(|_| req.model.filter(|model| !model.is_empty()).is_some() || default_model_supported);
         if reusable_session.is_none() {
             let notice = "카드 질문용 세션 또는 모델을 확인할 수 없어 다음 질문에 재사용하지 않습니다";
             worker_notice = Some(format!("{}{}", worker_notice.map_or(String::new(), |previous| format!("{previous}. ")), notice));

@@ -72,7 +72,7 @@ fn refusal(method: &str) -> Option<Value> {
 /// A transport that never finishes `initialize` reports the Codex version it needs.
 pub fn run(turn: &LeadTurn<'_>, input: impl BufRead, output: impl Write, emit: impl FnMut(Event)) -> Result<(), String> {
     let mut phase = 1;
-    drive(turn, input, output, emit, &mut phase, None).map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
+    drive(turn, input, output, emit, &mut phase, None, false).map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
 }
 
 /// Arguments supplied to the caller, which must authorize the run and card for this lead session.
@@ -91,7 +91,20 @@ pub fn run_with_card_results(
     mut read: impl FnMut(CardResultRequest) -> Result<String, String>,
 ) -> Result<(), String> {
     let mut phase = 1;
-    drive(turn, input, output, emit, &mut phase, Some(&mut read))
+    drive(turn, input, output, emit, &mut phase, Some(&mut read), false)
+        .map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
+}
+
+/// Resolve the CLI's current default without a model turn before resuming a worker session.
+pub fn run_with_default_model(
+    turn: &LeadTurn<'_>, input: impl BufRead, output: impl Write, emit: impl FnMut(Event),
+    read: Option<&mut dyn FnMut(CardResultRequest) -> Result<String, String>>,
+) -> Result<(), String> {
+    if turn.session.filter(|session| !session.is_empty()).is_none() || turn.model.is_some() {
+        return Err("기본 모델 확인에는 재개할 세션이 필요합니다".into());
+    }
+    let mut phase = 1;
+    drive(turn, input, output, emit, &mut phase, read, true)
         .map_err(|error| if phase == 1 { format!("{UNSUPPORTED} ({error})") } else { error })
 }
 
@@ -102,6 +115,7 @@ fn drive(
     mut emit: impl FnMut(Event),
     phase: &mut u8,
     mut read: Option<&mut dyn FnMut(CardResultRequest) -> Result<String, String>>,
+    resolve_default: bool,
 ) -> Result<(), String> {
     let mut init = json!({"id":1,"method":"initialize","params":{
         "clientInfo":{"name":"project_o","title":"Project O","version":env!("CARGO_PKG_VERSION")}
@@ -111,6 +125,7 @@ fn drive(
 
     let mut thread_id = String::new();
     let mut turn_id = String::new();
+    let mut resolved_model: Option<(String, String)> = None;
     let mut usage_total: Option<Value> = None;
     let mut pending = VecDeque::new();
     let mut lines = input.lines();
@@ -235,6 +250,12 @@ fn drive(
                 send(&mut output, &json!({"method":"initialized","params":{}}))?;
                 let mut params = json!({"cwd":turn.project,"sandbox":"read-only"});
                 for (key, value) in APPROVALS { params[key] = json!(value); }
+                if resolve_default {
+                    params["ephemeral"] = json!(true);
+                    send(&mut output, &json!({"id":4,"method":"thread/start","params":params}))?;
+                    *phase = 5;
+                    continue;
+                }
                 let method = if let Some(session) = turn.session.filter(|s| !s.is_empty()) {
                     params["threadId"] = json!(session);
                     "thread/resume"
@@ -254,7 +275,28 @@ fn drive(
                 send(&mut output, &json!({"id":2,"method":method,"params":params}))?;
                 *phase = 2;
             }
+            Some(4) if *phase == 5 => {
+                if message.pointer("/result/thread/ephemeral").and_then(Value::as_bool) != Some(true)
+                    || message.pointer("/result/thread/path").is_some_and(|path| !path.is_null()) {
+                    return Err("Codex 임시 세션을 확인하지 못해 카드 질문을 시작하지 않았습니다".into());
+                }
+                let model = message.pointer("/result/model").and_then(Value::as_str)
+                    .filter(|model| crate::policy::is_model_id(model)).ok_or("Codex 기본 모델을 확인하지 못했습니다")?;
+                let provider = message.pointer("/result/modelProvider").and_then(Value::as_str)
+                    .filter(|provider| !provider.is_empty()).ok_or("Codex 기본 공급자를 확인하지 못했습니다")?;
+                resolved_model = Some((model.to_string(), provider.to_string()));
+                let mut params = json!({"cwd":turn.project,"sandbox":"read-only","threadId":turn.session,"model":model});
+                for (key, value) in APPROVALS { params[key] = json!(value); }
+                send(&mut output, &json!({"id":2,"method":"thread/resume","params":params}))?;
+                *phase = 2;
+            }
             Some(2) if *phase == 2 => {
+                if let Some((model, provider)) = &resolved_model {
+                    if message.pointer("/result/model").and_then(Value::as_str) != Some(model)
+                        || message.pointer("/result/modelProvider").and_then(Value::as_str) != Some(provider) {
+                        return Err("Codex 재개 모델이나 공급자가 현재 설정과 달라 카드 질문을 시작하지 않았습니다".into());
+                    }
+                }
                 thread_id = message.pointer("/result/thread/id").and_then(Value::as_str)
                     .filter(|id| !id.is_empty()).ok_or("Codex 스레드 ID가 없습니다")?.to_string();
                 if turn.session.is_some_and(|session| !session.is_empty() && session != thread_id) {
@@ -264,7 +306,7 @@ fn drive(
                 content.extend(turn.images.iter().map(|path| json!({"type":"localImage","path":path})));
                 let mut params = json!({"threadId":thread_id,"cwd":turn.project,"input":content,"sandboxPolicy":{"type":"readOnly"}});
                 for (key, value) in APPROVALS { params[key] = json!(value); }
-                if let Some(model) = turn.model { params["model"] = json!(model); }
+                if let Some(model) = resolved_model.as_ref().map(|(model, _)| model.as_str()).or(turn.model) { params["model"] = json!(model); }
                 if let Some(effort) = turn.effort { params["effort"] = json!(effort); }
                 send(&mut output, &json!({"id":3,"method":"turn/start","params":params}))?;
                 *phase = 3;
@@ -287,6 +329,46 @@ fn drive(
 mod tests {
     use super::*;
     use std::io::Cursor;
+
+    #[test]
+    fn default_model_is_resolved_before_resuming_and_starting_the_turn() {
+        let turn = LeadTurn { project: "/project", prompt: "question".into(), session: Some("saved"), ..Default::default() };
+        let input = [
+            json!({"id":1,"result":{}}),
+            json!({"id":4,"result":{"thread":{"id":"temporary","ephemeral":true,"path":null},"model":"new-model","modelProvider":"openai"}}),
+            json!({"id":2,"result":{"thread":{"id":"saved"},"model":"new-model","modelProvider":"openai"}}),
+            json!({"id":3,"result":{"turn":{"id":"turn"}}}),
+            json!({"method":"turn/completed","params":{"threadId":"saved","turn":{"id":"turn","status":"completed"}}}),
+        ].into_iter().map(|value| format!("{value}\n")).collect::<String>();
+        let mut output = Vec::new();
+        let mut events = Vec::new();
+        run_with_default_model(&turn, Cursor::new(input), &mut output, |event| events.push(event), None).unwrap();
+        let requests: Vec<Value> = String::from_utf8(output).unwrap().lines().map(|line| serde_json::from_str(line).unwrap()).collect();
+        assert_eq!(requests[2]["method"], "thread/start");
+        assert_eq!(requests[2]["params"]["ephemeral"], true);
+        assert_eq!(requests[3]["method"], "thread/resume");
+        assert_eq!(requests[3]["params"]["model"], "new-model");
+        assert_eq!(requests[4]["method"], "turn/start");
+        assert_eq!(requests[4]["params"]["model"], "new-model");
+        assert_eq!(events.first(), Some(&Event::Session("saved".into())));
+    }
+
+    #[test]
+    fn default_probe_refuses_persistent_thread_or_different_resume_model() {
+        let turn = LeadTurn { project: "/project", prompt: "question".into(), session: Some("saved"), ..Default::default() };
+        for (ephemeral, resumed) in [(false, "new-model"), (true, "old-model")] {
+            let input = [
+                json!({"id":1,"result":{}}),
+                json!({"id":4,"result":{"thread":{"id":"temporary","ephemeral":ephemeral,"path":null},"model":"new-model","modelProvider":"openai"}}),
+                json!({"id":2,"result":{"thread":{"id":"saved"},"model":resumed,"modelProvider":"openai"}}),
+            ].into_iter().map(|value| format!("{value}\n")).collect::<String>();
+            let mut output = Vec::new();
+            let mut events = Vec::new();
+            assert!(run_with_default_model(&turn, Cursor::new(input), &mut output, |event| events.push(event), None).is_err());
+            assert!(events.is_empty());
+            assert!(!String::from_utf8(output).unwrap().contains("turn/start"));
+        }
+    }
 
     #[test]
     fn scoped_tool_registers_and_checks_each_request() {

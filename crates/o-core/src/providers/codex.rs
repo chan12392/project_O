@@ -194,6 +194,43 @@ pub fn app_server_probe() -> LaunchSpec {
     LaunchSpec { bin: "codex".into(), args: strings(&APP_SERVER_PROBE), stdin: None, env: BTreeMap::new(), env_remove: strings(Codex.api_key_vars()) }
 }
 
+/// Versions before 0.166.0 have not been verified for the ephemeral model probe.
+pub fn default_model_probe() -> LaunchSpec {
+    LaunchSpec { bin: "codex".into(), args: strings(&["--version"]), stdin: None, env: BTreeMap::new(), env_remove: strings(Codex.api_key_vars()) }
+}
+
+fn supports_ephemeral_version(version: &str) -> bool {
+    let Some(version) = version.trim().strip_prefix("codex-cli ") else { return false };
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit())) { return false; }
+    let Ok(parts) = parts.into_iter().map(str::parse::<u64>).collect::<Result<Vec<_>, _>>() else { return false };
+    (parts[0], parts[1], parts[2]) >= (0, 166, 0)
+}
+
+#[cfg(test)]
+mod default_model_version_tests {
+    use super::supports_ephemeral_version;
+
+    #[test]
+    fn only_known_or_newer_release_versions_enable_the_probe() {
+        assert!(supports_ephemeral_version("codex-cli 0.166.0\n"));
+        assert!(supports_ephemeral_version("codex-cli 0.167.1"));
+        assert!(!supports_ephemeral_version("codex-cli 0.165.9"));
+        assert!(!supports_ephemeral_version("codex-cli 0.166.0-alpha"));
+        assert!(!supports_ephemeral_version("not codex"));
+    }
+}
+
+pub fn supports_default_model_probe(mut command: Command) -> bool {
+    let key = format!("default-model {:?} {:?}", command.get_program(), command.get_args().collect::<Vec<_>>());
+    let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(known) = probed.get(&key) { return *known; }
+    super::without_api_keys(&mut command, ProviderId::Codex);
+    let supported = matches!(capture(&mut command, PROBE_TIMEOUT), Ok((status, stdout, _)) if status.success() && supports_ephemeral_version(&stdout));
+    probed.insert(key, supported);
+    supported
+}
+
 const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
 
 /// Probe results per CLI command line (the resolved program and its arguments).
