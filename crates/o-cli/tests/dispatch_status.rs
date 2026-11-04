@@ -54,11 +54,15 @@ fn changes_reports_git_index_worktree_untracked_and_ignored() {
     fs::write(workspace.join("tracked.txt"), "unstaged").unwrap();
     fs::write(workspace.join("new.txt"), "new").unwrap();
     fs::write(workspace.join("ignored.txt"), "ignored").unwrap();
-    fs::write(run.join("plan.json"), serde_json::json!({"cards":[{"id":"a"}]}).to_string()).unwrap();
+    let plan = serde_json::json!({"title":"test","project":root.join("project"),"cards":[{"id":"a","provider":"claude","task":"edit"}]});
+    fs::write(run.join("plan.json"), plan.to_string()).unwrap();
     fs::write(run.join("isolated-worktrees"), "").unwrap();
     fs::write(run.join("workspace-baseline.json"), serde_json::json!({"gitCommit":commit}).to_string()).unwrap();
     let workspace = o_core::run::store::resolved_path(&workspace.to_string_lossy());
-    fs::write(run.join("events.jsonl"), format!("{}\n", serde_json::json!({"t":"card.tool","at":"2026-01-01T00:00:00Z","cardId":"a","name":"O 작업 폴더","summary":workspace}))).unwrap();
+    let original = [serde_json::json!({"t":"card.tool","at":"2026-01-01T00:00:00Z","cardId":"a","name":"O 작업 폴더","summary":workspace}),
+        serde_json::json!({"t":"card.session","at":"2026-01-01T00:00:01Z","cardId":"a","sessionId":"session-1"}),
+        serde_json::json!({"t":"card.end","at":"2026-01-01T00:00:02Z","cardId":"a","status":"done"})];
+    fs::write(run.join("events.jsonl"), original.iter().map(|event| format!("{event}\n")).collect::<String>()).unwrap();
     let out = Command::new(env!("CARGO_BIN_EXE_o")).args(["changes", "run-1", "a"]).env("LOCALAPPDATA", &root).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
     assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
     let result: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
@@ -69,6 +73,23 @@ fn changes_reports_git_index_worktree_untracked_and_ignored() {
     assert!(masked.contains(&serde_json::json!({"path":"assumed.txt","skipWorktree":false,"assumeUnchanged":true})));
     assert!(masked.contains(&serde_json::json!({"path":"skipped.txt","skipWorktree":true,"assumeUnchanged":false})));
     assert_eq!(fs::read_to_string(std::path::Path::new(&workspace).join("tracked.txt")).unwrap(), "unstaged");
+    let followup = root.join("project_O/runs/follow-1");
+    fs::create_dir_all(&followup).unwrap();
+    fs::write(followup.join("plan.json"), plan.to_string()).unwrap();
+    fs::write(followup.join("followup.json"), serde_json::json!(["run-1", "a"]).to_string()).unwrap();
+    let follow_event = serde_json::json!({"t":"card.tool","at":"2026-01-01T00:01:00Z","cardId":"a","name":"O 작업 폴더","summary":workspace});
+    fs::write(followup.join("events.jsonl"), format!("{follow_event}\n")).unwrap();
+    let changes = || Command::new(env!("CARGO_BIN_EXE_o")).args(["changes", "follow-1", "a"]).env("LOCALAPPDATA", &root).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").output().unwrap();
+    let follow = changes();
+    assert!(follow.status.success(), "{}", String::from_utf8_lossy(&follow.stderr));
+    let follow: serde_json::Value = serde_json::from_slice(&follow.stdout).unwrap();
+    assert_eq!(follow["baselineRunId"], "run-1");
+    assert_eq!(follow["changes"], result["changes"]);
+    assert!(follow["note"].as_str().unwrap().contains("누적 변경"));
+    let mut altered = plan.clone();
+    altered["project"] = serde_json::json!(root.join("other"));
+    fs::write(followup.join("plan.json"), altered.to_string()).unwrap();
+    assert!(!changes().status.success(), "a changed project must be rejected");
     let blocked = Command::new(env!("CARGO_BIN_EXE_o")).args(["changes", "run-1", "a"]).env("LOCALAPPDATA", &root).env("O_AGENT_ROLE", "card").output().unwrap();
     assert_eq!(blocked.status.code(), Some(2));
 }

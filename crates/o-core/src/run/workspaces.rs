@@ -592,9 +592,36 @@ fn snapshot_copy_base(root: &Path, source: &Path) -> io::Result<Snapshot> {
 
 /// A read-only inventory for review; it does not establish that applying changes is safe.
 pub fn review_changes(home: &Path, run_id: &str, card_id: &str) -> io::Result<serde_json::Value> {
+    review_changes_with_depth(home, run_id, card_id, 0)
+}
+
+fn review_changes_with_depth(home: &Path, run_id: &str, card_id: &str, depth: usize) -> io::Result<serde_json::Value> {
     use crate::run::{events::OEvent, store};
+    if depth > 32 { return Err(io::Error::other("후속 작업 연결이 너무 깊습니다")); }
     if !store::is_run_id(run_id) { return Err(io::Error::other("올바르지 않은 실행 ID")); }
     let dir = store::run_dir(home, run_id);
+    if dir.join("followup.json").exists() {
+        let (source, card): (String, String) = serde_json::from_slice(&fs::read(dir.join("followup.json"))?).map_err(io::Error::other)?;
+        if card != card_id || !store::is_run_id(&source) { return Err(io::Error::other("후속 작업 연결이 올바르지 않습니다")); }
+        let plan: Plan = serde_json::from_value(store::read_plan(home, run_id)?).map_err(io::Error::other)?;
+        if plan.cards.len() != 1 || plan.cards[0].id != card { return Err(io::Error::other("후속 작업 정보가 바뀌었습니다")); }
+        let previous = super::followup::target(home, &source, &card).map_err(io::Error::other)?;
+        if previous.card.provider != plan.cards[0].provider || previous.card.model != plan.cards[0].model
+            || previous.project != plan.project || previous.clean != store::is_clean(home, run_id) {
+            return Err(io::Error::other("후속 작업 정보가 바뀌었습니다"));
+        }
+        let workspace = store::read_events(home, run_id).into_iter().rev().find_map(|event| match event {
+            OEvent::CardTool { card_id: id, name, summary, .. } if id == card && name == "O 작업 폴더" => Some(PathBuf::from(summary)),
+            _ => None,
+        }).ok_or_else(|| io::Error::other("후속 작업 폴더 기록이 없습니다"))?;
+        if workspace != previous.workspace || Path::new(&resolved_path(&workspace.to_string_lossy())) != workspace {
+            return Err(io::Error::other("후속 작업 폴더가 변경되었습니다"));
+        }
+        let mut result = review_changes_with_depth(home, &source, &card, depth + 1)?;
+        if result.get("baselineRunId").is_none() { result["baselineRunId"] = serde_json::json!(source); }
+        result["note"] = serde_json::json!(format!("원래 카드 시작 기준의 누적 변경입니다. {}", result["note"].as_str().unwrap_or_default()));
+        return Ok(result);
+    }
     if !dir.join("isolated-worktrees").is_file() { return Err(io::Error::other("분리된 실행이 아닙니다")); }
     let plan = store::read_plan(home, run_id)?;
     let ids = store::plan_card_ids(&plan)?;
