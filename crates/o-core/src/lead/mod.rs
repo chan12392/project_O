@@ -24,15 +24,16 @@ pub mod notes;
 pub mod prompt;
 pub mod recovery;
 mod status_file;
+mod turn_process;
 #[cfg(windows)]
 mod stream_status;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
-use std::io::{self, BufRead, BufReader, ErrorKind, Read, Write};
+use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -243,6 +244,8 @@ struct Running {
     /// The lead CLI, once it started. Only this is ever ended by a stop, never the owner.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     child: Option<ChildMark>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    unresolved: Option<bool>,
 }
 
 /// A started lead CLI: its pid and start time (`proc::started_at`), which together name
@@ -306,6 +309,7 @@ struct TurnSlot {
     path: PathBuf,
     stop: PathBuf,
     marker: Running,
+    keep_marker: bool,
 }
 
 impl TurnSlot {
@@ -321,10 +325,13 @@ impl TurnSlot {
                 Err(fs::TryLockError::Error(e)) => return Err(format!("총괄 대화를 시작하지 못했습니다: {e}")),
             }
         }
+        if read_marker(home, thread_id).is_some_and(|marker| marker.unresolved == Some(true)) {
+            return Err("이전 총괄의 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요".into());
+        }
         // A stop file here is an older turn's: this one has no marker yet, so none was meant for it.
         let _ = fs::remove_file(stop_path(home, thread_id));
-        let marker = Running { provider, owner: std::process::id(), token: new_run_id(Utc::now()), child: None };
-        let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), stop: stop_path(home, thread_id), marker };
+        let marker = Running { provider, owner: std::process::id(), token: new_run_id(Utc::now()), child: None, unresolved: None };
+        let slot = TurnSlot { _lock: lock, path: running_path(home, thread_id), stop: stop_path(home, thread_id), marker, keep_marker: false };
         slot.write().map_err(|e| format!("총괄 대화를 시작하지 못했습니다: {e}"))?;
         Ok(slot)
     }
@@ -351,8 +358,8 @@ impl TurnSlot {
 
 impl Drop for TurnSlot {
     fn drop(&mut self) {
-        // The marker and its stop before the lock: the next turn never finds them under its own lock.
-        let _ = fs::remove_file(&self.path);
+        // An unresolved marker must outlive the lock; its stop request must not.
+        if !self.keep_marker { let _ = fs::remove_file(&self.path); }
         let _ = fs::remove_file(&self.stop);
     }
 }
@@ -765,52 +772,49 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             return Ok(added);
         }
     };
-    let _tree = proc::contain(&child);
+    #[cfg(not(test))]
+    let tree = proc::contain(&child);
+    #[cfg(test)]
+    let tree = if turn_process::NO_JOB.get() { None } else { proc::contain(&child) };
+    let contained = tree.is_some();
     slot.set_child(child.id());
-    // The owner ends its own CLI when a stop comes, from this process or another: it holds the
-    // child's handle, so the pid cannot have gone to another process. Checked at once, then often.
-    // Past the time limit it ends it the same way, and says so (`true`).
-    let (done, finished) = mpsc::channel::<()>();
-    let watcher = {
-        let (stop, token, pid) = (slot.stop.clone(), slot.marker.token.clone(), child.id());
-        let deadline = Instant::now() + limit;
-        thread::spawn(move || loop {
-            if fs::read_to_string(&stop).is_ok_and(|t| t.is_empty() || t == token) {
-                proc::kill_tree(pid);
-                return false;
-            }
-            if Instant::now() >= deadline {
-                proc::kill_tree(pid);
-                return true;
-            }
-            match finished.recv_timeout(STOP_POLL) {
-                Err(mpsc::RecvTimeoutError::Timeout) => {}
-                _ => return false,
-            }
-        })
-    };
-    if !app_server {
-        if let Some(mut stdin) = child.stdin.take() {
-            let text = spec.stdin.clone().unwrap_or_default();
-            thread::spawn(move || {
-                let _ = stdin.write_all(text.as_bytes());
-            });
+    let mut stdin = child.stdin.take();
+    let stdout = child.stdout.take();
+    let stderr_pipe = child.stderr.take();
+    let process = turn_process::TurnProcess::start(child, tree, slot.stop.clone(), slot.marker.token.clone(), limit);
+    let mut stdin_worker = None;
+    let mut server_stdin = None;
+    if app_server {
+        if let Some(stdin) = stdin.take() {
+            let (writer, worker) = process.writer(stdin);
+            server_stdin = Some(writer);
+            stdin_worker = Some(worker);
         }
+    } else if let Some(mut stdin) = stdin.take() {
+        let text = spec.stdin.clone().unwrap_or_default();
+        stdin_worker = Some(thread::spawn(move || {
+            let _ = stdin.write_all(text.as_bytes());
+        }));
     }
-    let stderr = child.stderr.take().map(|mut stderr| {
+    let stderr_tail = Arc::new(Mutex::new(String::new()));
+    let stderr = stderr_pipe.map(|mut stderr| {
+        let tail = Arc::clone(&stderr_tail);
         thread::spawn(move || {
-            let mut tail = String::new();
             let mut chunk = [0u8; 8192];
             while let Ok(n) = stderr.read(&mut chunk) {
                 if n == 0 {
                     break;
                 }
+                let mut tail = tail.lock().unwrap();
                 tail.push_str(&String::from_utf8_lossy(&chunk[..n]));
-                tail = js_tail(&tail, 400).to_string();
+                *tail = js_tail(&tail, 400).to_string();
             }
-            tail
         })
     });
+    let (stdout, stdout_worker) = match stdout {
+        Some(stdout) => { let (reader, worker) = process.reader(stdout); (Some(reader), Some(worker)) }
+        None => (None, None),
+    };
 
     let mut reader = StreamReader::new(req.provider);
     // The session this turn ran in: the resumed one, or the one the stream names.
@@ -831,7 +835,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let mut finished = false;
     let mut provider_finished = false;
     let mut raw_issue = None::<String>;
-    if let Some(stdout) = child.stdout.take() {
+    if let Some(stdout) = stdout {
         let mut raw = match OpenOptions::new().create(true).append(true).open(dir.join("turn.raw.jsonl")) {
             Ok(file) => Some(file),
             Err(error) => { raw_issue = Some(error.to_string()); None }
@@ -916,9 +920,10 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         };
         let mut protocol_error = None;
         if app_server {
-            match child.stdin.take() {
+            match server_stdin.take() {
                 None => fatal = Some("Codex app-server 입력을 열지 못했습니다".into()),
                 Some(stdin) => {
+                    let stdin = BufWriter::new(stdin);
                     let on_event = |event| {
                         if fatal.is_none() {
                             provider_finished |= matches!(event, providers::codex_app_server::Event::Finished { .. });
@@ -967,19 +972,18 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         }
         if let Some(error) = protocol_error { last = Some((false, error)); }
     }
+    drop(server_stdin);
     let _ = fs::write(&progress_path, "[]");
     // The turn ends with an error below; the CLI must not outlive it.
-    if fatal.is_some() && matches!(child.try_wait(), Ok(None)) {
-        proc::kill_tree(child.id());
-    }
+    if fatal.is_some() { process.kill(); }
     // app-server is a long-lived process; do not let a stuck shutdown keep the turn open forever.
     // A turn it already finished keeps its result: only the process is ended.
     if app_server && fatal.is_none() {
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
-            if !matches!(child.try_wait(), Ok(None)) { break; }
+            if process.poll().is_some() || process.unknown() || process.cancelled() { break; }
             if Instant::now() >= deadline {
-                proc::kill_tree(child.id());
+                process.kill();
                 if !finished {
                     last = Some((false, "Codex app-server가 종료되지 않았습니다. 대화 상태를 확인하세요.".into()));
                 }
@@ -988,17 +992,65 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             thread::sleep(Duration::from_millis(25));
         }
     }
-    // The watcher is done before the child is reaped, so it never ends a pid reused since.
-    drop(done);
-    let timed_out = watcher.join().unwrap_or(false);
-    let stderr_tail = stderr.and_then(|h| h.join().ok()).unwrap_or_default();
-    let exit = child.wait().ok().and_then(proc::exit_code);
-    if used {
-        emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output, complete: Some(usage_complete && (!app_server || provider_finished)) })?;
+    let mut grace = None;
+    let status = loop {
+        let status = process.poll();
+        let pipes_done = stdout_worker.as_ref().is_none_or(|h| h.is_finished()) && stderr.as_ref().is_none_or(|h| h.is_finished())
+            && stdin_worker.as_ref().is_none_or(|h| h.is_finished());
+        if status.is_some() && pipes_done { break status; }
+        if process.unknown() { process.kill(); break None; }
+        if process.cancelled() && Instant::now() >= *grace.get_or_insert_with(|| Instant::now() + Duration::from_secs(1)) {
+            break status;
+        }
+        thread::sleep(Duration::from_millis(25));
+    };
+    let incomplete = status.is_none() || stdout_worker.as_ref().is_some_and(|h| !h.is_finished()) || stderr.as_ref().is_some_and(|h| !h.is_finished())
+        || stdin_worker.as_ref().is_some_and(|h| !h.is_finished());
+    let stop_asked = slot.stop_asked();
+    let (reason, reap) = process.finish();
+    let stderr_tail = stderr_tail.lock().unwrap().clone();
+    let mut unknown_saved = true;
+    // Without a job, closed pipes cannot prove that detached descendants have exited.
+    let unresolved = incomplete || (!contained && reason != turn_process::End::Complete);
+    if unresolved {
+        slot.marker.unresolved = Some(true);
+        unknown_saved = slot.write().is_ok();
+        slot.keep_marker = true;
     }
-    if let Some(error) = fatal { return Err(error); }
+    if incomplete {
+        // Keep the turn locked until the process and inherited pipes actually finish.
+        thread::spawn(move || {
+            reap.wait();
+            if let Some(worker) = stdout_worker { let _ = worker.join(); }
+            if let Some(worker) = stderr { let _ = worker.join(); }
+            if let Some(worker) = stdin_worker { let _ = worker.join(); }
+            if !unknown_saved { loop { thread::park(); } }
+            drop(slot);
+        });
+    } else if unresolved && !unknown_saved {
+        thread::spawn(move || { let _slot = slot; loop { thread::park(); } });
+    }
+    if used {
+        emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output, complete: Some(usage_complete && (!app_server || provider_finished) && !incomplete) })?;
+    }
     if let Some(error) = raw_issue {
         emit(LeadEvent::Error { at: now_iso(), text: format!("총괄 원시 출력 기록이 불완전합니다: {error}") })?;
+    }
+    if incomplete {
+        let text = match reason {
+            turn_process::End::Timeout => "총괄이 제한 시간을 넘겼고 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요.",
+            turn_process::End::Stop => "총괄 중지를 요청했지만 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요.",
+            _ => "총괄의 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요.",
+        };
+        let mut text = if unknown_saved { text.to_string() } else { format!("{text} 불명 상태를 저장하지 못했습니다.") };
+        if !stderr_tail.trim().is_empty() { text.push_str(&format!("\n최근 오류 출력: {}", stderr_tail.trim())); }
+        emit(LeadEvent::Error { at: now_iso(), text })?;
+        return Ok(added);
+    }
+    let timed_out = reason == turn_process::End::Timeout;
+    let exit = status.and_then(proc::exit_code);
+    if let Some(error) = fatal {
+        return Err(if unresolved { format!("{error} 총괄 자손의 종료 상태도 불명입니다.") } else { error });
     }
     // The CLI got this turn's message: its session has seen the thread through it.
     let session_seen = used_session.is_some();
@@ -1008,14 +1060,23 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             emit(LeadEvent::Error { at: now_iso(), text: "주석은 전달했지만 전달 상태를 저장하지 못했습니다. 다시 보내기 전에 주석을 확인하세요".into() })?;
         }
     }
-    if slot.stop_asked() {
-        emit(stopped())?;
+    if stop_asked || reason == turn_process::End::Stop {
+        let text = if unknown_saved { "총괄 중지를 요청했지만 자손 프로세스 종료 여부는 불명입니다." }
+            else { "총괄 중지를 요청했지만 자손 종료 여부가 불명이며 이 상태를 저장하지 못했습니다." };
+        emit(if contained { stopped() } else { LeadEvent::Error { at: now_iso(), text: text.into() } })?;
         return Ok(added);
     }
     if timed_out {
         let minutes = limit.as_secs().div_ceil(60);
-        emit(LeadEvent::Error { at: now_iso(), text: format!("총괄이 제한 시간({minutes}분) 안에 답하지 않아 멈췄습니다. 요청을 나눠 다시 보내세요") })?;
+        let text = if contained { format!("총괄이 제한 시간({minutes}분) 안에 답하지 않아 멈췄습니다. 요청을 나눠 다시 보내세요") }
+            else if unknown_saved { format!("총괄이 제한 시간({minutes}분)을 넘겨 종료를 요청했지만 자손 프로세스 종료 여부는 불명입니다.") }
+            else { format!("총괄이 제한 시간({minutes}분)을 넘겼고 자손 종료 여부가 불명이며 이 상태를 저장하지 못했습니다.") };
+        emit(LeadEvent::Error { at: now_iso(), text })?;
         return Ok(added);
+    }
+    if unresolved {
+        let text = if unknown_saved { "총괄 자손의 종료 상태가 불명입니다." } else { "총괄 자손의 종료 상태가 불명이며 이 상태를 저장하지 못했습니다." };
+        emit(LeadEvent::Warning { at: now_iso(), text: text.into() })?;
     }
     // A turn app-server finished needs no clean exit: a slow shutdown was ended above.
     let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && (exit == Some(0) || finished);
@@ -1089,6 +1150,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         Ok(None) => {},
         Err(message) => { emit(LeadEvent::Error { at: now_iso(), text: message })?; return Ok(added); }
         Ok(Some(items)) => {
+            if unresolved { emit(LeadEvent::Error { at: now_iso(), text: "총괄 종료 상태가 불명이라 후속 지시를 보내지 않았습니다".into() })?; return Ok(added); }
             let Some(start) = start else { emit(LeadEvent::Error { at: now_iso(), text: "이 실행 환경에서는 후속 지시를 자동 전달할 수 없습니다".into() })?; return Ok(added); };
             if !matches!(plan, Ok(None)) { emit(LeadEvent::Error { at: now_iso(), text: "새 설계와 후속 지시가 함께 있어 실행하지 않았습니다".into() })?; return Ok(added); }
             // "새 설계" changes the current thread under current.lock: hold it while the thread is
@@ -1206,6 +1268,9 @@ fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, String> {
             Err(fs::TryLockError::WouldBlock) if Instant::now() < deadline => thread::sleep(Duration::from_millis(10)),
             Err(_) => return Err("총괄이 답하는 중입니다. 새 설계를 확인한 뒤 분배하세요".to_string()),
         }
+    }
+    if read_marker(home, thread_id).is_some_and(|marker| marker.unresolved == Some(true)) {
+        return Err("이전 총괄의 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요".into());
     }
     let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
     lock.lock().map_err(|e| e.to_string())?;
@@ -1462,6 +1527,7 @@ fn clear_dead_turn(home: &Path, thread_id: &str) -> Option<bool> {
     if marker.is_none() && !path.exists() {
         return None;
     }
+    if marker.as_ref().is_some_and(|marker| marker.unresolved == Some(true)) { return Some(false); }
     let mut ended = false;
     if let Some(orphan) = marker.and_then(|m| m.child) {
         let started = proc::started_at(orphan.pid);

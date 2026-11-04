@@ -5,8 +5,27 @@ use o_core::lead::{self, LeadEvent, SendRequest};
 use o_core::run::plan::ProviderId;
 
 #[test]
+#[allow(clippy::zombie_processes)] // The fixture deliberately orphans its pipe-holding child.
 fn closed_stdout_fixture() {
     if std::env::var_os("O_TEST_CLOSED_STDOUT").is_none() { return; }
+    if std::env::var_os("O_TEST_HOLD_PIPE").is_some() {
+        std::thread::sleep(Duration::from_secs(5));
+        return;
+    }
+    if std::env::var_os("O_TEST_DESCENDANT").is_some() {
+        std::thread::sleep(Duration::from_millis(200));
+        let mut command = Command::new(std::env::current_exe().unwrap());
+        command.args(["--exact", "closed_stdout_fixture", "--nocapture"])
+            .env("O_TEST_HOLD_PIPE", "1").stdin(Stdio::null()).stderr(Stdio::inherit());
+        if std::env::var_os("O_TEST_HOLD_STDOUT").is_none() { command.stdout(Stdio::null()); }
+        let descendant = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
+        if let Some(path) = std::env::var_os("O_TEST_DESC_PID") { std::fs::write(path, descendant.id().to_string()).unwrap(); }
+        return;
+    }
+    if std::env::var_os("O_TEST_PARTIAL").is_some() {
+        println!("{{\"type\":\"system\",\"subtype\":\"init\",\"session_id\":\"partial\"}}");
+        println!("{{\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"partial output\"}}]}}}}");
+    }
     #[cfg(windows)]
     unsafe {
         use std::os::windows::io::AsRawHandle;
@@ -17,6 +36,7 @@ fn closed_stdout_fixture() {
         unsafe extern "C" { fn close(fd: i32) -> i32; }
         close(1);
     }
+    if let Some(path) = std::env::var_os("O_TEST_READY") { std::fs::write(path, "ready").unwrap(); }
     std::thread::sleep(Duration::from_secs(8));
 }
 
@@ -30,20 +50,69 @@ fn closed_stdout_turn() {
     std::fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy();
     let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
-    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| {
+    let ready = root.join("ready");
+    let descendant_pid = root.join("descendant.pid");
+    let mode = std::env::var("O_TEST_MODE").unwrap_or_default();
+    let (spawn_mode, spawn_ready, spawn_pid) = (mode.clone(), ready.clone(), descendant_pid.clone());
+    let spawn = move |_: &o_core::providers::LaunchSpec, _: &str| {
         let mut command = Command::new(std::env::current_exe()?);
         command.args(["--exact", "closed_stdout_fixture", "--nocapture"]).env("O_TEST_CLOSED_STDOUT", "1");
+        if spawn_mode == "descendant" || spawn_mode == "both" { command.env("O_TEST_DESCENDANT", "1").env("O_TEST_DESC_PID", &spawn_pid); }
+        if spawn_mode == "both" { command.env("O_TEST_HOLD_STDOUT", "1"); }
+        if spawn_mode == "stop" { command.env("O_TEST_READY", &spawn_ready); }
+        if spawn_mode == "partial" { command.env("O_TEST_PARTIAL", "1"); }
         Ok(command)
     };
-    let events = lead::send_within(&home, &request, &spawn, Duration::from_millis(500)).unwrap();
-    assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains("시간"))), "{events:?}");
+    let stopper = if mode == "stop" {
+        let (home, project) = (home.clone(), project.to_string());
+        Some(std::thread::spawn(move || {
+            while !ready.exists() { std::thread::sleep(Duration::from_millis(20)); }
+            assert!(lead::stop(&home, Some(&project)));
+        }))
+    } else { None };
+    let limit = if mode == "stop" { Duration::from_secs(10) } else { Duration::from_millis(800) };
+    let events = lead::send_within(&home, &request, &spawn, limit).unwrap();
+    if let Some(stopper) = stopper { stopper.join().unwrap(); }
+    let expected = if mode == "stop" { "중지" } else { "시간" };
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains(expected))), "{events:?}");
+    #[cfg(windows)]
+    if mode == "descendant" || mode == "both" {
+        assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains("멈췄습니다"))), "{events:?}");
+        let pid = std::fs::read_to_string(descendant_pid).unwrap().parse().unwrap();
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while o_core::sys::proc::is_alive(pid) {
+            assert!(Instant::now() < deadline, "job left its descendant running");
+            std::thread::sleep(Duration::from_millis(20));
+        }
+    }
+    if mode == "partial" {
+        let thread = lead::current_thread(&home, &project).unwrap();
+        let raw = std::fs::read_to_string(lead::thread_dir(&home, &thread).join("turn.raw.jsonl")).unwrap();
+        assert!(raw.contains("partial output"), "{raw}");
+        assert!(!events.iter().any(|event| matches!(event, LeadEvent::Reply { .. })));
+    }
 }
 
 #[test]
-#[ignore = "재현 테스트: stdout EOF 뒤 시간제한이 해제되는 결함이 수정되면 활성화"]
 fn deadline_survives_stdout_eof() {
+    run_turn("");
+}
+
+#[test]
+fn deadline_covers_inherited_stderr() { run_turn("descendant"); }
+
+#[test]
+fn deadline_covers_inherited_stdout_and_stderr() { run_turn("both"); }
+
+#[test]
+fn stop_survives_stdout_eof() { run_turn("stop"); }
+
+#[test]
+fn timeout_preserves_partial_raw_output() { run_turn("partial"); }
+
+fn run_turn(mode: &str) {
     let mut command = Command::new(std::env::current_exe().unwrap());
-    command.args(["--exact", "closed_stdout_turn", "--nocapture"]).env("O_TEST_DEADLINE_TURN", "1").stdout(Stdio::null()).stderr(Stdio::null());
+    command.args(["--exact", "closed_stdout_turn", "--nocapture"]).env("O_TEST_DEADLINE_TURN", "1").env("O_TEST_MODE", mode).stdout(Stdio::null()).stderr(Stdio::null());
     let mut child = o_core::sys::proc::Contained::spawn(&mut command).unwrap();
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
