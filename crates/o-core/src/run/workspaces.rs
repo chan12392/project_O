@@ -569,11 +569,20 @@ pub fn review_changes(home: &Path, run_id: &str, card_id: &str) -> io::Result<se
             let unmerged = list(&["diff", "--relative", "--name-only", "-z", "--no-ext-diff", "--no-textconv", "--diff-filter=U", "--", "."])?;
             let untracked = list(&["ls-files", "--others", "--exclude-standard", "-z", "--", "."])?;
             let ignored = list(&["ls-files", "--others", "--ignored", "--exclude-standard", "-z", "--", "."])?;
-            Ok(serde_json::json!({"changed":changed,"staged":staged,"unstaged":unstaged,"unmerged":unmerged,"untracked":untracked,"ignored":ignored}))
+            let mut masked = Vec::new();
+            for entry in list(&["ls-files", "-v", "-z", "--", "."])? {
+                let bytes = entry.as_bytes();
+                if bytes.len() < 3 || bytes[1] != b' ' { return Err(io::Error::other("Git 인덱스 표시 형식이 올바르지 않습니다")); }
+                let tag = bytes[0];
+                let skip = tag.eq_ignore_ascii_case(&b'S');
+                let assume = tag.is_ascii_lowercase();
+                if skip || assume { masked.push(serde_json::json!({"path": &entry[2..], "skipWorktree": skip, "assumeUnchanged": assume})); }
+            }
+            Ok(serde_json::json!({"changed":changed,"staged":staged,"unstaged":unstaged,"unmerged":unmerged,"untracked":untracked,"ignored":ignored,"masked":masked}))
         };
         let changes = collect()?;
         if changes != collect()? { return Err(io::Error::other("변경 목록을 읽는 중 작업 폴더가 바뀌었습니다")); }
-        Ok(serde_json::json!({"workspace":workspace,"gitCommit":commit,"changes":changes,"note":"Git의 인덱스 표시 설정에 따라 숨겨진 변경이 있을 수 있습니다. 원본 적용의 안전성은 별도로 확인해야 합니다."}))
+        Ok(serde_json::json!({"workspace":workspace,"gitCommit":commit,"changes":changes,"note":"masked 파일은 Git 설정으로 변경이 숨겨질 수 있으므로 직접 확인하세요. 원본 적용의 안전성은 별도로 확인해야 합니다."}))
     } else {
         let base = run.join("base");
         if Path::new(&resolved_path(&base.to_string_lossy())) != base { return Err(io::Error::other("기준 복사본 경로가 변경되었습니다")); }

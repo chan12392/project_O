@@ -39,10 +39,16 @@ fn changes_reports_git_index_worktree_untracked_and_ignored() {
     };
     git(&["init", "--quiet"]);
     fs::write(workspace.join("tracked.txt"), "original").unwrap();
+    fs::write(workspace.join("assumed.txt"), "original").unwrap();
+    fs::write(workspace.join("skipped.txt"), "original").unwrap();
     fs::write(workspace.join(".gitignore"), "ignored.txt\n").unwrap();
     git(&["add", "."]);
     git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "base"]);
     let commit = git(&["rev-parse", "HEAD"]);
+    git(&["update-index", "--assume-unchanged", "assumed.txt"]);
+    git(&["update-index", "--skip-worktree", "skipped.txt"]);
+    fs::write(workspace.join("assumed.txt"), "hidden change").unwrap();
+    fs::write(workspace.join("skipped.txt"), "hidden change").unwrap();
     fs::write(workspace.join("tracked.txt"), "staged").unwrap();
     git(&["add", "tracked.txt"]);
     fs::write(workspace.join("tracked.txt"), "unstaged").unwrap();
@@ -59,6 +65,9 @@ fn changes_reports_git_index_worktree_untracked_and_ignored() {
     for (field, name) in [("changed", "tracked.txt"), ("staged", "tracked.txt"), ("unstaged", "tracked.txt"), ("untracked", "new.txt"), ("ignored", "ignored.txt")] {
         assert!(result["changes"][field].as_array().unwrap().contains(&serde_json::json!(name)), "{field}: {result}");
     }
+    let masked = result["changes"]["masked"].as_array().unwrap();
+    assert!(masked.contains(&serde_json::json!({"path":"assumed.txt","skipWorktree":false,"assumeUnchanged":true})));
+    assert!(masked.contains(&serde_json::json!({"path":"skipped.txt","skipWorktree":true,"assumeUnchanged":false})));
     assert_eq!(fs::read_to_string(std::path::Path::new(&workspace).join("tracked.txt")).unwrap(), "unstaged");
     let blocked = Command::new(env!("CARGO_BIN_EXE_o")).args(["changes", "run-1", "a"]).env("LOCALAPPDATA", &root).env("O_AGENT_ROLE", "card").output().unwrap();
     assert_eq!(blocked.status.code(), Some(2));
