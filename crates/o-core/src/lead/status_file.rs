@@ -73,12 +73,21 @@ pub(super) fn open_events(home: &Path, run_id: &str) -> io::Result<Option<(std::
 
 #[cfg(windows)]
 pub fn read_events(home: &Path, run_id: &str) -> io::Result<Option<String>> {
-    use std::io::Read;
-    let Some((file, _parents)) = open_events(home, run_id)? else { return Ok(None) };
-    if file.metadata()?.len() > MAX_LOG_BYTES { return Err(io::Error::other("실행 기록이 안전한 읽기 상한을 초과했습니다")); }
+    use std::io::{Read, Seek, SeekFrom};
+    let Some((mut file, _parents)) = open_events(home, run_id)? else { return Ok(None) };
+    if file.metadata()?.len() > MAX_LOG_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "실행 기록이 안전한 읽기 상한을 초과했습니다")); }
+    let mut lines = 0usize;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = file.read(&mut chunk)?;
+        if n == 0 { break; }
+        lines += chunk[..n].iter().filter(|&&byte| byte == b'\n').count();
+        if lines > super::MAX_STATUS_LINES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "실행 기록의 행 수가 안전한 읽기 상한을 초과했습니다")); }
+    }
+    file.seek(SeekFrom::Start(0))?;
     let mut bytes = Vec::new();
     file.take(MAX_LOG_BYTES + 1).read_to_end(&mut bytes)?;
-    if bytes.len() as u64 > MAX_LOG_BYTES { return Err(io::Error::other("실행 기록이 안전한 읽기 상한을 초과했습니다")); }
+    if bytes.len() as u64 > MAX_LOG_BYTES { return Err(io::Error::new(io::ErrorKind::FileTooLarge, "실행 기록이 안전한 읽기 상한을 초과했습니다")); }
     let text = String::from_utf8(bytes).map_err(io::Error::other)?;
     Ok(Some(text))
 }
@@ -99,6 +108,25 @@ pub fn create(home: &Path, thread: &str) -> io::Result<StatusFile> {
 
 #[cfg(windows)]
 impl StatusFile {
+pub(super) fn temporary(&self) -> io::Result<(PathBuf, std::fs::File)> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{DELETE, FILE_FLAG_DELETE_ON_CLOSE, FILE_SHARE_READ};
+    for _ in 0..100 {
+        let path = self.path.join(format!("run-pages-{}.txt", crate::run::store::new_run_id(chrono::Utc::now())));
+        match std::fs::OpenOptions::new().read(true).write(true).create_new(true)
+            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE).share_mode(FILE_SHARE_READ)
+            .custom_flags(FILE_FLAG_DELETE_ON_CLOSE).open(&path) {
+            Ok(file) => return Ok((path, file)),
+            Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    Err(io::Error::other("결과 페이지 파일 이름을 확보하지 못했습니다"))
+}
+
+pub(super) fn retain(&mut self, file: std::fs::File) { self._handles.push(file); }
+
 pub fn put(&mut self, bytes: &[u8]) -> io::Result<PathBuf> {
     use std::fs::OpenOptions;
     use std::io::{Read, Write};
@@ -267,6 +295,32 @@ mod tests {
         drop(file);
         assert!(read_events(&home, "run").unwrap_err().to_string().contains("상한"));
         assert_eq!(std::fs::metadata(path).unwrap().len(), MAX_LOG_BYTES + 1);
+    }
+
+    #[test]
+    fn many_short_lines_select_streaming_before_loading_the_log() {
+        let home = home();
+        let run = crate::run::store::run_dir(&home, "run");
+        std::fs::create_dir_all(&run).unwrap();
+        std::fs::write(run.join("events.jsonl"), "{}\n".repeat(super::super::MAX_STATUS_LINES + 1)).unwrap();
+        assert_eq!(read_events(&home, "run").unwrap_err().kind(), io::ErrorKind::FileTooLarge);
+    }
+
+    #[test]
+    fn source_handle_blocks_changes_and_replacement() {
+        let home = home();
+        let run = crate::run::store::run_dir(&home, "run");
+        std::fs::create_dir_all(&run).unwrap();
+        let original = run.join("events.jsonl");
+        std::fs::write(&original, "original\n").unwrap();
+        let parent = std::fs::canonicalize(&run).unwrap();
+        assert!(parent.starts_with(std::fs::canonicalize(std::env::temp_dir()).unwrap()));
+        let moved = parent.join("moved.jsonl");
+        assert_eq!(moved.parent(), Some(parent.as_path()));
+        let (_file, _parents) = open_events(&home, "run").unwrap().unwrap();
+        assert!(std::fs::write(&original, "changed").is_err());
+        assert!(std::fs::rename(&original, &moved).is_err());
+        assert_eq!(std::fs::read_to_string(original).unwrap(), "original\n");
     }
 
     #[test]

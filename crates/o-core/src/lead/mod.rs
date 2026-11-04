@@ -23,6 +23,8 @@ pub mod log_page;
 pub mod notes;
 pub mod prompt;
 mod status_file;
+#[cfg(windows)]
+mod stream_status;
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
@@ -450,7 +452,17 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str)
     let mut unavailable = 0;
     let mut bytes = 0usize;
     let mut lines = 0usize;
-    let limit = || (vec!["- 실행 기록 조회 안전 상한 초과: 모든 실행 상태와 원문을 확인할 수 없음".to_string()], Vec::new(), 1);
+    let limit = || {
+        let mut ids = BTreeSet::new();
+        for event in events {
+            if let LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } = event {
+                if is_run_id(run_id) { ids.insert(run_id); }
+                if ids.len() > MAX_STATUS_RUNS { break; }
+            }
+        }
+        let records = if ids.len() <= MAX_STATUS_RUNS { ids.into_iter().map(|id| StatusRecord { meta: json!({"runId":id,"type":"stream-run"}), raw: None }).collect() } else { Vec::new() };
+        (vec!["- 실행 요약 안전 상한 초과: 상태 불명, 가능한 원문은 색인 확인".to_string()], records, 1)
+    };
     for event in events {
         let run_id = match event {
             LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => run_id,
@@ -472,6 +484,12 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str)
                 unavailable += 1;
                 continue;
             }
+            Err(e) if e.kind() == ErrorKind::FileTooLarge => {
+                summaries.push(format!("- 실행 {run_id}: 대용량 기록의 상태 불명, 가능한 원문은 색인 확인"));
+                originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"stream-run"}), raw: None });
+                unavailable += 1;
+                continue;
+            }
             Err(e) => {
                 summaries.push(format!("- 실행 {run_id}: 원문과 상태를 확인할 수 없음 ({})", serde_json::to_string(&e.to_string()).unwrap_or_default()));
                 originals.push(StatusRecord { meta: json!({"runId":run_id,"type":"unavailable","error":e.to_string()}), raw: None });
@@ -489,7 +507,8 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str)
             let value = serde_json::from_str::<Value>(raw).ok();
             let parsed = if raw.ends_with('\n') { value.clone().and_then(|v| serde_json::from_value::<crate::run::events::OEvent>(v).ok()) } else { None };
             let kind = value.as_ref().and_then(|v| v.get("t")).and_then(Value::as_str).unwrap_or("unknown");
-            let keep = parsed.is_none() || matches!(kind, "run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end");
+            let private = matches!(kind, "msg" | "msg.state" | "card.tool" | "card.message" | "card.input");
+            let keep = !private && (parsed.is_none() || matches!(kind, "run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end"));
             if parsed.is_none() { unknown += 1; }
             if keep {
                 let card_id = value.as_ref().and_then(|v| v.get("cardId")).and_then(Value::as_str).filter(|s| s.len() <= 64 && s.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_'));
@@ -514,6 +533,8 @@ fn dispatched_runs(home: &Path, events: &[LeadEvent], read: impl Fn(&Path, &str)
 
 fn write_status_index(home: &Path, thread: &str, records: Vec<StatusRecord>) -> io::Result<status_file::StatusFile> {
     if records.len() > MAX_STATUS_RECORDS { return Err(io::Error::other("실행 색인 항목 수가 안전 상한을 초과했습니다")); }
+    #[cfg(windows)]
+    if records.iter().any(|record| record.meta["type"] == "stream-run") { return stream_status::write(home, thread, records); }
     let mut parts = 0usize;
     for record in &records {
         if let Some(raw) = &record.raw {
@@ -656,15 +677,24 @@ mod status_tests {
     }
 
     #[test]
+    fn malformed_team_events_are_not_included_in_result_files() {
+        let events = [LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: "run".into(), clean: false, profile: None, yolo: false }];
+        let (_, records, unknown) = dispatched_runs(Path::new("unused"), &events, |_, _| Ok(Some("{\"t\":\"msg\",\"text\":\"PRIVATE\"}\n{\"t\":\"future\",\"value\":\"visible\"}\n".into())));
+        assert_eq!(unknown, 1);
+        assert!(records.iter().all(|record| !record.raw.as_deref().unwrap_or("").contains("PRIVATE")));
+        assert!(records.iter().any(|record| record.raw.as_deref().is_some_and(|raw| raw.contains("visible"))));
+    }
+
+    #[test]
     fn oversized_histories_are_not_partially_reported() {
         let dispatch = LeadEvent::Dispatch { at: "now".into(), plan_id: "p".into(), run_id: "run".into(), clean: false, profile: None, yolo: false };
         let (summaries, records, unknown) = dispatched_runs(Path::new("unused"), &[dispatch.clone()], |_, _| Ok(Some("{}\n".repeat(MAX_STATUS_LINES + 1))));
         assert_eq!(unknown, 1);
-        assert!(records.is_empty());
+        assert_eq!(records[0].meta["type"], "stream-run");
         assert!(summaries[0].contains("상한"));
         let (summaries, records, unknown) = dispatched_runs(Path::new("unused"), &[dispatch], |_, _| Ok(Some("x".repeat(MAX_STATUS_BYTES + 1))));
         assert_eq!(unknown, 1);
-        assert!(records.is_empty());
+        assert_eq!(records[0].meta["type"], "stream-run");
         assert!(summaries[0].contains("상한"));
     }
 

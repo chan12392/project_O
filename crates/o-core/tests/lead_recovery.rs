@@ -20,6 +20,25 @@ fn request(project: &str) -> SendRequest<'_> {
 #[test]
 fn fake_child() {
     if std::env::var_os("O_LEAD_SUCCESS_REPLY").is_some() { println!("\n{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"확인했습니다\"}}"); }
+    if let Some(index) = std::env::var_os("O_STREAM_INDEX") {
+        use std::io::{BufRead, BufReader};
+        use sha2::{Digest, Sha256};
+        let rows: Vec<serde_json::Value> = std::fs::read_to_string(index).unwrap().lines().filter_map(|line| serde_json::from_str(line).ok()).collect();
+        let row = rows.iter().find(|row| row["type"] == "card.end").unwrap();
+        let path = row["file"].as_str().unwrap();
+        assert!(std::fs::write(path, b"changed").is_err());
+        let first = row["pageStart"].as_u64().unwrap() as usize - 1;
+        let count = row["pageCount"].as_u64().unwrap() as usize;
+        let mut hash = Sha256::new();
+        let mut seen = 0;
+        for line in BufReader::new(std::fs::File::open(path).unwrap()).lines().skip(first).take(count) {
+            let text: String = serde_json::from_str(&line.unwrap()).unwrap();
+            hash.update(text.as_bytes());
+            seen += 1;
+        }
+        assert_eq!(seen, count);
+        assert_eq!(format!("{:x}", hash.finalize()), std::env::var("O_STREAM_SHA").unwrap());
+    }
     if std::env::var_os("O_LEAD_RECOVERY_WAIT").is_some() { std::thread::sleep(Duration::from_secs(30)); }
     if std::env::var_os("O_LEAD_RECOVERY_SHORT").is_some() { std::thread::sleep(Duration::from_millis(500)); }
     if let Some(path) = std::env::var_os("O_LEAD_STATUS_PATH") {
@@ -280,6 +299,125 @@ fn large_result_is_paged_for_the_read_only_lead() {
     assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Reply { text, .. } if text.contains("확인했습니다"))));
     assert!(!events.iter().any(|e| matches!(e, lead::LeadEvent::Error { .. })));
     assert_eq!(std::fs::read_to_string(source_path).unwrap(), source);
+}
+
+#[cfg(windows)]
+#[test]
+fn very_large_card_result_streams_without_tool_or_team_events() {
+    use std::io::{BufRead, BufReader, Write};
+    use sha2::{Digest, Sha256};
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let run = o_core::run::store::run_dir(&home, "huge");
+    std::fs::create_dir_all(&run).unwrap();
+    let source = run.join("events.jsonl");
+    let mut log = std::fs::File::create(&source).unwrap();
+    writeln!(log, "{}", serde_json::json!({"t":"msg","at":"now","from":"a","to":"b","text":"PRIVATE-TEAM"})).unwrap();
+    writeln!(log, "{}", serde_json::json!({"t":"msg","text":"PRIVATE-BROKEN"})).unwrap();
+    for _ in 0..4200 { writeln!(log, "{}", serde_json::json!({"t":"card.tool","at":"now","cardId":"card","name":"tool","summary":"PRIVATE-TOOL"})).unwrap(); }
+    let prefix = b"{\"t\":\"card.end\",\"at\":\"now\",\"cardId\":\"card\",\"status\":\"done\",\"result\":\"";
+    let block = "한글abc\\n".repeat(1024);
+    let suffix = b"\",\"exitCode\":0}\n";
+    let mut digest = Sha256::new();
+    digest.update(prefix);
+    log.write_all(prefix).unwrap();
+    for _ in 0..700 { digest.update(block.as_bytes()); log.write_all(block.as_bytes()).unwrap(); }
+    digest.update(suffix);
+    log.write_all(suffix).unwrap();
+    writeln!(log, "{}", serde_json::json!({"t":"run.end","at":"now","runId":"huge","status":"done"})).unwrap();
+    drop(log);
+    let expected = format!("{:x}", digest.finalize());
+    let log = lead::thread_dir(&home, &thread).join("events.jsonl");
+    writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"huge","clean":false})).unwrap();
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        assert!(spec.stdin.as_ref().unwrap().contains("json-string-lines"), "{}", spec.stdin.as_ref().unwrap());
+        let at = spec.args.iter().position(|a| a == "--add-dir").unwrap();
+        let dir = PathBuf::from(&spec.args[at + 1]);
+        let paths: Vec<_> = std::fs::read_dir(&dir)?.map(|e| e.unwrap().path()).collect();
+        let (index_path, index) = paths.iter().find_map(|p| {
+            let text = std::fs::read_to_string(p).ok()?;
+            let rows: Vec<serde_json::Value> = text.lines().filter_map(|s| serde_json::from_str(s).ok()).collect();
+            rows.iter().any(|v| v["type"] == "card.end").then(|| (p.clone(), rows))
+        }).unwrap();
+        let row = index.iter().find(|v| v["type"] == "card.end").unwrap();
+        assert_eq!(row["sha256"], expected);
+        let page_path = row["file"].as_str().unwrap();
+        assert!(std::fs::write(page_path, b"altered").is_err());
+        let mut hash = Sha256::new();
+        let start = row["pageStart"].as_u64().unwrap() as usize - 1;
+        let count = row["pageCount"].as_u64().unwrap() as usize;
+        let mut actual_count = 0;
+        for (i, line) in BufReader::new(std::fs::File::open(page_path)?).lines().enumerate() {
+            let line = line?;
+            let text: String = serde_json::from_str(&line)?;
+            assert!(!text.contains("PRIVATE-"));
+            if (start..start + count).contains(&i) { hash.update(text.as_bytes()); actual_count += 1; }
+        }
+        assert_eq!(actual_count, count);
+        assert_eq!(format!("{:x}", hash.finalize()), expected);
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index_path).env("O_STREAM_SHA", &expected);
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Reply { .. })));
+    assert!(!events.iter().any(|e| matches!(e, lead::LeadEvent::Error { .. })));
+    assert_eq!(std::fs::read_dir(lead::files::thread_files(&home, &thread)).unwrap().count(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn truncated_large_record_is_unavailable_and_partial_pages_are_removed() {
+    use std::io::Write;
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let run = o_core::run::store::run_dir(&home, "truncated");
+    std::fs::create_dir_all(&run).unwrap();
+    let mut record = std::fs::File::create(run.join("events.jsonl")).unwrap();
+    writeln!(record, "{}", serde_json::json!({"t":"run.end","at":"now","runId":"truncated","status":"failed"})).unwrap();
+    record.write_all(b"{\"t\":\"card.end\",\"at\":\"now\",\"cardId\":\"card\",\"status\":\"done\",\"result\":\"").unwrap();
+    for _ in 0..1100 { record.write_all(&[b'a'; 4096]).unwrap(); }
+    drop(record);
+    let log = lead::thread_dir(&home, &thread).join("events.jsonl");
+    writeln!(std::fs::OpenOptions::new().append(true).open(log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"truncated","clean":false})).unwrap();
+    let spawner = |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        assert!(spec.stdin.as_ref().unwrap().contains("잘렸"));
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Warning { text, .. } if text.contains("잘렸"))));
+    assert!(events.iter().any(|e| matches!(e, lead::LeadEvent::Reply { .. })));
+    assert_eq!(std::fs::read_dir(lead::files::thread_files(&home, &thread)).unwrap().count(), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn many_short_events_stream_before_the_preview_is_loaded() {
+    use std::io::Write;
+    let (home, project) = fixture();
+    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let run = o_core::run::store::run_dir(&home, "many");
+    std::fs::create_dir_all(&run).unwrap();
+    let mut log = std::fs::File::create(run.join("events.jsonl")).unwrap();
+    for _ in 0..4100 { writeln!(log, "{}", serde_json::json!({"t":"card.tool","at":"now","cardId":"card","name":"tool","summary":"PRIVATE"})).unwrap(); }
+    let event = format!("{}\n", serde_json::json!({"t":"card.end","at":"now","cardId":"card","status":"done","result":"끝","exitCode":0}));
+    log.write_all(event.as_bytes()).unwrap();
+    drop(log);
+    let thread_log = lead::thread_dir(&home, &thread).join("events.jsonl");
+    writeln!(std::fs::OpenOptions::new().append(true).open(thread_log).unwrap(), "{}", serde_json::json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"many","clean":false})).unwrap();
+    let hash = o_core::run::result::digest(&event);
+    let spawner = move |spec: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Command> {
+        let at = spec.args.iter().position(|arg| arg == "--add-dir").unwrap();
+        let index = std::fs::read_dir(&spec.args[at + 1])?.filter_map(|entry| entry.ok()).map(|entry| entry.path()).find(|path| std::fs::read_to_string(path).is_ok_and(|text| text.lines().filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok()).any(|row| row["type"] == "card.end"))).unwrap();
+        let mut command = Command::new(std::env::current_exe()?);
+        command.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1").env("O_STREAM_INDEX", index).env("O_STREAM_SHA", &hash);
+        Ok(command)
+    };
+    let events = lead::send(&home, &request(&project), &spawner).unwrap();
+    assert!(events.iter().any(|event| matches!(event, lead::LeadEvent::Reply { .. })));
+    assert!(!events.iter().any(|event| matches!(event, lead::LeadEvent::Error { .. })));
 }
 
 #[cfg(windows)]
