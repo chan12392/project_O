@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-#[cfg(any(not(any(windows, target_os = "macos")), all(test, windows)))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -951,17 +951,17 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     let spawned = command.and_then(|command| {
         #[cfg(all(test, any(windows, target_os = "macos")))]
-            if turn_process::NO_JOB.get() {
-                let mut command = command.command();
-                slot.marker.unresolved = Some(true);
-                slot.keep_marker = true;
-                if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
-                let child = match proc::hide_window(&mut command).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() {
-                    Ok(child) => child,
-                    Err(error) => { slot.keep_marker = false; return Err(error); }
-                };
-                return Ok((crate::sys::worker::Child::standard(child), None));
-            }
+        if turn_process::NO_JOB.get() {
+            let mut command = command.command();
+            slot.marker.unresolved = Some(true);
+            slot.keep_marker = true;
+            if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
+            let child = match proc::hide_window(&mut command).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() {
+                Ok(child) => child,
+                Err(error) => { slot.keep_marker = false; return Err(error); }
+            };
+            return Ok((crate::sys::worker::Child::standard(child), None));
+        }
         #[cfg(windows)]
         {
             let native = command.native(std::env::vars_os())?;
