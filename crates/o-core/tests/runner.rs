@@ -56,7 +56,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 33] = [
+    let tests: [(&str, fn()); 34] = [
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
         ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
