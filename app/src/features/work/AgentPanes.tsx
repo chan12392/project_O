@@ -2,7 +2,7 @@ import { Columns2, Grid2x2, Square } from "lucide-react";
 import { useState } from "react";
 
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
-import { PANE_COUNTS, defaultPaneCount, fitPanes, showInPane, type PaneCount } from "../../../../src/core/panes.ts";
+import { EMPTY_COMPOSER, PANE_COUNTS, defaultPaneCount, fitPanes, showInPane, withComposer, type Composer, type PaneCount } from "../../../../src/core/panes.ts";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
 import { lookOf } from "../office/characters.ts";
 import { Avatar } from "../office/Avatar.tsx";
@@ -34,6 +34,8 @@ export function AgentPanes({ title, panes, api, onClose }: { title: string; pane
   const count: PaneCount = wanted === 4 && ids.length < 3 ? 2 : wanted;
   const [picked, setPicked] = useState<string[]>([]);
   const [focus, setFocus] = useState(0);
+  // Unsent follow-ups by card, kept while a card's pane is hidden (this view is keyed by run).
+  const [composers, setComposers] = useState<Record<string, Composer>>({});
   const open = fitPanes(picked, ids, count);
   const focused = Math.min(focus, Math.max(open.length - 1, 0));
   const byId = new Map(panes.map((p) => [p.card.id, p]));
@@ -110,7 +112,7 @@ export function AgentPanes({ title, panes, api, onClose }: { title: string; pane
                   onFocusCapture={() => setFocus(i)}
                   className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden border-b @2xl:border-r ${open.length > 1 && i === focused ? "after:pointer-events-none after:absolute after:inset-0 after:ring-1 after:ring-inset after:ring-ring/60" : ""}`}
                 >
-                  <CardTranscript card={pane.card} run={pane.run} names={names(pane.run)} api={api} onFollowup={() => {}} />
+                  <CardTranscript card={pane.card} run={pane.run} names={names(pane.run)} api={api} onFollowup={() => {}} composer={{ ...(composers[id] ?? EMPTY_COMPOSER), set: (change) => setComposers((all) => withComposer(all, id, change)) }} />
                 </div>
               );
             })}
