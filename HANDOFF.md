@@ -20,8 +20,9 @@
 
 - 2026-11-05 후속 작업 진행: launchd 임시 작업별 resource coalition, 커널 시작/종료 수 비교, audit-token PID 세대 검증으로 정확한 자손 종료 구현. macos_native는 기존 suspended spawn; macos_worker는 전용 도우미와 비공개 소켓.
 - 제품 회귀14개 통과: detached/setsid 자손은 실제 PID+시작시각 종료를 확인한 뒤 예약/총괄 잠금 해제. 추가 격리 검사6개 통과(이웃/동시 작업 보존, 부모 crash, 시작 전 중지, 환경/인수/cwd).
-- 진행 중: 오류 경로 보강·전체 검사·실제 Codex 작업·새 앱 재설치. 현재 설치 앱은 이전 ceb8794, 새 구현 설치 전. PR68 아직 병합 안 함.
-- 공식 Codex CLI 0.150.1의 누락된 arm64 선택 의존성 같은 버전 재설치로 복구. `codex login status`: Logged in using ChatGPT. 인증 파일 접근 없음.
+- 구현 커밋 95c99f3. 실제 Codex 0.166.0 기본 모드 파일 작성/명령 실행·후속 지시 done, 실행 중 중지 stopped. 관찰한 작업 프로그램7개 모두 종료(0.11초), 예약빈배열. 로그 /private/tmp/o-macos-real-state-20261105b, /private/tmp/o-real-cancel-proof-observed.json.
+- 진행 중: 전체 검사·새 앱 재설치. 현재 설치 앱은 이전 ceb8794, 새 구현 설치 전. PR68 아직 병합 안 함.
+- 공식 Codex CLI 누락된 arm64 선택 의존성을 복구한 뒤, 0.150.1의 모델지원 오류를 확인해 공식 최신0.166.0으로 갱신. `codex login status`: Logged in using ChatGPT. 인증 파일 접근 없음.
 - Discord 2026-11-05 13:22 대표: test_2와 맥 충돌 점검 요청. origin/test_2=1fe1412, PR68 mergeable/CLEAN·GitHub 검사 성공 확인. 외부 채팅 발송 없음.
 
 <details><summary>앞선 6개 오류 수정 상태</summary>

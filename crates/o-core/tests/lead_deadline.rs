@@ -71,7 +71,11 @@ fn closed_stdout_fixture() {
             .env("O_TEST_HOLD_PIPE", "1").stdin(Stdio::null()).stderr(Stdio::inherit());
         if std::env::var_os("O_TEST_HOLD_STDOUT").is_none() { command.stdout(Stdio::null()); }
         let descendant = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
-        if let Some(path) = std::env::var_os("O_TEST_DESC_PID") { std::fs::write(path, descendant.id().to_string()).unwrap(); }
+        if let Some(path) = std::env::var_os("O_TEST_DESC_PID") {
+            std::fs::write(&path, descendant.id().to_string()).unwrap();
+            #[cfg(target_os = "macos")]
+            std::fs::write(std::path::Path::new(&path).with_extension("started"), o_core::sys::proc::started_at(descendant.id()).unwrap().to_string()).unwrap();
+        }
         return;
     }
     if std::env::var_os("O_TEST_PARTIAL").is_some() {
@@ -126,7 +130,21 @@ fn closed_stdout_turn() {
     let events = lead::send_within(&home, &request, &spawn, limit).unwrap();
     if let Some(stopper) = stopper { stopper.join().unwrap(); }
     let expected = if mode == "stop" { "중지" } else { "시간" };
-    assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains(expected))), "{events:?}");
+    // macOS now closes orphaned writers as soon as their direct worker exits;
+    // it need not wait for the turn deadline to discover that no reply arrived.
+    let cleaned_early = cfg!(target_os = "macos") && (mode == "descendant" || mode == "both");
+    if !cleaned_early {
+        assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains(expected))), "{events:?}");
+    }
+    #[cfg(target_os = "macos")]
+    if cleaned_early {
+        assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { .. })), "{events:?}");
+        assert!(!events.iter().any(|event| matches!(event, LeadEvent::Reply { .. })));
+        let pid = std::fs::read_to_string(&descendant_pid).unwrap().parse().unwrap();
+        let started = std::fs::read_to_string(descendant_pid.with_extension("started")).unwrap().parse().unwrap();
+        assert!(o_core::sys::proc::definitely_exited(pid, started), "orphaned writer survived completion");
+        assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    }
     #[cfg(windows)]
     if mode == "descendant" || mode == "both" {
         assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { text, .. } if text.contains("멈췄습니다"))), "{events:?}");
