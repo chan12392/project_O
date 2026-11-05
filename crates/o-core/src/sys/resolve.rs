@@ -17,10 +17,12 @@ pub struct CliCommand {
     pub prefix: Vec<String>,
 }
 
-static SHIM_SCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)"%dp0%\\([^"%]+\.(?:js|mjs|cjs))""#).unwrap());
+/// The shim's own folder is `%dp0%\` in npm's shims (after `SET dp0=%~dp0`) and `%~dp0` itself,
+/// with or without a backslash after it, in the older cmd-shim output.
+static SHIM_SCRIPT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)"(?:%dp0%\\|%~dp0\\?)([^"%]+\.(?:js|mjs|cjs))""#).unwrap());
 /// A shim that runs a program its package ships, not a script (OpenCode v2). Only read when the
 /// shim names no script: a script shim also names `%dp0%\node.exe`, the interpreter it prefers.
-static SHIM_PROGRAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)"%dp0%\\(node_modules\\[^"%]+\.exe)""#).unwrap());
+static SHIM_PROGRAM: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)"(?:%dp0%\\|%~dp0\\?)(node_modules\\[^"%]+\.exe)""#).unwrap());
 static EXTRA_PATHS: LazyLock<RwLock<Vec<PathBuf>>> = LazyLock::new(|| RwLock::new(Vec::new()));
 static PATHS_READY: OnceLock<()> = OnceLock::new();
 
@@ -246,5 +248,53 @@ mod tests {
         assert_eq!(std::env::split_paths(&joined).collect::<Vec<_>>(), [dir.clone(), a, b]);
         let alone = first_on_path(&dir, None).unwrap();
         assert_eq!(std::env::split_paths(&alone).collect::<Vec<_>>(), [dir]);
+    }
+
+    /// A shim names its own folder `%dp0%\` (npm) or `%~dp0` (older cmd-shim output, which other
+    /// package managers' global shims may follow); both start the script with node.
+    #[test]
+    fn shim_script_is_read_with_either_spelling_of_its_folder() {
+        let script = |text: &str| SHIM_SCRIPT.captures(text).map(|c| c[1].to_string());
+        assert_eq!(script(r#"endLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\node_modules\asar\bin\asar.js" %*"#).as_deref(), Some(r"node_modules\asar\bin\asar.js"));
+        assert_eq!(script(r#"  node  "%~dp0\global\5\node_modules\fake\bin\fake.js" %*"#).as_deref(), Some(r"global\5\node_modules\fake\bin\fake.js"));
+        assert_eq!(script(r#""%~DP0node_modules\fake\bin\fake.mjs" %*"#).as_deref(), Some(r"node_modules\fake\bin\fake.mjs"));
+        // The interpreter a shim prefers is not the script, and nor is a file named from another folder.
+        assert_eq!(script(r#"@IF EXIST "%~dp0\node.exe" ("%~dp0\node.exe" %*)"#), None);
+        assert_eq!(script(r#""%dp0%\node.exe"  "%OTHER%\x.js" %*"#), None);
+    }
+
+    #[test]
+    fn shim_program_is_read_with_either_spelling_of_its_folder() {
+        let program = |text: &str| SHIM_PROGRAM.captures(text).map(|c| c[1].to_string());
+        assert_eq!(program(r#""%dp0%\node_modules\@opencode\cli\bin\opencode.exe" %*"#).as_deref(), Some(r"node_modules\@opencode\cli\bin\opencode.exe"));
+        assert_eq!(program(r#""%~dp0node_modules\fake\bin\fake-win32-x64.exe" %*"#).as_deref(), Some(r"node_modules\fake\bin\fake-win32-x64.exe"));
+        assert_eq!(program(r#""%~dp0\node_modules\fake\bin\fake.exe" %*"#).as_deref(), Some(r"node_modules\fake\bin\fake.exe"));
+        assert_eq!(program(r#""%~dp0fake.exe" %*"#), None);
+    }
+
+    /// A shim that names no script or program of its own package is refused, never run through cmd.exe.
+    #[test]
+    fn a_shim_that_cannot_be_read_is_refused() {
+        let dir = std::env::temp_dir().join(format!("o-resolve-shim-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let shim = dir.join("fake-agent.cmd");
+        for text in ["@echo off\r\ncall \"%~dp0other.cmd\" %*\r\n", "@echo off\r\ncall \"%dp0%\\other.cmd\" %*\r\n", "@echo off\r\nfake-agent-real %*\r\n"] {
+            fs::write(&shim, text).unwrap();
+            assert_eq!(shim_target(&shim), None, "{text}");
+        }
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_program_shim_in_the_tilde_spelling_starts_the_program_itself() {
+        let dir = std::env::temp_dir().join(format!("o-resolve-program-{}", std::process::id()));
+        let program = dir.join(r"node_modules\fake\bin\fake-win32-x64.exe");
+        fs::create_dir_all(program.parent().unwrap()).unwrap();
+        fs::write(&program, "").unwrap();
+        let shim = dir.join("fake.cmd");
+        fs::write(&shim, "@ECHO off\r\n\"%~dp0node_modules\\fake\\bin\\fake-win32-x64.exe\" %*\r\n").unwrap();
+        assert_eq!(shim_target(&shim), Some(CliCommand { command: program, prefix: Vec::new() }));
+        let _ = fs::remove_dir_all(&dir);
     }
 }
