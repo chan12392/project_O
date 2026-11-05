@@ -2,7 +2,7 @@
 
 | 갈래 | 한 줄 요약 | 마지막 갱신 | 급함 |
 |---|---|---|---|
-| B | 맥 6개 재현 오류 수정·전체검사·앱설치 완료, 하위 작업 제한 잔존 | 2026-11-05 | 하위 프로그램 전체 지원은 제한 |
+| B | 하위 프로그램 coalition 추적 구현·격리 검사 통과, 실제 AI 검증 진행 | 2026-11-05 | 실사용·전체검사·앱 재설치 남음 |
 | A | macOS 앱 빌드·실제 시작 검증 완료 | 2026-11-02 21:51 | 사람 검토·공식 CLI 로그인 |
 
 ## A. macOS 앱
@@ -18,6 +18,14 @@
 
 ## B. macOS 오류 수정 — 2026-11-05
 
+- 2026-11-05 후속 작업 진행: launchd 임시 작업별 resource coalition, 커널 시작/종료 수 비교, audit-token PID 세대 검증으로 정확한 자손 종료 구현. macos_native는 기존 suspended spawn; macos_worker는 전용 도우미와 비공개 소켓.
+- 제품 회귀14개 통과: detached/setsid 자손은 실제 PID+시작시각 종료를 확인한 뒤 예약/총괄 잠금 해제. 추가 격리 검사6개 통과(이웃/동시 작업 보존, 부모 crash, 시작 전 중지, 환경/인수/cwd).
+- 진행 중: 오류 경로 보강·전체 검사·실제 Codex 작업·새 앱 재설치. 현재 설치 앱은 이전 ceb8794, 새 구현 설치 전. PR68 아직 병합 안 함.
+- 공식 Codex CLI 0.150.1의 누락된 arm64 선택 의존성 같은 버전 재설치로 복구. `codex login status`: Logged in using ChatGPT. 인증 파일 접근 없음.
+- Discord 2026-11-05 13:22 대표: test_2와 맥 충돌 점검 요청. origin/test_2=1fe1412, PR68 mergeable/CLEAN·GitHub 검사 성공 확인. 외부 채팅 발송 없음.
+
+<details><summary>앞선 6개 오류 수정 상태</summary>
+
 - 사용자 요청: 남은6개 오류 수정·맥 실사용 가능하도록 계속 진행.
 - 작업 브랜치 eunmi-macos-validation, PR68에 이어서 수정. 보호 브랜치 변경 없음.
 - 파일 별칭: CoreFoundation Unicode 정규화·볼륨 대소문자 정책, 기존 예약 키도 비교 때 변환.
@@ -27,6 +35,8 @@
 - 코드 커밋 ceb8794 push 완료. PR68 제목/본문을 최종 수정으로 갱신, draft 유지·병합 없음. GitHub branch-flow 통과, policy 진행 중(13:20 확인).
 - 최종 arm64 앱+o 빌드 성공. /Users/piglet/Applications/project_O.app 교체 설치 및 실제 창·남아 있는 예약 없음 표시 확인. 이전 앱은 /Users/piglet/Applications/Project_O_backups/project_O-before-20261105-fix.app 보존.
 - 다음: 실제 공급자 도구 실행에서 fork 이후 종료를 입증할 실행 격리 설계. 현재는 하위 프로그램을 만든 작업이 끝나도 불명으로 남을 수 있으므로 완전한 맥 연속 코딩 지원 완료가 아니다. 실제 로그인·유료 요청·Intel 미검증. 외부 채팅 발송 없음.
+
+</details>
 
 <details><summary>이전 맥 실기 기록</summary>
 ## B. macOS 재검증 — 2026-11-05

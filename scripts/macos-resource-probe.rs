@@ -199,12 +199,12 @@ fn card_escaped(hold_pipe: bool) {
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !ready.exists() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(20)); }
     assert!(ready.exists(), "fake card did not start");
-    let early = receive.recv_timeout(Duration::from_millis(500));
-    assert!(!project.join("grand-finished").exists(), "descendant ended before observation");
-    assert!(resource_held(&home, "run", "card").unwrap(), "live descendant lost its reservation");
-    assert!(matches!(reserve(&home, &project, "next", "shared"), Reserved::Busy(_)));
-    if let Ok(result) = early { assert_ne!(result.unwrap(), CardStatus::Done, "live descendant was reported complete"); }
-    else { receive.recv_timeout(Duration::from_secs(12)).expect("runner did not finish").unwrap(); }
+    let status = receive.recv_timeout(Duration::from_secs(12)).expect("runner did not finish").unwrap();
+    assert_eq!(status, CardStatus::Done);
+    assert_descendant_exited(&project);
+    assert!(!resource_held(&home, "run", "card").unwrap(), "proven exit left a reservation");
+    assert!(matches!(reserve(&home, &project, "next", "shared"), Reserved::Granted(_)));
+
 }
 
 #[cfg(target_os = "macos")]
@@ -221,7 +221,9 @@ fn fake_lead() {
     let Ok(mode) = std::env::var("O_PROBE_LEAD") else { return };
     let base = PathBuf::from(std::env::var_os("O_PROBE_LEAD_DIR").unwrap());
     if mode == "grandchild" {
-        std::fs::write(base.join("grand-ready"), "ready").unwrap();
+        let pid = std::process::id();
+        let started = o_core::sys::proc::started_at(pid).unwrap();
+        std::fs::write(base.join("grand-ready"), format!("{pid} {started}")).unwrap();
         std::thread::sleep(Duration::from_secs(5));
         std::fs::write(base.join("grand-finished"), "done").unwrap();
         return;
@@ -258,13 +260,9 @@ fn lead_run(mode: &'static str) {
     assert!(project.join("lead-ready").exists(), "fake lead did not start");
     if mode == "stop" { assert!(lead::stop(&home, project.to_str())); }
     receive.recv_timeout(Duration::from_secs(12)).expect("lead did not finish").unwrap();
-    if mode == "escape" {
-        assert!(!project.join("grand-finished").exists(), "descendant ended before observation");
-        assert_eq!(lead::show(&home, project.to_str())["thread"]["busy"], "unknown", "live escaped descendant was treated as finished");
-        assert!(lead::thread_for(&home, project.to_str().unwrap(), true).is_err());
-    } else {
-        assert!(lead::show(&home, project.to_str())["thread"]["busy"].is_null(), "completed lead still blocks the next turn");
-    }
+    if mode == "escape" { assert_descendant_exited(&project); }
+    assert!(lead::show(&home, project.to_str())["thread"]["busy"].is_null(), "completed lead still blocks the next turn");
+
 }
 
 #[cfg(target_os = "macos")]
@@ -278,3 +276,12 @@ fn macos_lead_stop() { lead_run("stop"); }
 #[cfg(target_os = "macos")]
 #[test]
 fn macos_lead_escaped_descendant() { lead_run("escape"); }
+
+fn assert_descendant_exited(project: &Path) {
+    let identity = std::fs::read_to_string(project.join("grand-ready")).unwrap();
+    let mut values = identity.split_whitespace();
+    let pid = values.next().unwrap().parse().unwrap();
+    let started = values.next().unwrap().parse().unwrap();
+    assert!(o_core::sys::proc::definitely_exited(pid, started), "escaped child still exists after completion");
+    assert!(!project.join("grand-finished").exists(), "fixture ended naturally; forced cleanup was not exercised");
+}

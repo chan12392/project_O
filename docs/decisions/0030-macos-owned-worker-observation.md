@@ -1,29 +1,35 @@
-# ADR-0030: macOS 작업 시작 감시와 보수적인 종료 판정
+# ADR-0030: macOS 작업별 coalition과 정확한 자손 종료 증명
 
-상태: 부분 구현, 2026-11-05. Apple Silicon의 독립 가짜 프로세스 11개 회귀 검사를 통과했다. 실제 공급자의 도구 실행 전체를 지원했다고 선언하지 않는다.
+상태: 구현·회귀 검증, 2026-11-05. 실제 공급자 검증은 별도 실기 기록에 남긴다.
 
 ## 문제
 
-macOS는 Windows Job Object를 제공하지 않는다. 기존 contain()은 None이며, 카드의 정상 종료/중지가 실패하고 총괄은 닫힌 파이프만으로 완료를 판정할 수 있었다. PID 목록을 사후 조회하면 이미 재부모화된 자손이나 재사용된 PID를 놓친다. Darwin의 NOTE_TRACK/NOTE_CHILD는 10.5 이후 지원하지 않는다(Apple SDK sys/event.h 및 https://github.com/apple-oss-distributions/xnu/blob/main/bsd/sys/event.h).
+macOS의 NOTE_TRACK/NOTE_CHILD는 지원되지 않는다. 부모 PID·프로세스 그룹의 사후 조회는 이중 fork·setsid·재부모화를 놓친다. 첫 구현은 suspended spawn 앞에 kqueue를 붙이고 fork가 한 번이라도 발생하면 종료 불명으로 남겼다. 이 방식은 안전하게 거부하지만 실제 CLI가 명령을 실행한 뒤 다음 작업을 막는다.
 
 ## 결정
 
-- 카드·총괄의 macOS 시작 경로를 하나로 모은다. posix_spawn의 POSIX_SPAWN_START_SUSPENDED로 실행 전 정지한 자식을 생성하고 NOTE_FORK/NOTE_EXIT 감시를 등록한 후에만 SIGCONT로 시작한다. 셸을 거치지 않으며 인수·cwd·상속/교체 환경을 직접 전달한다. POSIX_SPAWN_CLOEXEC_DEFAULT와 명시적인 세 파이프로 부모의 다른 파일 핸들 상속을 막는다.
-- 등록 실패 시 아직 정지해 있는 직접 소유 자식을 종료·회수하고 실패한다. 시작 전에는 공급자 코드가 실행되지 않는다.
-- 카드의 시작 기록·의존 결과 재검증과 중지 요청은 Windows와 동일한 시작 잠금으로 직렬화한다.
-- 종료/중지와 reap은 동일 mutex 아래 처리한다. 신호 대상은 아직 reap되지 않은 직접 소유 자식뿐이다. 디스크에서 읽은 PID나 사후 검색한 자손을 종료하지 않는다.
-- NOTE_FORK가 한 번이라도 발생하거나 관찰 오류가 있으면 종료 증명을 영구적으로 불명으로 둔다. 직접 자식만 존재하고 NOTE_EXIT까지 확인된 경우에는 정상 완료/중지로 자원 예약과 총괄 표식을 정리한다.
-- 총괄도 macOS 종료 증명이 없으면 정상 응답/닫힌 출력 여부와 무관하게 불명 표식을 남긴다. 분리된 자손이 살아 있는데 다음 턴이 시작되는 경로를 막는다.
-- 자원 이름은 CoreFoundation의 정규 분해와 해당 볼륨의 pathconf(_PC_CASE_SENSITIVE)에 따른 대소문자 접기로 비교한다. 기존 버전이 저장한 키도 비교 때 변환한다. 볼륨을 확인할 수 없으면 충돌 가능성이 있는 것으로 취급한다. Unicode 정규화는 비 APFS 볼륨에서 과도하게 충돌을 막을 수 있지만 중복 쓰기를 허용하지 않는다.
+- 카드와 총괄은 macos_worker의 공통 실행 경로를 쓴다. 사용자 GUI launchd 도메인에 임시 작업을 등록하고, 동봉된 `o --o-mac-worker`만 시작한다. KeepAlive/RunAtLoad는 false이며, 시작은 명시적으로 kickstart한다. 관리자 권한·상시 LaunchAgent 설치가 필요하지 않다.
+- launchd가 만든 resource coalition이 호출자와 다르고 활성 작업이 도우미 하나뿐임을 양쪽에서 검사한다. 필요한 macOS API가 없거나 격리/계수를 확인할 수 없으면 공급자를 시작하지 않는다. headless GUI 도메인이 없는 환경도 명확한 시작 실패다.
+- 0700 임시 폴더의 Unix 소켓으로 실행 파일·인수·cwd·정확한 환경을 전달한다. plist에는 도우미와 소켓 경로만 기록한다. 네 연결 모두 uid/PID를 검사한다. 인증 환경이나 프롬프트를 plist/명령줄에 옮기지 않는다.
+- 도우미는 native posix_spawn START_SUSPENDED/CLOEXEC_DEFAULT로 직접 자식을 만들고 coalition 상속을 확인한다. 부모가 시작 기록·중지 직렬화를 마친 뒤에만 resume한다. 공급자의 인수는 셸을 거치지 않는다.
+- 직접 자식 종료, 중지, 소켓 단절 시 같은 coalition의 모든 자손을 정리한다. 조회는 종료 대상 발견에만 사용한다. 각 PID의 세대(pidversion)를 먼저 확보하고 coalition을 확인한 뒤 `proc_signal_with_audittoken`으로 신호를 보낸다. PID 재사용은 커널이 거부한다. 다른 작업·호출자·도우미 자신은 종료 대상이 아니다.
+- 종료 **증명**은 PID 목록이 아니라 `coalition_info_resource_usage`의 `tasks_started - tasks_exited == 1`이다. 도우미만 남은 뒤 직접 자식의 종료 상태를 전달하고, 부모도 같은 커널 계수를 확인한 뒤 예약/총괄 표식을 해제한다. 도우미는 그동안 살아 있다. 셸 출력 파이프의 닫힘만으로 성공을 판정하지 않는다.
+- 도우미의 출력 중계는 완료 증명을 막지 않는다. 부모가 출력을 읽지 않아도 중지 판정은 끝난다. 부모 EOF 시 도우미가 자손을 정리하고 자기 임시 launchd 등록을 해제한다. 정상 소유자도 Drop에서 정리한다.
+- API/통신/계수 오류나 제한 시간 초과는 종료 불명이다. 기록된 오래된 PID로 복구 종료하지 않는다. 도우미 자체의 비정상 종료 등 증명이 없는 예약은 기존 보수적 복구 규칙을 유지한다.
+- 파일 자원 별칭은 기존 CoreFoundation 정규 분해·볼륨 대소문자 정책 비교를 유지한다.
 
-## 보장 범위와 남은 일
+## 근거와 범위
 
-이 방식은 Windows와 동등한 자손 종료/강제 정리를 구현한 것이 아니다. **일반적인 CLI가 도구를 실행하기 위해 자식을 만들면, 자식이 실제로 끝났더라도 현재는 종료 불명으로 남는다.** 단순 대화·자식 없는 직접 작업과 중지는 지원하지만 자식을 만드는 실제 코딩 작업의 연속 사용은 제한된다. 이를 숨기거나 가짜 검사만 통과했다는 이유로 맥 실사용 완료라고 알리지 않는다.
+Apple XNU의 resource coalition은 fork/exec/setsid 후에도 작업 소속과 시작/종료 누적 수를 유지한다. 별도 coalition 생성은 launchd에 맡긴다. 해당 API 일부는 공개 안정 ABI가 아니므로 런타임 심볼·구조 크기·독립성·계수 확인에 실패하면 실행을 거부한다. 다른 macOS 버전/Intel에서 동등한 지원을 추정하지 않는다. 같은 사용자 권한의 악의적인 프로세스나 특권 프로그램의 고의적인 이탈을 막는 보안 샌드박스는 아니다. 공급자 자체의 기존 sandbox/승인 정책은 변경하지 않는다.
 
-공급자 코드가 실행된 뒤 부모 앱이 강제 종료되면 자손 종료를 보장하지 못하며 기존 내구성 표식을 보존한다. 커널 수준의 자손 격리 또는 검증된 별도 실행 환경 없이, 주기적인 PID 조회·프로세스 그룹 조회를 종료 증명으로 격상하지 않는다. 실제 공급자 동작과 macOS 전체 지원은 후속 설계·검증 대상이다.
+- [Apple coalition 구조](https://github.com/apple-oss-distributions/xnu/blob/main/osfmk/mach/coalition.h)
+- [Apple coalition syscall](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/sys_coalition.c)
+- [Apple proc_info](https://github.com/apple-oss-distributions/xnu/blob/main/bsd/kern/proc_info.c)
+- 로컬 macOS SDK libproc.h의 audit-token 신호 API, launchd.plist(5).
 
 ## 검증
 
-- scripts/macos-resource-probe.rs를 macOS 전용 Cargo 회귀 검사로 등록했다. 독립 임시 패키지 검사도 유지한다.
-- 대소문자/조합형 이름 별칭, 시작 전 복구, 시작 불명 보존, 카드 정상/중지/분리 자손, 총괄 정상/중지/분리 자손.
-- 셸 특수 문자가 포함된 인수 보존, 시작 전 중지 시 사용자 코드 미실행, 짧은 fork의 불명 유지.
+- 제품 카드/총괄 정상·중지·setsid 분리 자손·출력 파이프 상속: 자손 PID+시작 시각으로 실제 종료를 추가 확인하고 예약 해제를 검사한다.
+- 환경 교체·인수·cwd, 시작 전 중지·없는 실행 파일, 동시 작업/무관한 프로세스 보존, 소유자 강제 종료.
+- 같은 PID의 잘못된 세대 토큰은 ESRCH, 올바른 토큰은 성공. 공유 coalition 거부.
+- 실제 AI 명령 실행·연속 작업·설치 앱 결과: docs/macos-verification-2026-11-05.md.

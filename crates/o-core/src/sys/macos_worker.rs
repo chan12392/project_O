@@ -1,292 +1,254 @@
-//! Observe the owned worker before any provider code runs. Darwin cannot track
-//! descendants with NOTE_TRACK; a fork permanently makes exit proof unknown.
-use std::io;
-use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+//! A launchd-owned supervisor gives each worker a dedicated kernel coalition.
+//! Credentials travel only over private, peer-checked local sockets.
+use std::ffi::{OsStr, OsString};
+use std::io::{self, Read, Write};
+use std::os::fd::AsRawFd;
+use std::os::unix::ffi::{OsStrExt, OsStringExt};
+use std::os::unix::fs::{PermissionsExt, MetadataExt};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::os::unix::process::{ExitStatusExt, CommandExt};
+use std::path::{Path, PathBuf};
+use std::process::{Command, ExitStatus};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
+use serde::{Deserialize, Serialize};
+use super::{launch::Launch, macos_coalition::Coalition, macos_native, proc::KillOnClose};
 
-use super::{launch::Launch, proc::KillOnClose};
+#[derive(Serialize, Deserialize)]
+struct Request { executable: Vec<u8>, args: Vec<Vec<u8>>, cwd: Vec<u8>, environment: Vec<(Vec<u8>, Vec<u8>)> }
+#[derive(Serialize, Deserialize)]
+struct Ready { pid: u32, coalition: u64 }
+#[derive(Default, Serialize, Deserialize)]
+struct Finished { status: Option<i32>, confirmed: bool }
+struct Shared { result: Mutex<Option<Finished>>, control: Mutex<UnixStream> }
 
-pub struct Monitor {
-    queue: OwnedFd,
-    pid: u32,
-    pub reaped: bool,
-    exited: bool,
-    uncertain: bool,
+fn send<T: Serialize>(stream: &mut UnixStream, value: &T) -> io::Result<()> {
+    let bytes = serde_json::to_vec(value)?;
+    let size = u32::try_from(bytes.len()).map_err(io::Error::other)?;
+    stream.write_all(&size.to_be_bytes())?; stream.write_all(&bytes)
+}
+fn receive<T: serde::de::DeserializeOwned>(stream: &mut UnixStream) -> io::Result<T> {
+    let mut size = [0; 4]; stream.read_exact(&mut size)?;
+    let size = u32::from_be_bytes(size) as usize;
+    if size > 16 * 1024 * 1024 { return Err(io::Error::other("작업 시작 메시지가 너무 큽니다")); }
+    let mut bytes = vec![0; size]; stream.read_exact(&mut bytes)?;
+    Ok(serde_json::from_slice(&bytes)?)
+}
+fn peer(stream: &UnixStream) -> io::Result<u32> {
+    let mut uid = 0; let mut gid = 0;
+    let mut pid = 0i32; let mut len = 4;
+    if unsafe { libc::getpeereid(stream.as_raw_fd(), &mut uid, &mut gid) } != 0 || uid != unsafe { libc::geteuid() } ||
+        unsafe { libc::getsockopt(stream.as_raw_fd(), 0, 2, (&mut pid as *mut i32).cast(), &mut len) } != 0 || len != 4 || pid <= 0 {
+        return Err(io::Error::other("macOS 실행 도우미의 신원을 확인하지 못했습니다"));
+    }
+    Ok(pid as u32)
+}
+fn launchctl(args: &[&OsStr]) -> io::Result<std::process::Output> {
+    let output = Command::new("/bin/launchctl").args(args).output()?;
+    if !output.status.success() { return Err(io::Error::other(format!("macOS 실행 묶음 시작 실패: {}", String::from_utf8_lossy(&output.stderr)))); }
+    Ok(output)
+}
+fn xml(value: &str) -> String { value.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;").replace('\'', "&apos;") }
+
+struct Job { directory: PathBuf, target: String, loaded: bool }
+impl Drop for Job {
+    fn drop(&mut self) {
+        if self.loaded { let _ = Command::new("/bin/launchctl").args(["bootout", &self.target]).output(); }
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
 }
 
+pub struct Monitor { shared: Arc<Shared>, coalition: Coalition, _job: Job }
 impl Monitor {
-    fn new(pid: u32) -> io::Result<Self> {
-        let fd = unsafe { libc::kqueue() };
-        if fd < 0 { return Err(io::Error::last_os_error()); }
-        let queue = unsafe { OwnedFd::from_raw_fd(fd) };
-        if unsafe { libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC) } < 0 { return Err(io::Error::last_os_error()); }
-        let event = libc::kevent { ident: pid as _, filter: libc::EVFILT_PROC,
-            flags: libc::EV_ADD | libc::EV_ENABLE | libc::EV_CLEAR,
-            fflags: libc::NOTE_EXIT | libc::NOTE_FORK, data: 0, udata: std::ptr::null_mut() };
-        if unsafe { libc::kevent(fd, &event, 1, std::ptr::null_mut(), 0, std::ptr::null()) } < 0 {
-            return Err(io::Error::last_os_error());
-        }
-        Ok(Self { queue, pid, reaped: false, exited: false, uncertain: false })
-    }
-
-    fn poll(&mut self) {
-        // Drain queued fork bits even if NOTE_EXIT was delivered in the same event.
-        loop {
-            let mut event: libc::kevent = unsafe { std::mem::zeroed() };
-            let timeout = libc::timespec { tv_sec: 0, tv_nsec: 0 };
-            let count = unsafe { libc::kevent(self.queue.as_raw_fd(), std::ptr::null(), 0, &mut event, 1, &timeout) };
-            if count == 0 { break; }
-            if count < 0 {
-                if io::Error::last_os_error().kind() == io::ErrorKind::Interrupted { continue; }
-                self.uncertain = true;
-                break;
-            }
-            if event.ident != self.pid as usize || event.flags & libc::EV_ERROR != 0 { self.uncertain = true; }
-            if event.fflags & libc::NOTE_FORK != 0 { self.uncertain = true; }
-            if event.fflags & libc::NOTE_EXIT != 0 { self.exited = true; }
-        }
-    }
-
     pub fn stop_and_confirm(&mut self) -> bool {
-        self.poll();
-        // Reap and this method share the same mutex. An unreaped direct child
-        // retains its PID; no PID read from disk or descendant is ever signalled.
-        if !self.reaped && !self.exited && unsafe { libc::kill(self.pid as i32, libc::SIGKILL) } < 0 { self.uncertain = true; }
-        let deadline = Instant::now() + Duration::from_secs(1);
-        while !self.exited && Instant::now() < deadline {
-            self.poll();
-            if !self.exited { std::thread::sleep(Duration::from_millis(5)); }
+        let _ = self.shared.control.lock().map(|mut control| control.write_all(b"S"));
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            if let Ok(result) = self.shared.result.lock() {
+                if let Some(result) = result.as_ref() {
+                    // The supervisor stays alive until this handle is closed.
+                    return result.confirmed && self.coalition.active().ok() == Some(1);
+                }
+            } else { return false; }
+            if Instant::now() >= deadline { return false; }
+            std::thread::sleep(Duration::from_millis(10));
         }
-        self.exited && !self.uncertain
     }
 }
-
-fn checked(code: i32) -> io::Result<()> {
-    if code == 0 { Ok(()) } else { Err(io::Error::from_raw_os_error(code)) }
-}
-
-struct Attributes(libc::posix_spawnattr_t);
-impl Drop for Attributes { fn drop(&mut self) { unsafe { libc::posix_spawnattr_destroy(&mut self.0); } } }
-struct Actions(libc::posix_spawn_file_actions_t);
-impl Drop for Actions { fn drop(&mut self) { unsafe { libc::posix_spawn_file_actions_destroy(&mut self.0); } } }
-
-fn pipe() -> io::Result<(OwnedFd, OwnedFd)> {
-    let mut pair = [0; 2];
-    if unsafe { libc::pipe(pair.as_mut_ptr()) } < 0 { return Err(io::Error::last_os_error()); }
-    let mut fds = unsafe { (OwnedFd::from_raw_fd(pair[0]), OwnedFd::from_raw_fd(pair[1])) };
-    // Keep action sources away from stdin/stdout/stderr, even in a headless host.
-    for fd in [&mut fds.0, &mut fds.1] {
-        let copy = unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_DUPFD_CLOEXEC, 3) };
-        if copy < 0 { return Err(io::Error::last_os_error()); }
-        *fd = unsafe { OwnedFd::from_raw_fd(copy) };
+impl Drop for Monitor {
+    fn drop(&mut self) {
+        let _ = self.stop_and_confirm();
+        // Reader thread owns another descriptor, so explicitly close the write
+        // side. The helper cleans up even when the original owner crashes.
+        if let Ok(control) = self.shared.control.lock() { let _ = control.shutdown(std::net::Shutdown::Write); }
     }
-    Ok(fds)
 }
 
 pub struct Child {
-    pub stdin: Option<std::fs::File>,
-    pub stdout: Option<std::fs::File>,
-    pub stderr: Option<std::fs::File>,
-    pid: u32,
-    status: Option<std::process::ExitStatus>,
-    tree: Arc<Mutex<KillOnClose>>,
+    pub stdin: Option<UnixStream>, pub stdout: Option<UnixStream>, pub stderr: Option<UnixStream>,
+    pid: u32, shared: Arc<Shared>, tree: Arc<Mutex<KillOnClose>>,
 }
-
 impl Child {
     pub fn id(&self) -> u32 { self.pid }
-    pub fn resume(&self) -> io::Result<()> {
-        let tree = self.tree.lock().map_err(|_| io::Error::other("프로세스 상태 잠금 실패"))?;
-        if tree.monitor.reaped { return Err(io::Error::other("이미 종료된 작업입니다")); }
-        if unsafe { libc::kill(self.pid as i32, libc::SIGCONT) } < 0 { return Err(io::Error::last_os_error()); }
-        Ok(())
-    }
-    pub fn kill(&mut self) -> io::Result<()> {
-        let tree = self.tree.lock().map_err(|_| io::Error::other("프로세스 상태 잠금 실패"))?;
-        if self.status.is_some() || tree.monitor.reaped { return Ok(()); }
-        if unsafe { libc::kill(self.pid as i32, libc::SIGKILL) } < 0 { return Err(io::Error::last_os_error()); }
-        Ok(())
-    }
-    pub fn try_wait(&mut self) -> io::Result<Option<std::process::ExitStatus>> {
-        use std::os::unix::process::ExitStatusExt;
-        if self.status.is_some() { return Ok(self.status); }
-        let mut tree = self.tree.lock().map_err(|_| io::Error::other("프로세스 상태 잠금 실패"))?;
-        let mut status = 0;
-        let result = unsafe { libc::waitpid(self.pid as i32, &mut status, libc::WNOHANG) };
-        if result < 0 { tree.monitor.uncertain = true; return Err(io::Error::last_os_error()); }
-        if result > 0 {
-            tree.monitor.reaped = true;
-            self.status = Some(std::process::ExitStatus::from_raw(status));
+    pub fn resume(&self) -> io::Result<()> { self.shared.control.lock().map_err(|_| io::Error::other("작업 잠금 실패"))?.write_all(b"R") }
+    pub fn kill(&mut self) -> io::Result<()> { self.shared.control.lock().map_err(|_| io::Error::other("작업 잠금 실패"))?.write_all(b"S") }
+    pub fn try_wait(&mut self) -> io::Result<Option<ExitStatus>> {
+        let result = self.shared.result.lock().map_err(|_| io::Error::other("작업 잠금 실패"))?;
+        match result.as_ref() {
+            Some(Finished { status: Some(status), .. }) => Ok(Some(ExitStatus::from_raw(*status))),
+            Some(_) => Err(io::Error::other("macOS 실행 도우미가 종료 상태를 확인하지 못했습니다")),
+            None => Ok(None),
         }
-        Ok(self.status)
     }
-    pub fn wait(&mut self) -> io::Result<std::process::ExitStatus> {
+    pub fn wait(&mut self) -> io::Result<ExitStatus> {
         self.stdin.take();
-        loop {
-            if let Some(status) = self.try_wait()? { return Ok(status); }
-            std::thread::sleep(Duration::from_millis(5));
-        }
+        loop { if let Some(status) = self.try_wait()? { return Ok(status); } std::thread::sleep(Duration::from_millis(10)); }
     }
 }
+impl Drop for Child { fn drop(&mut self) { if let Ok(mut tree) = self.tree.lock() { tree.stop_and_confirm(); } } }
 
-impl Drop for Child {
-    fn drop(&mut self) {
-        if matches!(self.try_wait(), Ok(None)) {
-            let _ = self.kill();
-            let deadline = Instant::now() + Duration::from_secs(1);
-            while matches!(self.try_wait(), Ok(None)) && Instant::now() < deadline {
-                std::thread::sleep(Duration::from_millis(5));
+fn helper_path() -> io::Result<PathBuf> {
+    let exe = std::env::current_exe()?;
+    let parent = exe.parent().ok_or_else(|| io::Error::other("실행 파일 폴더 없음"))?;
+    if exe.file_name() == Some(OsStr::new("o")) || exe.file_name() == Some(OsStr::new("o-handle-owner")) { return Ok(exe); }
+    // Cargo's integration harnesses live in deps; their explicitly built
+    // fixture lives next to deps. Installed GUI uses its bundled o sidecar.
+    let helper = if parent.file_name() == Some(OsStr::new("deps")) { parent.parent().unwrap().join("o-handle-owner") } else { parent.join("o") };
+    if !helper.is_file() { return Err(io::Error::other("macOS 실행 도우미 o를 찾지 못했습니다")); }
+    Ok(helper)
+}
+
+pub fn spawn(launch: &Launch) -> io::Result<(Child, Arc<Mutex<KillOnClose>>)> {
+    let helper = helper_path()?;
+    let mut nonce = [0u8; 12]; unsafe { libc::arc4random_buf(nonce.as_mut_ptr().cast(), nonce.len()); }
+    let suffix: String = nonce.iter().map(|b| format!("{b:02x}")).collect();
+    let directory = PathBuf::from(format!("/private/tmp/o-worker-{suffix}"));
+    // No credentials or provider arguments are written here.
+    std::fs::DirBuilder::new().mode(0o700).create(&directory)?;
+    let domain = format!("gui/{}", unsafe { libc::geteuid() });
+    let label = format!("local.project-o.worker.{suffix}");
+    let mut job = Job { directory, target: format!("{domain}/{label}"), loaded: false };
+    let socket = job.directory.join("ipc");
+    let listener = UnixListener::bind(&socket)?; listener.set_nonblocking(true)?;
+    let plist = job.directory.join("job.plist");
+    let helper = helper.to_str().ok_or_else(|| io::Error::other("도우미 경로 인코딩 오류"))?;
+    std::fs::write(&plist, format!(r#"<?xml version="1.0" encoding="UTF-8"?><plist version="1.0"><dict><key>Label</key><string>{label}</string><key>ProgramArguments</key><array><string>{}</string><string>--o-mac-worker</string><string>{}</string></array><key>KeepAlive</key><false/><key>RunAtLoad</key><false/><key>ProcessType</key><string>Background</string></dict></plist>"#, xml(helper), xml(socket.to_str().unwrap())))?;
+    launchctl(&[OsStr::new("bootstrap"), OsStr::new(&domain), plist.as_os_str()])?; job.loaded = true;
+    let output = launchctl(&[OsStr::new("kickstart"), OsStr::new("-p"), OsStr::new(&job.target)])?;
+    let helper_pid: u32 = String::from_utf8_lossy(&output.stdout).trim().parse().map_err(io::Error::other)?;
+    let coalition = Coalition::isolated(helper_pid, std::process::id())?;
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let mut sockets = Vec::new();
+    while sockets.len() < 4 {
+        match listener.accept() {
+            Ok((stream, _)) => {
+                stream.set_nonblocking(false)?;
+                if peer(&stream)? != helper_pid { return Err(io::Error::other("예상하지 않은 실행 도우미")); }
+                stream.set_read_timeout(Some(Duration::from_secs(10)))?;
+                stream.set_write_timeout(Some(Duration::from_secs(10)))?;
+                sockets.push(stream);
+            }
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline => std::thread::sleep(Duration::from_millis(5)),
+            Err(error) => return Err(error),
+        }
+    }
+    let mut iter = sockets.into_iter();
+    let mut control = iter.next().unwrap(); let stdin = iter.next().unwrap(); let stdout = iter.next().unwrap(); let stderr = iter.next().unwrap();
+    let cwd = if launch.cwd.as_os_str().is_empty() { std::env::current_dir()? } else { launch.cwd.clone() };
+    let request = Request { executable: launch.executable.as_os_str().as_bytes().to_vec(), args: launch.args.iter().map(|a| a.as_bytes().to_vec()).collect(), cwd: cwd.as_os_str().as_bytes().to_vec(), environment: launch.environment(std::env::vars_os())?.into_iter().map(|(k,v)| (k.as_bytes().to_vec(),v.as_bytes().to_vec())).collect() };
+    send(&mut control, &request)?;
+    let ready: Ready = receive(&mut control)?;
+    if ready.coalition != coalition.id || super::macos_coalition::id(ready.pid)? != coalition.id { return Err(io::Error::other("작업의 실행 묶음이 일치하지 않습니다")); }
+    for stream in [&control, &stdin, &stdout, &stderr] { stream.set_read_timeout(None)?; stream.set_write_timeout(None)?; }
+    let mut reader = control.try_clone()?;
+    let shared = Arc::new(Shared { result: Mutex::new(None), control: Mutex::new(control) });
+    let read_shared = shared.clone();
+    std::thread::spawn(move || {
+        let result: Finished = receive(&mut reader).unwrap_or_default();
+        if let Ok(mut stored) = read_shared.result.lock() { *stored = Some(result); }
+    });
+    let tree = Arc::new(Mutex::new(KillOnClose { monitor: Monitor { shared: shared.clone(), coalition, _job: job } }));
+    Ok((Child { stdin: Some(stdin), stdout: Some(stdout), stderr: Some(stderr), pid: ready.pid, shared, tree: tree.clone() }, tree))
+}
+
+use std::os::unix::fs::DirBuilderExt;
+
+/// Only the bundled CLI/test fixture invokes this entry point, before CLI hooks.
+pub fn run_helper(args: &[OsString]) -> io::Result<()> {
+    if args.len() != 1 { return Err(io::Error::other("실행 도우미 인자 오류")); }
+    let socket = Path::new(&args[0]);
+    let directory = socket.parent().ok_or_else(|| io::Error::other("소켓 폴더 없음"))?;
+    let suffix = directory.file_name().and_then(OsStr::to_str).and_then(|s| s.strip_prefix("o-worker-"))
+        .filter(|s| s.len() == 24 && s.bytes().all(|b| b.is_ascii_hexdigit()))
+        .ok_or_else(|| io::Error::other("실행 폴더 이름 오류"))?;
+    if directory.parent() != Some(Path::new("/private/tmp")) { return Err(io::Error::other("실행 폴더 위치 오류")); }
+    let metadata = std::fs::symlink_metadata(directory)?;
+    if !metadata.is_dir() || metadata.uid() != unsafe { libc::geteuid() } || metadata.permissions().mode() & 0o077 != 0 { return Err(io::Error::other("비공개 실행 폴더가 아닙니다")); }
+    let mut control = UnixStream::connect(socket)?;
+    let parent = peer(&control)?;
+    let coalition = Coalition::isolated(std::process::id(), parent)?;
+    let mut stdin = UnixStream::connect(socket)?; let mut stdout = UnixStream::connect(socket)?; let mut stderr = UnixStream::connect(socket)?;
+    for stream in [&control, &stdin, &stdout, &stderr] { if peer(stream)? != parent { return Err(io::Error::other("실행 소켓 소유자가 바뀌었습니다")); } }
+    control.set_read_timeout(Some(Duration::from_secs(10)))?;
+    let request: Request = receive(&mut control)?;
+    let mut launch = Launch::new(OsString::from_vec(request.executable));
+    launch.args(request.args.into_iter().map(OsString::from_vec)); launch.current_dir(OsString::from_vec(request.cwd));
+    launch.env_clear().envs(request.environment.into_iter().map(|(k,v)| (OsString::from_vec(k), OsString::from_vec(v))));
+    let _cleanup = super::macos_coalition::Cleanup(&coalition);
+    let (mut child, _native_tree) = macos_native::spawn(&launch)?;
+    let child_pid = child.id();
+    if super::macos_coalition::id(child_pid)? != coalition.id { return Err(io::Error::other("작업 묶음 상속 실패")); }
+    send(&mut control, &Ready { pid: child_pid, coalition: coalition.id })?;
+    let mut input = child.stdin.take().unwrap();
+    std::thread::spawn(move || { let _ = io::copy(&mut stdin, &mut input); });
+    let mut output = child.stdout.take().unwrap();
+    std::thread::spawn(move || { let _ = io::copy(&mut output, &mut stdout); });
+    let mut errors = child.stderr.take().unwrap();
+    std::thread::spawn(move || { let _ = io::copy(&mut errors, &mut stderr); });
+    control.set_read_timeout(Some(Duration::from_millis(20)))?;
+    let mut stopped = false; let mut disconnected = false; let mut status = None; let mut deadline = None;
+    loop {
+        let mut command = [0];
+        match control.read(&mut command) {
+            Ok(0) => { stopped = true; disconnected = true; }
+            Ok(_) if command[0] == b'R' && !stopped => { if child.resume().is_err() { stopped = true; } }
+            Ok(_) if command[0] == b'S' => stopped = true,
+            Ok(_) => {},
+            Err(error) if matches!(error.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) => {},
+            Err(_) => { stopped = true; disconnected = true; },
+        }
+        if status.is_none() { match child.try_wait() { Ok(Some(value)) => { status = Some(value.into_raw()); stopped = true; }, Ok(None) => {}, Err(_) => stopped = true } }
+        if stopped {
+            let until = *deadline.get_or_insert_with(|| Instant::now() + Duration::from_secs(5));
+            let _ = coalition.stop_members();
+            // Zombie children count as exited, but still reap our direct child.
+            if status.is_none() { status = child.try_wait()?.map(ExitStatus::into_raw); }
+            if coalition.active().ok() == Some(1) && status.is_some() { break; }
+            if Instant::now() >= until {
+                let _ = send(&mut control, &Finished { status, confirmed: false });
+                return Err(io::Error::other("하위 작업 종료 확인 시간 초과"));
             }
         }
     }
-}
-
-/// Native suspended spawn: no provider instruction runs before kqueue is attached.
-/// Arguments, environment and cwd go directly to posix_spawn, never a shell.
-pub fn spawn(launch: &Launch) -> io::Result<(Child, Arc<Mutex<KillOnClose>>)> {
-    use std::ffi::CString;
-    use std::os::unix::ffi::OsStrExt;
-    let cwd = if launch.cwd.as_os_str().is_empty() { std::env::current_dir()? } else { launch.cwd.clone() };
-    let environment = launch.environment(std::env::vars_os())?;
-    let executable = if launch.executable.components().count() > 1 || launch.executable.is_absolute() {
-        if launch.executable.is_absolute() { launch.executable.clone() } else { cwd.join(&launch.executable) }
-    } else {
-        let path = environment.iter().find(|(name, _)| name == "PATH").map(|(_, value)| value)
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "실행 파일의 절대 경로나 PATH가 필요합니다"))?;
-        std::env::split_paths(path).map(|part| cwd.join(part).join(&launch.executable)).find(|path| path.is_file())
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "실행 파일을 찾지 못했습니다"))?
-    };
-    let executable = CString::new(executable.as_os_str().as_bytes())?;
-    let cwd = CString::new(cwd.as_os_str().as_bytes())?;
-    let args: Vec<CString> = std::iter::once(launch.executable.as_os_str()).chain(launch.args.iter().map(|a| a.as_os_str()))
-        .map(|a| CString::new(a.as_bytes())).collect::<Result<_, _>>()?;
-    let env: Vec<CString> = environment.iter().map(|(name, value)| {
-        if name.is_empty() || name.as_bytes().contains(&b'=') { return Err(io::Error::other("잘못된 환경 변수 이름입니다")); }
-        let mut bytes = name.as_bytes().to_vec(); bytes.push(b'='); bytes.extend_from_slice(value.as_bytes());
-        CString::new(bytes).map_err(io::Error::from)
-    }).collect::<io::Result<_>>()?;
-    let argv: Vec<_> = args.iter().map(|a| a.as_ptr().cast_mut()).chain(std::iter::once(std::ptr::null_mut())).collect();
-    let envp: Vec<_> = env.iter().map(|a| a.as_ptr().cast_mut()).chain(std::iter::once(std::ptr::null_mut())).collect();
-    let (stdin_read, stdin_write) = pipe()?;
-    let (stdout_read, stdout_write) = pipe()?;
-    let (stderr_read, stderr_write) = pipe()?;
-    let mut attr = std::ptr::null_mut();
-    checked(unsafe { libc::posix_spawnattr_init(&mut attr) })?;
-    let mut attr = Attributes(attr);
-    checked(unsafe { libc::posix_spawnattr_setflags(&mut attr.0, (libc::POSIX_SPAWN_START_SUSPENDED | libc::POSIX_SPAWN_CLOEXEC_DEFAULT) as _) })?;
-    let mut actions = std::ptr::null_mut();
-    checked(unsafe { libc::posix_spawn_file_actions_init(&mut actions) })?;
-    let mut actions = Actions(actions);
-    checked(unsafe { libc::posix_spawn_file_actions_addchdir_np(&mut actions.0, cwd.as_ptr()) })?;
-    for (fd, target) in [(stdin_read.as_raw_fd(), 0), (stdout_write.as_raw_fd(), 1), (stderr_write.as_raw_fd(), 2)] {
-        checked(unsafe { libc::posix_spawn_file_actions_adddup2(&mut actions.0, fd, target) })?;
-    }
-    for fd in [&stdin_read, &stdin_write, &stdout_read, &stdout_write, &stderr_read, &stderr_write] {
-        checked(unsafe { libc::posix_spawn_file_actions_addclose(&mut actions.0, fd.as_raw_fd()) })?;
-    }
-    let mut pid = 0;
-    checked(unsafe { libc::posix_spawn(&mut pid, executable.as_ptr(), &actions.0, &attr.0, argv.as_ptr(), envp.as_ptr()) })?;
-    let monitor = match Monitor::new(pid as u32) {
-        Ok(monitor) => monitor,
-        Err(error) => {
-            // No other code owns/reaps this suspended child yet.
-            unsafe { libc::kill(pid, libc::SIGKILL); libc::waitpid(pid, std::ptr::null_mut(), 0); }
-            return Err(error);
-        }
-    };
-    let tree = Arc::new(Mutex::new(KillOnClose { monitor }));
-    Ok((Child { stdin: Some(stdin_write.into()), stdout: Some(stdout_read.into()), stderr: Some(stderr_read.into()), pid: pid as u32, status: None, tree: tree.clone() }, tree))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use std::io::Read;
-
-    #[test]
-    fn arguments_environment_and_pipes_survive_the_start_gate() {
-        let mut launch = Launch::new("/usr/bin/printf");
-        launch.args(["%s", "quoted ' \" $HOME ; $(false)\n끝"]);
-        launch.env_clear();
-        let (mut child, tree) = spawn(&launch).unwrap();
-        assert!(child.try_wait().unwrap().is_none());
-        child.resume().unwrap();
-        let mut output = String::new();
-        child.stdout.take().unwrap().read_to_string(&mut output).unwrap();
-        assert!(child.wait().unwrap().success());
-        assert_eq!(output, "quoted ' \" $HOME ; $(false)\n끝");
-        assert!(tree.lock().unwrap().stop_and_confirm());
-    }
-
-    #[test]
-    fn replacement_environment_is_exact() {
-        let mut launch = Launch::new("/usr/bin/env");
-        launch.env_clear().env("O_MAC_FIXTURE", "value with spaces");
-        let (mut child, tree) = spawn(&launch).unwrap();
-        child.resume().unwrap();
-        let mut output = String::new();
-        child.stdout.take().unwrap().read_to_string(&mut output).unwrap();
-        assert!(child.wait().unwrap().success());
-        assert_eq!(output, "O_MAC_FIXTURE=value with spaces\n");
-        assert!(tree.lock().unwrap().stop_and_confirm());
-    }
-
-    #[test]
-    fn failed_spawn_has_no_child_and_cwd_is_preserved() {
-        assert!(spawn(&Launch::new("/no-such-o-test-executable")).is_err());
-        let cwd = std::env::temp_dir().canonicalize().unwrap();
-        let mut launch = Launch::new("/bin/pwd");
-        launch.current_dir(&cwd);
-        let (mut child, tree) = spawn(&launch).unwrap();
-        child.resume().unwrap();
-        let mut output = String::new();
-        child.stdout.take().unwrap().read_to_string(&mut output).unwrap();
-        assert!(child.wait().unwrap().success());
-        assert_eq!(output.trim(), cwd.to_str().unwrap());
-        assert!(tree.lock().unwrap().stop_and_confirm());
-    }
-
-    #[test]
-    fn spawn_fixture() {
-        if std::env::var_os("O_MAC_SPAWN_FIXTURE").is_some() {
-            assert!(std::process::Command::new("/usr/bin/true").status().unwrap().success());
+    // Pipe relays close independently after draining. Never block exit proof
+    // on a caller that has stopped reading a full output pipe.
+    if !disconnected {
+        send(&mut control, &Finished { status, confirmed: true })?;
+        // Keep coalition accounting alive for the parent to independently check.
+        loop {
+            let mut byte = [0];
+            match control.read(&mut byte) {
+                Ok(0) => break,
+                Ok(_) => {},
+                Err(e) if matches!(e.kind(), io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut | io::ErrorKind::Interrupted) => {},
+                Err(_) => break,
+            }
         }
     }
-
-    #[test]
-    fn native_posix_spawn_descendant_is_not_missed() {
-        let mut launch = Launch::new(std::env::current_exe().unwrap());
-        launch.args(["--exact", "sys::macos_worker::tests::spawn_fixture"]);
-        launch.env_clear().env("O_MAC_SPAWN_FIXTURE", "1");
-        let (mut child, tree) = spawn(&launch).unwrap();
-        child.resume().unwrap();
-        assert!(child.wait().unwrap().success());
-        assert!(!tree.lock().unwrap().stop_and_confirm());
-    }
-
-    #[test]
-    fn stop_before_resume_never_executes_provider() {
-        let dir = std::env::temp_dir().join(format!("o-mac-before-resume-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let marker = dir.join("should-not-exist");
-        let mut launch = Launch::new("/usr/bin/touch");
-        launch.arg(marker.as_os_str());
-        let (mut child, tree) = spawn(&launch).unwrap();
-        assert!(tree.lock().unwrap().stop_and_confirm());
-        assert!(!child.wait().unwrap().success());
-        assert!(!marker.exists());
-        assert!(tree.lock().unwrap().stop_and_confirm());
-    }
-
-    #[test]
-    fn fork_is_unknown_even_when_child_was_already_reaped() {
-        let mut launch = Launch::new("/bin/sh");
-        // Force a fork, including a fully reaped descendant. Darwin gives no
-        // complete descendant identities: never silently turn this into proof.
-        launch.args(["-c", "/usr/bin/true & wait"]);
-        let (mut child, tree) = spawn(&launch).unwrap();
-        child.resume().unwrap();
-        assert!(child.wait().unwrap().success());
-        assert!(!tree.lock().unwrap().stop_and_confirm());
-    }
+    drop(child); drop(_native_tree); drop(_cleanup);
+    // Retire even after the parent was killed. No persistent LaunchAgent or
+    // completed launchd entry is left by a successful emergency cleanup.
+    let _ = std::fs::remove_dir_all(directory);
+    let target = format!("gui/{}/local.project-o.worker.{suffix}", unsafe { libc::geteuid() });
+    Err(Command::new("/bin/launchctl").args(["bootout", &target]).exec())
 }

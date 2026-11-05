@@ -950,20 +950,20 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         return Ok(added);
     }
     let spawned = command.and_then(|command| {
-        #[cfg(windows)]
-        {
-            #[cfg(test)]
+        #[cfg(all(test, any(windows, target_os = "macos")))]
             if turn_process::NO_JOB.get() {
                 let mut command = command.command();
                 slot.marker.unresolved = Some(true);
                 slot.keep_marker = true;
                 if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
-                let child = match proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
+                let child = match proc::hide_window(&mut command).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() {
                     Ok(child) => child,
                     Err(error) => { slot.keep_marker = false; return Err(error); }
                 };
                 return Ok((crate::sys::worker::Child::standard(child), None));
             }
+        #[cfg(windows)]
+        {
             let native = command.native(std::env::vars_os())?;
             let executable = match command.handle_owner_executable {
                 Some(path) => path,
