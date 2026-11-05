@@ -56,7 +56,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 32] = [
+    let tests: [(&str, fn()); 33] = [
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
         ("a failed log stops the worker and its dependent", failed_log),
@@ -64,6 +64,7 @@ fn main() {
         ("dependency results remain readable when they are large", dependency_result_limit),
         ("queued follow-ups stop safely and never run in parallel for one session", followup_queue_and_stop),
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
+        ("a stop recorded before the follow-up's runner looks still cancels it", followup_cancelled_when_stop_lands_before_runner),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
@@ -147,6 +148,28 @@ fn followup_cancelled_with_source() {
     }
     assert!(o_core::run::runner::stop_run(&home, "original").unwrap());
     assert!(worker.join().unwrap().is_err());
+    let events = read_events(&home, &queued);
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Stopped, result: Some(text), .. } if text.contains("취소"))), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Stopped, .. })));
+    assert!(active_markers(&home).is_empty());
+}
+
+/// #52: the original card is stopped after the follow-up was accepted but before its runner
+/// looked, so the runner first sees an already stopped card; it must still cancel.
+fn followup_cancelled_when_stop_lands_before_runner() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
+    initial.project = project.to_string_lossy().into_owned();
+    create_run(&home, "original", &initial).unwrap();
+    let queued = o_core::run::followup::start(&home, "original", "a", "수정", &|_| Ok(())).unwrap();
+    assert!(o_core::run::runner::stop_run(&home, "original").unwrap());
+    let at = o_core::sys::js::now_iso();
+    o_core::run::store::append_event(&home, "original", &OEvent::CardEnd { at: at.clone(), card_id: "a".into(), status: CardStatus::Stopped, result: None, exit_code: None }).unwrap();
+    o_core::run::store::append_event(&home, "original", &OEvent::RunEnd { at, run_id: "original".into(), status: CardStatus::Stopped }).unwrap();
+    assert!(run_detached(&home, &queued).is_err());
     let events = read_events(&home, &queued);
     assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Stopped, result: Some(text), .. } if text.contains("취소"))), "{events:?}");
     assert!(events.iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Stopped, .. })));
