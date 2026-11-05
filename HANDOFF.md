@@ -24,3 +24,4 @@
 - 독립 검사 경로 /private/tmp/o-nov5-qa-su014nue, 항목별 로그 보존. 실제 계정 요청/Discord 발송 없음.
 - 이전 A 갈래의 11월 2일 성공 결과는 당시 버전 결과다. 최신 macOS 작업 지원 완료로 해석하지 말 것.
 - test_2 표준 macOS 빌드도 성공, 앱+o arm64 확인 및 첫 화면 실행 확인. ~/Applications/Project_O-test2-20261105.app (실사용 완료 아님).
+- 수정/실기보고 커밋 9f45a6c, draft PR #68 → test_2: https://github.com/chan12392/project_O/pull/68. 제품 실패 6개 미해결, 병합 없음.
