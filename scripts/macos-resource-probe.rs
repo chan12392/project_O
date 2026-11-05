@@ -1,4 +1,5 @@
-//! Copy into an independent temporary Cargo crate; never run against real state.
+//! Runs only isolated fake children and temporary state. Also usable in an independent crate.
+#![cfg(target_os = "macos")]
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -7,8 +8,10 @@ use o_core::run::plan::{Card, ProviderId, Resource, ResourceKind, ResourceMode};
 use o_core::run::store::{mark_spawning, recover_resource, reserve_slot, resource_leases, Reserved};
 
 fn fixture() -> (PathBuf, PathBuf) {
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let nonce = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let base = std::env::temp_dir().join(format!("o-mac-resource-{}-{nonce}", std::process::id()));
+    let base = std::env::temp_dir().join(format!("o-mac-resource-{}-{nonce}-{sequence}", std::process::id()));
     let project = base.join("project");
     std::fs::create_dir_all(&project).unwrap();
     (base.join("state"), project)
@@ -162,6 +165,8 @@ fn spawn_escaped(base: &Path, hold_pipe: bool) {
         .env("O_PROBE_LEAD", "grandchild").env("O_PROBE_LEAD_DIR", base)
         .stdin(Stdio::null()).stdout(if hold_pipe { Stdio::inherit() } else { Stdio::null() }).stderr(Stdio::null());
     unsafe { command.pre_exec(|| if setsid() < 0 { Err(std::io::Error::last_os_error()) } else { Ok(()) }); }
+    // This fixture must exit before its detached child; launchd reaps the child.
+    #[allow(clippy::zombie_processes)]
     let _grandchild = command.spawn().unwrap();
     let deadline = std::time::Instant::now() + Duration::from_secs(3);
     while !base.join("grand-ready").exists() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(20)); }

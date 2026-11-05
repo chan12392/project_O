@@ -569,14 +569,14 @@ pub fn resolved_path(path: &str) -> String {
 }
 
 pub fn request_stop(home: &Path, run_id: &str) -> io::Result<()> {
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     { with_start_gate(home, run_id, || fs::write(run_dir(home, run_id).join("stop"), "")) }
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     { fs::write(run_dir(home, run_id).join("stop"), "") }
 }
 
 /// Serialize the stop record with the final decision to resume a suspended card.
-#[cfg(windows)]
+#[cfg(any(windows, target_os = "macos"))]
 pub(crate) fn with_start_gate<T>(home: &Path, run_id: &str, action: impl FnOnce() -> io::Result<T>) -> io::Result<T> {
     let lock = OpenOptions::new().create(true).truncate(false).write(true).open(run_dir(home, run_id).join("start-stop.lock"))?;
     lock.lock()?;

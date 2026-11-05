@@ -12,3 +12,9 @@ pub mod resolve;
 pub mod worker;
 #[cfg(windows)]
 pub mod win_launch;
+
+#[cfg(target_os = "macos")]
+pub mod macos_worker;
+
+#[cfg(target_os = "macos")]
+pub(crate) mod macos_paths;

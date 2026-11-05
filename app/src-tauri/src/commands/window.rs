@@ -268,10 +268,12 @@ mod tests {
         let project = crate::commands::temp("quit-project");
         let project = project.to_string_lossy().into_owned();
         let thread = o_core::lead::start(&home, &project).unwrap();
+        // Create the newer thread before making the old one busy. Starting a
+        // new thread while a turn is live is now correctly refused by lead.
+        o_core::lead::start(&home, &project).unwrap();
         let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
             .open(o_core::lead::thread_dir(&home, &thread).join("turn.lock")).unwrap();
         lock.try_lock().unwrap();
-        o_core::lead::start(&home, &project).unwrap();
         std::fs::create_dir_all(home.join("runs").join("r1")).unwrap();
         append_event(&home, "r1", &OEvent::RunStart { at: "2026-11-02T00:00:00Z".into(), run_id: "r1".into(), title: "t".into(), project, cards: vec![] }).unwrap();
         mark_active(&home, &ActiveMarker { run_id: "r1".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() }).unwrap();

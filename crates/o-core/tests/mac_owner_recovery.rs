@@ -1,7 +1,9 @@
 use std::path::PathBuf;
 
 fn temporary_home() -> PathBuf {
-    let base = std::env::temp_dir().join(format!("o-mac-recovery-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    static NEXT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let sequence = NEXT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("o-mac-recovery-{}-{}-{sequence}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
     std::fs::create_dir_all(&base).unwrap();
     base
 }
