@@ -1,6 +1,7 @@
 import { CircleAlert, CircleCheck, FilePen, FileText, Gauge, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
 
 import type { CardLogEntry, CardView, RunView } from "../../../../src/core/snapshot.ts";
+import { EMPTY_COMPOSER, type Composer } from "../../../../src/core/panes.ts";
 import { lookOf } from "../office/characters.ts";
 import { PROVIDER_NAME, STATE_WORD, modelLine, timeOf } from "../../lib/format.ts";
 import { AgentStateDot } from "../../ui/AgentStateDot.tsx";
@@ -18,11 +19,15 @@ import type { Backend } from "../../platform/backend/index.ts";
 const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTerminal, "파일 읽기": FileText, "파일 수정": FilePen, "웹 검색": Globe };
 
 /** One work card's session, read back as Orca shows an agent transcript. */
-export function CardTranscript({ card, run, names, api, onFollowup }: { card: CardView; run: RunView; names: (party: string) => string; api?: Backend; onFollowup?: (runId: string) => void }) {
-  const [draft, setDraft] = useState("");
+export function CardTranscript({ card, run, names, api, onFollowup, composer }: { card: CardView; run: RunView; names: (party: string) => string; api?: Backend; onFollowup?: (runId: string) => void; composer?: Composer & { set: (change: Partial<Composer>) => void } }) {
+  // The draft lives with the caller when it gives one, so hiding this transcript keeps it.
+  const [own, setOwn] = useState<Composer>(EMPTY_COMPOSER);
+  const { draft, sending } = composer ?? own;
+  const update = composer?.set ?? ((change: Partial<Composer>) => setOwn((current) => ({ ...current, ...change })));
+  const setDraft = (text: string) => update({ draft: text });
+  const setSending = (value: boolean) => update({ sending: value });
   const draftRef = useRef<HTMLTextAreaElement>(null);
   useAutoGrow(draftRef, draft);
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const send = async () => {

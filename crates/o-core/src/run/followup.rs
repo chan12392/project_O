@@ -19,6 +19,9 @@ pub struct Target {
     pub clean: bool,
 }
 
+/// Marks a follow-up accepted while its original card was still running.
+pub(crate) const QUEUED_BEHIND: &str = "followup-queued-behind";
+
 /// Uses only O's saved run, never a caller-provided executable, session or workspace.
 pub fn target(home: &Path, run: &str, card: &str) -> Result<Target, String> {
     target_with_depth(home, run, card, 0)
@@ -114,6 +117,9 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
     let id = store::new_run_id(Utc::now());
     store::create_run(home, &id, &plan).map_err(|e| e.to_string())?;
     store::mark_mode(home, &id, &RunMode { profile, context: true, yolo: false }).map_err(|e| e.to_string())?;
+    // Whether it waits behind a running card is decided now, not when its runner starts:
+    // a stop recorded first must still cancel it (`runner::wait_for_followup`).
+    if running { fs::write(run_dir(home, &id).join(QUEUED_BEHIND), "").map_err(|e| e.to_string())?; }
     fs::write(run_dir(home, &id).join("followup.json"), serde_json::to_vec(&(run, card)).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let item = &plan.cards[0];
     let at = crate::sys::js::now_iso();

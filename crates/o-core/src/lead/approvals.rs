@@ -429,6 +429,13 @@ pub fn from_codex_files(params: &Value, changes: &[Value]) -> Request {
     };
     let detail = files.iter().map(|f| format!("--- {}\n{}", f.path, f.diff)).collect::<Vec<_>>().join("\n");
     let mut review: Vec<Value> = files.iter().map(|f| json!({ "tool_name": "Write", "tool_input": { "file_path": f.path, "content": f.diff } })).collect();
+    // A moved file is written at its destination too: that path meets the same checks (#62).
+    for change in changes {
+        let destination = change.pointer("/kind/move_path").or_else(|| change.pointer("/kind/movePath")).and_then(Value::as_str).filter(|path| !path.is_empty());
+        if let Some(destination) = destination {
+            review.push(json!({ "tool_name": "Write", "tool_input": { "file_path": destination, "content": change["diff"].as_str().unwrap_or("") } }));
+        }
+    }
     if let Some(root) = params["grantRoot"].as_str() { review.push(json!({ "tool_name": "Write", "tool_input": { "file_path": root, "content": "" } })); }
     Request { provider: ProviderId::Codex, kind: Kind::File, tool: "fileChange".into(), summary, detail, cwd: None, reason: params["reason"].as_str().map(str::to_string), files, review }
 }
@@ -652,6 +659,24 @@ mod tests {
         assert_eq!(from_claude("WebSearch", &json!({"query": query}), &project).detail, query);
         let url = format!("https://example.com/{}", "x".repeat(400));
         assert!(from_claude("WebFetch", &json!({"url": url, "prompt": "read"}), &project).detail.contains(&url));
+    }
+
+    /// #62: a Codex move is checked at its destination too, with no grantRoot to fall back on.
+    #[test]
+    fn codex_move_destination_is_checked_before_approval() {
+        let (home, thread, project, slot) = setup("codex-move");
+        let source = in_project(&project);
+        let into_state = home.join("leads").join("x.decision").to_string_lossy().into_owned();
+        let elsewhere = Path::new(&project).join("b.txt").to_string_lossy().into_owned();
+        let moved = |to: &str, key: &str| json!({"path": source, "kind": {"type": "update", key: to}, "diff": ""});
+        for key in ["move_path", "movePath"] {
+            let request = from_codex_files(&json!({}), &[moved(&into_state, key)]);
+            assert!(refusals(&home, &project, &request).iter().any(|r| r.contains("O 상태 폴더")), "{key}");
+            assert!(refusals(&home, &project, &from_codex_files(&json!({}), &[moved(&elsewhere, key)])).is_empty(), "{key}");
+        }
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, from_codex_files(&json!({}), &[moved(&into_state, "move_path")]), Duration::from_secs(5), &mut || panic!("asked the person"));
+        assert_eq!(outcome.decision, "deny");
+        assert!(pending(&home, &thread).is_empty());
     }
 
     #[test]

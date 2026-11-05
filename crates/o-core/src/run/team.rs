@@ -204,7 +204,16 @@ pub fn post(home: &Path, speaker: &Speaker) -> Result<(String, String), Refused>
     let key = name.strip_prefix(&prefix).ok_or_else(|| Refused::Io(io::Error::other("outbox 이름 오류")))?;
     let content = fs::read(&claimed).map_err(Refused::Io)?;
     let (to, text) = parse_outbox(&String::from_utf8_lossy(&content));
-    let id = send_tracked(home, speaker, &to, &text, false, Some(key))?;
+    let id = match send_tracked(home, speaker, &to, &text, false, Some(key)) {
+        // A policy refusal is final and nothing was stored: set the claim aside (content kept) so a
+        // rewritten outbox is posted next instead of the refused one again (#60). I/O errors keep the
+        // claim for the idempotent retry.
+        Err(Refused::Policy(violations)) => {
+            fs::rename(&claimed, dir.join(format!("{}.rejected-{key}", speaker.me))).map_err(Refused::Io)?;
+            return Err(Refused::Policy(violations));
+        }
+        result => result?,
+    };
     fs::remove_file(claimed).map_err(Refused::Io)?;
     Ok((to, id))
 }

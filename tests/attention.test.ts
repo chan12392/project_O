@@ -136,6 +136,22 @@ test("an approval request remains visible until the matching direct reply", () =
   assert.equal(nextUp([replied], after(team.endedAt!, 60_000)).todo.filter((item) => item.kind === "answer").length, 0);
 });
 
+test("a question or approval the card cancelled leaves next up, picks and the action count", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const now = after(team.endedAt!, 60_000);
+  for (const kind of ["question", "approval"] as const) {
+    const asked: RunView = { ...team, status: "running", messages: [
+      { at: at(1000), id: "gone", kind, from: "a", to: "lead", text: "취소할 질문인가요?", recipients: { lead: "cancelled" } },
+      { at: at(2000), id: "open", kind, from: "a", to: "lead", text: "남은 질문인가요?", recipients: { lead: "stored" } },
+    ] };
+    const answers = nextUp([asked], now).todo.filter((i) => i.kind === "answer");
+    assert.deepEqual(answers.map((i) => i.questionId), ["open"], kind);
+    assert.equal(answers.filter(needsAction).length, 1, kind);
+    assert.deepEqual(recommend([asked], now).filter((s) => s.kind === "answer").map((s) => s.item?.questionId), ["open"], kind);
+  }
+});
+
 test("fleet stats and activity read the same runs", () => {
   const now = after(byId("20261101-162328-9p0b").endedAt!, 0);
   const stats = fleetStats(runs, now);

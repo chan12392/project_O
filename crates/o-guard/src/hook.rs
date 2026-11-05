@@ -75,6 +75,10 @@ static GH_MERGE_CALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgh\s+(?:
 static API_PR_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge/?$").unwrap());
 static API_MERGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/[^/\s]+/[^/\s]+/merges/?$").unwrap());
 static GRAPHQL_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b").unwrap());
+/// A program that runs a string as a command, so single quotes handed to it do not keep a call literal.
+static STRING_RUNNER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:bash|sh|zsh|dash|ksh|fish|pwsh|powershell|cmd|eval|iex|invoke-expression|invoke-command|start-process|ssh|wsl|sudo|su|xargs|watch|python3?|py|node|perl|ruby)\b").unwrap()
+});
 /// Credentials named on the command line make gh act as someone the login lookup never saw.
 static GH_IDENTITY_OVERRIDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_HOST)\b|--hostname\b").unwrap());
 
@@ -274,7 +278,8 @@ fn is_free_base(base: &str) -> bool {
 /// Each `gh pr merge` (`true`) or `gh api` (`false`) call with its arguments: the text from the call
 /// to the first `;`, `&`, `|` or line break (LF, CR) outside quotes. Calls are found anywhere, so a
 /// line break or quoting cannot hide one; one inside an `echo` only costs a lookup. The third value
-/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, `$(` or a line break before it).
+/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, `$(` or a line break before it)
+/// and is not literal text inside single quotes (#56).
 fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
     GH_MERGE_CALL
         .captures_iter(command)
@@ -282,10 +287,41 @@ fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
             let whole = c.get(0).unwrap();
             let rest = &command[whole.end()..];
             let before = command[..whole.start()].trim_end_matches([' ', '\t']);
-            let starts_command = before.is_empty() || before.ends_with([';', '&', '|', '(', '\n', '\r']);
+            let starts_command = (before.is_empty() || before.ends_with([';', '&', '|', '(', '\n', '\r']))
+                && !in_literal_quote(command, whole.start());
             (c.get(1).is_some(), &rest[..unquoted_end(rest)], starts_command)
         })
         .collect()
+}
+
+/// Whether `at` lies inside single quotes, where bash and PowerShell run nothing. Read with both
+/// escape characters (bash `\`, PowerShell `` ` ``) and true only when both readings agree. Double
+/// quotes do not count (`$(…)` runs inside them), nor does text handed to a program that runs a string.
+/// Quoting this reading cannot follow (`$'…'`, here-documents, comments, PowerShell's curly quotes)
+/// counts as not literal, so the call keeps its full check.
+fn in_literal_quote(command: &str, at: usize) -> bool {
+    const CURLY_QUOTES: [char; 7] = ['\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}'];
+    if STRING_RUNNER.is_match(command) || command.contains("$'") || command.contains("<<") || command.contains(CURLY_QUOTES) {
+        return false;
+    }
+    ['\\', '`'].into_iter().all(|escape| {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for c in command[..at].chars() {
+            match quote {
+                Some('\'') if c == '\'' => quote = None,
+                Some('\'') => {}
+                _ if escaped => escaped = false,
+                _ if c == escape => escaped = true,
+                Some(_) if c == '"' => quote = None,
+                Some(_) => {}
+                None if c == '"' || c == '\'' => quote = Some(c),
+                None if c == '#' => return false,
+                None => {}
+            }
+        }
+        quote == Some('\'')
+    })
 }
 
 /// Where the command part starting `text` ends: the first `;`, `&`, `|`, LF or CR outside quotes.

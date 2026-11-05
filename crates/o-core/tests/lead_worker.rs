@@ -257,6 +257,45 @@ fn explicit_approval_request_does_not_wake_the_lead() {
     cleanup(&home);
 }
 
+#[test]
+fn question_the_person_answered_is_acknowledged_without_a_model_turn() {
+    let (home, project, card) = fixture();
+    let id = team::send_tracked(&home, &card, "lead", "어느 쪽으로 할까요?", true, Some("manual-first")).ok().unwrap();
+    let recipient = Speaker { run_id: "run-1".into(), me: "lead".into(), cards: card.cards.clone() };
+    team::send_reply(&home, &recipient, "a", "답: 왼쪽", false, None, Some(&id)).ok().unwrap();
+    let spawner: Arc<Spawner> = Arc::new(|_, _| panic!("이미 답한 질문에서 총괄을 실행하면 안 됩니다"));
+    assert!(lead::wake_card(&home, &project, "run-1", &card.cards, spawner.as_ref()).unwrap());
+    assert!(team::read(&home, &recipient, false).unwrap().is_empty());
+    let replies: Vec<_> = team::read(&home, &card, false).unwrap().into_iter().filter(|m| m.reply_to.as_deref() == Some(id.as_str())).collect();
+    assert_eq!(replies.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["답: 왼쪽"]);
+    let next = team::send_tracked(&home, &card, "lead", "다음 메시지", true, Some("after")).ok().unwrap();
+    assert_eq!(team::read(&home, &recipient, false).unwrap()[0].id, next);
+    cleanup(&home);
+}
+
+#[test]
+fn person_answering_during_the_turn_keeps_their_answer() {
+    let (home, project, card) = fixture();
+    let id = team::send_tracked(&home, &card, "lead", "어느 쪽으로 할까요?", true, Some("manual-race")).ok().unwrap();
+    let (started, ready) = std::sync::mpsc::channel();
+    let spawner: Arc<Spawner> = Arc::new(move |_, cwd| {
+        started.send(()).unwrap();
+        let mut command = support::fake_worker_launch()?;
+        command.current_dir(cwd).args(["--exact", "fake_cli", "--nocapture"]).env("O_TEST_WORKER_CLI", "1").env("O_TEST_SLOW", "1").env("O_TEST_ANSWER", "총괄의 다른 답");
+        Ok(command)
+    });
+    let (h, p, cards) = (home.clone(), project.clone(), card.cards.clone());
+    let job = std::thread::spawn(move || lead::wake_card(&h, &p, "run-1", &cards, spawner.as_ref()));
+    ready.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    let recipient = Speaker { run_id: "run-1".into(), me: "lead".into(), cards: card.cards.clone() };
+    team::send_reply(&home, &recipient, "a", "답: 왼쪽", false, None, Some(&id)).ok().unwrap();
+    assert!(job.join().unwrap().unwrap());
+    let replies: Vec<_> = team::read(&home, &card, false).unwrap().into_iter().filter(|m| m.reply_to.as_deref() == Some(id.as_str())).collect();
+    assert_eq!(replies.iter().map(|m| m.text.as_str()).collect::<Vec<_>>(), ["답: 왼쪽"]);
+    assert!(team::read(&home, &recipient, false).unwrap().is_empty(), "질문이 처리 불명으로 남아 뒤 메시지를 막으면 안 됩니다");
+    cleanup(&home);
+}
+
 fn cleanup(home: &std::path::Path) {
     let root = home.parent().unwrap().canonicalize().unwrap();
     let temp = std::env::temp_dir().canonicalize().unwrap();

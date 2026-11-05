@@ -2,7 +2,7 @@ import { Check, MessageCircleQuestion } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
 import { isLeadProvider, type LeadItem } from "../../../../src/core/lead.ts";
-import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, isComplete, pendingLeadAsk, toggle, type Answer, type PendingAsk } from "../../../../src/core/questions.ts";
+import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, isComplete, leadRuns, pendingLeadAsk, toggle, type Answer, type PendingAsk } from "../../../../src/core/questions.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { settingsNow, useSettings } from "../../data/settings.ts";
@@ -48,7 +48,8 @@ function lastChoice(items: readonly LeadItem[]) {
 export function QuestionDialog({ api, lead, runs, live }: { api: Backend; lead: LeadState; runs: readonly RunView[]; live: boolean }) {
   const { clean } = useSettings();
   const leadAsk = live ? pendingLeadAsk(lead.items) : undefined;
-  const cards = useMemo(() => (live ? cardQuestions(runs) : []), [runs, live]);
+  const led = useMemo(() => leadRuns(lead.items), [lead.items]);
+  const cards = useMemo(() => (live ? cardQuestions(runs, led) : []), [runs, live, led]);
   const asks = useMemo(() => [...(leadAsk ? [leadAsk] : []), ...cards], [leadAsk?.key, cards]);
   const [later, setLater] = useState<ReadonlySet<string>>(new Set());
   // Sent and not yet gone from the list (the next poll drops it); failed ones come back.

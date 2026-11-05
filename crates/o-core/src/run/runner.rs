@@ -1106,7 +1106,8 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
     });
     // Queued behind a card that was still running: stopping that card (or its run) cancels
     // the queued instruction too. One sent after the card already ended is a new request.
-    let queued_behind = source_end().is_none();
+    // The mark from acceptance keeps that true when the stop was recorded before this runner got here.
+    let queued_behind = run_dir(home, run_id).join(super::followup::QUEUED_BEHIND).exists() || source_end().is_none();
     loop {
         if stop_requested(home, run_id) { return Err("후속 작업이 시작 전에 중지되었습니다".into()); }
         let ended = source_end();
