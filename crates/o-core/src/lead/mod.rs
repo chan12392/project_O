@@ -705,6 +705,8 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
         _ => None,
     }) else { return Err("실행에 연결된 총괄 설정이 없습니다".into()) };
     let Some(profile) = profile else { return Err("이전 총괄의 프로필이 기록되지 않아 자동 응답할 수 없습니다".into()) };
+    // An effort recorded before the CLI stopped taking it (Codex `minimal`) runs at the CLI's default.
+    let effort = effort.filter(|e| providers::get(provider).lead_efforts().contains(e));
     let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: cards.to_vec() };
     let Some(message) = team::read(home, &speaker, false).map_err(|e| e.to_string())?.into_iter().next() else { return Ok(false) };
     if message.kind == "approval" {

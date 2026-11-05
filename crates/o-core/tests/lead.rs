@@ -1169,6 +1169,8 @@ fn refused_requests() {
     let cases = [
         SendRequest { provider: ProviderId::Agy, effort: Some("minimal"), ..request(&project, "a") },
         SendRequest { effort: Some("minimal"), ..request(&project, "a") },
+        // Codex's models start at `low`.
+        SendRequest { provider: ProviderId::Codex, effort: Some("minimal"), ..request(&project, "a") },
         // The lead's model takes the shape a card's model does (policy's model rule).
         SendRequest { model: Some("-opus"), ..request(&project, "a") },
         SendRequest { model: Some("opus 5"), ..request(&project, "a") },

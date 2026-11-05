@@ -60,7 +60,7 @@ impl Provider for Codex {
     }
 
     fn lead_efforts(&self) -> &'static [&'static str] {
-        &["minimal", "low", "medium", "high", "xhigh"]
+        &["low", "medium", "high", "xhigh"]
     }
 
     /// The lead drives app-server over stdio; turn settings are sent through its protocol.
