@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import type { OEvent } from "../src/core/events.ts";
 import { leadItems } from "../src/core/lead.ts";
-import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, isComplete, parseCardQuestion, pendingLeadAsk, toggle } from "../src/core/questions.ts";
+import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, isComplete, leadRuns, parseCardQuestion, pendingLeadAsk, toggle } from "../src/core/questions.ts";
 import { snapshot, type RunView } from "../src/core/snapshot.ts";
 
 const demo = JSON.parse(readFileSync(new URL("../app/src/data/demo-runs.json", import.meta.url), "utf8")) as { runs: { events: OEvent[] }[] };
@@ -82,13 +82,14 @@ test("a card's question waits while its run goes and the lead has not answered t
   assert.equal(cardQuestions([{ ...asked, runId: `session-${asked.runId}` }]).length, 0);
 });
 
-test("an approval waits for its own answer; a --question is left to the lead", () => {
+test("an approval waits for its own answer; a --question is left to the lead that dispatched the run", () => {
   const asked: RunView = { ...live, messages: [
     { at: at(1000), id: "q1", kind: "approval", from: "a", to: "lead", text: "어떤 방식? [보기: A | B]" },
     { at: at(2000), id: "q2", kind: "question", from: "a", to: "lead", text: "설정은 어디에 있나요?" },
     { at: at(3000), from: "lead", to: "a", text: "다른 안내" },
   ] };
-  const pending = cardQuestions([asked]);
+  const led = new Set([asked.runId]);
+  const pending = cardQuestions([asked], led);
   // The lead answers q2 itself (ADR-0029); the person is not asked it as well.
   assert.equal(pending.length, 1);
   assert.equal(pending[0].source.kind === "card" && pending[0].source.approval, true);
@@ -96,5 +97,28 @@ test("an approval waits for its own answer; a --question is left to the lead", (
   assert.equal(pending[0].questions[0].options.length, 2);
   // An answer to another request, or a message without one, does not answer it.
   const answered: RunView = { ...asked, messages: [...asked.messages, { at: at(4000), from: "lead", to: "a", text: "답", replyTo: "q1" }] };
-  assert.equal(cardQuestions([answered]).length, 0);
+  assert.equal(cardQuestions([answered], led).length, 0);
+});
+
+test("a --question from a run no lead thread dispatched waits on the person", () => {
+  const asked: RunView = { ...live, messages: [
+    { at: at(1000), id: "q2", kind: "question", from: "a", to: "lead", text: "설정은 어디에 있나요?" },
+    { at: at(2000), id: "q3", kind: "question", from: "b", to: "lead", text: "취소한 질문인가요?", recipients: { lead: "cancelled" } },
+  ] };
+  // Started with `o dispatch` from the CLI: the thread neither planned nor continued it.
+  const events = [
+    { t: "lead.plan", at: at(0), planId: "p1", plan: { title: "다른 작업", cards: [] }, ok: true },
+    { t: "lead.dispatch", at: at(0), planId: "p1", runId: "other-run" },
+    { t: "lead.followup", at: at(0), sourceRunId: "other-run", cardId: "a", runId: "followup-run" },
+  ];
+  const thread = leadItems(events);
+  assert.deepEqual([...leadRuns(thread)].sort(), ["followup-run", "other-run"]);
+  const [only, ...rest] = cardQuestions([asked], leadRuns(thread));
+  assert.equal(rest.length, 0, "a cancelled question asks nothing");
+  assert.equal(only.source.kind === "card" && only.source.messageId, "q2");
+  assert.equal(only.source.kind === "card" && only.source.approval, false);
+  // Once a reply is linked to it, nothing waits.
+  assert.equal(cardQuestions([{ ...asked, messages: [...asked.messages, { at: at(3000), from: "lead", to: "a", text: "답: 여기", replyTo: "q2" }] }], leadRuns(thread)).length, 0);
+  // The same run dispatched by the thread is the lead's to answer.
+  assert.equal(cardQuestions([asked], new Set([asked.runId])).length, 0);
 });

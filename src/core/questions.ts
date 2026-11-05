@@ -73,19 +73,31 @@ export function parseCardQuestion(text: string): Question {
   return { question: question || text.trim(), options: labels.length >= 2 ? labels.map((label) => ({ label })) : [], multi: false };
 }
 
+/** Runs the lead's current thread dispatched or continued: their cards' questions wake it (`wake_card`). */
+export function leadRuns(items: readonly LeadItem[]): Set<string> {
+  const runs = new Set<string>();
+  for (const item of items) {
+    if (item.kind === "plan" && item.runId) runs.add(item.runId);
+    if (item.kind === "followup") runs.add(item.runId);
+  }
+  return runs;
+}
+
 /**
  * Card questions the lead has not answered, from O runs still running (a finished card could
  * not read the answer) and cards still at work. Messages that only report are left out.
+ * `led`: runs whose `--question`s the lead answers itself; any other run's wait on the person.
  */
-export function cardQuestions(runs: readonly RunView[]): PendingAsk[] {
+export function cardQuestions(runs: readonly RunView[], led: ReadonlySet<string> = new Set()): PendingAsk[] {
   const asks: PendingAsk[] = [];
   for (const run of runs) {
     if (isSessionRun(run) || run.status !== "running") continue;
     const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
     for (const card of run.cards) {
       if (card.state !== "running" && card.state !== "waiting") continue;
-      // A `--question` goes to the lead, which answers it itself (ADR-0029); only an approval waits on the person.
-      const structured = run.messages.filter((m) => m.from === card.id && m.to === "lead" && m.id && m.kind === "approval" && !cancelledForLead(m) && !run.messages.some((reply) => reply.from === "lead" && reply.replyTo === m.id));
+      // A `--question` goes to the lead, which answers it itself in a run it dispatched (ADR-0029); an approval,
+      // or a question from a run no lead thread handles (`o dispatch` from the CLI), waits on the person.
+      const structured = run.messages.filter((m) => m.from === card.id && m.to === "lead" && m.id && (m.kind === "approval" || (m.kind === "question" && !led.has(run.runId))) && !cancelledForLead(m) && !run.messages.some((reply) => reply.from === "lead" && reply.replyTo === m.id));
       for (const m of structured) {
         asks.push({ key: `card:${run.runId}:${card.id}:${m.id}`, source: { kind: "card", runId: run.runId, runTitle: run.title, cardId: card.id, cardLabel: card.label, provider: card.provider, messageId: m.id, approval: m.kind === "approval" }, intro: "", questions: [parseCardQuestion(m.text)], since: m.at });
       }
