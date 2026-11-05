@@ -2,7 +2,7 @@
 
 | 갈래 | 한 줄 요약 | 마지막 갱신 | 급함 |
 |---|---|---|---|
-| B | 하위 프로그램 coalition 추적 구현·격리 검사 통과, 실제 AI 검증 진행 | 2026-11-05 | 실사용·전체검사·앱 재설치 남음 |
+| B | 맥 하위 작업 종료·실제 Codex 연속/중지·앱설치 완료 | 2026-11-05 | PR68 팀 검토 |
 | A | macOS 앱 빌드·실제 시작 검증 완료 | 2026-11-02 21:51 | 사람 검토·공식 CLI 로그인 |
 
 ## A. macOS 앱
@@ -16,14 +16,17 @@
 - 코드 구현 커밋 0e9f9f8, origin/eunmi-macos push 완료. 검토용 draft PR https://github.com/chan12392/project_O/pull/27 생성. GitHub 검사 진행 중. 사람 검토 후 통합하며 보호 브랜치 직접 수정·병합 없음.
 - 다음: 사용자 공식 CLI 로그인 후 빈 프로젝트에서 실제 작업 검증. Windows와 동등한 비정상 종료 하위 프로세스 정리는 아직 보장하지 않음. 외부 채팅 메시지 발송 승인 없음.
 
-## B. macOS 오류 수정 — 2026-11-05
+## B. macOS 하위 프로그램·실제 AI 검증 완료 — 2026-11-05 13:47
 
-- 2026-11-05 후속 작업 진행: launchd 임시 작업별 resource coalition, 커널 시작/종료 수 비교, audit-token PID 세대 검증으로 정확한 자손 종료 구현. macos_native는 기존 suspended spawn; macos_worker는 전용 도우미와 비공개 소켓.
-- 제품 회귀14개 통과: detached/setsid 자손은 실제 PID+시작시각 종료를 확인한 뒤 예약/총괄 잠금 해제. 추가 격리 검사6개 통과(이웃/동시 작업 보존, 부모 crash, 시작 전 중지, 환경/인수/cwd).
-- 구현 커밋 95c99f3. 실제 Codex 0.166.0 기본 모드 파일 작성/명령 실행·후속 지시 done, 실행 중 중지 stopped. 관찰한 작업 프로그램7개 모두 종료(0.11초), 예약빈배열. 로그 /private/tmp/o-macos-real-state-20261105b, /private/tmp/o-real-cancel-proof-observed.json.
-- 진행 중: 전체 검사·새 앱 재설치. 현재 설치 앱은 이전 ceb8794, 새 구현 설치 전. PR68 아직 병합 안 함.
-- 공식 Codex CLI 누락된 arm64 선택 의존성을 복구한 뒤, 0.150.1의 모델지원 오류를 확인해 공식 최신0.166.0으로 갱신. `codex login status`: Logged in using ChatGPT. 인증 파일 접근 없음.
-- Discord 2026-11-05 13:22 대표: test_2와 맥 충돌 점검 요청. origin/test_2=1fe1412, PR68 mergeable/CLEAN·GitHub 검사 성공 확인. 외부 채팅 발송 없음.
+- 사용자 요청 범위 완료: 작업별 launchd coalition, audit-token 신호, 커널 작업 수로 자손 전체 종료 증명. PID 목록은 발견에만 사용하며 불명 예약을 강제해제하지 않음. ADR0030.
+- 구현95c99f3·검사650807b, eunmi-macos-validation, PR68 → test_2. origin/test_2=1fe1412 최신 확인. 이전 PR27 통째 중복 적용 금지. PR 병합·Discord 발송 없음.
+- 실제 Codex0.166.0 개인 로그인·기본 sandbox 모드: Python 작성/명령실행 done, 같은세션후속 done, 실행중중지 stopped. 관찰7프로그램 동일신원 잔존0, 0.11초, 예약빈배열. API키/로그인파일 접근없음.
+- 초기0.150.1 모델지원실패 후 공식npm0.166.0 갱신. 첫 실패 상태는 별도시험폴더에 보존, 성공실기 /private/tmp/o-macos-real-state-20261105b. 결과물 ~/Projects/project-o-macos-smoke-20261105.
+- Rust workspace·화면100·타입·clippy·정책471 통과. 맥제품14, 격리7(+수동CLI1), PID세대/공유묶음2 포함. 로그 /tmp/o-coalition-workspace5.log 및 문서폴더 하위 '최종'.
+- 새 arm64 앱 설치 /Users/piglet/Applications/project_O.app, 동봉o와 ~/.cargo/bin/o SHA동일. 백업 ~/Applications/Project_O_backups/project_O-before-coalition-20261105.app.
+- 설치 release도우미 fork실행 RELEASE_HELPER_OK, 시작8/종료7/활성1로 증명. 실제창 Codex연결됨·개인프로필·Codex선택·초기연결완료·예약없음. YOLO끄기/하루예산켜기 유지.
+- 범위: 이 Apple Silicon/macOS26.6.2·Codex 실기. Intel/다른macOS/다른공급자 실호출은 미검증. 도우미자체 강제종료 등 증명없는복구는 계속불명보존. 필요한커널API/GUI도메인 없으면 시작거부.
+- 다음: PR68 팀검토 후 통합(본작업에서 병합안함). 외부메시지 발송승인 없음.
 
 <details><summary>앞선 6개 오류 수정 상태</summary>
 
