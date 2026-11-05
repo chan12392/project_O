@@ -343,7 +343,7 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
 /** The agents that can lead and the efforts each takes (crates/o-core/src/providers `lead_efforts`). */
 export const LEAD_EFFORTS = {
   claude: ["low", "medium", "high", "xhigh", "max"],
-  codex: ["minimal", "low", "medium", "high", "xhigh"],
+  codex: ["low", "medium", "high", "xhigh"],
   agy: ["low", "medium", "high", "xhigh", "max"],
 } as const satisfies Partial<Record<ProviderId, readonly string[]>>;
 

@@ -113,6 +113,8 @@ test("switching the lead keeps the effort, or the nearest one the new CLI takes"
   assert.equal(effortFor("codex", "high"), "high");
   assert.equal(effortFor("codex", "max"), "xhigh");
   assert.equal(effortFor("claude", "minimal"), "low");
+  // Codex's models start at low, so a saved `minimal` comes back as low.
+  assert.equal(effortFor("codex", "minimal"), "low");
   assert.equal(effortFor("claude", undefined), "medium");
 });
 
