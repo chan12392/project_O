@@ -2,7 +2,7 @@
 
 | 갈래 | 한 줄 요약 | 마지막 갱신 | 급함 |
 |---|---|---|---|
-| B | 맥 6개 재현 오류 수정·전체 검사 통과, native 빌드 확인 중 | 2026-11-05 | 하위 프로그램 전체 지원은 제한 |
+| B | 맥 6개 재현 오류 수정·전체검사·앱설치 완료, 하위 작업 제한 잔존 | 2026-11-05 | 하위 프로그램 전체 지원은 제한 |
 | A | macOS 앱 빌드·실제 시작 검증 완료 | 2026-11-02 21:51 | 사람 검토·공식 CLI 로그인 |
 
 ## A. macOS 앱
@@ -22,9 +22,11 @@
 - 작업 브랜치 eunmi-macos-validation, PR68에 이어서 수정. 보호 브랜치 변경 없음.
 - 파일 별칭: CoreFoundation Unicode 정규화·볼륨 대소문자 정책, 기존 예약 키도 비교 때 변환.
 - macOS 시작 전 정지한 posix_spawn + kqueue NOTE_FORK/NOTE_EXIT 감시. 직접 자식 정상/중지 증명은 가능; fork가 발생하면 자손 종료 보증이 없어 불명 유지. 실제 CLI 도구 실행 전체 지원 완료 아님. ADR0030 참조.
-- 기존 독립11개 검사는 11/11 통과. 이후 셸 없는 native posix_spawn으로 개선했고 전체 회귀 검사 진행 중(/tmp/project-o-mac-native-all.log).
+- 셸 없는 native posix_spawn 최종 실행부에서 맥 회귀14개(제품11+보조3) 통과. 전체 Rust workspace 통과(/tmp/project-o-mac-final-tests.log), 화면100개·타입·clippy·정책 통과.
 - 기존 앱 검사2개는 변경된 토큰 응답/대화 잠금 계약을 반영하지 못해 실패. 기대 응답 및 테스트 준비 순서 수정(제품 기능 완화 없음).
-- 전체 Rust workspace 검사 통과, 화면100개·앱 타입검사·clippy 통과. macOS 회귀14개(보조3개 포함) 통과. 다음=최종 앱 설치/창 확인, PR68 갱신·커밋. 외부 채팅 발송 없음.
+- 코드 커밋 ceb8794 push 완료. PR68 제목/본문을 최종 수정으로 갱신, draft 유지·병합 없음. GitHub branch-flow 통과, policy 진행 중(13:20 확인).
+- 최종 arm64 앱+o 빌드 성공. /Users/piglet/Applications/project_O.app 교체 설치 및 실제 창·남아 있는 예약 없음 표시 확인. 이전 앱은 /Users/piglet/Applications/Project_O_backups/project_O-before-20261105-fix.app 보존.
+- 다음: 실제 공급자 도구 실행에서 fork 이후 종료를 입증할 실행 격리 설계. 현재는 하위 프로그램을 만든 작업이 끝나도 불명으로 남을 수 있으므로 완전한 맥 연속 코딩 지원 완료가 아니다. 실제 로그인·유료 요청·Intel 미검증. 외부 채팅 발송 없음.
 
 <details><summary>이전 맥 실기 기록</summary>
 ## B. macOS 재검증 — 2026-11-05
