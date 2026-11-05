@@ -17,6 +17,7 @@ sha2 = "0.10"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 libc = "0.2"
+core-foundation-sys = "0.8"
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61", features = [
@@ -46,3 +47,7 @@ harness = false
 [[test]]
 name = "windows_native_launch"
 harness = false
+
+[[test]]
+name = "macos_resource_probe"
+path = "../../scripts/macos-resource-probe.rs"

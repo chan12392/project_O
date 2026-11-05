@@ -1,6 +1,8 @@
 //! Normalize declared resources before they are reserved across runs.
 use std::io;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Component, Path};
+#[cfg(not(target_os = "macos"))]
+use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
@@ -45,7 +47,10 @@ pub(crate) fn normalize(project: &str, resources: &[Resource]) -> io::Result<Vec
                 let mut resolved = path.canonicalize()?;
                 if !resolved.starts_with(root) { return Err(io::Error::other("프로젝트 밖을 가리키는 자원 경로입니다")); }
                 for name in missing.iter().rev() { resolved.push(name); }
+                #[cfg(not(target_os = "macos"))]
                 let text = resolved.to_string_lossy().replace('\\', "/");
+                #[cfg(target_os = "macos")]
+                let text = crate::sys::macos_paths::key(&resolved)?.to_str().ok_or_else(|| io::Error::other("자원 경로 문자 변환 실패"))?.to_string();
                 if cfg!(windows) { text.to_lowercase() } else { text }
             }
         };
@@ -59,7 +64,16 @@ pub(crate) fn conflicts(a: &[Key], b: &[Key]) -> bool {
         if x.kind != y.kind || (x.mode == ResourceMode::Read && y.mode == ResourceMode::Read) { return false; }
         match x.kind {
             ResourceKind::External => x.key == y.key,
-            ResourceKind::ProjectPath => PathBuf::from(&x.key).starts_with(&y.key) || PathBuf::from(&y.key).starts_with(&x.key),
+            ResourceKind::ProjectPath => {
+                #[cfg(target_os = "macos")]
+                let (a, b) = match (crate::sys::macos_paths::key(Path::new(&x.key)), crate::sys::macos_paths::key(Path::new(&y.key))) {
+                    (Ok(a), Ok(b)) => (a, b),
+                    _ => return true, // A volume we cannot inspect cannot prove non-conflict.
+                };
+                #[cfg(not(target_os = "macos"))]
+                let (a, b) = (PathBuf::from(&x.key), PathBuf::from(&y.key));
+                a.starts_with(&b) || b.starts_with(&a)
+            },
         }
     }))
 }

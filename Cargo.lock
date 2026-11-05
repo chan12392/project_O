@@ -2211,6 +2211,7 @@ name = "o-core"
 version = "0.3.0"
 dependencies = [
  "chrono",
+ "core-foundation-sys",
  "libc",
  "o-guard",
  "regex",

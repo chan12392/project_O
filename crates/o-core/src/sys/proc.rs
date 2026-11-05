@@ -95,6 +95,8 @@ pub fn spawn_detached(command: &mut Command) -> std::io::Result<Child> {
 
 /// Windows holds a kill-on-close job; Linux only tracks the directly owned child.
 pub struct KillOnClose {
+    #[cfg(target_os = "macos")]
+    pub(crate) monitor: super::macos_worker::Monitor,
     #[cfg(windows)]
     pub(crate) job: windows_sys::Win32::Foundation::HANDLE,
     #[cfg(target_os = "linux")]
@@ -140,7 +142,10 @@ impl KillOnClose {
         false
     }
 
-    #[cfg(not(any(windows, target_os = "linux")))]
+    #[cfg(target_os = "macos")]
+    pub fn stop_and_confirm(&mut self) -> bool { self.monitor.stop_and_confirm() }
+
+    #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
     pub fn stop_and_confirm(&mut self) -> bool { false }
 }
 

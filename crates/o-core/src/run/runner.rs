@@ -8,7 +8,7 @@ use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::panic::{self, AssertUnwindSafe};
 use std::path::{Path, PathBuf};
-#[cfg(not(windows))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::process::Stdio;
 use std::sync::{mpsc, Arc, Mutex};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -656,7 +656,16 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
                 Err(error) => { slot.started = false; Err(error) }
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            crate::run::store::mark_spawning(home, &slot.reservation)?;
+            slot.started = true;
+            match crate::sys::macos_worker::spawn(&command) {
+                Ok((child, tree)) => Ok((crate::sys::worker::Child::mac(child), Some(tree))),
+                Err(error) => { slot.started = false; Err(error) }
+            }
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             crate::run::store::mark_spawning(home, &slot.reservation)?;
             let mut command = command.command();
@@ -745,9 +754,9 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         if let Some(hook) = hook { hook(); }
     }
     let start_event = OEvent::CardStart { at: now_iso(), card_id: card.id.clone(), pid: Some(pid) };
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let mut resume_attempted = false;
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     let resumed = crate::run::store::with_events(home, run_id, |file| {
         if !dependencies.is_empty() {
             let events = crate::run::store::event_text(file)?;
@@ -764,10 +773,10 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
             child.resume()
         })
     });
-    #[cfg(not(windows))]
+    #[cfg(not(any(windows, target_os = "macos")))]
     let resumed = { emit(start_event)?; child.resume() };
     if let Err(error) = resumed {
-        #[cfg(windows)]
+        #[cfg(any(windows, target_os = "macos"))]
         if !resume_attempted {
             drop(running_child);
             if slot.exited.load(Ordering::Acquire) { slot.started = false; }

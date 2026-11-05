@@ -36,7 +36,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{self, OpenOptions};
 use std::io::{self, BufRead, BufReader, BufWriter, ErrorKind, Read, Write};
 use std::path::{Path, PathBuf};
-#[cfg(any(not(windows), test))]
+#[cfg(not(any(windows, target_os = "macos")))]
 use std::process::Stdio;
 use std::sync::{Arc, Mutex};
 use std::thread;
@@ -950,20 +950,20 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         return Ok(added);
     }
     let spawned = command.and_then(|command| {
+        #[cfg(all(test, any(windows, target_os = "macos")))]
+        if turn_process::NO_JOB.get() {
+            let mut command = command.command();
+            slot.marker.unresolved = Some(true);
+            slot.keep_marker = true;
+            if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
+            let child = match proc::hide_window(&mut command).stdin(std::process::Stdio::piped()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn() {
+                Ok(child) => child,
+                Err(error) => { slot.keep_marker = false; return Err(error); }
+            };
+            return Ok((crate::sys::worker::Child::standard(child), None));
+        }
         #[cfg(windows)]
         {
-            #[cfg(test)]
-            if turn_process::NO_JOB.get() {
-                let mut command = command.command();
-                slot.marker.unresolved = Some(true);
-                slot.keep_marker = true;
-                if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
-                let child = match proc::hide_window(&mut command).stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn() {
-                    Ok(child) => child,
-                    Err(error) => { slot.keep_marker = false; return Err(error); }
-                };
-                return Ok((crate::sys::worker::Child::standard(child), None));
-            }
             let native = command.native(std::env::vars_os())?;
             let executable = match command.handle_owner_executable {
                 Some(path) => path,
@@ -983,7 +983,17 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                 Err(error) => { slot.keep_marker = false; Err(error) }
             }
         }
-        #[cfg(not(windows))]
+        #[cfg(target_os = "macos")]
+        {
+            slot.marker.unresolved = Some(true);
+            slot.keep_marker = true;
+            if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
+            match crate::sys::macos_worker::spawn(&command) {
+                Ok((child, tree)) => Ok((crate::sys::worker::Child::mac(child), Some(tree))),
+                Err(error) => { slot.keep_marker = false; Err(error) }
+            }
+        }
+        #[cfg(not(any(windows, target_os = "macos")))]
         {
             let mut command = command.command();
             slot.marker.unresolved = Some(true);
@@ -1013,14 +1023,14 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         let _ = child.kill();
         return Err(format!("총괄 프로세스 상태를 기록하지 못했습니다: {error}"));
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if slot.stop_asked() {
         let confirmed = tree.as_ref().is_some_and(|tree| tree.lock().is_ok_and(|mut tree| tree.stop_and_confirm())) && child.wait(&tree).is_ok();
         if confirmed { slot.keep_marker = false; }
         emit(if confirmed { stopped() } else { LeadEvent::Error { at: now_iso(), text: "총괄 중지 후 자손 종료 상태가 불명입니다".into() } })?;
         return Ok(added);
     }
-    #[cfg(windows)]
+    #[cfg(any(windows, target_os = "macos"))]
     if contained { if let Err(error) = child.resume() { return Err(format!("총괄 시작 상태가 불명입니다: {error}")); } }
     let mut stdin = child.stdin.take();
     let stdout = child.stdout.take();
@@ -1279,7 +1289,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let stderr_tail = stderr_tail.lock().unwrap().clone();
     let mut unknown_saved = true;
     // Without a job, closed pipes cannot prove that detached descendants have exited.
-    let unresolved = incomplete || (!contained && reason != turn_process::End::Complete) || (cfg!(windows) && contained && !tree_confirmed);
+    let unresolved = incomplete || (!contained && reason != turn_process::End::Complete) || (cfg!(any(windows, target_os = "macos")) && (!contained || !tree_confirmed));
     if unresolved {
         slot.marker.unresolved = Some(true);
         unknown_saved = slot.write().is_ok();

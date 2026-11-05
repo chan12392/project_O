@@ -7,6 +7,13 @@ use o_core::run::store::default_home;
 mod commands;
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    {
+        let args: Vec<_> = std::env::args_os().skip(1).collect();
+        if args.first().is_some_and(|arg| arg == "--o-mac-worker") {
+            std::process::exit(i32::from(o_core::sys::macos_worker::run_helper(&args[1..]).is_err()));
+        }
+    }
     #[cfg(windows)]
     {
         let args: Vec<_> = std::env::args_os().skip(1).collect();

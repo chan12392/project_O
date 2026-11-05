@@ -1,3 +1,4 @@
+#[cfg(any(windows, target_os = "linux"))]
 mod support;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Barrier};

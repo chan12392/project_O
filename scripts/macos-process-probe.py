@@ -22,7 +22,8 @@ def fixture(directory, inherited):
     child = os.fork()
     if child == 0:
         try:
-            sid = os.setsid()
+            os.setsid()
+            sid = os.getsid(0)
             if not inherited:
                 null = os.open(os.devnull, os.O_WRONLY)
                 os.dup2(null, 1)
