@@ -18,15 +18,14 @@ export function openQuestions(key?: string) {
   window.dispatchEvent(new CustomEvent(OPEN_EVENT, { detail: key }));
 }
 
-/** A question just came in while the window is not in front: a toast (if allowed) and a flashing taskbar button. */
-async function alertPerson(api: Backend, ask: PendingAsk) {
+/** Something waits on the person while the window is not in front: a toast (if allowed) and a flashing taskbar button. */
+export async function alertPerson(api: Backend, title: string, body: string) {
   if (!settingsNow().notifyQuestions || document.hasFocus()) return;
   void api.attention().catch(() => {});
   if (typeof Notification === "undefined") return;
   try {
     const permission = Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
     if (permission !== "granted") return;
-    const { title, body } = askNotice(ask);
     new Notification(title, { body });
   } catch {
     // Some webviews only allow notifications from a service worker; the flashing button still tells.
@@ -62,7 +61,8 @@ export function QuestionDialog({ api, lead, runs, live }: { api: Backend; lead: 
     for (const ask of asks) {
       if (told.current.has(ask.key)) continue;
       told.current.add(ask.key);
-      void alertPerson(api, ask);
+      const { title, body } = askNotice(ask);
+      void alertPerson(api, title, body);
     }
   }, [asks, api]);
 

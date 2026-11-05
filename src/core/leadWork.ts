@@ -126,6 +126,11 @@ export function approvalView(approvals: readonly LeadApproval[] | undefined, now
   };
 }
 
+/** The notification for an approval request that just came in. */
+export function approvalNotice(view: Pick<ApprovalView, "title" | "summary" | "more">): { title: string; body: string } {
+  return { title: `총괄 ${view.title} 승인 요청`, body: `${view.summary}${view.more > 0 ? ` 외 ${view.more}개 대기` : ""}` };
+}
+
 /** A long detail starts folded: more than this many lines or characters. */
 export function detailIsLong(detail: string): boolean {
   return detail.length > 400 || detail.split("\n").length > 8;

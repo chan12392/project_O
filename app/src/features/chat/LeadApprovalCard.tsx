@@ -1,11 +1,13 @@
 import { Clock, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { approvalView, detailIsLong, remainingText } from "../../../../src/core/leadWork.ts";
+import { approvalNotice, approvalView, detailIsLong, remainingText } from "../../../../src/core/leadWork.ts";
 import { LEAD_NAME } from "../../../../src/core/lead.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useSettings } from "../../data/settings.ts";
+import type { Backend } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
+import { alertPerson } from "./QuestionDialog.tsx";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const NAMES: Record<string, string> = LEAD_NAME;
@@ -28,7 +30,7 @@ function Detail({ text, label }: { text: string; label: string }) {
  * asks in full, how long it waits, and 거부 (focused first) or 허용. There is no "always allow":
  * each action is its own decision, and only these buttons decide, never text in the chat.
  */
-export function LeadApprovalCard({ lead }: { lead: LeadState }) {
+export function LeadApprovalCard({ lead, api }: { lead: LeadState; api: Backend }) {
   const { clean } = useSettings();
   const [now, setNow] = useState(() => Date.now());
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
@@ -41,6 +43,14 @@ export function LeadApprovalCard({ lead }: { lead: LeadState }) {
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [id]);
+  // A request that just came in tells the person when the window is not in front (the same notice setting as questions).
+  const told = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!view || told.current === view.id) return;
+    told.current = view.id;
+    const notice = approvalNotice(view);
+    void alertPerson(api, notice.title, notice.body);
+  }, [view?.id]);
   // A new request takes the focus on 거부, the safe answer: Enter or Space refuses it.
   useEffect(() => {
     if (!id) return;
