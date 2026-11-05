@@ -444,7 +444,7 @@ function MainWindow() {
               />
             </div>
           )}
-          {live && state !== "error" && <div className="shrink-0 bg-chat-canvas px-6"><LeadApprovalCard lead={lead} /></div>}
+          {live && state !== "error" && <div className="shrink-0 bg-chat-canvas px-6"><LeadApprovalCard lead={lead} api={api} /></div>}
           <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
         </section>
         )}
