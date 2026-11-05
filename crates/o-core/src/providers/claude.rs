@@ -126,7 +126,8 @@ impl Provider for Claude {
     }
 
     fn stream_reader(&self) -> ReadLine {
-        Box::new(read_stream)
+        let mut reset_given = false;
+        Box::new(move |data| read_stream(&mut reset_given, data))
     }
 
     fn lead_efforts(&self) -> &'static [&'static str] {
@@ -294,7 +295,9 @@ fn mcp_in_state(state: &Value) -> bool {
     servers(state) || state.get("projects").and_then(Value::as_object).is_some_and(|p| p.values().any(servers))
 }
 
-fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
+/// `reset_given`: a rejected `rate_limit_event` already gave this card's reset time, so the
+/// failure text that follows must not set one of its own.
+fn read_stream(reset_given: &mut bool, data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
     if kind == Some("system") && data.get("subtype").and_then(Value::as_str) == Some("init") {
         if let Some(id) = data.get("session_id").and_then(Value::as_str) {
@@ -342,6 +345,7 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
             if info.get("status").and_then(Value::as_str) == Some("rejected") {
                 if let Some(resets) = info.get("resetsAt").and_then(Value::as_f64) {
                     out.push(StreamSignal::Limit { until: iso_from_secs(resets) });
+                    *reset_given = true;
                 }
             }
             return out;
@@ -360,7 +364,11 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
         }
         let text = coalesce([data.get("result")]).map(js_string).unwrap_or_default().trim().to_string();
         // Usually a rejected rate_limit_event comes first; the text still catches a limit without one.
-        out.extend(limit_from_text(&text, ok));
+        // After that event its reset time stands: a wait read from the wording ("try again in
+        // 1 hour", rounded or repeated late) must not stretch it.
+        if !*reset_given {
+            out.extend(limit_from_text(&text, ok));
+        }
         out.push(StreamSignal::Final { ok, text });
         return out;
     }

@@ -521,6 +521,28 @@ fn a_claude_limit_shows_in_its_error_text_too_but_one_limit_per_card_keeps_the_e
     assert!(matches!(r.read(failed).as_slice(), [StreamSignal::Final { ok: false, .. }]));
 }
 
+/// Issue #69: a wait in the failure text ("try again in 1 hour") must not stretch the reset
+/// time a rejected limit event gave, while a later limit event still updates it.
+#[test]
+fn a_claude_failure_text_with_a_wait_keeps_the_event_reset_time() {
+    let failed = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached. Try again in 1 hour."}"#;
+    let soon = chrono::Utc::now().timestamp() + 300;
+    let event = |at: i64| format!(r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","resetsAt":{at}}}}}"#);
+    let mut r = StreamReader::new(ProviderId::Claude);
+    assert_eq!(r.read(&event(soon)), [StreamSignal::Limit { until: iso_from_secs(soon as f64) }]);
+    assert!(matches!(r.read(failed).as_slice(), [StreamSignal::Final { ok: false, .. }]));
+    assert_eq!(r.read(&event(soon + 600)), [StreamSignal::Limit { until: iso_from_secs((soon + 600) as f64) }]);
+
+    // With no limit event, the wording's wait is the reset time.
+    let before = chrono::Utc::now();
+    let alone = StreamReader::new(ProviderId::Claude).read(failed);
+    let after = chrono::Utc::now();
+    let [StreamSignal::Limit { until }, StreamSignal::Final { ok: false, .. }] = alone.as_slice() else { panic!("{alone:?}") };
+    let until = chrono::DateTime::parse_from_rfc3339(until).unwrap().with_timezone(&chrono::Utc);
+    let hour = chrono::Duration::hours(1);
+    assert!(until >= before + hour - chrono::Duration::milliseconds(1) && until <= after + hour + chrono::Duration::milliseconds(1), "{until}");
+}
+
 // YOLO mode (ADR-0014). This file and the provider files are the only code that may spell
 // the CLIs' "never ask" flags (o_guard::rules BYPASS_PATHS).
 

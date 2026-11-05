@@ -123,11 +123,15 @@ pub(super) fn reset_from_text(text: &str, now: DateTime<Utc>) -> Option<DateTime
 }
 
 pub(super) fn limit_from_text(text: &str, ok: bool) -> Vec<StreamSignal> {
+    limit_from_text_at(text, ok, Utc::now())
+}
+
+fn limit_from_text_at(text: &str, ok: bool, now: DateTime<Utc>) -> Vec<StreamSignal> {
     if ok || !is_limit_text(text) {
         return Vec::new();
     }
     // No reset time in the wording: empty, and the default cooldown applies.
-    let until = reset_from_text(text, Utc::now()).map(iso).unwrap_or_default();
+    let until = reset_from_text(text, now).map(iso).unwrap_or_default();
     vec![StreamSignal::Limit { until }]
 }
 
@@ -159,7 +163,8 @@ pub(super) fn short(text: &str) -> String {
 
 #[cfg(test)]
 mod reset_from_text_tests {
-    use super::reset_from_text;
+    use super::{limit_from_text_at, reset_from_text};
+    use crate::run::events::StreamSignal;
     use chrono::{DateTime, Duration, Utc};
 
     fn now() -> DateTime<Utc> {
@@ -191,6 +196,16 @@ mod reset_from_text_tests {
         assert_eq!(wait(r#"{"error":"rate limit","resets_at":"2026-11-01T10:00:00.000Z"}"#), Some(Duration::hours(1)));
         // 1793523600 is 2026-11-01T09:00:00Z.
         assert_eq!(wait("usage limit, resets at 1793527200"), Some(Duration::hours(1)));
+    }
+
+    #[test]
+    fn a_limit_text_with_a_wait_carries_its_reset_time() {
+        assert_eq!(
+            limit_from_text_at("Claude AI usage limit reached. Try again in 1 hour.", false, now()),
+            [StreamSignal::Limit { until: "2026-11-01T10:00:00.000Z".into() }]
+        );
+        assert_eq!(limit_from_text_at("Claude AI usage limit reached", false, now()), [StreamSignal::Limit { until: String::new() }]);
+        assert_eq!(limit_from_text_at("Claude AI usage limit reached. Try again in 1 hour.", true, now()), []);
     }
 
     #[test]
