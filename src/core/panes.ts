@@ -8,6 +8,12 @@ export function defaultPaneCount(agents: number): PaneCount {
   return agents >= 2 ? 2 : 1;
 }
 
+/** The split a wanted count really gets: two panes need two agents, four need three. */
+export function fitPaneCount(wanted: PaneCount, agents: number): PaneCount {
+  if (agents < 2) return 1;
+  return wanted === 4 && agents < 3 ? 2 : wanted;
+}
+
 /**
  * The agents shown in panes, in pane order: the ones already open that still exist, then the
  * next unopened agents in team order, never more panes than agents.

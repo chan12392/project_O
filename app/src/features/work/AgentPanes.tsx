@@ -2,7 +2,7 @@ import { Columns2, Grid2x2, Square } from "lucide-react";
 import { useState } from "react";
 
 import type { CardView, RunView } from "../../../../src/core/snapshot.ts";
-import { EMPTY_COMPOSER, PANE_COUNTS, defaultPaneCount, fitPanes, showInPane, withComposer, type Composer, type PaneCount } from "../../../../src/core/panes.ts";
+import { EMPTY_COMPOSER, PANE_COUNTS, defaultPaneCount, fitPaneCount, fitPanes, showInPane, withComposer, type Composer, type PaneCount } from "../../../../src/core/panes.ts";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
 import { lookOf } from "../office/characters.ts";
 import { Avatar } from "../office/Avatar.tsx";
@@ -29,9 +29,8 @@ type Pane = { run: RunView; card: CardView };
 export function AgentPanes({ title, panes, api, onClose }: { title: string; panes: Pane[]; api?: Backend; onClose: () => void }) {
   const ids = panes.map((p) => p.card.id);
   const [chosen, setChosen] = useState<PaneCount | undefined>(() => readStored<PaneCount | undefined>(COUNT_KEY, undefined, (saved) => PANE_COUNTS.find((c) => c === saved)));
-  // Four panes need at least three agents; a saved four with fewer shows two.
-  const wanted = chosen ?? defaultPaneCount(ids.length);
-  const count: PaneCount = wanted === 4 && ids.length < 3 ? 2 : wanted;
+  // Two panes need two agents and four need three; a saved split larger than the team shrinks to fit.
+  const count = fitPaneCount(chosen ?? defaultPaneCount(ids.length), ids.length);
   const [picked, setPicked] = useState<string[]>([]);
   const [focus, setFocus] = useState(0);
   // Unsent follow-ups by card, kept while a card's pane is hidden (this view is keyed by run).

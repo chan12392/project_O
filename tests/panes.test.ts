@@ -1,12 +1,21 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { EMPTY_COMPOSER, defaultPaneCount, fitPanes, showInPane, withComposer } from "../src/core/panes.ts";
+import { EMPTY_COMPOSER, defaultPaneCount, fitPaneCount, fitPanes, showInPane, withComposer } from "../src/core/panes.ts";
 
 test("a team opens in two panes, a lone agent in one", () => {
   assert.equal(defaultPaneCount(0), 1);
   assert.equal(defaultPaneCount(1), 1);
   assert.equal(defaultPaneCount(11), 2);
+});
+
+test("a saved split larger than the team shrinks to fit, so no pane sits empty", () => {
+  assert.equal(fitPaneCount(2, 1), 1);
+  assert.equal(fitPaneCount(4, 1), 1);
+  assert.equal(fitPaneCount(4, 2), 2);
+  assert.equal(fitPaneCount(4, 3), 4);
+  assert.equal(fitPaneCount(2, 5), 2);
+  assert.equal(fitPaneCount(1, 5), 1);
 });
 
 test("panes keep the open agents and fill the rest in team order", () => {
