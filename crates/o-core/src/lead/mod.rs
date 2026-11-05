@@ -707,14 +707,12 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
     let Some(profile) = profile else { return Err("이전 총괄의 프로필이 기록되지 않아 자동 응답할 수 없습니다".into()) };
     let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: cards.to_vec() };
     let Some(message) = team::read(home, &speaker, false).map_err(|e| e.to_string())?.into_iter().next() else { return Ok(false) };
-    if message.kind == "approval" {
-        let answered = team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.from == "lead" && m.to == message.from && m.reply_to.as_deref() == Some(&message.id));
-        if answered {
-            team::transition(home, &speaker, &message.id, "acknowledged").map_err(|e| e.to_string())?;
-            return Ok(true);
-        }
-        return Err("승인 요청은 대표님의 답변을 기다립니다".into());
+    // A question the person already answered (the app's answer goes as the lead's reply) needs no model turn.
+    if matches!(message.kind.as_str(), "question" | "approval") && answered(home, &speaker, &message)? {
+        team::transition(home, &speaker, &message.id, "acknowledged").map_err(|e| e.to_string())?;
+        return Ok(true);
     }
+    if message.kind == "approval" { return Err("승인 요청은 대표님의 답변을 기다립니다".into()); }
     if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
     let root = clean::default_root();
     let req = SendRequest { project, provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
@@ -723,6 +721,11 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
         return Err("총괄 처리 결과가 불명입니다. 대화와 메시지 상태를 확인하세요".into());
     }
     Ok(true)
+}
+
+/// The lead (or the person as the lead) has already replied to this question.
+fn answered(home: &Path, speaker: &team::Speaker, message: &team::Received) -> Result<bool, String> {
+    Ok(team::read(home, speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.from == "lead" && m.to == message.from && m.reply_to.as_deref() == Some(&message.id)))
 }
 
 /// Explicit recovery for a queued message after its runner has stopped.
@@ -1414,7 +1417,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
                     Err(error) => { emit(LeadEvent::Error { at: now_iso(), text: format!("긴 답변을 저장하지 못했습니다: {error}") })?; return Ok(added); }
                 }
             } else { answer.clone() };
-            if team::send_reply(home, w.speaker, &w.message.from, &text, false, Some(&key), Some(&w.message.id)).is_err() {
+            // The person may have answered while the model was at work: their answer stands.
+            if team::send_reply(home, w.speaker, &w.message.from, &text, false, Some(&key), Some(&w.message.id)).is_err() && !answered(home, w.speaker, w.message)? {
                 emit(LeadEvent::Error { at: now_iso(), text: "카드에 답을 보내지 못했습니다. 답변과 메시지 상태를 확인하세요".into() })?;
                 return Ok(added);
             }

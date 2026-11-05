@@ -56,14 +56,16 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 32] = [
+    let tests: [(&str, fn()); 34] = [
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
+        ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
         ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
         ("a failed log stops the worker and its dependent", failed_log),
         ("raw output is preserved byte for byte", raw_output_preserved),
         ("dependency results remain readable when they are large", dependency_result_limit),
         ("queued follow-ups stop safely and never run in parallel for one session", followup_queue_and_stop),
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
+        ("a stop recorded before the follow-up's runner looks still cancels it", followup_cancelled_when_stop_lands_before_runner),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
@@ -147,6 +149,28 @@ fn followup_cancelled_with_source() {
     }
     assert!(o_core::run::runner::stop_run(&home, "original").unwrap());
     assert!(worker.join().unwrap().is_err());
+    let events = read_events(&home, &queued);
+    assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Stopped, result: Some(text), .. } if text.contains("취소"))), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Stopped, .. })));
+    assert!(active_markers(&home).is_empty());
+}
+
+/// #52: the original card is stopped after the follow-up was accepted but before its runner
+/// looked, so the runner first sees an already stopped card; it must still cancel.
+fn followup_cancelled_when_stop_lands_before_runner() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
+    initial.project = project.to_string_lossy().into_owned();
+    create_run(&home, "original", &initial).unwrap();
+    let queued = o_core::run::followup::start(&home, "original", "a", "수정", &|_| Ok(())).unwrap();
+    assert!(o_core::run::runner::stop_run(&home, "original").unwrap());
+    let at = o_core::sys::js::now_iso();
+    o_core::run::store::append_event(&home, "original", &OEvent::CardEnd { at: at.clone(), card_id: "a".into(), status: CardStatus::Stopped, result: None, exit_code: None }).unwrap();
+    o_core::run::store::append_event(&home, "original", &OEvent::RunEnd { at, run_id: "original".into(), status: CardStatus::Stopped }).unwrap();
+    assert!(run_detached(&home, &queued).is_err());
     let events = read_events(&home, &queued);
     assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Stopped, result: Some(text), .. } if text.contains("취소"))), "{events:?}");
     assert!(events.iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Stopped, .. })));
@@ -313,6 +337,71 @@ fn isolated_worktrees() {
     assert!(!launched.load(Ordering::SeqCst));
     assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "user change\n");
     assert!(read_events(&home, "dirty").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("커밋하지 않은"))));
+}
+
+/// #63: a file turned into a folder (or back), committed or not, reaches the dependent as the exact tree.
+fn file_folder_handoffs() {
+    for scenario in ["file-to-folder", "file-to-folder-committed", "folder-to-file"] {
+        let fixture = temp_home();
+        let home = fixture.join("state");
+        let project = fixture.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let in_dir = move |dir: &std::path::Path, args: &[&str]| {
+            let mut command = Command::new("git");
+            command.current_dir(dir).args(args);
+            let out = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+            assert!(out.status.success(), "{scenario}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        in_dir(&project, &["init"]);
+        std::fs::write(project.join(".gitattributes"), "* -text\n").unwrap();
+        std::fs::write(project.join("keep.txt"), "keep\n").unwrap();
+        if scenario == "folder-to-file" {
+            std::fs::create_dir_all(project.join("config")).unwrap();
+            std::fs::write(project.join("config/default.json"), "{}\n").unwrap();
+        } else {
+            std::fs::write(project.join("config"), "old\n").unwrap();
+        }
+        in_dir(&project, &["add", "."]);
+        in_dir(&project, &["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "fixture"]);
+        let mut a = card("a", ProviderId::Claude, "dependent");
+        a.depends_on = vec!["b".into()];
+        let mut p = plan(vec![a, card("b", ProviderId::Claude, "refactor")]);
+        p.project = project.to_string_lossy().into_owned();
+        create_run(&home, "swap", &p).unwrap();
+        std::fs::write(o_core::run::store::run_dir(&home, "swap").join("isolated-worktrees"), "").unwrap();
+        let started = Arc::new(AtomicBool::new(false));
+        let seen = Arc::clone(&started);
+        let inner = quiet();
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            let dir = PathBuf::from(cwd);
+            if spec.env["O_CARD_ID"] == "b" {
+                if scenario == "folder-to-file" {
+                    std::fs::remove_dir_all(dir.join("config")).unwrap();
+                    std::fs::write(dir.join("config"), "new\n").unwrap();
+                } else {
+                    std::fs::remove_file(dir.join("config")).unwrap();
+                    std::fs::create_dir(dir.join("config")).unwrap();
+                    std::fs::write(dir.join("config/default.json"), "{}\n").unwrap();
+                }
+                if scenario == "file-to-folder-committed" {
+                    in_dir(&dir, &["add", "--all"]);
+                    in_dir(&dir, &["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "-m", "worker"]);
+                }
+            } else {
+                seen.store(true, Ordering::SeqCst);
+                if scenario == "folder-to-file" {
+                    assert_eq!(std::fs::read_to_string(dir.join("config")).unwrap(), "new\n");
+                } else {
+                    assert!(dir.join("config").is_dir());
+                    assert_eq!(std::fs::read_to_string(dir.join("config/default.json")).unwrap(), "{}\n");
+                }
+                assert_eq!(std::fs::read_to_string(dir.join("keep.txt")).unwrap(), "keep\n");
+            }
+            inner(spec, cwd)
+        });
+        assert_eq!(run_plan(&home, "swap", &p, None, spawner).unwrap(), CardStatus::Done, "{scenario}: {:?}", read_events(&home, "swap"));
+        assert!(started.load(Ordering::SeqCst), "{scenario}");
+    }
 }
 
 fn unsafe_handoffs() {

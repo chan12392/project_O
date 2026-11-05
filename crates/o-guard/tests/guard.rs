@@ -379,6 +379,28 @@ fn merge_lookups_that_fail_block() {
     }
     assert!(blocked(&bash("git status && gh pr merge 99"), &OWNER_GH));
     assert!(blocked(&bash("echo ok\ngh pr merge 99"), &OWNER_GH));
+    // A separator inside single quotes starts no command (#56): the owner still passes,
+    // and anyone else still meets the owner check.
+    for mention in ["echo 'Next steps;\ngh pr merge later'", "git commit -m 'docs: steps\n\ngh pr merge 99'", "echo 'a; gh pr merge 99' && echo done"] {
+        assert!(passes(&bash(mention), &OWNER_GH), "{mention:?}");
+        assert!(blocked(&bash(mention), &MEMBER_GH), "{mention:?}");
+    }
+    // Closed quotes, double quotes, escapes, comments and strings handed to a shell still run it.
+    for real in [
+        "echo 'x'; gh pr merge 99",
+        "echo \"steps; $(gh pr merge 99)\"",
+        "echo \"a\n$(true; gh pr merge 99)\"",
+        "echo it\\'s; gh pr merge 99 '",
+        "echo it`'s; gh pr merge 99 '",
+        "# it's\ngh pr merge 99 '",
+        "bash -c 'git fetch; gh pr merge 99'",
+        "pwsh -Command 'git fetch; gh pr merge 99'",
+        "cat <<EOF\nit's\nEOF\ngh pr merge 99 '",
+        "echo $'a\\'b' ; gh pr merge 99 '",
+        "echo 'a\u{2019}; gh pr merge 99 '",
+    ] {
+        assert!(blocked(&bash(real), &OWNER_GH), "{real:?}");
+    }
     // Confirmed bases keep their rule for the owner.
     for known in ["gh pr merge 1", "gh pr merge 3", "gh pr merge 5", "gh pr merge 2", "gh pr merge 4"] {
         assert!(passes(&bash(known), &OWNER_GH), "{known}");
