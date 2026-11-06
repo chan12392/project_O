@@ -29,10 +29,10 @@ jobs:
           fetch-depth: 2
       - name: 이미 검사한 내용인지 확인
         id: same
-        # Release PRs (test_2/test_1_hotfix → test_1, test_1 → main) usually carry exactly the head's
+        # Release PRs (test_2/test_1_hotfix → test_1, test_1/main_hotfix → main) usually carry exactly the head's
         # tree, which its own PRs already tested. Anything the base adds on top runs the full check.
         # This assumes the head was merged after its checks passed (the owner never merges red checks).
-        if: github.event_name == 'pull_request' && contains(fromJSON('["test_2", "test_1_hotfix", "test_1"]'), github.head_ref)
+        if: github.event_name == 'pull_request' && contains(fromJSON('["test_2", "test_1_hotfix", "test_1", "main_hotfix"]'), github.head_ref)
         run: |
           if git diff --quiet HEAD^2 HEAD; then
             echo "skip=true" >> "$GITHUB_OUTPUT"

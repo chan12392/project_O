@@ -99,7 +99,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | `o budget [--json] [--cached] [--percent 12\|13\|14] [--on\|--off]` | 에이전트별 오늘 사용 예산(주간 한도의 12~14%)·속도·effort 조절, 예산 켜기·끄기 (아래) |
 | `o runs --json` | 모든 실행 기록(화면용) |
 | `o hook` / `o scan --all\|--staged\|--pre-push` | 에이전트 훅 / 정책 검사 |
-| `o sync-mirror <폴더>` | 거울(팀은 `test_2`, `test_1`·`main`도 가능) fast-forward (예약 작업용) |
+| `o sync-mirror <폴더>` | 거울(팀은 `test_2`, 다른 보호 브랜치도 가능) fast-forward (예약 작업용) |
 | `o agents path\|login\|shell\|doctor` | 깨끗한 에이전트 프로필 (아래) |
 | `o agents status\|install\|open-login` / `o about` | 에이전트 CLI 설치·로그인 상태, 공식 설치·로그인 창 / 버전과 폴더 위치 (데스크톱 앱과 같은 동작) |
 

@@ -82,14 +82,17 @@ pub fn code_rules() -> impl Iterator<Item = &'static Rule> {
 
 /// Protected branches: they only change by merging PRs (no direct commits or
 /// pushes), and checkouts on them are mirrors agents may read and test in,
-/// never change. `test_1_hotfix` is the hotfix lane into test_1 (ADR-0021).
+/// never change. `test_1_hotfix` is the hotfix lane into test_1 (ADR-0021),
+/// `main_hotfix` the hotfix lane into main for the official release (ADR-0031).
 /// Keep in sync with .github/workflows/branch-flow.yml and
 /// crates/o-core/src/sys/mirror.rs.
-pub const READ_ONLY_BRANCHES: [&str; 4] = ["test_1", "test_1_hotfix", "test_2", "main"];
+pub const READ_ONLY_BRANCHES: [&str; 5] = ["test_1", "test_1_hotfix", "test_2", "main_hotfix", "main"];
 
 /// The owner's GitHub login (member A): the only account that may merge into
-/// `test_1`, `test_1_hotfix` and `main`; his agents run under the same `gh` login. Shared
-/// boundary — keep in sync with .github/workflows/merge-guard.yml.
+/// `test_1_hotfix`, `main_hotfix` and `main`; his agents run under the same `gh` login.
+/// `test_1` needs one approving review from another member on GitHub (ruleset), which
+/// the owner may bypass (ADR-0031). Shared boundary — keep in sync with
+/// .github/workflows/merge-guard.yml.
 pub const OWNER: &str = "chan12392";
 
 /// Mirrors are project_O checkouts only; other repositories on main are ordinary work.
