@@ -1,8 +1,8 @@
 //! Static policy scan, run by git hooks and CI.
 //!
 //!   --all       every tracked file (CI)
-//!   --staged    staged content, and no commits on test_1/test_2/main (pre-commit)
-//!   --pre-push  refuses pushes that target test_1/test_2/main (pre-push; refs on stdin)
+//!   --staged    staged content, and no commits on a protected branch (pre-commit)
+//!   --pre-push  refuses pushes that target a protected branch (pre-push; refs on stdin)
 
 use std::io::{self, Read};
 use std::process::Stdio;
@@ -69,7 +69,7 @@ fn fail(title: &str, lines: &[String]) -> i32 {
     1
 }
 
-/// The pre-push lines (`<local ref> <local sha> <remote ref> <remote sha>`) whose remote ref is a protected branch (test_1, test_2, main).
+/// The pre-push lines (`<local ref> <local sha> <remote ref> <remote sha>`) whose remote ref is a protected branch (READ_ONLY_BRANCHES).
 pub fn blocked_refs(stdin: &str) -> Vec<String> {
     let protected_refs: Vec<String> = READ_ONLY_BRANCHES.iter().map(|b| format!("refs/heads/{b}")).collect();
     lines(stdin)
@@ -84,7 +84,7 @@ fn run(mode: &str) -> io::Result<i32> {
         io::stdin().read_to_string(&mut stdin)?;
         let blocked = blocked_refs(&stdin);
         if !blocked.is_empty() {
-            return Ok(fail("보호 브랜치(test_1·test_1_hotfix·test_2·main)에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
+            return Ok(fail("보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main)에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
         }
         return Ok(0);
     }
@@ -136,9 +136,10 @@ mod tests {
         let main = format!("refs/heads/younchan abc refs/heads/main {ZERO}");
         let test_1 = format!("refs/heads/test_2 abc refs/heads/test_1 {ZERO}");
         let test_2 = format!("refs/heads/younchan abc refs/heads/test_2 {ZERO}\r");
+        let main_hotfix = format!("refs/heads/younchan-fix abc refs/heads/main_hotfix {ZERO}");
         let own = format!("refs/heads/younchan abc refs/heads/younchan {ZERO}");
-        let input = format!("{own}\n{main}\n\n{test_1}\n{test_2}\n");
-        assert_eq!(blocked_refs(&input), vec![main, test_1, test_2]);
+        let input = format!("{own}\n{main}\n\n{test_1}\n{test_2}\n{main_hotfix}\n");
+        assert_eq!(blocked_refs(&input), vec![main, test_1, test_2, main_hotfix]);
     }
 
     #[test]
