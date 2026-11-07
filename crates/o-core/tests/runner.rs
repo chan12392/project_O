@@ -56,7 +56,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 34] = [
+    let tests: [(&str, fn()); 35] = [
+        ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
         ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
@@ -870,6 +871,25 @@ fn stop_request() {
     request_stop(&home, "r4").unwrap();
     assert_eq!(run_plan(&home, "r4", &p, None, quiet()).unwrap(), CardStatus::Stopped);
     assert_eq!(ends_of(&home, "r4"), BTreeMap::from([("a".into(), CardStatus::Stopped)]));
+}
+
+fn guides_recorded() {
+    let home = temp_home();
+    let blocks = home.join("harness");
+    std::fs::create_dir_all(&blocks).unwrap();
+    std::fs::write(blocks.join("check.md"), "검사를 돌린다").unwrap();
+    std::fs::write(blocks.join("index.json"), r#"[{"name":"check","path":"check.md","triggers":["test"]}]"#).unwrap();
+    let p = plan(vec![card("a", ProviderId::Codex, "run the test"), card("b", ProviderId::Codex, "write docs")]);
+    create_run(&home, "guides", &p).unwrap();
+    run_plan(&home, "guides", &p, None, quiet()).unwrap();
+    let guides: Vec<(String, Vec<String>, Vec<String>)> = read_events(&home, "guides").into_iter().filter_map(|e| match e {
+        OEvent::CardGuides { card_id, skills, harness, .. } => Some((card_id, skills, harness)),
+        _ => None,
+    }).collect();
+    assert_eq!(guides, [("a".to_string(), vec![], vec!["check".to_string()])]);
+    let view = o_core::run::snapshot::snapshot(&read_events(&home, "guides")).unwrap();
+    let a = view.cards.iter().find(|c| c.id == "a").unwrap();
+    assert!(a.log.iter().any(|l| l.kind == o_core::run::snapshot::LogKind::Guides && l.text == "넣은 지침: 하네스 check"));
 }
 
 fn queue_then_run() {

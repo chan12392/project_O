@@ -404,6 +404,11 @@ pub fn run_plan_with(
                     context.push_str(&serde_json::to_string(&skills).unwrap_or_default());
                 }
                 let harness = crate::skills::harness(&home, &card.task);
+                if !skills.is_empty() || !harness.is_empty() {
+                    let names = |items: &[serde_json::Value]| items.iter().filter_map(|item| item["name"].as_str().map(str::to_string)).collect();
+                    // A missing record must not keep the card from starting.
+                    let _ = append_event(&home, &run_id, &OEvent::CardGuides { at: now_iso(), card_id: card.id.clone(), skills: names(&skills), harness: names(&harness) });
+                }
                 if !harness.is_empty() {
                     context.push_str("\n[O 선택 지침 — 공급자의 기본 지침과 안전 규칙이 우선합니다]\n");
                     context.push_str(&serde_json::to_string(&harness).unwrap_or_default());

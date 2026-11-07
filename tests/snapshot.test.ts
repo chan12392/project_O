@@ -132,6 +132,16 @@ test("a budget adjustment shows the effort the card ran with in its activity and
   assert.match(b.activity, /effort 기본 → low/);
 });
 
+test("the skills and harness blocks a card got show in its log, not its activity", () => {
+  const run = snapshot([
+    { t: "run.start", at: "2026-11-02T10:00:00.000Z", runId: "r", title: "t", project: "C:/p", cards: [{ id: "a", provider: "codex", label: "a" }] },
+    { t: "card.guides", at: "2026-11-02T10:00:01.000Z", cardId: "a", skills: ["ui", "test"], harness: ["game"] },
+  ]);
+  const [a] = run?.cards ?? [];
+  assert.equal(a.activity, "");
+  assert.deepEqual(a.log.map((l) => [l.kind, l.text]), [["guides", "넣은 지침: 하네스 game · 스킬 ui, test"]]);
+});
+
 // Same events as crates/o-core/tests/snapshot.rs `a_repeated_card_id_is_one_card_kept_by_the_first`.
 test("a repeated card id is one card, kept by the first", () => {
   const run = snapshot([
