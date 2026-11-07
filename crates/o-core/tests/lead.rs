@@ -113,7 +113,8 @@ Usage: codex [OPTIONS] [PROMPT]
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 7] = [
+    let extra: [(&str, fn()); 8] = [
+        ("the overall lead passes requests on to listed projects only, once each", overall_forwards),
         ("questions stand in for the answer; the next turn carries the picks", ask_questions),
         ("a Codex CLI without app-server leads through read-only exec, probed once, resuming across transports", codex_exec_fallback),
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
@@ -169,6 +170,65 @@ fn followup_routing() {
     assert_eq!(started.lock().unwrap().len(), 1);
     let example = "````markdown\n```o-followup\n[]\n```\n````";
     assert!(o_core::lead::prompt::split_followups(example).1.unwrap().is_none());
+}
+
+/// A home beside a projects root holding "alpha" and "beta"; the root is the overall lead's folder.
+fn setup_overall(name: &str) -> (PathBuf, String, String, String) {
+    let base = temp(name);
+    let home = base.join("project_O");
+    let root = base.join("projects");
+    for dir in [&home, &root.join("alpha"), &root.join("beta")] { std::fs::create_dir_all(dir).unwrap(); }
+    let listing = o_core::projects::set_root(&home, &o_core::run::store::user_home(), Some(&root.to_string_lossy())).unwrap();
+    let path = |name: &str| listing.projects.iter().find(|p| p.name == name).unwrap().path.clone();
+    (home, listing.root.clone(), path("alpha"), path("beta"))
+}
+
+fn forward_block(items: &[(&str, &str)]) -> String {
+    let items: Vec<Value> = items.iter().map(|(project, text)| json!({"project": project, "text": text})).collect();
+    format!("두 프로젝트에 넘깁니다.\n```o-forward\n{}\n```", Value::from(items))
+}
+
+fn overall_forwards() {
+    let (home, root, alpha, beta) = setup_overall("overall");
+    assert!(lead::overall::is_overall(&home, &root) && !lead::overall::is_overall(&home, &alpha));
+    // The overall lead sees every project and never runs in YOLO.
+    let (spawner, seen) = fake(claude_answer("o1", &forward_block(&[(&alpha, "로그인 화면 정리"), (&beta, "테스트 보강")])));
+    let events = lead::send(&home, &SendRequest { yolo: true, ..request(&root, "둘 다 진행해") }, spawner.as_ref()).unwrap();
+    let prompt = seen.lock().unwrap()[0].stdin.clone().unwrap();
+    assert!(prompt.contains("[O 전체 총괄]") && prompt.contains("alpha") && prompt.contains("beta") && !prompt.contains("YOLO"));
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::User { yolo: false, origin: None, .. })));
+    let forwards: Vec<(String, String)> = events.iter().filter_map(|e| match e { LeadEvent::Forward { project, text, .. } => Some((project.clone(), text.clone())), _ => None }).collect();
+    assert_eq!(forwards, [(alpha.clone(), "로그인 화면 정리".into()), (beta.clone(), "테스트 보강".into())]);
+    let thread = lead::current_thread(&home, &root).unwrap();
+    let started = Mutex::new(Vec::new());
+    lead::overall::pass_on(&home, &thread, &events, &|id, n| { started.lock().unwrap().push((id.to_string(), n)); Ok(()) });
+    assert_eq!(*started.lock().unwrap(), [(thread.clone(), 0), (thread.clone(), 1)]);
+
+    // The project lead gets it marked as the overall lead's, once; its plan waits for "실행".
+    let (spawner, seen) = fake(claude_answer("p1", &plan_answer(good_plan())));
+    let sent = lead::overall::forward(&home, &thread, 0, spawner.as_ref()).unwrap();
+    assert!(seen.lock().unwrap()[0].stdin.as_deref().unwrap().contains("[전체 총괄이 넘긴 요청"));
+    assert!(sent.iter().any(|e| matches!(e, LeadEvent::User { origin: Some(o), text, .. } if o == "overall" && text == "로그인 화면 정리")));
+    assert_eq!(plans(&sent).len(), 1);
+    assert!(!sent.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    assert!(lead::overall::forward(&home, &thread, 0, spawner.as_ref()).unwrap_err().contains("이미"));
+    assert!(lead::overall::forward(&home, &thread, 5, spawner.as_ref()).is_err());
+    // The overview shows the plan waiting for the person on the next overall turn.
+    assert!(lead::overall::overview(&home).contains("실행하지 않은 계획"));
+
+    // What the code refuses, whatever the model writes.
+    let refused = |answer: String, word: &str| {
+        let (spawner, _) = fake(claude_answer("o1", &answer));
+        let events = lead::send(&home, &request(&root, "진행"), spawner.as_ref()).unwrap();
+        assert!(!events.iter().any(|e| matches!(e, LeadEvent::Forward { .. } | LeadEvent::Plan { .. })), "{answer}");
+        assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains(word))), "{answer}: {events:?}");
+    };
+    refused(plan_answer(good_plan()), "계획");
+    refused(forward_block(&[("C:/elsewhere", "일")]), "목록에 없는");
+    refused(forward_block(&[(&root, "일")]), "목록에 없는");
+    refused(forward_block(&[(&alpha, "하나"), (&alpha, "둘")]), "하나만");
+    refused(forward_block(&[(&alpha, "1"), (&beta, "2"), (&alpha, "3"), (&beta, "4")]), "1~3");
+    assert!(lead::overall::forward(&home, &lead::current_thread(&home, &alpha).unwrap(), 0, spawner.as_ref()).unwrap_err().contains("전체 총괄 대화가 아닙니다"));
 }
 
 fn design_snapshots() {
@@ -816,7 +876,7 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false };
     let first = build(&input);
     for part in ["[O 총괄]", "프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");

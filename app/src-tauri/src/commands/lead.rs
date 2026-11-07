@@ -121,7 +121,9 @@ pub async fn lead_send(
             yolo: o_core::run::yolo::read_enabled(&home),
         };
         let events = lead::send_with_followups(&home, &req, &official_command, &super::runs::start_followup)?;
-        Ok(json!({ "threadId": lead::current_thread(&home, &project), "events": events }))
+        let thread = lead::current_thread(&home, &project);
+        if let Some(thread) = &thread { lead::overall::pass_on(&home, thread, &events, &super::runs::start_forward); }
+        Ok(json!({ "threadId": thread, "events": events }))
     })
     .await?
 }

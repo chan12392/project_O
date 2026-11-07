@@ -71,6 +71,7 @@ pub const COMMANDS: &[Command] = &[
     dispatch::RUN,
     lead::WATCH,
     lead::APPROVE,
+    lead::FORWARD,
     followup::RUN_FOLLOWUP,
     review::REVIEW_BACKGROUND,
 ];

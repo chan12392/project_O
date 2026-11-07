@@ -41,7 +41,7 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
-static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
 static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
@@ -780,6 +780,7 @@ mod tests {
         assert!(AGENT_DISPATCH.is_match("o lead stop"));
         assert!(AGENT_DISPATCH.is_match("o lead stop-all"));
         assert!(!AGENT_DISPATCH.is_match("o lead status"));
+        assert!(AGENT_DISPATCH.is_match("o _lead-forward 20261107-x 0"));
     }
 
     #[test]

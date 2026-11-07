@@ -24,6 +24,7 @@ pub mod approvals;
 pub mod files;
 pub mod log_page;
 pub mod notes;
+pub mod overall;
 pub mod prompt;
 pub mod recovery;
 pub mod steps;
@@ -89,6 +90,24 @@ pub enum LeadEvent {
         /// The turn ran in YOLO 모드 (ADR-0014): the lead could edit files and run commands.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         yolo: bool,
+        /// Who wrote it when not the person: "overall" for a request the overall lead passed on
+        /// (ADR-0032). Absent: the person.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        origin: Option<String>,
+    },
+    /// The overall lead passed a request on to a project's lead (ADR-0032), which
+    /// `o _lead-forward` then sends with the same agent, model and profile.
+    #[serde(rename = "lead.forward")]
+    Forward {
+        at: String,
+        project: String,
+        text: String,
+        provider: ProviderId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        profile: Profile,
     },
     /// Untrusted data sent by a card, never a user instruction or approval.
     #[serde(rename = "lead.worker")]
@@ -605,12 +624,16 @@ fn missed_turns(events: &[LeadEvent], provider: ProviderId, session_id: &str) ->
     turns_after(events, seen)
 }
 
+/// Who a request the overall lead passed on is from, in a project lead's history (ADR-0032).
+const FORWARDED: &str = "전체 총괄이 넘긴 요청";
+
 fn turns_after(events: &[LeadEvent], seen: usize) -> Vec<(String, String)> {
     // Its own turn's answer follows its message; what it missed starts at the next message.
     let Some(next) = events.iter().skip(seen + 1).position(|e| matches!(e, LeadEvent::User { .. } | LeadEvent::Worker { .. })) else { return Vec::new() };
     events[seen + 1 + next..]
         .iter()
         .filter_map(|e| match e {
+            LeadEvent::User { text, origin: Some(_), .. } => Some((FORWARDED.to_string(), text.clone())),
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
@@ -670,7 +693,7 @@ pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, st
 /// `ask`: a person is there to approve actions (ADR-0008 개정 3); a scheduled turn has nobody
 /// to ask and stays read-only.
 fn send_within_followups(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, ask: bool) -> Result<Vec<LeadEvent>, String> {
-    send_turn(home, req, spawner, limit, start, None, ask)
+    send_turn(home, req, spawner, limit, start, None, ask, None)
 }
 
 /// `o` itself, which serves a turn's approvals (`o _lead-approve`): this program when it is
@@ -718,7 +741,7 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
     if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
     let root = clean::default_root();
     let req = SendRequest { project, provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
-    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }), false)?;
+    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }), false, None)?;
     if !team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.id == message.id && m.state == "acknowledged") {
         return Err("총괄 처리 결과가 불명입니다. 대화와 메시지 상태를 확인하세요".into());
     }
@@ -761,8 +784,19 @@ pub fn retry_card(home: &Path, run_id: &str, message_id: &str) -> Result<&'stati
     Ok(if sent { "acknowledged" } else { "queued" })
 }
 
-fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool) -> Result<Vec<LeadEvent>, String> {
+/// A request the overall lead passed on (`overall::forward`), recorded as such in the project's thread.
+fn send_forwarded(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<LeadEvent>, String> {
+    if overall::is_overall(home, req.project) { return Err("전체 총괄 자신에게는 넘기지 않습니다".into()); }
+    send_turn(home, req, spawner, TURN_LIMIT, None, None, false, Some("overall"))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<&str>) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
+    // The overall lead reads every project and only passes requests on (ADR-0032): never YOLO.
+    let overall = worker.is_none() && overall::is_overall(home, req.project);
+    let read_only;
+    let req = if overall && req.yolo { read_only = SendRequest { yolo: false, ..*req }; &read_only } else { req };
     check_request(home, req)?;
     let thread_id = match &worker {
         Some(w) => w.thread_id.to_string(),
@@ -814,6 +848,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
         profile: Some(Profile::of_clean(req.clean.is_some())),
         yolo: req.yolo,
+        origin: origin.map(str::to_string),
     })?; }
 
     let app_server = req.provider == ProviderId::Codex
@@ -844,6 +879,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let history: Vec<(String, String)> = if worker.is_some() { worker_history(&before) } else { before
         .iter()
         .filter_map(|e| match e {
+            LeadEvent::User { text, origin: Some(_), .. } => Some((FORWARDED.to_string(), text.clone())),
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, .. } => Some(("총괄".to_string(), text.clone())),
@@ -896,6 +932,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
     let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
+    let overview = overall.then(|| overall::overview(home));
     let input = prompt::PromptInput {
         project: req.project,
         text: &user_text,
@@ -911,6 +948,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         design: design.as_deref(),
         yolo: req.yolo,
         approvals: ask,
+        overview: overview.as_deref(),
+        forwarded: origin.is_some(),
     };
     let text = if worker.is_some() { prompt::build_worker(&input) } else { prompt::build(&input) };
     let files_dir = status_file.as_ref().and_then(|f| f.path.parent()).map(Path::to_path_buf).unwrap_or_else(|| files::thread_files(home, &thread_id));
@@ -1446,6 +1485,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let (prose, plan) = prompt::split_plan(&answer);
     let (prose, design) = prompt::split_design(&prose);
     let (prose, followups) = prompt::split_followups(&prose);
+    let (prose, forwards) = if overall { prompt::split_forwards(&prose) } else { (prose, Ok(None)) };
     let prose = if migrate {
         format!("결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작했습니다. 이전 대화는 최근 일부만 전달되었으며 캐시가 초기화될 수 있습니다.\n\n{prose}")
     } else { prose };
@@ -1469,6 +1509,41 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     }
     if !prose.is_empty() {
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
+    }
+    if overall {
+        if !matches!(plan, Ok(None)) || !matches!(design, Ok(None)) || !matches!(followups, Ok(None)) {
+            emit(LeadEvent::Error { at: now_iso(), text: "전체 총괄은 계획·설계·후속 지시를 내지 않습니다. 일은 o-forward로 프로젝트 총괄에게 넘깁니다".into() })?;
+            return Ok(added);
+        }
+        let items = match forwards {
+            Ok(None) => return Ok(added),
+            Err(message) => { emit(LeadEvent::Error { at: now_iso(), text: message })?; return Ok(added); }
+            Ok(Some(items)) => items,
+        };
+        if unresolved { emit(LeadEvent::Error { at: now_iso(), text: "총괄 종료 상태가 불명이라 요청을 넘기지 않았습니다".into() })?; return Ok(added); }
+        // As for follow-ups: hold current.lock so nothing goes out for a thread "새 대화" just replaced.
+        let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
+        current.lock().map_err(|e| e.to_string())?;
+        let stopped = fs::read_to_string(thread_dir(home, &thread_id).join("stop-all-at")).ok().and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
+        if stopped || current_thread(home, req.project).as_deref() != Some(&thread_id) {
+            emit(LeadEvent::Error { at: now_iso(), text: "중지되었거나 새 대화로 전환되어 요청을 넘기지 않았습니다".into() })?;
+            return Ok(added);
+        }
+        match overall::check(home, items) {
+            Err(message) => emit(LeadEvent::Error { at: now_iso(), text: message })?,
+            Ok(items) => for item in items {
+                emit(LeadEvent::Forward {
+                    at: now_iso(),
+                    project: item.project,
+                    text: item.text,
+                    provider: req.provider,
+                    model: req.model.filter(|m| !m.is_empty()).map(str::to_string),
+                    effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
+                    profile: Profile::of_clean(req.clean.is_some()),
+                })?;
+            },
+        }
+        return Ok(added);
     }
     match design {
         Ok(Some(design)) => emit(LeadEvent::Design { at: now_iso(), design })?,
