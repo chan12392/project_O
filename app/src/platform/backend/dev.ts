@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS, type About, type UpdateCheck } from "../updates.ts";
 
 async function json<T>(res: Response): Promise<T> {
@@ -78,6 +78,19 @@ export const devBackend: Backend = {
   leadRetry: (runId, messageId) => fetch(`/api/lead/retry?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST" }).then((r) => json<{ state: "queued" | "acknowledged" }>(r)),
   leadAnswerApproval: (runId, messageId, text) => fetch(`/api/lead/answer-approval?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST", body: text }).then((r) => json<{ id: string }>(r)),
   leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
+  graphView: (project) => fetch(`/api/graph/view${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<GraphView>(r)),
+  graphBuild: (project) => fetch(`/api/graph/build?${new URLSearchParams({ project })}`, { method: "POST" }).then((r) => json<{ ok: boolean; output: string }>(r)),
+  graphDeep: async (project, provider, model) =>
+    fetch(`/api/graph/deep?${new URLSearchParams({ project })}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      // Read lazily: data/settings.ts touches window at import, and tests load this module under Node.
+      body: JSON.stringify({ provider: provider ?? null, model: model ?? null, clean: (await import("../../data/settings.ts")).settingsNow().clean }),
+    }).then((r) => json<GraphDeepResult>(r)),
+  graphSettings: (change) =>
+    change === undefined
+      ? fetch("/api/graph/settings").then((r) => json<GraphSettings>(r))
+      : fetch("/api/graph/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<GraphSettings>(r)),
   projects: () => fetch("/api/projects").then((r) => json<ProjectList>(r)),
   projectOpen: (path) => fetch(`/api/projects/open?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   projectsAdd: (path) => fetch(`/api/projects/add?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),

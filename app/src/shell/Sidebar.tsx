@@ -1,4 +1,4 @@
-import { BookOpen, CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, X } from "lucide-react";
+import { BookOpen, CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, Waypoints, X } from "lucide-react";
 import { useCallback, useId, useRef, useState, type ReactNode } from "react";
 
 import { isSessionRun } from "../../../src/core/attention.ts";
@@ -43,6 +43,7 @@ interface Props {
   onDashboard: () => void;
   onAutomation: () => void;
   onWiki: () => void;
+  onGraph: () => void;
   currentScreen?: string;
   /** A folder just put on the list (registered or made): open it. */
   onListed: (path: string) => void;
@@ -61,7 +62,7 @@ const HEAD_BUTTON = "flex size-6 items-center justify-center rounded-md text-mut
 
 /** Orca's repo sidebar: the listed projects (root, registered, test group), each with its lead and recent runs (ADR-0009). */
 export function Sidebar(props: Props) {
-  const { state, projects, groups, leadState, project, run, card, now, listError, root, onProject, onWake, onRun, onCard, onNewRequest, onSearch, onDashboard, onAutomation, onWiki, currentScreen, onListed, onUnregister, nextCount = 0, nextOpen, onNextUp, footer } = props;
+  const { state, projects, groups, leadState, project, run, card, now, listError, root, onProject, onWake, onRun, onCard, onNewRequest, onSearch, onDashboard, onAutomation, onWiki, onGraph, currentScreen, onListed, onUnregister, nextCount = 0, nextOpen, onNextUp, footer } = props;
   const shown = state === "full" ? projects : [];
   const [naming, setNaming] = useState<{ project?: string } | undefined>();
   const [adding, setAdding] = useState<"new" | "folder" | undefined>();
@@ -130,7 +131,7 @@ export function Sidebar(props: Props) {
   return (
     <aside className="flex min-h-0 flex-col border-r bg-sidebar text-sidebar-foreground" aria-label="프로젝트 목록">
       <nav className="flex flex-col gap-0.5 px-2 pt-3 pb-2">
-        {([ ["wiki", "WIKI", BookOpen, onWiki], ["search", "검색", Search, onSearch], ["dashboard", "대시보드", LayoutDashboard, onDashboard] ] as const).map(([id, label, Icon, action]) => <button key={id} type="button" onClick={action} aria-current={currentScreen === id ? "page" : undefined} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium"><Icon className="size-4 text-muted-foreground" aria-hidden="true" />{label}</button>)}
+        {([ ["wiki", "WIKI", BookOpen, onWiki], ["graph", "Graph", Waypoints, onGraph], ["search", "검색", Search, onSearch], ["dashboard", "대시보드", LayoutDashboard, onDashboard] ] as const).map(([id, label, Icon, action]) => <button key={id} type="button" onClick={action} aria-current={currentScreen === id ? "page" : undefined} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium"><Icon className="size-4 text-muted-foreground" aria-hidden="true" />{label}</button>)}
         {onNextUp && (
           <button
             type="button"

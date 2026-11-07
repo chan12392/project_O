@@ -25,6 +25,7 @@ import { LeadThread } from "../features/chat/LeadThread.tsx";
 import { LeadApprovalCard } from "../features/chat/LeadApprovalCard.tsx";
 import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
+import { GraphScreen } from "../features/graph/GraphScreen.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
 import { NewRequest } from "../features/projects/NewRequest.tsx";
@@ -54,7 +55,7 @@ const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
 const api = backend(!window.__TAURI_INTERNALS__ && new URLSearchParams(window.location.search).get("source") === "demo");
 
-type Screen = "app" | "onboarding" | "settings" | "nextup" | "new" | "search" | "dashboard" | "automation" | "wiki";
+type Screen = "app" | "onboarding" | "settings" | "nextup" | "new" | "search" | "dashboard" | "automation" | "wiki" | "graph";
 
 export function App() {
   return initial.popout ? <PopoutPanel /> : <MainWindow />;
@@ -323,6 +324,7 @@ function MainWindow() {
           onDashboard={() => setScreen("dashboard")}
           onAutomation={() => setScreen("automation")}
           onWiki={() => setScreen("wiki")}
+          onGraph={() => setScreen("graph")}
           currentScreen={screen}
           onListed={openProject}
           onUnregister={(path) => void unregister(path)}
@@ -342,6 +344,7 @@ function MainWindow() {
       </div>
       {screen === "onboarding" && <Onboarding api={api} onDone={finishOnboarding} onSettings={() => openSettings("agents")} />}
       {screen === "wiki" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">WIKI</header><p className="p-5 text-sm text-muted-foreground">위키는 준비 중입니다.</p></section>}
+      {screen === "graph" && <GraphScreen api={api} projects={projects} current={project?.path} />}
       {screen === "automation" && <Automation api={api} projects={projects} current={project?.path} />}
       {screen === "dashboard" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">대시보드</header><div className="mx-auto max-w-5xl p-5"><WorkDashboard runs={views} now={now} global onCard={(run, card) => { setScreen("app"); openCard(run, card); }} /></div></section>}
       {screen === "search" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">검색</header><div className="mx-auto max-w-3xl space-y-4 p-5"><input autoFocus aria-label="프로젝트와 작업 검색" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="프로젝트 또는 작업 검색" className="w-full rounded-md border bg-background px-3 py-2 text-sm focus-ring" />{query.trim() && <><h2 className="text-xs font-semibold text-muted-foreground">프로젝트</h2>{projects.filter((p) => `${p.name} ${p.path}`.toLowerCase().includes(query.toLowerCase())).map((p) => <button key={p.path} type="button" onClick={() => openProject(p.path)} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{p.name}<span className="ml-2 text-xs text-muted-foreground">{p.path}</span></button>)}<h2 className="text-xs font-semibold text-muted-foreground">작업</h2>{views.flatMap((run) => run.cards.filter((card) => `${run.title} ${card.label} ${card.activity}`.toLowerCase().includes(query.toLowerCase())).map((card) => <button key={`${run.runId}/${card.id}`} type="button" onClick={() => { setScreen("app"); openCard(run.runId, card.id); }} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{card.label}<span className="ml-2 text-xs text-muted-foreground">{run.title}</span></button>))}</>}</div></section>}

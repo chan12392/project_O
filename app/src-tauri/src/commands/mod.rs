@@ -8,6 +8,7 @@
 
 mod about;
 mod agents;
+mod graph;
 mod lead;
 mod images;
 mod issues;
@@ -63,6 +64,10 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_answer_approval,
         lead::lead_stop_all,
         lead::lead_models,
+        graph::graph_view,
+        graph::graph_build,
+        graph::graph_deep,
+        graph::graph_settings,
         images::image_read,
         images::image_open,
         schedule::schedule_list,

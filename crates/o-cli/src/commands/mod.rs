@@ -15,6 +15,7 @@ mod dispatch;
 mod events;
 mod followup;
 mod guard;
+mod graph;
 mod images;
 mod issues;
 mod lead;
@@ -63,6 +64,7 @@ pub const COMMANDS: &[Command] = &[
     sessions::SESSIONS,
     schedule::SCHEDULE,
     projects::PROJECTS,
+    graph::GRAPH,
     guard::HOOK,
     guard::SCAN,
     mirror::SYNC_MIRROR,

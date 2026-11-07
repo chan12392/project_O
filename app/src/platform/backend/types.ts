@@ -244,6 +244,17 @@ export interface Backend {
   /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
   leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
 
+  // The Graph tab (ADR-0033). `graphDeep` spends the person's subscription once, only after a click.
+
+  /** `o graph view --json`: the 3D graph for every listed project (no `project`) or one folder. */
+  graphView(project?: string): Promise<GraphView>;
+  /** `o graph build`: runs `grafly build` in the project; the parser's output is in `output`. */
+  graphBuild(project: string): Promise<{ ok: boolean; output: string }>;
+  /** `o graph deep`: one read-only LLM call naming the project's areas; rejects with the reason (budget spent, limit reached). */
+  graphDeep(project: string, provider?: "codex" | "claude", model?: string): Promise<GraphDeepResult>;
+  /** `o graph settings`: read (no `change`) or save the Graph tab's settings. */
+  graphSettings(change?: Partial<GraphSettings>): Promise<GraphSettings>;
+
   // The project list (ADR-0009). Nothing here deletes a folder; refusals reject with the reason.
 
   /** The projects root, its projects and the registered folders (`o projects --json`). */
@@ -300,6 +311,77 @@ export interface LeadDispatched {
   events: string;
   cards: string[];
   clean: boolean;
+}
+
+/** `o graph view --json`: the whole workspace (root → projects → areas) or one project (project → folders → files). */
+export interface GraphView {
+  scope: "overall" | "project";
+  /** The folder `scope: "project"` answers for. */
+  project?: string;
+  grafly: { installed: boolean; version?: string };
+  /** A project's wiring.json exists (overall: at least one does). */
+  indexed: boolean;
+  nodes: GraphNode[];
+  links: GraphLink[];
+  /** `maxNodes` cut the graph: glowing nodes always stay. */
+  truncated: boolean;
+  /** When a Deep answer last named this graph's areas. */
+  deep?: { at: string; provider: string; model: string };
+}
+
+export interface GraphNode {
+  /** "o:root" | "p:<경로>" | "a:<경로>|<폴더>" | "d:<폴더>" | "f:<파일>". */
+  id: string;
+  label: string;
+  kind: "root" | "project" | "area" | "file";
+  project?: string;
+  /** The project-relative path of a file or folder node. */
+  path?: string;
+  /** File or symbol count (1 or more). */
+  size: number;
+  /** "active": changed on disk now; "path": on its impact path. */
+  glow?: "active" | "path";
+  /** The Deep summary, when one named this area. */
+  summary?: string;
+  /** Project nodes: whether that project's index exists. */
+  indexed?: boolean;
+}
+
+export interface GraphLink {
+  source: string;
+  target: string;
+  kind: "contains" | "calls" | "imports" | "references";
+  /** How many edges between the same pair of files were folded into this one. */
+  weight: number;
+  /** On a glowing path. */
+  glow?: boolean;
+}
+
+/** `o graph settings --json` (<O 상태 폴더>/graph/settings.json). */
+export interface GraphSettings {
+  /** Glowing nodes, halo and brighter path links. */
+  effects: boolean;
+  /** Dots flowing along a glowing path. */
+  particles: boolean;
+  deepProvider: "codex" | "claude";
+  codexModel: string;
+  claudeModel: string;
+  /** The first-use "LLM 사용량이 차감됩니다" dialog before Deep. */
+  warnDeep: boolean;
+  /** Node cap per view (100–5000, default 1500). */
+  maxNodes: number;
+  /** Impact-path depth (1–4, default 2). */
+  depth: number;
+}
+
+/** `o graph deep --json`: the LLM's names and summaries for the project's areas. */
+export interface GraphDeepResult {
+  areas: { id: string; name: string; summary: string }[];
+  provider: string;
+  model: string;
+  at: string;
+  /** Tokens the CLI reported; null when it did not report them. */
+  usage: { input: number | null; output: number | null };
 }
 
 /** Tauri's invoke: named arguments, or raw bytes with headers (attachments). */

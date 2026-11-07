@@ -339,6 +339,63 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   return false;
 }
 
+const GRAPH_PROVIDER = /^(claude|codex)$/;
+const GRAPH_TIMEOUT_MS = 11 * 60_000;
+/** The Graph settings `o graph settings` takes, as flags (ADR-0033); anything else is refused. */
+const GRAPH_SWITCHES = { effects: "--effects", particles: "--particles", warnDeep: "--warn-deep" } as const;
+const GRAPH_VALUES = { deepProvider: "--deep-provider", codexModel: "--codex-model", claudeModel: "--claude-model", maxNodes: "--max-nodes", depth: "--depth" } as const;
+
+/** The Graph tab's twins of the Tauri graph_* commands (app/src-tauri/src/commands/graph.rs, ADR-0033). */
+async function graph(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
+  const fail = (status: number, message: string) => {
+    send(res, status, JSON.stringify({ error: message }));
+    return true;
+  };
+  const run = (args: string[], timeout?: number) => {
+    void o(["graph", ...args, "--json"], timeout).then((out) => send(res, 200, out), (e: Error & { code?: number }) => fail(e.code === 2 ? 409 : 500, e.message));
+    return true;
+  };
+  const project = query.get("project") ?? "";
+  if (project && !(ABSOLUTE.test(project) && existsSync(project))) return fail(400, "프로젝트 폴더가 없습니다");
+  if (req.method === "GET" && path === "/graph/view") return run(["view", ...(project ? ["--project", project] : [])]);
+  if (req.method === "GET" && path === "/graph/settings") return run(["settings"]);
+  if (req.method !== "POST") return false;
+  let input: Record<string, unknown> = {};
+  if (path === "/graph/deep" || path === "/graph/settings") {
+    try {
+      const parsed: unknown = JSON.parse((await body(req, 4096)).toString("utf8") || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fail(400, "요청 본문이 JSON 객체가 아닙니다");
+      input = parsed as Record<string, unknown>;
+    } catch {
+      return fail(400, "요청 본문이 JSON이 아닙니다");
+    }
+  }
+  if (path === "/graph/build") return project ? run(["build", "--project", project], GRAPH_TIMEOUT_MS) : fail(400, "프로젝트가 필요합니다");
+  if (path === "/graph/deep") {
+    if (!project) return fail(400, "프로젝트가 필요합니다");
+    const args = ["deep", "--project", project, "--profile", input.clean === true ? "project-o" : "own"];
+    if (input.provider != null) {
+      if (typeof input.provider !== "string" || !GRAPH_PROVIDER.test(input.provider)) return fail(400, "Deep 에이전트는 codex 또는 claude입니다");
+      args.push("--provider", input.provider);
+    }
+    if (input.model != null && input.model !== "") {
+      if (typeof input.model !== "string" || !MODEL_ID.test(input.model)) return fail(400, "model 이름 형식이 올바르지 않습니다");
+      args.push("--model", input.model);
+    }
+    return run(args, GRAPH_TIMEOUT_MS);
+  }
+  if (path === "/graph/settings") {
+    const args = ["settings"];
+    for (const [key, value] of Object.entries(input)) {
+      if (key in GRAPH_SWITCHES && typeof value === "boolean") args.push(GRAPH_SWITCHES[key as keyof typeof GRAPH_SWITCHES], value ? "on" : "off");
+      else if (key in GRAPH_VALUES && (typeof value === "string" || Number.isInteger(value)) && /^[A-Za-z0-9._-]{1,64}$/.test(String(value))) args.push(GRAPH_VALUES[key as keyof typeof GRAPH_VALUES], String(value));
+      else return fail(400, `설정이 올바르지 않습니다: ${key}`);
+    }
+    return run(args);
+  }
+  return false;
+}
+
 /** A new project's folder name as `o projects new` takes it; it checks the name again. */
 const PROJECT_NAME = /^[^\\/:*?"<>|\0]{1,64}$/;
 
@@ -513,6 +570,9 @@ export function liveRuns(): Plugin {
         }
         if (path === "/projects" || path?.startsWith("/projects/")) {
           return void projects(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
+        }
+        if (path?.startsWith("/graph/")) {
+          return void graph(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
         if (path?.startsWith("/lead/")) {
           return void lead(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));

@@ -37,7 +37,8 @@
 | `agents/` | `mod.rs` `clean.rs` | 앱이 보여 주는 CLI 설치·로그인 상태와 공식 설치·로그인, 깨끗한 테스트 프로필(환경변수 허용 목록·오염 검사) |
 | `usage/` | `mod.rs` `probe.rs` `budget.rs` | 구독 창 형식, `usage.json` 조회·저장, 하루 사용 예산(ADR-0004) |
 | `context/` | `mod.rs` `tokens.rs` | 세션 공유 컨텍스트 검색·주입과 토큰 보고(ADR-0005) |
-| `lead/` | `mod.rs` `prompt.rs` `files.rs` `approvals.rs` `steps.rs` | 총괄 채팅(ADR-0008): 프로젝트별 스레드(`leads/<id>/events.jsonl`), 총괄 한 턴과 세션 재개, `o-plan` 블록 읽기·정책 검사·한 번만 실행, 첨부(O 상태 폴더 밖). 일반 모드의 건별 승인(`approvals`: 가드 먼저, `approvals/<id>.json` 대기, `decide`, Claude용 MCP 서버 `o _lead-approve`)과 진행 단계(`steps`: 스트림 → `lead.step`, 개정 3) |
+| `lead/` | `mod.rs` `prompt.rs` `files.rs` `approvals.rs` `steps.rs` `overall.rs` | 전체 총괄(`overall`, ADR-0032: 프로젝트 루트의 대화, 전체 현황, `o-forward` 검사와 `o _lead-forward` 전달). 총괄 채팅(ADR-0008): 프로젝트별 스레드(`leads/<id>/events.jsonl`), 총괄 한 턴과 세션 재개, `o-plan` 블록 읽기·정책 검사·한 번만 실행, 첨부(O 상태 폴더 밖). 일반 모드의 건별 승인(`approvals`: 가드 먼저, `approvals/<id>.json` 대기, `decide`, Claude용 MCP 서버 `o _lead-approve`)과 진행 단계(`steps`: 스트림 → `lead.step`, 개정 3) |
+| `graph/` | `wiring` `query` `view` `grafly` `git` `deep` `settings` | Graph 탭(ADR-0033): grafly 인덱스(`.grafly/.graph/wiring.json`)를 읽어 호출 관계·변경 영향·파일 API·개요를 LLM 없이 계산, 3D 화면용 그래프와 빛나는 경로(`git status` + 영향 범위), `grafly build/check/ask` 호출, 사람이 고른 CLI·모델로 영역 이름·요약을 한 번에 만드는 Deep, 설정(`graph/settings.json`) |
 | `review.rs` | | `o review`: PR을 gh로 읽어 검토 카드 하나로 실행(ADR-0006) |
 | `sessions.rs` | | 이 PC의 Claude Code 세션을 실행처럼 읽기(읽기 전용) |
 | `projects.rs` | | 앱 왼쪽 목록의 프로젝트(ADR-0009): 프로젝트 루트(기본 `~/.project_o/project`)의 하위 폴더, 그 `test` 묶음, 등록한 폴더(`projects.json`). 등록은 `policy::check_project`와 같은 검사 |
@@ -62,6 +63,7 @@
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(설계·대시보드), 팀 에이전트 탭·분할 화면 `AgentPanes`(1·2·4칸, 칸 배정은 `src/core/panes.ts`), 전체 `WorkDashboard`·`AllNextUp`, 예약 `Automation`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
+| `features/graph/` | Graph 탭(ADR-0033): `GraphScreen`(전체·프로젝트 목록과 도구 막대), `Graph3D`(`3d-force-graph`를 필요할 때만 불러오는 3D 표시), 첫 Deep 안내 `DeepConfirm`, 순수 모듈 `graphStyle`·`modelTier`, 불러오기 `useGraphView` |
 | `features/projects/` | 새 요청 화면 `NewRequest`(맡길 프로젝트 고르기·새 프로젝트·폴더 등록), 첫 실행 `ImportCard`(기록에서 찾은 프로젝트), 공용 양식 `ProjectForms` (ADR-0009) |
 | `features/updates/` | `UpdatePrompt`(shell에 한 번 마운트), 정보 항목의 `UpdateSettings`. 공용 업데이트 타입·문구·제거 명령은 `platform/updates.ts` |
 | `features/settings/` | `Settings`(틀), `Section.tsx`(항목 계약·공용 배치), `sections/*.tsx`(항목별 파일, `sections/index.ts`가 순서), `AccountMenu`, `AgentSetup`, `Onboarding` |

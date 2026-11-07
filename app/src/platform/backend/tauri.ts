@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
 import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
 /** Raised when the desktop app did not open a link; `shell/LinkNotice.tsx` shows it (also raised by app/src-tauri/src/commands/window.rs). */
@@ -84,6 +84,17 @@ export function tauriBackend(invoke: Invoke): Backend {
   leadAnswerApproval: (runId, messageId, text) => invoke("lead_answer_approval", { runId, messageId, text }) as Promise<{ id: string }>,
     leadStopAll: (project) => invoke("lead_stop_all", { project }) as Promise<{ stopped: number }>,
     leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
+    graphView: (project) => invoke("graph_view", { project: project ?? null }) as Promise<GraphView>,
+    graphBuild: (project) => invoke("graph_build", { project }) as Promise<{ ok: boolean; output: string }>,
+    graphDeep: async (project, provider, model) =>
+      invoke("graph_deep", {
+        project,
+        provider: provider ?? null,
+        model: model ?? null,
+        // Read lazily: data/settings.ts touches window at import, and tests load this module under Node.
+        clean: (await import("../../data/settings.ts")).settingsNow().clean,
+      }) as Promise<GraphDeepResult>,
+    graphSettings: (change) => invoke("graph_settings", { change: change ?? null }) as Promise<GraphSettings>,
     projects: () => invoke("projects_list") as Promise<ProjectList>,
     projectOpen: (path) => invoke("project_open", { path }) as Promise<void>,
     projectsAdd: (path) => invoke("projects_add", { path }) as Promise<ProjectList>,

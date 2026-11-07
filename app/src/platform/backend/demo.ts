@@ -1,4 +1,4 @@
-import type { AgentId, Backend, BudgetReport, BudgetState, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
+import type { AgentId, Backend, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
 import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS } from "../updates.ts";
 
@@ -101,6 +101,134 @@ const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
   ).flatMap(([id, name]) => (["high", "medium", "low"] as const).map((level) => ({ id: `${id}-${level}`, label: `${name} (${level[0].toUpperCase()}${level.slice(1)})` }))),
 };
 
+/** The preview's graph settings (ADR-0033); saved for this window only. */
+let demoGraphSettings: GraphSettings = { effects: true, particles: true, deepProvider: "codex", codexModel: "gpt-6.1-terra", claudeModel: "sonnet", warnDeep: true, maxNodes: 1500, depth: 2 };
+
+/** The workspace graph: one indexed project and one folder being written now, its impact path lit. */
+const DEMO_OVERALL: GraphView = {
+  scope: "overall",
+  grafly: { installed: true, version: "0.4.0" },
+  indexed: true,
+  truncated: false,
+  deep: { at: "2026-01-05T09:30:00.000Z", provider: "codex", model: "gpt-6.1-terra" },
+  nodes: [
+    { id: "o:root", label: "전체", kind: "root", size: 40 },
+    { id: "p:C:/projects/project_O", label: "project_O", kind: "project", project: "C:/projects/project_O", size: 30, indexed: true },
+    { id: "p:D:/work/landing", label: "landing", kind: "project", project: "D:/work/landing", size: 10, glow: "active", indexed: false },
+    { id: "a:C:/projects/project_O|app", label: "app", kind: "area", project: "C:/projects/project_O", path: "app", size: 12 },
+    { id: "a:C:/projects/project_O|crates/o-core", label: "crates/o-core", kind: "area", project: "C:/projects/project_O", path: "crates/o-core", size: 10 },
+    { id: "a:C:/projects/project_O|crates/o-cli", label: "crates/o-cli", kind: "area", project: "C:/projects/project_O", path: "crates/o-cli", size: 5 },
+    { id: "a:D:/work/landing|src", label: "src", kind: "area", project: "D:/work/landing", path: "src", size: 8, glow: "path" },
+    { id: "a:D:/work/landing|public", label: "public", kind: "area", project: "D:/work/landing", path: "public", size: 5 },
+  ],
+  links: [
+    { source: "o:root", target: "p:C:/projects/project_O", kind: "contains", weight: 1 },
+    { source: "o:root", target: "p:D:/work/landing", kind: "contains", weight: 1, glow: true },
+    { source: "p:C:/projects/project_O", target: "a:C:/projects/project_O|app", kind: "contains", weight: 1 },
+    { source: "p:C:/projects/project_O", target: "a:C:/projects/project_O|crates/o-core", kind: "contains", weight: 1 },
+    { source: "p:C:/projects/project_O", target: "a:C:/projects/project_O|crates/o-cli", kind: "contains", weight: 1 },
+    { source: "p:D:/work/landing", target: "a:D:/work/landing|src", kind: "contains", weight: 1, glow: true },
+    { source: "p:D:/work/landing", target: "a:D:/work/landing|public", kind: "contains", weight: 1 },
+  ],
+};
+
+/** A file node in the preview's project graph; `path` is relative to the project folder. */
+const demoFile = (path: string, size: number, extra?: Partial<GraphNode>): GraphNode => ({
+  id: `f:${path}`,
+  label: path.split("/").pop() ?? path,
+  kind: "file",
+  path,
+  size,
+  ...extra,
+});
+
+/**
+ * One project's graph (ADR-0033): three folders hold the files and calls/imports wire them.
+ * `src/graph.ts` is the file changing on disk now; the two files it touches glow along the path.
+ */
+function demoProjectGraph(project: string): GraphView {
+  const nodes: GraphNode[] = [
+    { id: `p:${project}`, label: project.split("/").filter(Boolean).pop() ?? project, kind: "project", project, size: 105, indexed: true },
+    { id: "d:src", label: "src", kind: "area", path: "src", size: 40, summary: "화면과 플랫폼 연결 코드가 모인 폴더" },
+    { id: "d:src/core", label: "src/core", kind: "area", path: "src/core", size: 30, summary: "O CLI의 공용 규칙과 정책을 담는 핵심 폴더" },
+    { id: "d:app", label: "app", kind: "area", path: "app", size: 35 },
+    demoFile("src/graph.ts", 20, { glow: "active", summary: "그래프 탭 데이터를 모으는 진입점" }),
+    demoFile("src/graphStyle.ts", 14, { glow: "path" }),
+    demoFile("src/useGraphView.ts", 9, { glow: "path" }),
+    demoFile("src/main.ts", 6),
+    demoFile("src/router.ts", 4),
+    demoFile("src/platform/backend.ts", 12),
+    demoFile("src/platform/types.ts", 8),
+    demoFile("src/platform/tauri.ts", 7),
+    demoFile("src/platform/dev.ts", 5),
+    demoFile("src/platform/demo.ts", 11),
+    demoFile("src/core/lead.ts", 18),
+    demoFile("src/core/projects.ts", 9),
+    demoFile("src/core/policy.ts", 13),
+    demoFile("src/core/tokens.ts", 6),
+    demoFile("src/core/budget.ts", 8),
+    demoFile("src/core/schedule.ts", 5),
+    demoFile("src/core/review.ts", 7),
+    demoFile("src/core/issues.ts", 6),
+    demoFile("src/core/guard.ts", 15),
+    demoFile("src/core/rules.ts", 10),
+    demoFile("app/App.tsx", 14),
+    demoFile("app/Composer.tsx", 12),
+    demoFile("app/LeadThread.tsx", 10),
+    demoFile("app/Settings.tsx", 8),
+    demoFile("app/Graph3D.tsx", 16),
+    demoFile("app/Office.tsx", 9),
+    demoFile("app/Person.tsx", 5),
+    demoFile("app/Runs.tsx", 11),
+    demoFile("app/Cards.tsx", 7),
+    demoFile("app/Chat.tsx", 13),
+  ];
+  const folderOf = (path: string) => (path.startsWith("src/core/") ? "d:src/core" : path.startsWith("src/") ? "d:src" : "d:app");
+  const contains: GraphLink[] = [
+    { source: `p:${project}`, target: "d:src", kind: "contains", weight: 1 },
+    { source: `p:${project}`, target: "d:app", kind: "contains", weight: 1 },
+    { source: "d:src", target: "d:src/core", kind: "contains", weight: 1 },
+    ...nodes.filter((n) => n.kind === "file").map((n) => ({ source: folderOf(n.path ?? ""), target: n.id, kind: "contains" as const, weight: 1 })),
+  ];
+  const wires: GraphLink[] = [
+    { source: "f:src/graph.ts", target: "f:src/graphStyle.ts", kind: "calls", weight: 3, glow: true },
+    { source: "f:src/graph.ts", target: "f:src/useGraphView.ts", kind: "calls", weight: 2, glow: true },
+    { source: "f:src/graph.ts", target: "f:src/platform/backend.ts", kind: "calls", weight: 2 },
+    { source: "f:src/graphStyle.ts", target: "f:src/platform/types.ts", kind: "imports", weight: 2 },
+    { source: "f:src/useGraphView.ts", target: "f:src/platform/backend.ts", kind: "calls", weight: 3 },
+    { source: "f:src/main.ts", target: "f:src/router.ts", kind: "imports", weight: 2 },
+    { source: "f:src/router.ts", target: "f:app/App.tsx", kind: "imports", weight: 1 },
+    { source: "f:app/App.tsx", target: "f:app/Chat.tsx", kind: "imports", weight: 2 },
+    { source: "f:app/Chat.tsx", target: "f:app/Composer.tsx", kind: "imports", weight: 2 },
+    { source: "f:app/Chat.tsx", target: "f:app/LeadThread.tsx", kind: "imports", weight: 1 },
+    { source: "f:app/Graph3D.tsx", target: "f:src/graphStyle.ts", kind: "imports", weight: 3 },
+    { source: "f:app/Graph3D.tsx", target: "f:src/useGraphView.ts", kind: "calls", weight: 1 },
+    { source: "f:app/Office.tsx", target: "f:app/Person.tsx", kind: "imports", weight: 2 },
+    { source: "f:app/Runs.tsx", target: "f:app/Cards.tsx", kind: "imports", weight: 2 },
+    { source: "f:app/Settings.tsx", target: "f:src/platform/backend.ts", kind: "calls", weight: 1 },
+    { source: "f:src/platform/backend.ts", target: "f:src/platform/types.ts", kind: "imports", weight: 4 },
+    { source: "f:src/platform/tauri.ts", target: "f:src/platform/types.ts", kind: "imports", weight: 3 },
+    { source: "f:src/platform/dev.ts", target: "f:src/platform/types.ts", kind: "imports", weight: 2 },
+    { source: "f:src/platform/demo.ts", target: "f:src/platform/types.ts", kind: "imports", weight: 2 },
+    { source: "f:src/platform/backend.ts", target: "f:src/platform/tauri.ts", kind: "calls", weight: 1 },
+    { source: "f:src/core/lead.ts", target: "f:src/core/policy.ts", kind: "calls", weight: 3 },
+    { source: "f:src/core/lead.ts", target: "f:src/core/projects.ts", kind: "calls", weight: 2 },
+    { source: "f:src/core/tokens.ts", target: "f:src/core/budget.ts", kind: "calls", weight: 2 },
+    { source: "f:src/core/schedule.ts", target: "f:src/core/lead.ts", kind: "calls", weight: 2 },
+    { source: "f:src/core/guard.ts", target: "f:src/core/rules.ts", kind: "calls", weight: 4 },
+  ];
+  return {
+    scope: "project",
+    project,
+    grafly: { installed: true, version: "0.4.0" },
+    indexed: true,
+    truncated: false,
+    deep: { at: "2026-01-05T09:30:00.000Z", provider: "codex", model: "gpt-6.1-terra" },
+    nodes,
+    links: [...contains, ...wires],
+  };
+}
+
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 export const demoBackend: Backend = {
   kind: "demo",
@@ -169,6 +297,20 @@ export const demoBackend: Backend = {
   leadAnswerApproval: async () => { throw new Error("미리보기에서는 답변을 보낼 수 없습니다"); },
   leadStopAll: async () => ({ stopped: 0 }),
   leadModels: async (provider) => ({ provider, models: DEMO_MODELS[provider] }),
+  graphView: async (project) => (project ? demoProjectGraph(project) : DEMO_OVERALL),
+  graphBuild: async (project) => ({ ok: true, output: `미리보기용 인덱스입니다: ${project}` }),
+  graphDeep: async (project, provider, model): Promise<GraphDeepResult> => ({
+    areas: [
+      { id: "d:src", name: "src", summary: "화면과 플랫폼 연결 코드가 모인 폴더" },
+      { id: "d:src/core", name: "src/core", summary: "O CLI의 공용 규칙과 정책을 담는 핵심 폴더" },
+      { id: "d:app", name: "app", summary: "Tauri 셸과 React 화면 코드" },
+    ],
+    provider: provider ?? "codex",
+    model: model ?? "gpt-6.1-terra",
+    at: new Date().toISOString(),
+    usage: { input: 42100, output: 980 },
+  }),
+  graphSettings: async (change) => (demoGraphSettings = { ...demoGraphSettings, ...change }),
   projects: async () => demoList(),
   projectsAdd: async (path) => {
     if (!ABSOLUTE.test(path)) throw new Error("project는 절대 경로여야 합니다");
