@@ -40,9 +40,7 @@ pub async fn graph_deep(project: String, provider: Option<String>, model: Option
     project_arg(&project)?;
     blocking(move || {
         let home = store::default_home();
-        let saved = settings::read(&home);
-        let provider = provider.as_deref().unwrap_or(saved.deep_provider.as_str());
-        let provider = ProviderId::parse(provider).ok_or_else(|| format!("알 수 없는 에이전트: {provider}"))?;
+        let provider = provider.as_deref().map(|p| ProviderId::parse(p).ok_or_else(|| format!("알 수 없는 에이전트: {p}"))).transpose()?;
         let model = model.filter(|m| !m.is_empty());
         let root = clean.then(clean::default_root);
         graph::deep::run(&home, &project, provider, model.as_deref(), root.as_deref()).map(|done| json!(done))

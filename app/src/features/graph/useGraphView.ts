@@ -5,6 +5,9 @@ import type { Backend, GraphView } from "../../platform/backend/types.ts";
 /** Which graph is on screen: every project ("overall") or one folder. */
 export type GraphScope = { scope: "overall" } | { scope: "project"; project: string };
 
+/** The project this scope draws, or undefined on the overall scope. */
+export const projectOf = (scope: GraphScope) => (scope.scope === "project" ? scope.project : undefined);
+
 const keyOf = (scope: GraphScope) => (scope.scope === "overall" ? "overall" : scope.project);
 
 interface State {
@@ -27,7 +30,7 @@ export function useGraphView(api: Backend, scope: GraphScope) {
 
   const refresh = useCallback(async () => {
     const mine = ++seq.current;
-    const project = scope.scope === "project" ? scope.project : undefined;
+    const project = projectOf(scope);
     setState((s) => ({ ...s, loading: true }));
     try {
       const view = await api.graphView(project);

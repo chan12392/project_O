@@ -1,5 +1,6 @@
 //! Hierarchical graph data for the graph screen.
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
+use std::io::Read;
 use std::path::Path;
 use serde::Serialize;
 use super::{git, grafly, settings, wiring::{self, Wiring}};
@@ -16,7 +17,14 @@ pub struct GraphView {
     pub links: Vec<GraphLink>,
     pub truncated: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub deep: Option<serde_json::Value>,
+    pub deep: Option<DeepInfo>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct DeepInfo {
+    pub at: String,
+    pub provider: String,
+    pub model: String,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -144,6 +152,15 @@ fn project_graph(view: &mut GraphView, project: &str, data: &Data, max: usize) {
     for ((a, b, _), (weight, _)) in &data.edges { *degree.entry(a).or_default() += weight; *degree.entry(b).or_default() += weight; }
     let mut files: Vec<_> = data.files.iter().collect();
     files.sort_by(|(a, _), (b, _)| data.glow.contains_key(*b).cmp(&data.glow.contains_key(*a)).then_with(|| degree.get(b.as_str()).unwrap_or(&0).cmp(degree.get(a.as_str()).unwrap_or(&0))).then_with(|| a.cmp(b)));
+    let mut dir_info: HashMap<String, (usize, bool, bool)> = HashMap::new();
+    for path in data.files.keys() {
+        for dir in dirs(path) {
+            let info = dir_info.entry(dir).or_default();
+            info.0 += 1;
+            info.1 |= data.glow.get(path) == Some(&"active");
+            info.2 |= data.glow.contains_key(path);
+        }
+    }
     let mut inserted = HashSet::new();
     for (path, size) in files {
         let directories = dirs(path);
@@ -152,10 +169,8 @@ fn project_graph(view: &mut GraphView, project: &str, data: &Data, max: usize) {
         let mut parent = root.clone();
         for dir in directories {
             let id = format!("d:{dir}");
-            let active = data.glow.iter().any(|(p, g)| *g == "active" && p.starts_with(&format!("{dir}/")));
-            let path_glow = data.glow.keys().any(|p| p.starts_with(&format!("{dir}/")));
+            let (count, active, path_glow) = dir_info[&dir];
             if inserted.insert(dir.clone()) {
-                let count = data.files.keys().filter(|p| p.starts_with(&format!("{dir}/"))).count();
                 view.nodes.push(node(id.clone(), name(&dir).into(), "area", Some(project), Some(&dir), count, if active { Some("active") } else if path_glow { Some("path") } else { None }));
                 view.links.push(link(&parent, &id, "contains", 1, path_glow));
             }
@@ -197,29 +212,36 @@ fn overall_project(view: &mut GraphView, project: &str, label: &str, data: &Data
 
 fn apply_deep(home: &Path, project: &str, view: &mut GraphView) -> Result<(), String> {
     let path = super::deep::path(home, Path::new(project));
-    let bytes = match std::fs::read(&path) {
-        Ok(bytes) => bytes,
+    let file = match std::fs::File::open(&path) {
+        Ok(file) => file,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(e) => return Err(format!("{}: {e}", path.display())),
     };
+    const MAX_DEEP_BYTES: u64 = 2 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    file.take(MAX_DEEP_BYTES + 1).read_to_end(&mut bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    if bytes.len() as u64 > MAX_DEEP_BYTES { return Err(format!("{}: Deep exceeds 2 MiB", path.display())); }
     let deep: super::deep::Deep = serde_json::from_slice(&bytes).map_err(|e| format!("{}: {e}", path.display()))?;
+    let mut areas = HashMap::new();
     for area in &deep.areas {
-        let overall_id = area.id.strip_prefix("d:").map(|dir| format!("a:{project}|{dir}"));
-        for n in &mut view.nodes {
-            if n.project.as_deref() == Some(project) && (n.id == area.id || overall_id.as_deref() == Some(&n.id)) {
-                n.label.clone_from(&area.name);
-                n.summary = Some(area.summary.clone());
-            }
+        areas.insert(area.id.clone(), area);
+        if let Some(dir) = area.id.strip_prefix("d:") { areas.insert(format!("a:{project}|{dir}"), area); }
+    }
+    for n in &mut view.nodes {
+        if let Some(area) = (n.project.as_deref() == Some(project)).then(|| areas.get(&n.id)).flatten() {
+            n.label.clone_from(&area.name);
+            n.summary = Some(area.summary.clone());
         }
     }
-    if view.scope == "project" { view.deep = Some(serde_json::json!({"at": deep.at, "provider": deep.provider, "model": deep.model})); }
+    if view.scope == "project" { view.deep = Some(DeepInfo { at: deep.at, provider: deep.provider, model: deep.model }); }
     Ok(())
 }
 
 fn cap_overall(view: &mut GraphView, max: usize) {
     let mut keep = HashSet::new();
     for n in &view.nodes { if n.kind == "root" || n.glow.is_some() { keep.insert(n.id.clone()); } }
-    for n in &view.nodes { if n.kind == "project" && view.nodes.iter().any(|a| a.project == n.project && a.glow.is_some()) { keep.insert(n.id.clone()); } }
+    let active_projects: HashSet<_> = view.nodes.iter().filter(|n| n.glow.is_some()).filter_map(|n| n.project.as_ref()).collect();
+    for n in &view.nodes { if n.kind == "project" && n.project.as_ref().is_some_and(|p| active_projects.contains(p)) { keep.insert(n.id.clone()); } }
     for n in &view.nodes {
         if keep.len() >= max { break; }
         if n.kind != "area" || n.project.as_ref().is_some_and(|p| keep.contains(&format!("p:{p}"))) { keep.insert(n.id.clone()); }
@@ -273,5 +295,20 @@ mod tests {
         assert!(view.nodes.iter().any(|n| n.id == "a:/p|changed" && n.glow.as_deref() == Some("active")));
         assert!(view.links.iter().any(|l| l.target == "a:/p|changed" && l.glow == Some(true)));
         assert!(!view.nodes.iter().any(|n| n.id == "a:/p|other"));
+    }
+
+    #[test]
+    fn deep_metadata_keeps_json_shape_and_rejects_oversized_file() {
+        let home = std::env::temp_dir().join(format!("o-graph-view-{}", crate::run::store::new_run_id(chrono::Utc::now())));
+        let path = super::super::deep::path(&home, Path::new("/p"));
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, r#"{"at":"now","provider":"codex","model":"m","areas":[{"id":"d:src","name":"Source","summary":"summary"}]}"#).unwrap();
+        let mut view = GraphView { scope: "project".into(), project: Some("/p".into()), grafly: grafly::Status { installed: false, version: None }, indexed: true, nodes: vec![node("d:src".into(), "src".into(), "area", Some("/p"), Some("src"), 1, None)], links: vec![], truncated: false, deep: None };
+        apply_deep(&home, "/p", &mut view).unwrap();
+        assert_eq!(serde_json::to_value(&view.deep).unwrap(), serde_json::json!({"at":"now","provider":"codex","model":"m"}));
+        assert_eq!(view.nodes[0].summary.as_deref(), Some("summary"));
+        std::fs::File::create(&path).unwrap().set_len(2 * 1024 * 1024 + 1).unwrap();
+        assert!(apply_deep(&home, "/p", &mut view).unwrap_err().contains("exceeds 2 MiB"));
+        std::fs::remove_dir_all(home).unwrap();
     }
 }

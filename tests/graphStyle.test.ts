@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { fade, hasGlow, linkColor, linkParticles, linkWidth, nodeColor, nodeHalo, nodeSize, palette } from "../app/src/features/graph/graphStyle.ts";
+import { hasGlow, linkColor, linkParticles, linkWidth, nodeColor, nodeHalo, nodeSize, palette } from "../app/src/features/graph/graphStyle.ts";
 
 // A palette with distinct names so each slot is recognizable in assertions.
 const CSS: Record<string, string> = {
@@ -53,7 +53,6 @@ test("nodeColor paints kind colors, glow only with effects, and fades dimmed non
 
   // Dimmed non-glow nodes fade through fade()'s color-mix string form.
   assert.equal(nodeColor({ kind: "project" }, P, true, true), "color-mix(in srgb, PROJECT 25%, transparent)");
-  assert.equal(nodeColor({ kind: "project" }, P, true, true), fade("PROJECT", P));
   // Dimming does not apply to glowing nodes, and does nothing without effects.
   assert.equal(nodeColor({ kind: "file", glow: "active" }, P, true, true), "ACTIVE");
   assert.equal(nodeColor({ kind: "project" }, P, false, true), "PROJECT");
@@ -110,6 +109,14 @@ test("linkParticles needs effects && particles && link.glow; grows with weight, 
   assert.equal(linkParticles({ weight: 1, glow: true }, false, true), 0);
   assert.equal(linkParticles({ weight: 1, glow: true }, true, false), 0);
   assert.equal(linkParticles({ weight: 1 }, true, true), 0);
+});
+
+test("non-finite backend numbers behave like 0 and never produce NaN", () => {
+  assert.equal(nodeSize({ kind: "file", size: NaN }, false), nodeSize({ kind: "file", size: 0 }, false));
+  assert.ok(!Number.isNaN(nodeSize({ kind: "file", size: NaN }, false)));
+  assert.equal(linkWidth({ weight: NaN }, false), linkWidth({ weight: 1 }, false));
+  assert.equal(linkParticles({ weight: NaN, glow: true }, true, true), 2);
+  assert.ok(!Number.isNaN(linkParticles({ weight: NaN, glow: true }, true, true)));
 });
 
 test("hasGlow is false for a plain view and true once a node or link glows", () => {

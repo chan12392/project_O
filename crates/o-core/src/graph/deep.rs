@@ -8,7 +8,6 @@ use std::time::{Duration, Instant};
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::{settings, wiring};
 use crate::agents::clean;
@@ -23,8 +22,6 @@ pub struct Area {
     pub summary: String,
 }
 
-pub type DeepArea = Area;
-
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Deep {
     pub at: String,
@@ -34,8 +31,6 @@ pub struct Deep {
     pub usage: Usage,
     pub areas: Vec<Area>,
 }
-
-pub type DeepResult = Deep;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
 pub struct Usage {
@@ -47,7 +42,7 @@ pub struct Usage {
 pub fn path(home: &Path, project: &Path) -> PathBuf {
     let normalized = crate::context::normalize_project(&project.to_string_lossy());
     let normalized = if cfg!(windows) { normalized.to_lowercase() } else { normalized };
-    let key = format!("{:x}", Sha256::digest(normalized.as_bytes()));
+    let key = crate::run::result::digest(&normalized);
     home.join("graph").join(&key[..16]).join("deep.json")
 }
 
@@ -149,7 +144,7 @@ fn command(provider: ProviderId, model: &str, clean_root: Option<&Path>, dir: &P
         cmd.args(cli.prefix);
         cmd
     };
-    crate::providers::remove_inherited(&mut cmd, &["CODEX_API_KEY".into(), "ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into()]);
+    crate::providers::remove_inherited(&mut cmd, &["CODEX_API_KEY".into(), "OPENAI_API_KEY".into(), "ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into()]);
     cmd.current_dir(dir);
     match provider {
         ProviderId::Codex => { cmd.args(["exec", "--model", model, "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--json", "--ignore-user-config", "--disable", "hooks", "--disable", "unified_exec", "--disable", "apps", "--output-last-message"])
@@ -193,10 +188,11 @@ fn execute(cmd: &mut Command, prompt: String) -> Result<(String, String), String
 }
 
 /// Run one CLI invocation. `clean_root=None` selects the user's own profile.
-pub fn run(home: &Path, project: &str, provider: ProviderId, model: Option<&str>, clean_root: Option<&Path>) -> Result<Deep, String> {
+pub fn run(home: &Path, project: &str, provider: Option<ProviderId>, model: Option<&str>, clean_root: Option<&Path>) -> Result<Deep, String> {
     super::check_project(home, project)?;
-    if !matches!(provider, ProviderId::Codex | ProviderId::Claude) { return Err("Deep은 codex 또는 claude만 지원합니다".into()); }
     let settings = settings::load(home)?;
+    let provider = provider.or_else(|| ProviderId::parse(&settings.deep_provider)).ok_or("provider는 codex 또는 claude여야 합니다")?;
+    if !matches!(provider, ProviderId::Codex | ProviderId::Claude) { return Err("Deep은 codex 또는 claude만 지원합니다".into()); }
     let model = model.unwrap_or(match provider { ProviderId::Codex => &settings.codex_model, _ => &settings.claude_model });
     if !crate::policy::is_model_id(model) { return Err("모델 이름이 올바르지 않습니다".into()); }
     let wiring = wiring::load(Path::new(project))?.ok_or("grafly 인덱스가 없습니다")?;
@@ -213,7 +209,10 @@ pub fn run(home: &Path, project: &str, provider: ProviderId, model: Option<&str>
     let mut cmd = command(provider, model, clean_root, &temp.0)?;
     let (out, _) = execute(&mut cmd, prompt)?;
     let text = if provider == ProviderId::Codex {
-        std::fs::read_to_string(temp.0.join("result.json")).map_err(|e| format!("Deep 결과 읽기 실패: {e}"))?
+        let mut text = String::new();
+        std::fs::File::open(temp.0.join("result.json")).and_then(|f| f.take(2 * 1024 * 1024 + 1).read_to_string(&mut text)).map_err(|e| format!("Deep 결과 읽기 실패: {e}"))?;
+        if text.len() > 2 * 1024 * 1024 { return Err("Deep 결과가 너무 큽니다".into()); }
+        text
     } else {
         let value: serde_json::Value = serde_json::from_str(&out).map_err(|e| format!("Claude 결과 오류: {e}"))?;
         if value.get("is_error").and_then(|v| v.as_bool()) == Some(true) { return Err("Claude Deep 실행 실패".into()); }
@@ -233,6 +232,15 @@ pub fn run(home: &Path, project: &str, provider: ProviderId, model: Option<&str>
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn path_keeps_existing_sha256_key() {
+        use sha2::{Digest, Sha256};
+        let project = Path::new("example/project");
+        let normalized = crate::context::normalize_project(&project.to_string_lossy());
+        let normalized = if cfg!(windows) { normalized.to_lowercase() } else { normalized };
+        let old_key = format!("{:x}", Sha256::digest(normalized.as_bytes()));
+        assert_eq!(path(Path::new("home"), project), Path::new("home").join("graph").join(&old_key[..16]).join("deep.json"));
+    }
     #[test]
     fn parses_only_allowed_unique_ids_and_limits_unicode() {
         let allowed = HashSet::from(["d:src"]);

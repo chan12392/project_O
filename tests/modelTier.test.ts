@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { modelTier } from "../app/src/features/graph/modelTier.ts";
+import { deepModelOf, modelTier } from "../app/src/features/graph/modelTier.ts";
 
 test("luna and haiku ids are the low tier", () => {
   for (const m of ["gpt-6.1-luna", "luna", "claude-haiku-5-5", "haiku"]) {
@@ -22,4 +22,10 @@ test("terra, sonnet and unknown ids are the default tier", () => {
 
 test("whole words only: 'absolute' does not read as 'sol'", () => {
   assert.equal(modelTier("absolute-model"), "보통");
+});
+
+test("deepModelOf picks the saved model for the picked provider", () => {
+  assert.equal(deepModelOf({ deepProvider: "codex", codexModel: "gpt-6.1-sol", claudeModel: "claude-opus-5-5" }), "gpt-6.1-sol");
+  assert.equal(deepModelOf({ deepProvider: "claude", codexModel: "gpt-6.1-sol", claudeModel: "claude-opus-5-5" }), "claude-opus-5-5");
+  assert.equal(deepModelOf({ deepProvider: "codex", codexModel: "", claudeModel: "x" }), "");
 });

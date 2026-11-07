@@ -326,7 +326,14 @@ export interface GraphView {
   /** `maxNodes` cut the graph: glowing nodes always stay. */
   truncated: boolean;
   /** When a Deep answer last named this graph's areas. */
-  deep?: { at: string; provider: string; model: string };
+  deep?: GraphDeepStamp;
+}
+
+/** The stamp a `graph deep` run leaves on the view. */
+export interface GraphDeepStamp {
+  at: string;
+  provider: string;
+  model: string;
 }
 
 export interface GraphNode {

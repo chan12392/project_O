@@ -3,6 +3,8 @@
  * run roughly spends (ADR-0033 — "상위 모델일수록 차감량이 늘어납니다"). Pure: the id is
  * split into name parts, so "gpt-6.1-luna" and "claude-haiku-5-5" both land on their tier.
  */
+import type { GraphSettings } from "../../platform/backend/types.ts";
+
 export type ModelTier = "낮음" | "보통" | "높음";
 
 const LOW = ["luna", "haiku"];
@@ -17,4 +19,9 @@ export function modelTier(model: string): ModelTier {
   if (HIGH.some(has)) return "높음";
   // Mid and everything unlisted: the default tier.
   return "보통";
+}
+
+/** The model Deep will run: the saved one for the picked provider ("" means the CLI's default). */
+export function deepModelOf(settings: Pick<GraphSettings, "deepProvider" | "codexModel" | "claudeModel">): string {
+  return settings.deepProvider === "codex" ? settings.codexModel : settings.claudeModel;
 }

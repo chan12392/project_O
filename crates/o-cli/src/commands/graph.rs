@@ -51,12 +51,7 @@ fn run(home: &Path, command: &str, args: &[String]) -> Result<Value, String> {
                 "blast" => {
                     let mut changed = graph::git::changed(path)?;
                     if let Some(base) = options.get("base") {
-                        if base.starts_with('-') { return Err("base는 git 참조여야 합니다".into()); }
-                        let mut git = std::process::Command::new("git");
-                        git.current_dir(path).args(["diff", "--relative", "--name-only", "--no-renames", "-z", base, "--", "."]);
-                        let (status, out, err) = o_core::sys::proc::capture(&mut git, std::time::Duration::from_secs(20))?;
-                        if !status.success() { return Err(format!("git diff: {err}")); }
-                        changed.extend(out.split('\0').filter(|p| !p.is_empty()).map(str::to_owned));
+                        changed.extend(graph::git::changed_since(path, base)?);
                     }
                     let changed: Vec<String> = changed.into_iter().collect();
                     let depth = options.get("depth").map(|s| s.parse().unwrap()).unwrap_or(2);
@@ -67,9 +62,7 @@ fn run(home: &Path, command: &str, args: &[String]) -> Result<Value, String> {
             }
         }
         "deep" => {
-            let saved = settings::read(home);
-            let provider = options.get("provider").map(String::as_str).unwrap_or(&saved.deep_provider);
-            let provider = o_core::run::plan::ProviderId::parse(provider).ok_or("provider는 codex 또는 claude여야 합니다")?;
+            let provider = options.get("provider").and_then(|v| o_core::run::plan::ProviderId::parse(v));
             let root = (options.get("profile").map(String::as_str).unwrap_or("project-o") == "project-o").then(o_core::agents::clean::default_root);
             graph::deep::run(home, project.unwrap(), provider, options.get("model").map(String::as_str), root.as_deref()).map(|v| json!(v))
         }

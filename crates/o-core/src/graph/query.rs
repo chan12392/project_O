@@ -107,7 +107,7 @@ pub fn blast(wiring: &Wiring, paths: &[String], depth: usize) -> QueryResult {
         .filter(|n| paths.contains(&n.path.replace('\\', "/")))
         .map(|n| n.id.as_str())
         .collect();
-    traverse(wiring, &roots, Direction::In, Some(depth), false)
+    traverse(wiring, &roots, Direction::In, Some(depth.clamp(1, 8)), false)
 }
 
 /// Returns the indexed symbols in a file, including private symbols.
@@ -217,5 +217,14 @@ mod tests {
         assert_eq!((overview.files, overview.nodes, overview.edges), (4, 4, 5));
         assert_eq!(overview.directories["sub"], 1);
         assert_eq!(overview.relations["calls"], 3);
+    }
+
+    #[test]
+    fn blast_caps_depth_in_core() {
+        let nodes: Vec<_> = (0..11).map(|i| serde_json::json!({"id": i.to_string(), "path": format!("{i}.rs")})).collect();
+        let edges: Vec<_> = (1..11).map(|i| serde_json::json!({"source": i.to_string(), "target": (i - 1).to_string(), "relation": "calls"})).collect();
+        let wiring: Wiring = serde_json::from_value(serde_json::json!({"nodes": nodes, "edges": edges})).unwrap();
+        assert_eq!(blast(&wiring, &["0.rs".into()], usize::MAX).nodes.len(), 9);
+        assert_eq!(blast(&wiring, &["0.rs".into()], 0).nodes.len(), 2);
     }
 }

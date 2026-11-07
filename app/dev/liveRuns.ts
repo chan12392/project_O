@@ -388,7 +388,7 @@ async function graph(req: IncomingMessage, res: ServerResponse, path: string, qu
     const args = ["settings"];
     for (const [key, value] of Object.entries(input)) {
       if (key in GRAPH_SWITCHES && typeof value === "boolean") args.push(GRAPH_SWITCHES[key as keyof typeof GRAPH_SWITCHES], value ? "on" : "off");
-      else if (key in GRAPH_VALUES && (typeof value === "string" || Number.isInteger(value)) && /^[A-Za-z0-9._-]{1,64}$/.test(String(value))) args.push(GRAPH_VALUES[key as keyof typeof GRAPH_VALUES], String(value));
+      else if (key in GRAPH_VALUES && (typeof value === "string" || Number.isInteger(value)) && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(value))) args.push(GRAPH_VALUES[key as keyof typeof GRAPH_VALUES], String(value));
       else return fail(400, `설정이 올바르지 않습니다: ${key}`);
     }
     return run(args);

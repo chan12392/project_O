@@ -63,7 +63,7 @@
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(설계·대시보드), 팀 에이전트 탭·분할 화면 `AgentPanes`(1·2·4칸, 칸 배정은 `src/core/panes.ts`), 전체 `WorkDashboard`·`AllNextUp`, 예약 `Automation`, `Ticket`, `ReviewRequest` |
 | `features/usage/` | `UsagePanel`, `TokenCard` |
-| `features/graph/` | Graph 탭(ADR-0033): `GraphScreen`(전체·프로젝트 목록과 도구 막대), `Graph3D`(`3d-force-graph`를 필요할 때만 불러오는 3D 표시), 첫 Deep 안내 `DeepConfirm`, 순수 모듈 `graphStyle`·`modelTier`, 불러오기 `useGraphView` |
+| `features/graph/` | Graph 탭(ADR-0033): `GraphScreen`(조립), `GraphToolbar`(효과·흐름 스위치, 인덱스 만들기, Deep), `ScopeList`(전체 → 프로젝트), `CanvasState`(불러오기·오류·빈 상태), `NodeDetail`, `Graph3D`(`3d-force-graph`·`three`를 필요할 때만 불러오는 3D 표시), 첫 Deep 안내 `DeepConfirm`, 순수 모듈 `graphStyle`·`graphText`(HTML 이스케이프, 숫자 표시)·`modelTier`, 불러오기 `useGraphView` |
 | `features/projects/` | 새 요청 화면 `NewRequest`(맡길 프로젝트 고르기·새 프로젝트·폴더 등록), 첫 실행 `ImportCard`(기록에서 찾은 프로젝트), 공용 양식 `ProjectForms` (ADR-0009) |
 | `features/updates/` | `UpdatePrompt`(shell에 한 번 마운트), 정보 항목의 `UpdateSettings`. 공용 업데이트 타입·문구·제거 명령은 `platform/updates.ts` |
 | `features/settings/` | `Settings`(틀), `Section.tsx`(항목 계약·공용 배치), `sections/*.tsx`(항목별 파일, `sections/index.ts`가 순서), `AccountMenu`, `AgentSetup`, `Onboarding` |

@@ -1,8 +1,8 @@
 //! Non-LLM grafly operations; never invoke its Deep or vision modes.
-use std::{path::Path, process::Command, time::Duration};
+use std::{io::Read, path::Path, process::{Command, ExitStatus, Stdio}, thread, time::{Duration, Instant}};
 use serde::Serialize;
 use serde_json::{json, Value};
-use crate::sys::{proc::capture, resolve::{resolve_cli, which, CliCommand}};
+use crate::sys::{proc::Contained, resolve::{resolve_cli, which, CliCommand}};
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Status {
@@ -28,6 +28,37 @@ fn command_for(cli: CliCommand, args: &[&str], project: Option<&str>) -> Command
 fn run(args: &[&str], project: Option<&str>, timeout: Duration) -> Result<(bool, String, String), String> {
     let (status, out, err) = capture(&mut command(args, project)?, timeout)?;
     Ok((status.success(), out, err))
+}
+
+pub(super) fn capture(command: &mut Command, timeout: Duration) -> Result<(ExitStatus, String, String), String> {
+    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    let mut child = Contained::spawn(command).map_err(|e| format!("실행 실패: {e}"))?;
+    let child_stdout = child.child.stdout.take().ok_or("출력 파이프 없음")?;
+    let child_stderr = child.child.stderr.take().ok_or("오류 파이프 없음")?;
+    let out = thread::spawn(move || bounded_output(child_stdout));
+    let err = thread::spawn(move || bounded_output(child_stderr));
+    let deadline = Instant::now() + timeout;
+    let status = loop {
+        match child.child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
+            Ok(None) => return Err("실패 (시간 초과)".into()),
+            Err(e) => return Err(format!("실행 실패: {e}")),
+        }
+    };
+    drop(child);
+    let out = out.join().map_err(|_| "출력 읽기 실패")??;
+    let err = err.join().map_err(|_| "오류 출력 읽기 실패")??;
+    Ok((status, out, err))
+}
+
+fn bounded_output(mut pipe: impl Read) -> Result<String, String> {
+    const MAX_OUTPUT: u64 = 16 * 1024 * 1024;
+    let mut bytes = Vec::new();
+    pipe.by_ref().take(MAX_OUTPUT + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    let _ = std::io::copy(&mut pipe, &mut std::io::sink());
+    if bytes.len() as u64 > MAX_OUTPUT { return Err("프로세스 출력이 16 MiB를 넘었습니다".into()); }
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
 fn success(outcome: (bool, String, String)) -> Result<String, String> {
@@ -86,5 +117,10 @@ mod tests {
         assert_eq!(args, ["ask", "--json", "--read-only", "--", "a; b"]);
         assert!(command.get_envs().any(|(k, v)| k == "GRAFLY_NO_AUTO_DEEP" && v.is_some_and(|v| v == "1")));
         assert!(command.get_envs().any(|(k, v)| k == "OPENAI_API_KEY" && v.is_none()));
+    }
+    #[test]
+    fn output_read_is_bounded() {
+        assert_eq!(bounded_output(&b"ok"[..]).unwrap(), "ok");
+        assert!(bounded_output(std::io::repeat(0).take(16 * 1024 * 1024 + 1)).is_err());
     }
 }

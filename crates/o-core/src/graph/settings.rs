@@ -62,16 +62,6 @@ pub fn load(home: &Path) -> Result<GraphSettings, String> {
 
 pub fn read(home: &Path) -> GraphSettings { load(home).unwrap_or_default() }
 
-/// Keep unknown fields; malformed or invalid existing files are never overwritten.
-pub fn save(home: &Path, settings: &GraphSettings) -> Result<(), String> {
-    settings.validate()?;
-    let dir = home.join("graph");
-    fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("settings.lock")).map_err(|e| e.to_string())?;
-    lock.lock().map_err(|e| e.to_string())?;
-    write_locked(&dir, settings)
-}
-
 fn write_locked(dir: &Path, settings: &GraphSettings) -> Result<(), String> {
     let path = dir.join("settings.json");
     let mut map = read_map(&path)?;
@@ -114,15 +104,15 @@ mod tests {
         assert_eq!(load(&home).unwrap(), defaults);
         let mut invalid = defaults.clone();
         invalid.codex_model = "--bad model".into();
-        assert!(save(&home, &invalid).is_err());
+        assert!(invalid.validate().is_err());
         invalid = defaults.clone(); invalid.depth = 0;
-        assert!(save(&home, &invalid).is_err());
+        assert!(invalid.validate().is_err());
         invalid = defaults.clone(); invalid.max_nodes = 5001;
-        assert!(save(&home, &invalid).is_err());
+        assert!(invalid.validate().is_err());
         fs::create_dir_all(home.join("graph")).unwrap();
         let path = home.join("graph/settings.json");
         fs::write(&path, r#"{"unknown":42}"#).unwrap();
-        save(&home, &defaults).unwrap();
+        update(&home, Change::default()).unwrap();
         assert_eq!(serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap()["unknown"], 42);
         let changed = update(&home, Change { effects: Some(false), ..Change::default() }).unwrap();
         assert!(!changed.effects);
@@ -130,7 +120,6 @@ mod tests {
         assert_eq!(serde_json::from_slice::<Value>(&fs::read(&path).unwrap()).unwrap()["unknown"], 42);
         fs::write(&path, b"{broken").unwrap();
         assert!(load(&home).is_err());
-        assert!(save(&home, &defaults).is_err());
         assert!(update(&home, Change { effects: Some(false), ..Change::default() }).is_err());
         assert_eq!(fs::read(&path).unwrap(), b"{broken");
         let _ = fs::remove_dir_all(home);

@@ -9,6 +9,7 @@ import { useEffect, useRef } from "react";
 import type { ForceGraph3DInstance, LinkObject, NodeObject } from "3d-force-graph";
 
 import type { GraphLink, GraphNode, GraphView } from "../../platform/backend/types.ts";
+import { escapeHtml } from "./graphText.ts";
 import type { GraphPalette } from "./graphStyle.ts";
 import {
   hasGlow,
@@ -108,7 +109,10 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
         return [(v >> 16) & 255, (v >> 8) & 255, v & 255, 1];
       }
       const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(s.trim());
-      if (m) return [Number(m[1]), Number(m[2]), Number(m[3]), m[4] === undefined ? 1 : Number(m[4])];
+      if (m) {
+        const a = m[4] === undefined ? 1 : Number(m[4]);
+        return [Number(m[1]), Number(m[2]), Number(m[3]), Number.isFinite(a) ? a : 1];
+      }
       return null;
     };
     /** Canvas-serializes any CSS color (oklch, slash-rgb, color-mix) to hex or rgba(). */
@@ -223,7 +227,8 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
         graph
           .backgroundColor("rgba(0,0,0,0)")
           .nodeId("id")
-          .nodeLabel((n) => n.label)
+          // The tooltip writes this string with innerHTML; labels can carry Deep's LLM output.
+          .nodeLabel((n) => escapeHtml(n.label))
           .nodeResolution(12)
           .nodeThreeObject(nodeObject)
           .linkWidth((l) => linkWidth(l, live.current.effects))
@@ -277,5 +282,5 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
     graphRef.current?.refresh();
   }, [effects, particles, reducedMotion]);
 
-  return <div ref={host} className={className} />;
+  return <div ref={host} role="img" aria-label="코드 그래프" className={className} />;
 }

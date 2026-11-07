@@ -4,6 +4,7 @@
  * testable without a browser and both themes just work.
  */
 import type { GraphLink, GraphNode, GraphView } from "../../platform/backend/types.ts";
+import { finite } from "./graphText.ts";
 
 export interface GraphPalette {
   /** Node colors by kind. */
@@ -41,7 +42,7 @@ export function palette(read: (name: string) => string): GraphPalette {
 }
 
 /** A color faded back while something else glows: "color-mix(in srgb, <c> 25%, transparent)". */
-export function fade(color: string, palette: GraphPalette): string {
+function fade(color: string, palette: GraphPalette): string {
   return `color-mix(in srgb, ${color} ${Math.round(palette.dim * 100)}%, transparent)`;
 }
 
@@ -56,7 +57,7 @@ export function nodeColor(node: Pick<GraphNode, "kind" | "glow">, p: GraphPalett
  */
 export function nodeSize(node: Pick<GraphNode, "kind" | "size" | "glow">, effects: boolean): number {
   const base = { root: 7, project: 5.5, area: 4, file: 2.4 }[node.kind];
-  const size = base + Math.min(2.4, Math.log2(Math.max(1, node.size)) * 0.4);
+  const size = base + Math.min(2.4, Math.log2(Math.max(1, finite(node.size) ? node.size : 0)) * 0.4);
   if (!effects) return size;
   return node.glow === "active" ? size * 1.7 : node.glow === "path" ? size * 1.3 : size;
 }
@@ -72,13 +73,13 @@ export function linkColor(link: Pick<GraphLink, "glow">, p: GraphPalette, effect
 }
 
 export function linkWidth(link: Pick<GraphLink, "weight" | "glow">, effects: boolean): number {
-  const width = Math.min(3, 0.6 + Math.log2(Math.max(1, link.weight)));
+  const width = Math.min(3, 0.6 + Math.log2(Math.max(1, finite(link.weight) ? link.weight : 0)));
   return effects && link.glow ? width * 1.8 : width;
 }
 
 /** Dots flowing along a glowing link; both switches and the link's glow must be on. */
 export function linkParticles(link: Pick<GraphLink, "weight" | "glow">, effects: boolean, particles: boolean): number {
-  return effects && particles && link.glow ? Math.min(6, 2 + link.weight) : 0;
+  return effects && particles && link.glow ? Math.min(6, 2 + (finite(link.weight) ? link.weight : 0)) : 0;
 }
 
 /** Whether the view has anything glowing: while it does, the rest fades back. */
