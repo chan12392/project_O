@@ -1,5 +1,5 @@
 import { BookOpen, CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, Waypoints, X } from "lucide-react";
-import { useCallback, useId, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { isSessionRun } from "../../../src/core/attention.ts";
 import { chipSummary, isRecent, sameFolder, type AttentionKind } from "../../../src/core/projects.ts";
@@ -69,7 +69,16 @@ export function Sidebar(props: Props) {
   const [notice, setNotice] = useState<string>();
   const [picking, setPicking] = useState(false);
   const [testOpen, toggleTest] = useTestGroupOpen();
-  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(project ? [project] : []));
+  const listedPath = (path: string | undefined) => (path === undefined ? undefined : shown.find((p) => sameFolder(p.path, path))?.path);
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set(listedPath(project) ? [listedPath(project)!] : []));
+  // The project on screen opens once when it becomes current; after that its chevron folds it like any other.
+  const opened = useRef(listedPath(project) ? project : undefined);
+  useEffect(() => {
+    const path = listedPath(project);
+    if (!path || opened.current === project) return;
+    opened.current = project;
+    setExpanded((s) => (s.has(path) ? s : new Set(s).add(path)));
+  });
   const toggle = (path: string) =>
     setExpanded((s) => {
       const next = new Set(s);
@@ -110,7 +119,7 @@ export function Sidebar(props: Props) {
       groups={groups}
       lead={leadState(p.path)}
       current={isCurrent(p)}
-      open={expanded.has(p.path) || isCurrent(p)}
+      open={expanded.has(p.path)}
       run={run}
       card={card}
       now={now}
