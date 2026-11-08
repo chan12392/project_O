@@ -7,7 +7,6 @@
 //! ```
 
 use std::collections::BTreeSet;
-use std::fs::{self, OpenOptions};
 use std::path::Path;
 
 use crate::agents::clean;
@@ -21,7 +20,7 @@ use crate::run::yolo;
 use crate::sys::js::{js_head, js_len, now_iso};
 
 use super::prompt::{self, Forward};
-use super::{append, current_thread, read_thread, running, thread_dir, thread_project, LeadEvent, SendRequest};
+use super::{append, current_thread, read_thread, running, thread_project, LeadEvent, SendRequest};
 
 /// Requests one turn may pass on, one per project.
 pub const MAX_FORWARDS: usize = 3;
@@ -143,11 +142,8 @@ pub fn forward(home: &Path, thread_id: &str, index: usize, spawner: &Spawner) ->
     if !store::is_run_id(thread_id) { return Err("대화 id가 올바르지 않습니다".into()); }
     let events = read_thread(home, thread_id);
     if !thread_project(&events).is_some_and(|project| is_overall(home, &project)) { return Err("전체 총괄 대화가 아닙니다".into()); }
-    let Some(LeadEvent::Forward { project, text, provider, model, effort, profile, .. }) =
+    let Some(LeadEvent::Forward { at, project, text, provider, model, effort, profile }) =
         events.iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).nth(index).cloned() else { return Err("넘길 요청이 없습니다".into()) };
-    let marks = thread_dir(home, thread_id).join("forwarded");
-    fs::create_dir_all(&marks).map_err(|e| e.to_string())?;
-    OpenOptions::new().write(true).create_new(true).open(marks.join(index.to_string())).map_err(|_| "이미 넘긴 요청입니다".to_string())?;
     let root = (profile == Profile::ProjectO).then(clean::default_root);
     let req = SendRequest {
         project: &project,
@@ -160,7 +156,7 @@ pub fn forward(home: &Path, thread_id: &str, index: usize, spawner: &Spawner) ->
         clean: root.as_deref(),
         yolo: yolo::read_enabled(home),
     };
-    let sent = super::send_forwarded(home, &req, spawner);
+    let sent = super::send_forwarded(home, &req, spawner, thread_id, &at, index);
     if let Err(error) = &sent {
         let name = Path::new(&project).file_name().map_or_else(|| project.clone(), |n| n.to_string_lossy().into_owned());
         let _ = append(home, thread_id, &LeadEvent::Warning { at: now_iso(), text: format!("{name}에 요청을 넘기지 못했습니다: {error}") });

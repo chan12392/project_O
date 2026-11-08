@@ -785,13 +785,13 @@ pub fn retry_card(home: &Path, run_id: &str, message_id: &str) -> Result<&'stati
 }
 
 /// A request the overall lead passed on (`overall::forward`), recorded as such in the project's thread.
-fn send_forwarded(home: &Path, req: &SendRequest, spawner: &Spawner) -> Result<Vec<LeadEvent>, String> {
+fn send_forwarded(home: &Path, req: &SendRequest, spawner: &Spawner, source: &str, at: &str, index: usize) -> Result<Vec<LeadEvent>, String> {
     if overall::is_overall(home, req.project) { return Err("전체 총괄 자신에게는 넘기지 않습니다".into()); }
-    send_turn(home, req, spawner, TURN_LIMIT, None, None, false, Some("overall"))
+    send_turn(home, req, spawner, TURN_LIMIT, None, None, false, Some((source, at, index)))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<&str>) -> Result<Vec<LeadEvent>, String> {
+fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<(&str, &str, usize)>) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
     // The overall lead reads every project and only passes requests on (ADR-0032): never YOLO.
     let overall = worker.is_none() && overall::is_overall(home, req.project);
@@ -804,6 +804,24 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     };
     let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
     current.lock().map_err(|e| e.to_string())?;
+    if let Some((source, at, index)) = origin {
+        let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, source).join("dispatch.lock")).map_err(|e| e.to_string())?;
+        lock.lock().map_err(|e| e.to_string())?;
+        let project = thread_project(&read_thread(home, source)).ok_or("원본 총괄 대화를 확인할 수 없습니다")?;
+        let at = chrono::DateTime::parse_from_rfc3339(at).map_err(|e| e.to_string())?;
+        let stopped = match fs::read_to_string(thread_dir(home, source).join("stop-all-at")) {
+            Ok(stopped) => chrono::DateTime::parse_from_rfc3339(&stopped).map_err(|e| e.to_string())? >= at,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(e) => return Err(e.to_string()),
+        };
+        if stopped || current_thread(home, &project).as_deref() != Some(source) {
+            return Err("원본 총괄이 중지되었거나 새 대화로 전환되어 요청을 넘기지 않았습니다".into());
+        }
+        let marks = thread_dir(home, source).join("forwarded");
+        fs::create_dir_all(&marks).map_err(|e| e.to_string())?;
+        OpenOptions::new().write(true).create_new(true).open(marks.join(index.to_string())).map_err(|_| "이미 넘긴 요청입니다".to_string())?;
+        drop(lock);
+    }
     if read_current(home).map_err(|e| e.to_string())?.get(&project_key(req.project)) != Some(&thread_id) {
         return Err("새 대화로 전환되어 총괄을 시작하지 않았습니다".into());
     }
@@ -848,7 +866,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
         profile: Some(Profile::of_clean(req.clean.is_some())),
         yolo: req.yolo,
-        origin: origin.map(str::to_string),
+        origin: origin.map(|_| "overall".to_string()),
     })?; }
 
     let app_server = req.provider == ProviderId::Codex

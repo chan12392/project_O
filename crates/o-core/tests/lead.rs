@@ -113,8 +113,9 @@ Usage: codex [OPTIONS] [PROMPT]
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 8] = [
+    let extra: [(&str, fn()); 9] = [
         ("the overall lead passes requests on to listed projects only, once each", overall_forwards),
+        ("stopped or replaced overall threads do not deliver pending requests", overall_cancelled_forwards),
         ("questions stand in for the answer; the next turn carries the picks", ask_questions),
         ("a Codex CLI without app-server leads through read-only exec, probed once, resuming across transports", codex_exec_fallback),
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
@@ -229,6 +230,48 @@ fn overall_forwards() {
     refused(forward_block(&[(&alpha, "하나"), (&alpha, "둘")]), "하나만");
     refused(forward_block(&[(&alpha, "1"), (&beta, "2"), (&alpha, "3"), (&beta, "4")]), "1~3");
     assert!(lead::overall::forward(&home, &lead::current_thread(&home, &alpha).unwrap(), 0, spawner.as_ref()).unwrap_err().contains("전체 총괄 대화가 아닙니다"));
+}
+
+fn overall_cancelled_forwards() {
+    for replace in [false, true] {
+        let (home, root, alpha, _) = setup_overall(if replace { "forward-replaced" } else { "forward-stopped" });
+        let (source, _) = fake(claude_answer("o", &forward_block(&[(&alpha, "작업")])));
+        lead::send(&home, &request(&root, "진행"), source.as_ref()).unwrap();
+        let thread = lead::current_thread(&home, &root).unwrap();
+        let target = lead::new_thread(&home, &alpha).unwrap();
+        let (spawner, seen) = fake(claude_answer("p", "완료"));
+
+        if replace {
+            lead::new_thread(&home, &root).unwrap();
+            assert!(lead::overall::forward(&home, &thread, 0, spawner.as_ref()).is_err());
+        } else {
+            let lock = std::fs::OpenOptions::new().read(true).write(true).open(home.join("leads/current.lock")).unwrap();
+            lock.lock().unwrap();
+            std::thread::scope(|scope| {
+                let (ready, wait) = std::sync::mpsc::channel();
+                let (home, thread, spawner) = (&home, &thread, &spawner);
+                let forward = scope.spawn(move || {
+                    ready.send(()).unwrap();
+                    lead::overall::forward(home, thread, 0, spawner.as_ref())
+                });
+                wait.recv().unwrap();
+                lead::stop_all(home, &root).unwrap();
+                drop(lock);
+                assert!(forward.join().unwrap().is_err());
+            });
+        }
+        assert!(seen.lock().unwrap().is_empty());
+        assert!(!lead::read_thread(&home, &target).iter().any(|e| matches!(e, LeadEvent::User { origin: Some(_), .. })));
+
+        // A later turn remains deliverable after stopping the preceding one.
+        if !replace {
+            std::thread::sleep(std::time::Duration::from_millis(2));
+            lead::send(&home, &request(&root, "다시 진행"), source.as_ref()).unwrap();
+            let sent = lead::overall::forward(&home, &thread, 1, spawner.as_ref()).unwrap();
+            assert_eq!(sent.iter().filter(|e| matches!(e, LeadEvent::User { origin: Some(o), .. } if o == "overall")).count(), 1);
+            assert_eq!(seen.lock().unwrap().len(), 1);
+        }
+    }
 }
 
 fn design_snapshots() {

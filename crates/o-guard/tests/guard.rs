@@ -434,6 +434,25 @@ fn merge_lookups_that_fail_block() {
 }
 
 #[test]
+fn substitutions_cannot_hide_a_merge_behind_literal_quotes() {
+    for command in [
+        "echo \"$(printf \"'\"; gh pr merge 99; true)\"",
+        "echo \"$(printf \"'\"; $(true; gh pr merge 99; true))\"",
+        "echo \"`gh pr merge 99`\"",
+        "echo \"`printf \"'\"; gh pr merge 99; true`\"",
+        "echo 'first; gh pr merge 99'; gh pr merge 99",
+    ] {
+        for probe in [&OWNER_GH, &MEMBER_GH] {
+            let reasons = review(&bash(command), probe);
+            assert!(reasons.iter().any(|reason| reason.starts_with("병합할 PR의 base 브랜치를 확인하지 못했습니다")), "{command:?} → {reasons:?}");
+        }
+    }
+    let literal = "echo 'first; gh pr merge 99'";
+    assert!(passes(&bash(literal), &OWNER_GH));
+    assert!(blocked(&bash(literal), &MEMBER_GH));
+}
+
+#[test]
 fn direct_merge_apis_follow_the_same_rule() {
     let pr_merge = "gh api -X PUT repos/chan12392/project_O/pulls/1/merge";
     assert!(blocked(&bash(pr_merge), &MEMBER_GH));

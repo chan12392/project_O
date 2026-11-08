@@ -111,7 +111,7 @@ export function AgentPanes({ title, panes, api, onClose }: { title: string; pane
                   onFocusCapture={() => setFocus(i)}
                   className={`relative flex min-h-0 min-w-0 flex-col overflow-hidden border-b @2xl:border-r ${open.length > 1 && i === focused ? "after:pointer-events-none after:absolute after:inset-0 after:ring-1 after:ring-inset after:ring-ring/60" : ""}`}
                 >
-                  <CardTranscript card={pane.card} run={pane.run} names={names(pane.run)} api={api} onFollowup={() => {}} composer={{ ...(composers[id] ?? EMPTY_COMPOSER), set: (change) => setComposers((all) => withComposer(all, id, change)) }} />
+                  <CardTranscript card={pane.card} run={pane.run} names={names(pane.run)} api={api} onFollowup={() => {}} composer={{ ...(Object.hasOwn(composers, id) ? composers[id] : EMPTY_COMPOSER), set: (change) => setComposers((all) => withComposer(all, id, change)) }} />
                 </div>
               );
             })}

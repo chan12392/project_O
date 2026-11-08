@@ -44,8 +44,9 @@ export const EMPTY_COMPOSER: Composer = { draft: "", sending: false };
 /**
  * The team view keeps each card's composer by card ID, outside the panes, so switching a
  * tab or showing fewer panes hides a draft instead of dropping it. The view is keyed by
- * run, so another run's card with the same ID never sees it.
+ * run, so another run's card with the same ID never sees it. Card IDs that collide with
+ * Object.prototype ("constructor", "__proto__") are safe: only own properties are read.
  */
 export function withComposer(all: Readonly<Record<string, Composer>>, card: string, change: Partial<Composer>): Record<string, Composer> {
-  return { ...all, [card]: { ...(all[card] ?? EMPTY_COMPOSER), ...change } };
+  return { ...all, [card]: { ...(Object.hasOwn(all, card) ? all[card] : EMPTY_COMPOSER), ...change } };
 }

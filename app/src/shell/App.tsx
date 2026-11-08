@@ -22,7 +22,7 @@ import { readParams, writeParam, type PanelView, type ScreenState } from "../dat
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadThread } from "../features/chat/LeadThread.tsx";
-import { LeadApprovalCard } from "../features/chat/LeadApprovalCard.tsx";
+import { LeadApprovalCard, useApprovalAlert } from "../features/chat/LeadApprovalCard.tsx";
 import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { GraphScreen } from "../features/graph/GraphScreen.tsx";
@@ -151,6 +151,7 @@ function MainWindow() {
   const resolved = useMemo(() => resolve(runs, projects, selection), [runs, projects, selection]);
   const { project } = resolved;
   const lead = useLead(api, project?.path, live);
+  useApprovalAlert(lead, api);
   const lastLeadThread = useRef<{ project: string; thread?: string } | undefined>(undefined);
   useEffect(() => {
     if (!project?.path || !lead.loaded) return;
