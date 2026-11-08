@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasGlow, linkColor, linkParticles, linkWidth, nodeColor, nodeHalo, nodeSize, palette } from "../app/src/features/graph/graphStyle.ts";
+import { hasGlow, linkColor, linkParticles, nodeColor, nodeHalo, nodeSize, palette } from "../app/src/features/graph/graphStyle.ts";
 
 // A palette with distinct names so each slot is recognizable in assertions.
 const CSS: Record<string, string> = {
@@ -93,7 +93,7 @@ test("nodeHalo is positive only for glowing nodes with effects, active over path
   assert.equal(nodeHalo({ glow: "path" }, false), 0);
 });
 
-test("linkColor/linkWidth brighten glowing links only with effects; width grows with weight and is capped", () => {
+test("linkColor brightens glowing links only with effects and fades the rest while something glows", () => {
   // Glow only with effects; linkGlow is the --agent-working value.
   assert.equal(linkColor({ glow: true }, P, true, false), "ACTIVE");
   assert.equal(linkColor({ glow: true }, P, false, false), "LINK");
@@ -102,12 +102,6 @@ test("linkColor/linkWidth brighten glowing links only with effects; width grows 
   assert.equal(linkColor({}, P, true, true), "color-mix(in srgb, LINK 70%, transparent)");
   assert.equal(linkColor({}, P, true, false), "LINK");
   assert.equal(linkColor({}, P, false, true), "LINK");
-
-  assert.ok(linkWidth({ weight: 4, glow: true }, true) > linkWidth({ weight: 4 }, true));
-  assert.equal(linkWidth({ weight: 4, glow: true }, false), linkWidth({ weight: 4 }, false));
-  // Width grows with weight and the plain width is capped at 3.
-  assert.ok(linkWidth({ weight: 4 }, false) > linkWidth({ weight: 1 }, false));
-  assert.equal(linkWidth({ weight: 1000000 }, false), 3);
 });
 
 test("linkParticles needs effects && particles && link.glow; grows with weight, capped at 6", () => {
@@ -122,7 +116,6 @@ test("linkParticles needs effects && particles && link.glow; grows with weight, 
 test("non-finite backend numbers behave like 0 and never produce NaN", () => {
   assert.equal(nodeSize({ kind: "file", size: NaN }, false), nodeSize({ kind: "file", size: 0 }, false));
   assert.ok(!Number.isNaN(nodeSize({ kind: "file", size: NaN }, false)));
-  assert.equal(linkWidth({ weight: NaN }, false), linkWidth({ weight: 1 }, false));
   assert.equal(linkParticles({ weight: NaN, glow: true }, true, true), 2);
   assert.ok(!Number.isNaN(linkParticles({ weight: NaN, glow: true }, true, true)));
 });

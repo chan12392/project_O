@@ -20,7 +20,6 @@ import {
   hasGlow,
   linkColor,
   linkParticles,
-  linkWidth,
   nodeColor,
   nodeHalo,
   nodeSize,
@@ -267,7 +266,8 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
       .then(({ ForceGraph3D, three }) => {
         if (disposed) return;
         const T = three as Three;
-        sphere = new T.SphereGeometry(1, 12, 12);
+        // Low-poly on purpose: hundreds of nodes share this geometry, and at graph scale 8×6 reads as round.
+        sphere = new T.SphereGeometry(1, 8, 6);
         const geo = sphere;
 
         /** The shared white→transparent sprite image behind glowing nodes. */
@@ -357,9 +357,10 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
           .nodeId("id")
           // The tooltip writes this string with innerHTML; labels can carry Deep's LLM output.
           .nodeLabel((n) => escapeHtml(n.label))
-          .nodeResolution(12)
           .nodeThreeObject(nodeObject)
-          .linkWidth((l) => linkWidth(l, glowOn()))
+          // Width 0 draws each link as a plain straight line instead of a cylinder mesh;
+          // a glowing link stands out by its color and the flowing dots.
+          .linkWidth(0)
           .linkColor((l) => cssColor(linkColor(l, pal, glowOn(), glowOn() && hasGlow(live.current.view))))
           .linkOpacity(0.6)
           .linkDirectionalParticles((l) => linkParticles(l, glowOn(), live.current.particles && !live.current.reducedMotion))

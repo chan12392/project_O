@@ -76,11 +76,6 @@ export function linkColor(link: Pick<GraphLink, "glow">, p: GraphPalette, effect
   return effects && dimmed ? fade(p.link, p) : p.link;
 }
 
-export function linkWidth(link: Pick<GraphLink, "weight" | "glow">, effects: boolean): number {
-  const width = Math.min(3, 0.6 + Math.log2(Math.max(1, finite(link.weight) ? link.weight : 0)));
-  return effects && link.glow ? width * 1.8 : width;
-}
-
 /** Dots flowing along a glowing link; both switches and the link's glow must be on. */
 export function linkParticles(link: Pick<GraphLink, "weight" | "glow">, effects: boolean, particles: boolean): number {
   return effects && particles && link.glow ? Math.min(6, 2 + (finite(link.weight) ? link.weight : 0)) : 0;
