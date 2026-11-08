@@ -1,7 +1,9 @@
 //! Hierarchical graph data for the graph screen.
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::io::Read;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use serde::Serialize;
 use super::{git, grafly, settings, wiring::{self, Wiring}};
 
@@ -116,6 +118,84 @@ fn data(wiring: Option<&Wiring>, changed: &HashSet<String>, depth: usize) -> Dat
     Data { files, edges, glow }
 }
 
+type Stamp = Option<(SystemTime, u64)>;
+type CacheKey = (PathBuf, Stamp, Stamp, String);
+type OverallCache = VecDeque<(CacheKey, BTreeMap<String, usize>)>;
+static OVERALL_CACHE: OnceLock<Mutex<OverallCache>> = OnceLock::new();
+
+fn stamp(path: &Path) -> Stamp {
+    let meta = std::fs::metadata(path).ok()?;
+    Some((meta.modified().ok()?, meta.len()))
+}
+
+fn cache_key(project: &Path) -> CacheKey {
+    let git = project.ancestors().map(|p| p.join(".git")).find(|p| p.exists());
+    let git = git.map(|p| {
+        if p.is_file() {
+            let text = std::fs::read_to_string(&p).unwrap_or_default();
+            p.parent().unwrap_or(project).join(text.trim().strip_prefix("gitdir: ").unwrap_or(""))
+        } else { p }
+    });
+    let index = git.as_ref().and_then(|p| stamp(&p.join("index")));
+    let head = git.as_ref().map(|p| {
+        let head = std::fs::read_to_string(p.join("HEAD")).unwrap_or_default();
+        let common = std::fs::read_to_string(p.join("commondir")).ok().map(|d| p.join(d.trim())).unwrap_or_else(|| p.clone());
+        let value = head.trim().strip_prefix("ref: ").and_then(|r| std::fs::read_to_string(common.join(r)).ok()).unwrap_or_default();
+        format!("{head}{value}{:?}", stamp(&common.join("packed-refs")))
+    }).unwrap_or_default();
+    (project.to_path_buf(), stamp(&project.join(".grafly/.graph/wiring.json")), index, head)
+}
+
+fn overall_files(project: &Path) -> Result<Option<BTreeMap<String, usize>>, String> {
+    if std::fs::metadata(project.join(".grafly/.graph/wiring.json")).is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound) {
+        return Ok(None);
+    }
+    let key = cache_key(project);
+    if key.1.is_none() {
+        return wiring::load(project).map(|w| w.map(|w| {
+            let mut files = BTreeMap::new();
+            for n in w.nodes { if !n.path.is_empty() { *files.entry(n.path).or_default() += usize::from(n.kind != "file"); } }
+            files
+        }));
+    }
+    let cache = OVERALL_CACHE.get_or_init(|| Mutex::new(VecDeque::new()));
+    if let Some((_, files)) = cache.lock().unwrap().iter().find(|(k, _)| *k == key) { return Ok(Some(files.clone())); }
+    let Some(wiring) = wiring::load(project)? else { return Ok(None) };
+    let mut files = BTreeMap::new();
+    for n in wiring.nodes { if !n.path.is_empty() { *files.entry(n.path).or_default() += usize::from(n.kind != "file"); } }
+    let mut cache = cache.lock().unwrap();
+    cache.retain(|(k, _)| k.0 != key.0);
+    if cache.len() >= 64 { cache.pop_front(); }
+    cache.push_back((key, files.clone()));
+    Ok(Some(files))
+}
+
+fn make_overall_part(home: &Path, project: &str, label: &str, status: &grafly::Status) -> Result<GraphView, String> {
+    let mut result = GraphView { scope: "overall".into(), project: None, grafly: status.clone(), indexed: false, nodes: Vec::new(), links: Vec::new(), truncated: false, deep: None };
+    let files = overall_files(Path::new(project))?;
+    result.indexed = files.is_some();
+    let mut data = Data { files: files.unwrap_or_default(), edges: BTreeMap::new(), glow: HashMap::new() };
+    if result.indexed {
+        for path in git::changed(Path::new(project))? {
+            data.files.entry(path.clone()).or_default();
+            data.glow.insert(path, "active");
+        }
+    }
+    let indexed = result.indexed;
+    overall_project(&mut result, project, label, &data, indexed);
+    result.links.retain(|l| l.source != "o:root");
+    apply_deep(home, project, &mut result)?;
+    Ok(result)
+}
+
+/// One checked project in the overall graph, without the overall root.
+pub fn overall_part(home: &Path, project: &str) -> Result<GraphView, String> {
+    super::check_project(home, project)?;
+    let listing = crate::projects::list(home, &crate::run::store::user_home())?;
+    let label = listing.projects.iter().find(|p| crate::projects::same(&p.path, project)).map(|p| p.name.as_str()).unwrap_or_else(|| name(project));
+    make_overall_part(home, project, label, &grafly::status())
+}
+
 /// Build the overall graph, or the graph for a checked project.
 pub fn view(home: &Path, project: Option<&str>) -> Result<GraphView, String> {
     let settings = settings::read(home);
@@ -130,13 +210,22 @@ pub fn view(home: &Path, project: Option<&str>) -> Result<GraphView, String> {
     } else {
         result.nodes.push(node("o:root".into(), "Project O".into(), "root", None, None, 1, None));
         let listing = crate::projects::list(home, &crate::run::store::user_home())?;
-        for item in listing.projects {
-            if item.missing || super::check_project(home, &item.path).is_err() { continue; }
-            let wiring = wiring::load(Path::new(&item.path))?;
-            result.indexed |= wiring.is_some();
-            let changed = git::changed(Path::new(&item.path))?;
-            overall_project(&mut result, &item.path, &item.name, &data(wiring.as_ref(), &changed, settings.depth), wiring.is_some());
-            apply_deep(home, &item.path, &mut result)?;
+        let ctx = crate::run::store::policy_context(home, chrono::Utc::now()).map_err(|e| e.to_string())?;
+        let projects: Vec<_> = listing.projects.into_iter().filter(|item| !item.missing && crate::policy::check_project(Some(&item.path), &ctx).is_empty()).collect();
+        for chunk in projects.chunks(4) {
+            let parts = std::thread::scope(|scope| {
+                let handles: Vec<_> = chunk.iter().map(|item| {
+                    let status = &result.grafly;
+                    scope.spawn(move || make_overall_part(home, &item.path, &item.name, status))
+                }).collect();
+                handles.into_iter().map(|h| h.join().map_err(|_| "그래프 작업이 중단되었습니다".to_string())?).collect::<Result<Vec<_>, String>>()
+            })?;
+            for part in parts {
+                result.indexed |= part.indexed;
+                if let Some(project) = part.nodes.first() { result.links.push(link("o:root", &project.id, "contains", 1, project.glow.is_some())); }
+                result.nodes.extend(part.nodes);
+                result.links.extend(part.links);
+            }
         }
         cap_overall(&mut result, settings.max_nodes);
     }
@@ -254,6 +343,42 @@ fn cap_overall(view: &mut GraphView, max: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn overall_part_tracks_worktree_and_refreshes_wiring_cache() {
+        let base = std::env::temp_dir().join(format!("o-graph-part-{}", crate::run::store::new_run_id(chrono::Utc::now())));
+        let project = base.join("project");
+        let home = base.join("state");
+        std::fs::create_dir_all(project.join(".grafly/.graph")).unwrap();
+        std::fs::create_dir_all(&home).unwrap();
+        let git = |args: &[&str]| {
+            let mut cmd = std::process::Command::new("git");
+            cmd.arg("-C").arg(&project).args(args);
+            assert!(crate::sys::proc::hide_window(&mut cmd).output().unwrap().status.success());
+        };
+        git(&["init", "-q"]);
+        let wiring = project.join(".grafly/.graph/wiring.json");
+        std::fs::write(&wiring, r#"{"nodes":[{"id":"a","path":"src/a.rs"}]}"#).unwrap();
+        let path = project.to_string_lossy();
+        let first = overall_part(&home, &path).unwrap();
+        assert!(first.indexed);
+        assert!(first.nodes.iter().any(|n| n.path.as_deref() == Some("src")));
+        assert!(!first.nodes.iter().any(|n| n.id == "o:root"));
+        assert!(!first.links.iter().any(|l| l.source == "o:root"));
+        std::fs::create_dir_all(project.join("changed")).unwrap();
+        std::fs::write(project.join("changed/new.rs"), "new").unwrap();
+        let second = overall_part(&home, &path).unwrap();
+        assert!(second.nodes.iter().any(|n| n.path.as_deref() == Some("changed") && n.glow.as_deref() == Some("active")));
+        std::fs::write(&wiring, r#"{"nodes":[{"id":"b","path":"other/b.rs"},{"id":"c","path":"other/c.rs"}]}"#).unwrap();
+        let third = overall_part(&home, &path).unwrap();
+        assert!(third.nodes.iter().any(|n| n.path.as_deref() == Some("other")));
+        assert!(!third.nodes.iter().any(|n| n.path.as_deref() == Some("src")));
+        std::fs::remove_file(wiring).unwrap();
+        let empty = overall_part(&home, &path).unwrap();
+        assert!(!empty.indexed);
+        assert_eq!(empty.nodes.len(), 1);
+        assert!(empty.nodes[0].glow.is_none());
+        std::fs::remove_dir_all(base).unwrap();
+    }
     #[test]
     fn incoming_depth_and_cap_keep_active_paths() {
         let wiring: Wiring = serde_json::from_value(serde_json::json!({

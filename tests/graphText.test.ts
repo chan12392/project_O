@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { countText, deepStampText, escapeHtml, finite } from "../app/src/features/graph/graphText.ts";
+import { countText, deepStampText, escapeHtml, finite, modelText } from "../app/src/features/graph/graphText.ts";
 
 test("escapeHtml escapes the five HTML-significant characters", () => {
   assert.equal(escapeHtml("plain label"), "plain label");
@@ -14,7 +14,15 @@ test("deepStampText joins provider, model and a parsed date; bad dates drop the 
   const stamp = deepStampText({ at: "2026-01-05T09:30:00.000Z", provider: "codex", model: "gpt-6.1-terra" });
   assert.ok(stamp.startsWith("Deep: codex gpt-6.1-terra · "), stamp);
   assert.equal(deepStampText({ at: "not-a-date", provider: "claude", model: "sonnet" }), "Deep: claude sonnet");
-  assert.equal(deepStampText({ at: "", provider: "codex", model: "" }), "Deep: codex ");
+  // "" and "default" are the CLI's own default model (#83).
+  assert.equal(deepStampText({ at: "", provider: "codex", model: "" }), "Deep: codex 기본 모델");
+  assert.equal(deepStampText({ at: "", provider: "codex", model: "default" }), "Deep: codex 기본 모델");
+});
+
+test("modelText names a real id and shows '기본 모델' for '' or 'default'", () => {
+  assert.equal(modelText("gpt-6.1-terra"), "gpt-6.1-terra");
+  assert.equal(modelText(""), "기본 모델");
+  assert.equal(modelText("default"), "기본 모델");
 });
 
 test("countText shows finite numbers and '—' for NaN or infinite", () => {

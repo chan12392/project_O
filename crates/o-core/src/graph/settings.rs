@@ -8,6 +8,7 @@ use serde_json::{Map, Value};
 pub struct GraphSettings {
     pub effects: bool,
     pub particles: bool,
+    pub color_by: String,
     pub deep_provider: String,
     pub codex_model: String,
     pub claude_model: String,
@@ -21,6 +22,7 @@ pub struct GraphSettings {
 pub struct Change {
     pub effects: Option<bool>,
     pub particles: Option<bool>,
+    pub color_by: Option<String>,
     pub deep_provider: Option<String>,
     pub codex_model: Option<String>,
     pub claude_model: Option<String>,
@@ -31,14 +33,15 @@ pub struct Change {
 
 impl Default for GraphSettings {
     fn default() -> Self {
-        Self { effects: true, particles: true, deep_provider: "codex".into(), codex_model: "gpt-6.1-terra".into(), claude_model: "sonnet".into(), warn_deep: true, max_nodes: 1500, depth: 2 }
+        Self { effects: true, particles: true, color_by: "language".into(), deep_provider: "codex".into(), codex_model: "gpt-6.1-terra".into(), claude_model: "sonnet".into(), warn_deep: true, max_nodes: 1500, depth: 2 }
     }
 }
 
 impl GraphSettings {
     pub fn validate(&self) -> Result<(), String> {
+        if !matches!(self.color_by.as_str(), "language" | "area") { return Err("colorBy must be language or area".into()); }
         if !matches!(self.deep_provider.as_str(), "codex" | "claude") { return Err("deepProvider must be codex or claude".into()); }
-        if !crate::policy::is_model_id(&self.codex_model) || !crate::policy::is_model_id(&self.claude_model) { return Err("invalid model id".into()); }
+        if [&self.codex_model, &self.claude_model].iter().any(|model| !model.is_empty() && !crate::policy::is_model_id(model)) { return Err("invalid model id".into()); }
         if !(100..=5000).contains(&self.max_nodes) { return Err("maxNodes must be between 100 and 5000".into()); }
         if !(1..=4).contains(&self.depth) { return Err("depth must be between 1 and 4".into()); }
         Ok(())
@@ -82,6 +85,7 @@ pub fn update(home: &Path, change: Change) -> Result<GraphSettings, String> {
     let mut settings = load(home)?;
     if let Some(v) = change.effects { settings.effects = v; }
     if let Some(v) = change.particles { settings.particles = v; }
+    if let Some(v) = change.color_by { settings.color_by = v; }
     if let Some(v) = change.deep_provider { settings.deep_provider = v; }
     if let Some(v) = change.codex_model { settings.codex_model = v; }
     if let Some(v) = change.claude_model { settings.claude_model = v; }
@@ -102,6 +106,14 @@ mod tests {
         let home = home();
         let defaults = GraphSettings::default();
         assert_eq!(load(&home).unwrap(), defaults);
+        assert_eq!(defaults.color_by, "language");
+        let colored = update(&home, Change { color_by: Some("area".into()), ..Change::default() }).unwrap();
+        assert_eq!(load(&home).unwrap().color_by, colored.color_by);
+        assert!(update(&home, Change { color_by: Some("invalid".into()), ..Change::default() }).is_err());
+        assert_eq!(load(&home).unwrap().color_by, "area");
+        let cleared = update(&home, Change { codex_model: Some(String::new()), claude_model: Some(String::new()), ..Change::default() }).unwrap();
+        assert_eq!(load(&home).unwrap(), cleared);
+        assert!(cleared.codex_model.is_empty() && cleared.claude_model.is_empty());
         let mut invalid = defaults.clone();
         invalid.codex_model = "--bad model".into();
         assert!(invalid.validate().is_err());

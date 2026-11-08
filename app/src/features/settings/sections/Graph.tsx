@@ -3,7 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { MODEL_ID } from "../../../../../src/core/lead.ts";
 import { useLeadModels } from "../../../data/useLead.ts";
-import type { Backend, GraphSettings } from "../../../platform/backend/index.ts";
+import type { Backend, GraphColorBy, GraphSettings } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, Switch } from "../../../ui/controls.tsx";
 import { Rows, Section, type SettingsSectionDef } from "../Section.tsx";
 
@@ -102,6 +102,22 @@ function GraphSection({ api }: { api: Backend }) {
               control={<Switch checked={settings.particles} disabled={saving} onChange={(particles) => void save({ particles })} labelledBy="graph-particles-label" />}
             />
             <SettingsRow
+              label="색 기준"
+              description="파일과 영역 노드를 언어(확장자)별로 색칠할지, 영역별로 색칠할지 정합니다."
+              control={
+                <Segmented<GraphColorBy>
+                  label="색 기준"
+                  value={settings.colorBy ?? "language"}
+                  disabled={saving}
+                  onChange={(colorBy) => void save({ colorBy })}
+                  options={[
+                    { value: "language", label: "언어별" },
+                    { value: "area", label: "영역별" },
+                  ]}
+                />
+              }
+            />
+            <SettingsRow
               id="graph-warn-deep-label"
               label="Deep 사용량 안내"
               description="Deep을 처음 실행할 때 LLM 사용량 안내를 보여 줍니다."
@@ -128,7 +144,7 @@ function GraphSection({ api }: { api: Backend }) {
                 key={provider}
                 id={`graph-model-${provider}`}
                 label={`${PROVIDER_NAME[provider]} 모델`}
-                description={`Deep이 ${PROVIDER_NAME[provider]}로 실행될 때 쓰는 모델입니다. 비우면 ${provider === "codex" ? "Codex" : "Claude Code"} 설정의 기본 모델을 씁니다.`}
+                description={`Deep이 ${PROVIDER_NAME[provider]}로 실행될 때 쓰는 모델입니다. 비우면 ${provider === "codex" ? "Codex CLI에 내장된 기본 모델을 씁니다(Deep은 격리를 위해 Codex 사용자 설정을 읽지 않습니다)" : "Claude Code의 기본 모델을 씁니다"}.`}
                 control={<GraphModel api={api} provider={provider} saved={provider === "codex" ? settings.codexModel : settings.claudeModel} disabled={saving} onSave={(id) => void save(provider === "codex" ? { codexModel: id } : { claudeModel: id })} />}
               />
             ))}

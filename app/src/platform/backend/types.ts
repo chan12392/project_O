@@ -248,6 +248,12 @@ export interface Backend {
 
   /** `o graph view --json`: the 3D graph for every listed project (no `project`) or one folder. */
   graphView(project?: string): Promise<GraphView>;
+  /**
+   * `o graph part`: one project's slice of the overall graph (its node, areas and contains
+   * links — no root). Missing on backends that cannot slice the overall graph (demo, old
+   * dev servers); the overall scope then falls back to one `graphView()` call.
+   */
+  graphOverallPart?(project: string): Promise<GraphView>;
   /** `o graph build`: runs `grafly build` in the project; the parser's output is in `output`. */
   graphBuild(project: string): Promise<{ ok: boolean; output: string }>;
   /** `o graph deep`: one read-only LLM call naming the project's areas; rejects with the reason (budget spent, limit reached). */
@@ -352,6 +358,11 @@ export interface GraphNode {
   summary?: string;
   /** Project nodes: whether that project's index exists. */
   indexed?: boolean;
+  /**
+   * Screen-side only: why this project's slice of the overall graph did not load
+   * (`graphOverallPart` rejected). Never comes from the backend.
+   */
+  error?: string;
 }
 
 export interface GraphLink {
@@ -364,6 +375,9 @@ export interface GraphLink {
   glow?: boolean;
 }
 
+/** What file and area nodes take their colors from (`o graph settings --color-by`). */
+export type GraphColorBy = "language" | "area";
+
 /** `o graph settings --json` (<O 상태 폴더>/graph/settings.json). */
 export interface GraphSettings {
   /** Glowing nodes, halo and brighter path links. */
@@ -371,6 +385,7 @@ export interface GraphSettings {
   /** Dots flowing along a glowing path. */
   particles: boolean;
   deepProvider: "codex" | "claude";
+  /** "" = the CLI's own default model. */
   codexModel: string;
   claudeModel: string;
   /** The first-use "LLM 사용량이 차감됩니다" dialog before Deep. */
@@ -379,6 +394,8 @@ export interface GraphSettings {
   maxNodes: number;
   /** Impact-path depth (1–4, default 2). */
   depth: number;
+  /** Node coloring rule (default "language"); missing in answers from older `o`. */
+  colorBy?: GraphColorBy;
 }
 
 /** `o graph deep --json`: the LLM's names and summaries for the project's areas. */

@@ -27,6 +27,14 @@ pub async fn graph_view(project: Option<String>) -> Result<Value, String> {
     blocking(move || graph::view(&store::default_home(), project.as_deref()).map(|view| json!(view))).await?
 }
 
+/// One project's slice of the overall graph (`o graph part`): the screen draws the overall
+/// graph a project at a time instead of waiting for all of them.
+#[tauri::command]
+pub async fn graph_overall_part(project: String) -> Result<Value, String> {
+    project_arg(&project)?;
+    blocking(move || graph::view::overall_part(&store::default_home(), &project).map(|view| json!(view))).await?
+}
+
 /// Builds the project's grafly index, never its LLM pass (`o graph build`).
 #[tauri::command]
 pub async fn graph_build(project: String) -> Result<Value, String> {

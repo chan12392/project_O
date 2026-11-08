@@ -24,7 +24,8 @@ test("palette uses the read values and falls back on empty answers", () => {
   assert.equal(P.link, "LINK");
   // linkGlow reads --agent-working, same as active.
   assert.equal(P.linkGlow, "ACTIVE");
-  assert.equal(P.dim, 0.25);
+  // Mild dimming: non-glowing nodes stay readable instead of near-invisible.
+  assert.equal(P.dim, 0.7);
 
   const d = palette(() => "");
   assert.equal(d.root, "#f0f0f0");
@@ -47,15 +48,22 @@ test("nodeColor paints kind colors, glow only with effects, and fades dimmed non
 
   // Glow overrides the kind color, but only when effects are on.
   assert.equal(nodeColor({ kind: "file", glow: "active" }, P, true, false), "ACTIVE");
-  assert.equal(nodeColor({ kind: "file", glow: "path" }, P, true, false), "PATH");
+  // A path node keeps its own color; its halo and the flow carry the glow.
+  assert.equal(nodeColor({ kind: "file", glow: "path" }, P, true, false), "FILE");
+  assert.equal(nodeColor({ kind: "file", glow: "path" }, P, true, false, "#58a6ff"), "#58a6ff");
   assert.equal(nodeColor({ kind: "file", glow: "active" }, P, false, false), "FILE");
   assert.equal(nodeColor({ kind: "file", glow: "path" }, P, false, false), "FILE");
 
   // Dimmed non-glow nodes fade through fade()'s color-mix string form.
-  assert.equal(nodeColor({ kind: "project" }, P, true, true), "color-mix(in srgb, PROJECT 25%, transparent)");
+  assert.equal(nodeColor({ kind: "project" }, P, true, true), "color-mix(in srgb, PROJECT 70%, transparent)");
   // Dimming does not apply to glowing nodes, and does nothing without effects.
   assert.equal(nodeColor({ kind: "file", glow: "active" }, P, true, true), "ACTIVE");
   assert.equal(nodeColor({ kind: "project" }, P, false, true), "PROJECT");
+
+  // A 색 기준 base color wins over the kind color; glow still overrides it.
+  assert.equal(nodeColor({ kind: "file" }, P, false, false, "#123456"), "#123456");
+  assert.equal(nodeColor({ kind: "file", glow: "active" }, P, true, false, "#123456"), "ACTIVE");
+  assert.equal(nodeColor({ kind: "file" }, P, true, true, "#123456"), "color-mix(in srgb, #123456 70%, transparent)");
 });
 
 test("nodeSize orders kinds like depth levels and grows glowing nodes only with effects", () => {
@@ -91,7 +99,7 @@ test("linkColor/linkWidth brighten glowing links only with effects; width grows 
   assert.equal(linkColor({ glow: true }, P, false, false), "LINK");
   assert.equal(linkColor({ glow: true }, P, true, true), "ACTIVE");
   // Dimmed fades only non-glow links, only with effects.
-  assert.equal(linkColor({}, P, true, true), "color-mix(in srgb, LINK 25%, transparent)");
+  assert.equal(linkColor({}, P, true, true), "color-mix(in srgb, LINK 70%, transparent)");
   assert.equal(linkColor({}, P, true, false), "LINK");
   assert.equal(linkColor({}, P, false, true), "LINK");
 

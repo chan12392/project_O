@@ -146,14 +146,19 @@ fn command(provider: ProviderId, model: &str, clean_root: Option<&Path>, dir: &P
     };
     crate::providers::remove_inherited(&mut cmd, &["CODEX_API_KEY".into(), "OPENAI_API_KEY".into(), "ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into()]);
     cmd.current_dir(dir);
+    command_args(&mut cmd, provider, model, dir)?;
+    Ok(cmd)
+}
+
+fn command_args(cmd: &mut Command, provider: ProviderId, model: &str, dir: &Path) -> Result<(), String> {
     match provider {
-        ProviderId::Codex => { cmd.args(["exec", "--model", model, "--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--json", "--ignore-user-config", "--disable", "hooks", "--disable", "unified_exec", "--disable", "apps", "--output-last-message"])
+        ProviderId::Codex => { cmd.arg("exec"); if !model.is_empty() { cmd.args(["--model", model]); } cmd.args(["--sandbox", "read-only", "--skip-git-repo-check", "--ephemeral", "--json", "--ignore-user-config", "--disable", "hooks", "--disable", "unified_exec", "--disable", "apps", "--output-last-message"])
             .arg(dir.join("result.json"))
             .args(["-c", "model_reasoning_effort=\"low\"", "-c", "features.shell_tool=false", "-c", "web_search=\"disabled\"", "-c", "features.plugins=false", "-c", "project_doc_max_bytes=0", "-"]); }
-        ProviderId::Claude => { cmd.args(["-p", "--model", model, "--tools", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#, "--setting-sources", "user", "--settings", r#"{"disableAllHooks":true}"#, "--no-session-persistence", "--output-format", "json"]); }
+        ProviderId::Claude => { cmd.arg("-p"); if !model.is_empty() { cmd.args(["--model", model]); } cmd.args(["--tools", "", "--strict-mcp-config", "--mcp-config", r#"{"mcpServers":{}}"#, "--setting-sources", "user", "--settings", r#"{"disableAllHooks":true}"#, "--no-session-persistence", "--output-format", "json"]); }
         _ => return Err("Deep은 codex 또는 claude만 지원합니다".into()),
     }
-    Ok(cmd)
+    Ok(())
 }
 
 fn execute(cmd: &mut Command, prompt: String) -> Result<(String, String), String> {
@@ -194,7 +199,7 @@ pub fn run(home: &Path, project: &str, provider: Option<ProviderId>, model: Opti
     let provider = provider.or_else(|| ProviderId::parse(&settings.deep_provider)).ok_or("provider는 codex 또는 claude여야 합니다")?;
     if !matches!(provider, ProviderId::Codex | ProviderId::Claude) { return Err("Deep은 codex 또는 claude만 지원합니다".into()); }
     let model = model.unwrap_or(match provider { ProviderId::Codex => &settings.codex_model, _ => &settings.claude_model });
-    if !crate::policy::is_model_id(model) { return Err("모델 이름이 올바르지 않습니다".into()); }
+    if !model.is_empty() && !crate::policy::is_model_id(model) { return Err("모델 이름이 올바르지 않습니다".into()); }
     let wiring = wiring::load(Path::new(project))?.ok_or("grafly 인덱스가 없습니다")?;
     let areas = areas(&wiring);
     if areas.is_empty() { return Err("Deep으로 분석할 영역이 없습니다".into()); }
@@ -219,7 +224,7 @@ pub fn run(home: &Path, project: &str, provider: Option<ProviderId>, model: Opti
         value.get("result").and_then(|v| v.as_str()).ok_or("Claude 결과가 없습니다")?.to_owned()
     };
     let allowed = areas.iter().map(|a| a.id.as_str()).collect();
-    let result = Deep { at: js::now_iso(), provider: provider.as_str().into(), model: model.into(), usage: usage(provider, &out), areas: parse(&text, &allowed)? };
+    let result = Deep { at: js::now_iso(), provider: provider.as_str().into(), model: if model.is_empty() { "default" } else { model }.into(), usage: usage(provider, &out), areas: parse(&text, &allowed)? };
     let path = path(home, Path::new(project));
     let dir = path.parent().ok_or("Deep 저장 폴더 오류")?;
     std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
@@ -232,6 +237,18 @@ pub fn run(home: &Path, project: &str, provider: Option<ProviderId>, model: Opti
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn default_model_omits_model_flag_for_both_clis() {
+        for provider in [ProviderId::Codex, ProviderId::Claude] {
+            for model in ["", "custom-model"] {
+                let mut cmd = Command::new("unused");
+                command_args(&mut cmd, provider, model, Path::new("temporary")).unwrap();
+                let args: Vec<_> = cmd.get_args().map(|arg| arg.to_string_lossy().into_owned()).collect();
+                assert_eq!(args.iter().any(|arg| arg == "--model"), !model.is_empty());
+                if !model.is_empty() { assert!(args.windows(2).any(|pair| pair == ["--model", model])); }
+            }
+        }
+    }
     #[test]
     fn path_keeps_existing_sha256_key() {
         use sha2::{Digest, Sha256};

@@ -1,49 +1,45 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 
-import type { Backend, GraphView } from "../../platform/backend/types.ts";
+import type { Backend } from "../../platform/backend/types.ts";
+import { createViewLoader, keyOf, type GraphScope, type ListedProject, type LoaderState } from "./graphLoad.ts";
 
-/** Which graph is on screen: every project ("overall") or one folder. */
-export type GraphScope = { scope: "overall" } | { scope: "project"; project: string };
+export type { GraphScope, ListedProject } from "./graphLoad.ts";
 
 /** The project this scope draws, or undefined on the overall scope. */
 export const projectOf = (scope: GraphScope) => (scope.scope === "project" ? scope.project : undefined);
 
-const keyOf = (scope: GraphScope) => (scope.scope === "overall" ? "overall" : scope.project);
-
-interface State {
-  /** The scope this answer belongs to; a stale one never shows. */
-  key?: string;
-  view?: GraphView;
-  error?: string;
-  loading: boolean;
-}
-
 /**
- * `o graph view` for the scope on screen (ADR-0033). Loads on a scope change and on
- * `refresh` (the toolbar's 새로고침, after 인덱스 만들기, after Deep); an answer that
- * lands after the person picked another scope is dropped.
+ * `o graph view|part` for the scope on screen (ADR-0033). Loads on a scope change and on
+ * `refresh` (the toolbar's 새로고침, after 인덱스 만들기, after Deep); the overall scope
+ * shows a skeleton immediately and merges each project's part as it lands. An answer that
+ * lands after the person picked another scope is dropped, and a refresh only applies
+ * while its scope key is still current (#81).
  */
-export function useGraphView(api: Backend, scope: GraphScope) {
-  const [state, setState] = useState<State>({ loading: true });
-  const seq = useRef(0);
+export function useGraphView(api: Backend, scope: GraphScope, projects: ListedProject[]) {
+  const [state, setState] = useState<LoaderState>({ loading: true });
+  /** What the loader reads at call time, so a captured refresh can't aim at a stale scope. */
+  const live = useRef({ scope, projects });
+  live.current = { scope, projects };
+
+  const loader = useMemo(
+    () =>
+      createViewLoader({
+        api,
+        scope: () => live.current.scope,
+        projects: () => live.current.projects,
+        emit: setState,
+      }),
+    [api],
+  );
+
   const key = keyOf(scope);
-
-  const refresh = useCallback(async () => {
-    const mine = ++seq.current;
-    const project = projectOf(scope);
-    setState((s) => ({ ...s, loading: true }));
-    try {
-      const view = await api.graphView(project);
-      if (seq.current === mine) setState({ key, view, loading: false });
-    } catch (e) {
-      if (seq.current === mine) setState((s) => ({ key, view: s.key === key ? s.view : undefined, error: e instanceof Error ? e.message : String(e), loading: false }));
-    }
-  }, [api, scope, key]);
-
+  // The overall graph is drawn from the project list, which can arrive after the tab opened:
+  // a changed list loads it again (the parts already grown stay).
+  const listed = scope.scope === "overall" ? projects.filter((p) => !p.missing).map((p) => p.path).join("\n") : "";
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
+    void loader.refresh();
+  }, [loader, key, listed]);
 
   const current = state.key === key;
-  return { view: current ? state.view : undefined, error: current ? state.error : undefined, loading: state.loading || !current, refresh };
+  return { view: current ? state.view : undefined, error: current ? state.error : undefined, loading: state.loading || !current, refresh: loader.refresh };
 }

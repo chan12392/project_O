@@ -1,14 +1,19 @@
 /**
  * The Graph tab's canvas (ADR-0033): a thin wrapper around 3d-force-graph that loads
- * the library and three lazily so the main bundle stays small. The div stays empty
- * while they load — the parent shows its own loading state; a failed import logs and
- * leaves it empty. Colors come from the app's CSS variables, so both themes work.
+ * the library and three lazily so the main bundle stays small. On a scope's first load
+ * the graph grows level by level — each node spawning at its parent's position — then
+ * glow and particles light up, so it reads as "finding the connection". With effects
+ * off or reduced motion everything appears at once. Node colors come from the app's
+ * CSS variables and the 색 기준 setting, so both themes work.
  */
 import { useEffect, useRef } from "react";
 
 import type { ForceGraph3DInstance, LinkObject, NodeObject } from "3d-force-graph";
 
-import type { GraphLink, GraphNode, GraphView } from "../../platform/backend/types.ts";
+import type { GraphColorBy, GraphLink, GraphNode, GraphView } from "../../platform/backend/types.ts";
+import { baseColor, type GraphTheme } from "./graphColors.ts";
+import { loadGraphLibs } from "./graphLib.ts";
+import { levelsOf } from "./graphLoad.ts";
 import { escapeHtml } from "./graphText.ts";
 import type { GraphPalette } from "./graphStyle.ts";
 import {
@@ -58,17 +63,26 @@ interface ThreeMaterial {
   dispose(): void;
 }
 
-/** Copies the library can write x/y/z and index on without mutating the caller's view. */
-const copies = (view: GraphView): { nodes: GNode[]; links: GLink[] } => ({
-  nodes: view.nodes.map((n) => ({ ...n })),
-  links: view.links.map((l) => ({ ...l })),
-});
+/** How fast the reveal queue drains; the batch size adapts so the whole reveal stays near REVEAL_MS. */
+const REVEAL_TICK_MS = 40;
+const REVEAL_MS = 1_800;
 
-export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, className }: {
+/** A scope's identity for the reveal: project→project is a scope change even though `scope` is both "project". */
+const scopeKeyOf = (view: GraphView) => (view.scope === "overall" ? "overall" : (view.project ?? view.scope));
+
+const endOf = (end: string | GNode): string => (typeof end === "string" ? end : end.id);
+
+export function Graph3D({ view, loading, effects, particles, reducedMotion, colorBy, dark, onNodeClick, className }: {
   view: GraphView;
+  /** First-scope data still arriving (overall parts); the reveal keeps growing while it is true. */
+  loading: boolean;
   effects: boolean;
   particles: boolean;
   reducedMotion: boolean;
+  /** The 색 기준 setting: by file language or by top-level area. */
+  colorBy: GraphColorBy;
+  /** The app theme — picks the dark or light color tables. */
+  dark: boolean;
   onNodeClick?: (node: GraphNode) => void;
   className?: string;
 }) {
@@ -77,13 +91,130 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
   /** "Fly then open" timeouts; a scope change or unmount cancels them. */
   const timers = useRef(new Set<number>());
   /** The props mount-time accessors and library callbacks read, so they never go stale. */
-  const live = useRef({ view, effects, particles, reducedMotion, onNodeClick });
-  /** The scope on screen; its change cancels a pending fly. */
-  const scope = useRef(view.scope);
+  const live = useRef({ view, loading, effects, particles, reducedMotion, colorBy, dark, onNodeClick });
+  /** The scope on screen; its change cancels a pending fly and starts a fresh reveal. */
+  const scope = useRef(scopeKeyOf(view));
+  /** Nodes already handed to the graph (their x/y/z live on the objects). */
+  const placed = useRef(new Map<string, GNode>());
+  /** Reveal queue: nodes waiting to spawn, flushed lowest-level first. */
+  const queue = useRef<GNode[]>([]);
+  /** Depth in the contains tree per node, recomputed on every sync. */
+  const levels = useRef(new Map<string, number>());
+  /** The drain interval and the moment the current batch must be fully placed by. */
+  const draining = useRef(0);
+  const deadline = useRef(0);
+  /** The reveal finished for this scope visit; same-scope refreshes never re-run it. */
+  const revealDone = useRef(false);
+  /** Glow/particles suppressed while the reveal runs; flipped on at the end. */
+  const revealing = useRef(false);
 
   useEffect(() => {
-    live.current = { view, effects, particles, reducedMotion, onNodeClick };
+    live.current = { view, loading, effects, particles, reducedMotion, colorBy, dark, onNodeClick };
   });
+
+  /** The reveal only runs while effects are on, motion is allowed and this scope visit hasn't finished one. */
+  const wantReveal = () => live.current.effects && !live.current.reducedMotion && !revealDone.current;
+
+  /** Where a node spawns: its contains parent's position, so it grows outward from it. */
+  const spawnAt = (n: GNode) => {
+    const link = live.current.view.links.find((l) => l.kind === "contains" && endOf(l.target) === n.id);
+    const parent = link ? (placed.current.get(endOf(link.source)) ?? queue.current.find((q) => q.id === endOf(link.source))) : undefined;
+    const at = parent && [parent.x, parent.y, parent.z].every((c) => typeof c === "number" && Number.isFinite(c)) ? parent : undefined;
+    const jitter = () => (Math.random() - 0.5) * 8;
+    n.x = (at?.x ?? 0) + jitter();
+    n.y = (at?.y ?? 0) + jitter();
+    n.z = (at?.z ?? 0) + jitter();
+  };
+
+  /** Writes the placed nodes and every link whose ends both exist to the graph — camera and layout intact. */
+  const flush = () => {
+    const graph = graphRef.current;
+    if (!graph) return;
+    const ids = new Set(placed.current.keys());
+    graph.graphData({
+      nodes: [...placed.current.values()],
+      links: live.current.view.links.filter((l) => ids.has(endOf(l.source)) && ids.has(endOf(l.target))).map((l) => ({ ...l })),
+    });
+  };
+
+  const stopDrain = () => {
+    if (draining.current) window.clearInterval(draining.current);
+    draining.current = 0;
+  };
+
+  const place = (nodes: GNode[]) => {
+    for (const n of nodes) {
+      spawnAt(n);
+      placed.current.set(n.id, n);
+    }
+  };
+
+  /** The reveal ends once the queue is empty and the first load finished: glow and particles come on. */
+  const finishReveal = () => {
+    // A lone root (the project list not here yet) has not been revealed: what arrives next still grows.
+    if (revealDone.current || queue.current.length > 0 || live.current.loading || placed.current.size <= 1) return;
+    revealDone.current = true;
+    revealing.current = false;
+    graphRef.current?.refresh();
+  };
+
+  /** The camera frames the whole graph once per scope visit, when the layout settles; a refresh keeps the person's view. */
+  const fitPending = useRef(true);
+  const fitOnce = () => {
+    const graph = graphRef.current;
+    if (!fitPending.current || !graph || placed.current.size <= 1 || live.current.loading) return;
+    fitPending.current = false;
+    graph.zoomToFit(live.current.reducedMotion ? 0 : 700, 40);
+  };
+
+  const startDrain = () => {
+    if (draining.current) return;
+    draining.current = window.setInterval(() => {
+      const left = Math.max(1, Math.ceil((deadline.current - performance.now()) / REVEAL_TICK_MS));
+      const take = Math.max(1, Math.ceil(queue.current.length / left));
+      queue.current.sort((a, b) => (levels.current.get(a.id) ?? 99) - (levels.current.get(b.id) ?? 99));
+      place(queue.current.splice(0, take));
+      flush();
+      if (queue.current.length === 0) stopDrain();
+      finishReveal();
+    }, REVEAL_TICK_MS);
+  };
+
+  /**
+   * The view changed: kept nodes update in place (positions survive), gone nodes leave,
+   * new ones either join the reveal queue or land at once. Incremental — never a remount.
+   */
+  const sync = (v: GraphView) => {
+    if (!graphRef.current) return;
+    const ids = new Set(v.nodes.map((n) => n.id));
+    for (const id of [...placed.current.keys()]) if (!ids.has(id)) placed.current.delete(id);
+    queue.current = queue.current.filter((n) => ids.has(n.id));
+    const byId = new Map(v.nodes.map((n) => [n.id, n]));
+    const RESET: Partial<GraphNode> = { project: undefined, path: undefined, glow: undefined, summary: undefined, indexed: undefined, error: undefined };
+    for (const [id, gn] of placed.current) {
+      const fresh = byId.get(id);
+      if (fresh) Object.assign(gn, RESET, fresh);
+    }
+    levels.current = levelsOf(v);
+    const queued = new Set(queue.current.map((n) => n.id));
+    const fresh = v.nodes.filter((n) => !placed.current.has(n.id) && !queued.has(n.id)).map((n): GNode => ({ ...n }));
+    if (wantReveal() && fresh.length > 0) {
+      fresh.sort((a, b) => (levels.current.get(a.id) ?? 99) - (levels.current.get(b.id) ?? 99));
+      const now = performance.now();
+      if (deadline.current < now) deadline.current = now + REVEAL_MS;
+      queue.current.push(...fresh);
+      startDrain();
+      return;
+    }
+    if (queue.current.length > 0) {
+      // The reveal was switched off mid-way (effects off / reduced motion): land everything at once.
+      place(queue.current.splice(0));
+      stopDrain();
+    }
+    place(fresh);
+    flush();
+    finishReveal();
+  };
 
   useEffect(() => {
     const el = host.current;
@@ -99,33 +230,28 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
     const sprites = new Map<string, ThreeMaterial>();
 
     const style = getComputedStyle(el);
-    const paint = document.createElement("canvas").getContext("2d");
+    const pixel = document.createElement("canvas");
+    pixel.width = pixel.height = 1;
+    const paint = pixel.getContext("2d", { willReadFrequently: true });
     const channel = (v: number) => Math.round(Math.min(255, Math.max(0, v))).toString(16).padStart(2, "0");
-    /** "#rrggbb" or "rgb(a)(r, g, b[, a])" as canvas serializes them → [r, g, b, a]. */
-    const channels = (s: string): [number, number, number, number] | null => {
-      const h = /^#([0-9a-f]{6})$/i.exec(s.trim());
-      if (h) {
-        const v = parseInt(h[1], 16);
-        return [(v >> 16) & 255, (v >> 8) & 255, v & 255, 1];
-      }
-      const m = /^rgba?\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*(?:,\s*([\d.]+)\s*)?\)$/i.exec(s.trim());
-      if (m) {
-        const a = m[4] === undefined ? 1 : Number(m[4]);
-        return [Number(m[1]), Number(m[2]), Number(m[3]), Number.isFinite(a) ? a : 1];
-      }
-      return null;
-    };
-    /** Canvas-serializes any CSS color (oklch, slash-rgb, color-mix) to hex or rgba(). */
-    const serialize = (raw: string): string => {
-      if (!paint) return raw;
+    /**
+     * Any CSS color (hex, rgb, oklch — Tailwind 4's palette —, color-mix) as [r, g, b, a] in sRGB,
+     * by painting one pixel and reading it back. Parsing the canvas's color string failed for
+     * oklch, which it does not serialize as hex or rgb(), and those nodes came out black.
+     */
+    const channels = (raw: string): [number, number, number, number] | null => {
+      if (!paint || !raw.trim()) return null;
+      paint.clearRect(0, 0, 1, 1);
       paint.fillStyle = "#000";
       paint.fillStyle = raw;
-      return paint.fillStyle;
+      paint.fillRect(0, 0, 1, 1);
+      const [r, g, b, a] = paint.getImageData(0, 0, 1, 1).data;
+      return [r, g, b, a / 255];
     };
-    const bg: [number, number, number, number] = channels(serialize(style.getPropertyValue("--background"))) ?? [10, 10, 10, 1];
+    const bg: [number, number, number, number] = channels(style.getPropertyValue("--background")) ?? [10, 10, 10, 1];
     /** A CSS color WebGL can hold: composited over the app background, since three ignores alpha. */
     const cssColor = (raw: string): string => {
-      const c = channels(serialize(raw));
+      const c = channels(raw);
       if (!c) return "#000000";
       const a = c[3];
       return `#${channel(c[0] * a + bg[0] * (1 - a))}${channel(c[1] * a + bg[1] * (1 - a))}${channel(c[2] * a + bg[2] * (1 - a))}`;
@@ -134,16 +260,13 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
       const raw = style.getPropertyValue(name).trim();
       return raw ? cssColor(raw) : raw;
     });
+    /** Glow and particles are read through this so the reveal can hold them back until it ends. */
+    const glowOn = () => live.current.effects && !revealing.current;
 
-    void Promise.all([
-      import("3d-force-graph"),
-      // @ts-expect-error three ships no type declarations; `Three` above is the slice nodes use.
-      import("three"),
-    ])
-      .then(([mod, three]) => {
+    void loadGraphLibs()
+      .then(({ ForceGraph3D, three }) => {
         if (disposed) return;
         const T = three as Three;
-        const { default: ForceGraph3D } = mod;
         sphere = new T.SphereGeometry(1, 12, 12);
         const geo = sphere;
 
@@ -176,9 +299,12 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
         };
         /** A scaled sphere, plus a tinted halo sprite when the node glows. */
         const nodeObject = (n: GNode): ThreeObj => {
-          const { effects: eff, view: v } = live.current;
-          const dimmed = eff && hasGlow(v) && !n.glow;
-          const color = nodeColor(n, pal, eff, false);
+          const { view: v, colorBy: by, dark: isDark } = live.current;
+          const glow = glowOn();
+          const dimmed = glow && hasGlow(v) && !n.glow;
+          const theme: GraphTheme = isDark ? "dark" : "light";
+          // Never the dimmed form: three cannot read color-mix() and paints it white. Dimming is the opacity below.
+          const color = nodeColor(n, pal, glow, false, baseColor(n, by, theme, pal));
           const key = dimmed ? `${color}|dim` : color;
           let material = materials.get(key);
           if (!material) {
@@ -190,12 +316,12 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
             }
             materials.set(key, material);
           }
-          const size = nodeSize(n, eff);
+          const size = nodeSize(n, glow);
           const group = new T.Group();
           const mesh = new T.Mesh(geo, material);
           mesh.scale.setScalar(size);
           group.add(mesh);
-          const halo = nodeHalo(n, eff);
+          const halo = nodeHalo(n, glow);
           if (halo > 0) {
             const sprite = new T.Sprite(spriteMaterial(n));
             const s = size * (1 + halo);
@@ -233,17 +359,27 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
           .nodeLabel((n) => escapeHtml(n.label))
           .nodeResolution(12)
           .nodeThreeObject(nodeObject)
-          .linkWidth((l) => linkWidth(l, live.current.effects))
-          .linkColor((l) => cssColor(linkColor(l, pal, live.current.effects, hasGlow(live.current.view))))
+          .linkWidth((l) => linkWidth(l, glowOn()))
+          .linkColor((l) => cssColor(linkColor(l, pal, glowOn(), glowOn() && hasGlow(live.current.view))))
           .linkOpacity(0.6)
-          .linkDirectionalParticles((l) => linkParticles(l, live.current.effects, live.current.particles && !live.current.reducedMotion))
+          .linkDirectionalParticles((l) => linkParticles(l, glowOn(), live.current.particles && !live.current.reducedMotion))
           .linkDirectionalParticleColor(() => pal.linkGlow)
           .linkDirectionalParticleWidth(1.6)
           .linkDirectionalParticleSpeed(() => 0.008)
           .onNodeClick(clicked)
-          .graphData(copies(live.current.view))
+          .onEngineStop(fitOnce)
           .width(el.clientWidth)
           .height(el.clientHeight);
+
+        if (live.current.effects && !live.current.reducedMotion) {
+          // The reveal lets the simulation run as nodes grow (bounded); without it the
+          // layout settles before the first frame.
+          revealing.current = true;
+          graph.cooldownTime(4_000);
+        } else {
+          graph.warmupTicks(80);
+        }
+        sync(live.current.view);
 
         observer = new ResizeObserver((entries) => {
           const rect = entries[0]?.contentRect;
@@ -258,6 +394,7 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
     return () => {
       disposed = true;
       observer?.disconnect();
+      stopDrain();
       for (const t of timers.current) window.clearTimeout(t);
       timers.current.clear();
       graph?._destructor();
@@ -269,20 +406,37 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
       haloTexture?.dispose();
       sphere?.dispose();
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
-    if (scope.current !== view.scope) {
-      scope.current = view.scope;
+    const key = scopeKeyOf(view);
+    if (scope.current !== key) {
+      scope.current = key;
       for (const t of timers.current) window.clearTimeout(t);
       timers.current.clear();
+      // A new scope reveals again; everything from the old scope leaves.
+      placed.current.clear();
+      queue.current = [];
+      revealDone.current = false;
+      fitPending.current = true;
+      stopDrain();
+      revealing.current = live.current.effects && !live.current.reducedMotion;
     }
-    graphRef.current?.graphData(copies(view));
+    sync(view);
   }, [view]);
 
   useEffect(() => {
+    if (!revealDone.current && !wantReveal()) {
+      // The reveal was switched off mid-way: land everything at once, then paint as usual.
+      place(queue.current.splice(0));
+      stopDrain();
+      flush();
+    }
+    finishReveal();
     graphRef.current?.refresh();
-  }, [effects, particles, reducedMotion]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effects, particles, reducedMotion, colorBy, dark, loading]);
 
   return <div ref={host} role="img" aria-label="코드 그래프" className={className} />;
 }

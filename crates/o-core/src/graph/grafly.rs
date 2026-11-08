@@ -67,6 +67,11 @@ fn success(outcome: (bool, String, String)) -> Result<String, String> {
 }
 
 pub fn status() -> Status {
+    static STATUS: std::sync::OnceLock<Status> = std::sync::OnceLock::new();
+    STATUS.get_or_init(status_uncached).clone()
+}
+
+fn status_uncached() -> Status {
     if which("grafly").is_none() { return Status { installed: false, version: None }; }
     match run(&["--version"], None, Duration::from_secs(10)) {
         Ok((true, out, _)) => Status { installed: true, version: out.lines().next().map(str::to_owned) },

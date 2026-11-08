@@ -21,6 +21,7 @@ export function NodeDetail({ node, onClose }: { node: GraphNode; onClose: () => 
         {node.path && <div className="flex gap-2"><dt className="w-12 shrink-0">경로</dt><dd className="min-w-0 font-mono text-2xs break-all">{node.path}</dd></div>}
         {node.project && <div className="flex gap-2"><dt className="w-12 shrink-0">프로젝트</dt><dd className="min-w-0 font-mono text-2xs break-all">{node.project}</dd></div>}
         {node.glow && <div className="flex gap-2"><dt className="w-12 shrink-0">상태</dt><dd className="text-agent-working">{GLOW_WORD[node.glow]}</dd></div>}
+        {node.error && <div className="flex gap-2"><dt className="w-12 shrink-0">오류</dt><dd className="min-w-0 text-destructive break-all">{node.error}</dd></div>}
         {node.kind === "project" && node.indexed === false && <div className="flex gap-2"><dt className="w-12 shrink-0">인덱스</dt><dd>없음</dd></div>}
         <div className="flex gap-2"><dt className="w-12 shrink-0">크기</dt><dd>{countText(node.size)}</dd></div>
         {node.summary && <div className="flex gap-2"><dt className="w-12 shrink-0">요약</dt><dd className="min-w-0">{node.summary}</dd></div>}

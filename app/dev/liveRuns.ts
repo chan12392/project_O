@@ -343,7 +343,9 @@ const GRAPH_PROVIDER = /^(claude|codex)$/;
 const GRAPH_TIMEOUT_MS = 11 * 60_000;
 /** The Graph settings `o graph settings` takes, as flags (ADR-0033); anything else is refused. */
 const GRAPH_SWITCHES = { effects: "--effects", particles: "--particles", warnDeep: "--warn-deep" } as const;
-const GRAPH_VALUES = { deepProvider: "--deep-provider", codexModel: "--codex-model", claudeModel: "--claude-model", maxNodes: "--max-nodes", depth: "--depth" } as const;
+const GRAPH_VALUES = { deepProvider: "--deep-provider", codexModel: "--codex-model", claudeModel: "--claude-model", maxNodes: "--max-nodes", depth: "--depth", colorBy: "--color-by" } as const;
+/** An empty model is the CLI's own default; `o graph settings` takes it as the word `default`. */
+const GRAPH_EMPTY_MODEL = new Set(["codexModel", "claudeModel"]);
 
 /** The Graph tab's twins of the Tauri graph_* commands (app/src-tauri/src/commands/graph.rs, ADR-0033). */
 async function graph(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
@@ -358,6 +360,7 @@ async function graph(req: IncomingMessage, res: ServerResponse, path: string, qu
   const project = query.get("project") ?? "";
   if (project && !(ABSOLUTE.test(project) && existsSync(project))) return fail(400, "프로젝트 폴더가 없습니다");
   if (req.method === "GET" && path === "/graph/view") return run(["view", ...(project ? ["--project", project] : [])]);
+  if (req.method === "GET" && path === "/graph/part") return project ? run(["part", "--project", project]) : fail(400, "프로젝트가 필요합니다");
   if (req.method === "GET" && path === "/graph/settings") return run(["settings"]);
   if (req.method !== "POST") return false;
   let input: Record<string, unknown> = {};
@@ -387,7 +390,8 @@ async function graph(req: IncomingMessage, res: ServerResponse, path: string, qu
   if (path === "/graph/settings") {
     const args = ["settings"];
     for (const [key, value] of Object.entries(input)) {
-      if (key in GRAPH_SWITCHES && typeof value === "boolean") args.push(GRAPH_SWITCHES[key as keyof typeof GRAPH_SWITCHES], value ? "on" : "off");
+      if (GRAPH_EMPTY_MODEL.has(key) && value === "") args.push(GRAPH_VALUES[key as keyof typeof GRAPH_VALUES], "default");
+      else if (key in GRAPH_SWITCHES && typeof value === "boolean") args.push(GRAPH_SWITCHES[key as keyof typeof GRAPH_SWITCHES], value ? "on" : "off");
       else if (key in GRAPH_VALUES && (typeof value === "string" || Number.isInteger(value)) && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(value))) args.push(GRAPH_VALUES[key as keyof typeof GRAPH_VALUES], String(value));
       else return fail(400, `설정이 올바르지 않습니다: ${key}`);
     }

@@ -85,6 +85,7 @@ export function tauriBackend(invoke: Invoke): Backend {
     leadStopAll: (project) => invoke("lead_stop_all", { project }) as Promise<{ stopped: number }>,
     leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
     graphView: (project) => invoke("graph_view", { project: project ?? null }) as Promise<GraphView>,
+    graphOverallPart: (project) => invoke("graph_overall_part", { project }) as Promise<GraphView>,
     graphBuild: (project) => invoke("graph_build", { project }) as Promise<{ ok: boolean; output: string }>,
     graphDeep: async (project, provider, model) =>
       invoke("graph_deep", {

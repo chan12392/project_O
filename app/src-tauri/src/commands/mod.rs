@@ -65,6 +65,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_stop_all,
         lead::lead_models,
         graph::graph_view,
+        graph::graph_overall_part,
         graph::graph_build,
         graph::graph_deep,
         graph::graph_settings,

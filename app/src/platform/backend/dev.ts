@@ -79,6 +79,7 @@ export const devBackend: Backend = {
   leadAnswerApproval: (runId, messageId, text) => fetch(`/api/lead/answer-approval?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST", body: text }).then((r) => json<{ id: string }>(r)),
   leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
   graphView: (project) => fetch(`/api/graph/view${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<GraphView>(r)),
+  graphOverallPart: (project) => fetch(`/api/graph/part?project=${encodeURIComponent(project)}`).then((r) => json<GraphView>(r)),
   graphBuild: (project) => fetch(`/api/graph/build?${new URLSearchParams({ project })}`, { method: "POST" }).then((r) => json<{ ok: boolean; output: string }>(r)),
   graphDeep: async (project, provider, model) =>
     fetch(`/api/graph/deep?${new URLSearchParams({ project })}`, {

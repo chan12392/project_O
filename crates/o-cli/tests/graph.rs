@@ -41,6 +41,15 @@ fn settings_json_and_agent_refusals() {
     let (base, project) = fixture("settings");
     let project = project.to_str().unwrap();
     assert_eq!(output(&base, &["graph", "settings", "--json"])["effects"], true);
+    assert_eq!(output(&base, &["graph", "settings", "--json"])["colorBy"], "language");
+    assert_eq!(output(&base, &["graph", "settings", "--color-by", "area"])["colorBy"], "area");
+    assert!(!o(&base, &["graph", "settings", "--color-by", "invalid"], None).status.success());
+    assert_eq!(output(&base, &["graph", "settings", "--json"])["colorBy"], "area");
+    let defaults = output(&base, &["graph", "settings", "--codex-model", "default", "--claude-model", "default", "--json"]);
+    assert_eq!(defaults["codexModel"], "");
+    assert_eq!(defaults["claudeModel"], "");
+    assert_eq!(output(&base, &["graph", "settings", "--json"])["codexModel"], "");
+    assert!(!o(&base, &["graph", "settings", "--codex-model", "bad model"], None).status.success());
     assert_eq!(output(&base, &["graph", "settings", "--effects", "off", "--depth", "3", "--json"])["depth"], 3);
     assert_eq!(output(&base, &["graph", "settings", "--json"])["effects"], false);
     for args in [vec!["graph", "build", "--project", project], vec!["graph", "deep", "--project", project], vec!["graph", "settings", "--effects", "on"]] {
@@ -62,6 +71,12 @@ fn queries_use_the_requested_project_and_validate_options() {
     let view = output(&base, &["graph", "view", "--project", project, "--json"]);
     assert_eq!(view["scope"], "project");
     assert_eq!(view["indexed"], true);
+    let part = output(&base, &["graph", "part", "--project", project, "--json"]);
+    assert_eq!(part["scope"], "overall");
+    assert_eq!(part["indexed"], true);
+    assert!(part["nodes"].as_array().unwrap().iter().any(|n| n["kind"] == "project"));
+    assert!(!part["nodes"].as_array().unwrap().iter().any(|n| n["id"] == "o:root"));
+    assert!(!o(&base, &["graph", "part", "--json"], None).status.success());
     let callers = output(&base, &["graph", "callers", "f", "--project", project, "--direction", "in", "--depth", "all", "--json"]);
     assert_eq!(callers["nodes"].as_array().unwrap().len(), 2);
     assert!(o(&base, &["graph", "map", "--project", project, "--json"], Some("lead")).status.success());

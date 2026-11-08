@@ -16,9 +16,14 @@ export function escapeHtml(text: string): string {
   return text.replace(/[&<>"']/g, (c) => ESCAPE[c] ?? c);
 }
 
+/** A model id as the person sees it: "" or the backend's "default" is the CLI's own default model. */
+export function modelText(model: string): string {
+  return model && model !== "default" ? model : "기본 모델";
+}
+
 /** The "Deep: provider model · date" stamp; an unparseable `at` just drops the date. */
 export function deepStampText(deep: GraphDeepStamp): string {
-  const stamp = `Deep: ${deep.provider} ${deep.model}`;
+  const stamp = `Deep: ${deep.provider} ${modelText(deep.model)}`;
   const at = Date.parse(deep.at);
   return Number.isNaN(at) ? stamp : `${stamp} · ${new Date(at).toLocaleDateString()}`;
 }

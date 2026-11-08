@@ -9,7 +9,7 @@ use super::{fail, Command};
 
 pub const GRAPH: Command = Command {
     name: "graph",
-    usage: "  o graph view|build|check|ask|callers|blast|skeleton|map|deep|settings [옵션]\n                             프로젝트 코드 그래프 조회·인덱스·설정",
+    usage: "  o graph view|part|build|check|ask|callers|blast|skeleton|map|deep|settings [옵션]\n                             프로젝트 코드 그래프 조회·인덱스·설정",
     run: graph_main,
 };
 
@@ -36,6 +36,7 @@ fn run(home: &Path, command: &str, args: &[String]) -> Result<Value, String> {
     if let Some(project) = project { o_core::lead::check_folder(home, project)?; }
     match command {
         "view" => graph::view(home, project).map(|v| json!(v)),
+        "part" => graph::view::overall_part(home, project.unwrap()).map(|v| json!(v)),
         "build" => graph::build(home, project.unwrap()),
         "check" => graph::grafly::check(home, project.unwrap()),
         "ask" => graph::grafly::ask(home, project.unwrap(), positional.unwrap()),
@@ -73,10 +74,11 @@ fn run(home: &Path, command: &str, args: &[String]) -> Result<Value, String> {
                 match key.as_str() {
                     "effects" => change.effects = Some(on_off(value)?),
                     "particles" => change.particles = Some(on_off(value)?),
+                    "color-by" => change.color_by = Some(value.clone()),
                     "warn-deep" => change.warn_deep = Some(on_off(value)?),
                     "deep-provider" => change.deep_provider = Some(value.clone()),
-                    "codex-model" => change.codex_model = Some(value.clone()),
-                    "claude-model" => change.claude_model = Some(value.clone()),
+                    "codex-model" => change.codex_model = Some(if value == "default" { String::new() } else { value.clone() }),
+                    "claude-model" => change.claude_model = Some(if value == "default" { String::new() } else { value.clone() }),
                     "max-nodes" => change.max_nodes = Some(value.parse().map_err(|_| "max-nodes는 숫자여야 합니다")?),
                     "depth" => change.depth = Some(value.parse().map_err(|_| "depth는 숫자여야 합니다")?),
                     _ => unreachable!(),
@@ -94,11 +96,11 @@ fn on_off(value: &str) -> Result<bool, String> {
 
 fn parse<'a>(command: &str, args: &'a [String]) -> Result<(std::collections::HashMap<String, String>, Option<&'a str>), String> {
     let allowed: &[&str] = match command {
-        "view" | "build" | "check" | "ask" | "skeleton" | "map" => &["project"],
+        "view" | "part" | "build" | "check" | "ask" | "skeleton" | "map" => &["project"],
         "callers" => &["project", "direction", "depth"],
         "blast" => &["project", "base", "depth"],
         "deep" => &["project", "provider", "model", "profile"],
-        "settings" => &["effects", "particles", "deep-provider", "codex-model", "claude-model", "warn-deep", "max-nodes", "depth"],
+        "settings" => &["effects", "particles", "color-by", "deep-provider", "codex-model", "claude-model", "warn-deep", "max-nodes", "depth"],
         _ => return Err(format!("알 수 없는 graph 명령: {command}")),
     };
     let mut options = std::collections::HashMap::new();

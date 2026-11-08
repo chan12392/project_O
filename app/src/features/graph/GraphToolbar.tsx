@@ -1,11 +1,11 @@
 import { Boxes, RefreshCw, Sparkles } from "lucide-react";
 
-import type { GraphSettings, GraphView } from "../../platform/backend/types.ts";
+import type { GraphColorBy, GraphSettings, GraphView } from "../../platform/backend/types.ts";
 import { ICON_BUTTON } from "../../lib/format.ts";
-import { BUTTON_PRIMARY, BUTTON_SECONDARY, Switch } from "../../ui/controls.tsx";
+import { BUTTON_PRIMARY, BUTTON_SECONDARY, Segmented, Switch } from "../../ui/controls.tsx";
 
 /**
- * The Graph tab's header (ADR-0033): the 효과/흐름 switches on the left, then the
+ * The Graph tab's header (ADR-0033): the 효과/흐름 switches and 색 기준 on the left, then the
  * actions — 새로고침 always, 인덱스 만들기 and Deep for a project scope with grafly.
  */
 export function GraphToolbar({ settings, reducedMotion, onSettings, view, loading, onRefresh, project, notInstalled, busy, onBuild, onDeep }: {
@@ -28,6 +28,16 @@ export function GraphToolbar({ settings, reducedMotion, onSettings, view, loadin
       <ToolSwitch id="graph-effects" label="효과" checked={settings?.effects ?? true} disabled={!settings} onChange={(effects) => onSettings({ effects })} />
       <ToolSwitch id="graph-particles" label="흐름" checked={settings?.particles ?? true} disabled={!settings || reducedMotion} onChange={(particles) => onSettings({ particles })} />
       {reducedMotion && <span className="text-2xs text-muted-foreground">동작 줄이기 켜짐 — 흐름 끔</span>}
+      <Segmented<GraphColorBy>
+        label="색 기준"
+        value={settings?.colorBy ?? "language"}
+        disabled={!settings}
+        onChange={(colorBy) => onSettings({ colorBy })}
+        options={[
+          { value: "language", label: "언어별" },
+          { value: "area", label: "영역별" },
+        ]}
+      />
       <span className="ml-auto flex items-center gap-1.5">
         {view?.truncated && <span className="text-2xs text-muted-foreground">노드가 많아 일부만 표시합니다</span>}
         <button type="button" onClick={onRefresh} disabled={loading} aria-label="새로고침" title="새로고침" className={ICON_BUTTON}>

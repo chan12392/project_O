@@ -2,19 +2,23 @@ import { X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 import type { Project } from "../../data/projects.ts";
-import { useReducedMotion } from "../../data/settings.ts";
+import { useReducedMotion, useSettings } from "../../data/settings.ts";
 import type { Backend, GraphNode, GraphSettings } from "../../platform/backend/index.ts";
 import { CanvasState } from "./CanvasState.tsx";
 import { DeepConfirm } from "./DeepConfirm.tsx";
 import { Graph3D } from "./Graph3D.tsx";
+import { GraphLegend } from "./GraphLegend.tsx";
 import { GraphToolbar } from "./GraphToolbar.tsx";
-import { finite } from "./graphText.ts";
+import { loadGraphLibs } from "./graphLib.ts";
+import { finite, modelText } from "./graphText.ts";
 import { deepModelOf } from "./modelTier.ts";
 import { NodeDetail } from "./NodeDetail.tsx";
 import { ScopeList } from "./ScopeList.tsx";
 import { projectOf, useGraphView, type GraphScope } from "./useGraphView.ts";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+const darkQuery = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
 
 /**
  * The Graph tab (ADR-0033): the overall graph branches into one graph per project.
@@ -23,7 +27,7 @@ const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
  */
 export function GraphScreen({ api, projects, current }: { api: Backend; projects: Project[]; current?: string }) {
   const [scope, setScope] = useState<GraphScope>({ scope: "overall" });
-  const { view, error, loading, refresh } = useGraphView(api, scope);
+  const { view, error, loading, refresh } = useGraphView(api, scope, projects);
   const [settings, setSettings] = useState<GraphSettings>();
   const [settingsError, setSettingsError] = useState<string>();
   const [busy, setBusy] = useState<"build" | "deep">();
@@ -33,7 +37,17 @@ export function GraphScreen({ api, projects, current }: { api: Backend; projects
   /** Which projects have an index, remembered from the last overall view for the list's badge. */
   const [indexed, setIndexed] = useState<Record<string, boolean>>({});
   const reducedMotion = useReducedMotion();
+  const { theme } = useSettings();
+  const dark = theme === "dark" || (theme === "system" && darkQuery());
+  const colorBy = settings?.colorBy ?? "language";
   const project = projectOf(scope);
+  /** A project's name for notices, from the list (the path when unlisted). */
+  const projectName = (path: string) => projects.find((p) => p.path === path)?.name ?? path;
+
+  // The 3D chunks start downloading with the data request, not after it answers.
+  useEffect(() => {
+    void loadGraphLibs();
+  }, []);
 
   useEffect(() => {
     if (view?.scope !== "overall") return;
@@ -70,14 +84,15 @@ export function GraphScreen({ api, projects, current }: { api: Backend; projects
     setNotice(undefined);
     try {
       const result = await api.graphBuild(project);
-      setNotice(result.ok ? `인덱스를 만들었습니다. ${result.output}` : `인덱스를 만들지 못했습니다. ${result.output}`);
-      await refresh();
+      setNotice(result.ok ? `${projectName(project)}의 인덱스를 만들었습니다. ${result.output}` : `${projectName(project)}의 인덱스를 만들지 못했습니다. ${result.output}`);
+      // Only applies while this project is still the scope on screen (#81).
+      await refresh(project);
     } catch (e) {
-      setNotice(`인덱스를 만들지 못했습니다: ${errorText(e)}`);
+      setNotice(`${projectName(project)}의 인덱스를 만들지 못했습니다: ${errorText(e)}`);
     } finally {
       setBusy(undefined);
     }
-  }, [api, project, busy, refresh]);
+  }, [api, project, projects, busy, refresh]);
 
   const deep = useCallback(async () => {
     if (!project || !settings || busy) return;
@@ -87,14 +102,15 @@ export function GraphScreen({ api, projects, current }: { api: Backend; projects
       const result = await api.graphDeep(project, settings.deepProvider, deepModelOf(settings) || undefined);
       const { input, output } = result.usage;
       const tokens = finite(input) && finite(output) ? `, 입력 ${input.toLocaleString()}·출력 ${output.toLocaleString()} 토큰` : "";
-      setNotice(`Deep이 영역 ${result.areas.length}개의 이름과 요약을 만들었습니다 (${result.provider} ${result.model}${tokens}).`);
-      await refresh();
+      setNotice(`Deep이 ${projectName(project)}의 영역 ${result.areas.length}개의 이름과 요약을 만들었습니다 (${result.provider} ${modelText(result.model)}${tokens}).`);
+      // Only applies while this project is still the scope on screen (#81).
+      await refresh(project);
     } catch (e) {
-      setNotice(`Deep을 실행하지 못했습니다: ${errorText(e)}`);
+      setNotice(`${projectName(project)}의 Deep을 실행하지 못했습니다: ${errorText(e)}`);
     } finally {
       setBusy(undefined);
     }
-  }, [api, project, settings, busy, refresh]);
+  }, [api, project, projects, settings, busy, refresh]);
 
   const onDeep = () => {
     if (!settings) return;
@@ -159,8 +175,9 @@ export function GraphScreen({ api, projects, current }: { api: Backend; projects
           }}
         />
         <div className="relative min-w-0 flex-1 bg-chat-canvas">
-          {showGraph && view && <Graph3D view={view} effects={settings?.effects ?? true} particles={settings?.particles ?? true} reducedMotion={reducedMotion} onNodeClick={onNode} className="absolute inset-0" />}
+          {showGraph && view && <Graph3D view={view} loading={loading} effects={settings?.effects ?? true} particles={settings?.particles ?? true} reducedMotion={reducedMotion} colorBy={colorBy} dark={dark} onNodeClick={onNode} className="absolute inset-0" />}
           <CanvasState view={view} loading={loading} error={error} project={project} busy={busy} notInstalled={notInstalled} onRetry={() => void refresh()} onBuild={() => void build()} />
+          {showGraph && view && <GraphLegend view={view} colorBy={colorBy} dark={dark} />}
           {detail && <NodeDetail node={detail} onClose={() => setDetail(undefined)} />}
         </div>
       </div>

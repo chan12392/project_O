@@ -2,6 +2,7 @@ import { Sparkles } from "lucide-react";
 import { useEffect, useId, useRef, useState } from "react";
 
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
+import { modelText } from "./graphText.ts";
 import { modelTier } from "./modelTier.ts";
 
 interface Props {
@@ -52,7 +53,7 @@ export function DeepConfirm({ provider, model, onDone }: Props) {
         </h2>
       </header>
       <p className="mt-3 text-sm leading-relaxed">
-        Deep은 로그인된 {name}의 <span className="font-mono text-[13px]">{model || "기본 모델"}</span>로 영역 이름과 요약을 만듭니다. LLM 사용량이 차감됩니다. 상위
+        Deep은 로그인된 {name}의 <span className="font-mono text-[13px]">{modelText(model)}</span>로 영역 이름과 요약을 만듭니다. LLM 사용량이 차감됩니다. 상위
         모델일수록 차감량이 늘어납니다.
       </p>
       <p className="mt-2 text-xs text-muted-foreground">

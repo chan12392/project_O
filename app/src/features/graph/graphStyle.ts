@@ -37,17 +37,21 @@ export function palette(read: (name: string) => string): GraphPalette {
     path: at("--status-warning", "#eab308"),
     link: at("--border", "#404040"),
     linkGlow: at("--agent-working", "#eab308"),
-    dim: 0.25,
+    // Mild dimming: non-glowing nodes keep their color readable instead of near-invisible.
+    dim: 0.7,
   };
 }
 
-/** A color faded back while something else glows: "color-mix(in srgb, <c> 25%, transparent)". */
+/** A color faded back while something else glows: "color-mix(in srgb, <c> <dim>%, transparent)". */
 function fade(color: string, palette: GraphPalette): string {
   return `color-mix(in srgb, ${color} ${Math.round(palette.dim * 100)}%, transparent)`;
 }
 
-export function nodeColor(node: Pick<GraphNode, "kind" | "glow">, p: GraphPalette, effects: boolean, dimmed: boolean): string {
-  const color = effects && node.glow ? (node.glow === "active" ? p.active : p.path) : p[node.kind];
+/** `base` is the 색 기준 color for the node (language/area); without it the kind color stands. */
+export function nodeColor(node: Pick<GraphNode, "kind" | "glow">, p: GraphPalette, effects: boolean, dimmed: boolean, base?: string): string {
+  // Only the changed files take the glow color; a path node keeps its language/area color and
+  // glows through its halo and the flow, so a long path does not paint the whole graph one color.
+  const color = effects && node.glow === "active" ? p.active : (base ?? p[node.kind]);
   return effects && dimmed && !node.glow ? fade(color, p) : color;
 }
 
