@@ -13,7 +13,7 @@ import type { ForceGraph3DInstance, LinkObject, NodeObject } from "3d-force-grap
 import type { GraphColorBy, GraphLink, GraphNode, GraphView } from "../../platform/backend/types.ts";
 import { baseColor, type GraphTheme } from "./graphColors.ts";
 import { loadGraphLibs } from "./graphLib.ts";
-import { levelsOf } from "./graphLoad.ts";
+import { levelsOf, parentsOf } from "./graphLoad.ts";
 import { escapeHtml } from "./graphText.ts";
 import type { GraphPalette } from "./graphStyle.ts";
 import {
@@ -63,7 +63,8 @@ interface ThreeMaterial {
 }
 
 /** How fast the reveal queue drains; the batch size adapts so the whole reveal stays near REVEAL_MS. */
-const REVEAL_TICK_MS = 40;
+// Each tick hands the graph new data (a layout reheat and a scene update): fewer, larger batches stay smooth.
+const REVEAL_TICK_MS = 100;
 const REVEAL_MS = 1_800;
 
 /** A scope's identity for the reveal: project→project is a scope change even though `scope` is both "project". */
@@ -99,6 +100,13 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
   const queue = useRef<GNode[]>([]);
   /** Depth in the contains tree per node, recomputed on every sync. */
   const levels = useRef(new Map<string, number>());
+  /** Each node's contains parent, recomputed on every sync (spawning looked it up per node over every link). */
+  const parents = useRef(new Map<string, string>());
+  /**
+   * The link objects handed to the graph, kept per link: the library joins links by object, so a
+   * fresh copy each flush tore down and rebuilt every line in the scene on every reveal tick.
+   */
+  const linkObjects = useRef(new Map<string, GLink>());
   /** The drain interval and the moment the current batch must be fully placed by. */
   const draining = useRef(0);
   const deadline = useRef(0);
@@ -116,8 +124,8 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
 
   /** Where a node spawns: its contains parent's position, so it grows outward from it. */
   const spawnAt = (n: GNode) => {
-    const link = live.current.view.links.find((l) => l.kind === "contains" && endOf(l.target) === n.id);
-    const parent = link ? (placed.current.get(endOf(link.source)) ?? queue.current.find((q) => q.id === endOf(link.source))) : undefined;
+    const parentId = parents.current.get(n.id);
+    const parent = parentId === undefined ? undefined : placed.current.get(parentId);
     const at = parent && [parent.x, parent.y, parent.z].every((c) => typeof c === "number" && Number.isFinite(c)) ? parent : undefined;
     const jitter = () => (Math.random() - 0.5) * 8;
     n.x = (at?.x ?? 0) + jitter();
@@ -130,10 +138,28 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
     const graph = graphRef.current;
     if (!graph) return;
     const ids = new Set(placed.current.keys());
-    graph.graphData({
-      nodes: [...placed.current.values()],
-      links: live.current.view.links.filter((l) => ids.has(endOf(l.source)) && ids.has(endOf(l.target))).map((l) => ({ ...l })),
-    });
+    const links: GLink[] = [];
+    const kept = new Set<string>();
+    for (const l of live.current.view.links) {
+      const source = endOf(l.source);
+      const target = endOf(l.target);
+      if (!ids.has(source) || !ids.has(target)) continue;
+      const key = `${source}|${target}|${l.kind}`;
+      if (kept.has(key)) continue;
+      kept.add(key);
+      let object = linkObjects.current.get(key);
+      if (!object) {
+        object = { ...l, source, target };
+        linkObjects.current.set(key, object);
+      } else {
+        // Same object, fresh glow/weight: the library keeps its line and only repaints it.
+        object.glow = l.glow;
+        object.weight = l.weight;
+      }
+      links.push(object);
+    }
+    for (const key of [...linkObjects.current.keys()]) if (!kept.has(key)) linkObjects.current.delete(key);
+    graph.graphData({ nodes: [...placed.current.values()], links });
   };
 
   const stopDrain = () => {
@@ -194,7 +220,8 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
       const fresh = byId.get(id);
       if (fresh) Object.assign(gn, RESET, fresh);
     }
-    levels.current = levelsOf(v);
+    parents.current = parentsOf(v);
+    levels.current = levelsOf(v, parents.current);
     const queued = new Set(queue.current.map((n) => n.id));
     const fresh = v.nodes.filter((n) => !placed.current.has(n.id) && !queued.has(n.id)).map((n): GNode => ({ ...n }));
     if (wantReveal() && fresh.length > 0) {
@@ -249,11 +276,19 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
     };
     const bg: [number, number, number, number] = channels(style.getPropertyValue("--background")) ?? [10, 10, 10, 1];
     /** A CSS color WebGL can hold: composited over the app background, since three ignores alpha. */
+    /**
+     * Cached: the readback is a synchronous GPU round trip, and the library asks for every
+     * link's color on every repaint — a few distinct colors, asked thousands of times.
+     */
+    const converted = new Map<string, string>();
     const cssColor = (raw: string): string => {
+      const known = converted.get(raw);
+      if (known !== undefined) return known;
       const c = channels(raw);
-      if (!c) return "#000000";
-      const a = c[3];
-      return `#${channel(c[0] * a + bg[0] * (1 - a))}${channel(c[1] * a + bg[1] * (1 - a))}${channel(c[2] * a + bg[2] * (1 - a))}`;
+      const a = c ? c[3] : 1;
+      const hex = c ? `#${channel(c[0] * a + bg[0] * (1 - a))}${channel(c[1] * a + bg[1] * (1 - a))}${channel(c[2] * a + bg[2] * (1 - a))}` : "#000000";
+      converted.set(raw, hex);
+      return hex;
     };
     const pal: GraphPalette = palette((name) => {
       const raw = style.getPropertyValue(name).trim();
@@ -418,6 +453,7 @@ export function Graph3D({ view, loading, effects, particles, reducedMotion, colo
       timers.current.clear();
       // A new scope reveals again; everything from the old scope leaves.
       placed.current.clear();
+      linkObjects.current.clear();
       queue.current = [];
       revealDone.current = false;
       fitPending.current = true;

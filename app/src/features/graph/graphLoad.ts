@@ -99,17 +99,22 @@ export function markProjectError(view: GraphView, project: string, message: stri
   return { ...view, nodes: view.nodes.map((n) => (n.id === `p:${project}` ? { ...n, error: message } : n)) };
 }
 
-/**
- * Each node's depth in the contains tree: roots are 0, and every other node sits one
- * level under its contains parent (cycles and orphans stay at 0 — they appear first).
- */
-export function levelsOf(view: Pick<GraphView, "nodes" | "links">): Map<string, number> {
+/** Each node's contains parent (the first one when a node is listed twice). */
+export function parentsOf(view: Pick<GraphView, "links">): Map<string, string> {
   const parent = new Map<string, string>();
   for (const l of view.links) {
     if (l.kind !== "contains") continue;
     const t = endOf(l.target);
     if (!parent.has(t)) parent.set(t, endOf(l.source));
   }
+  return parent;
+}
+
+/**
+ * Each node's depth in the contains tree: roots are 0, and every other node sits one
+ * level under its contains parent (cycles and orphans stay at 0 — they appear first).
+ */
+export function levelsOf(view: Pick<GraphView, "nodes" | "links">, parent: ReadonlyMap<string, string> = parentsOf(view)): Map<string, number> {
   const levels = new Map<string, number>();
   const levelOf = (id: string, trail: ReadonlySet<string>): number => {
     const known = levels.get(id);
