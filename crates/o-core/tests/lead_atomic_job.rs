@@ -14,7 +14,7 @@ fn fixture() -> (PathBuf, String) {
     (root.join("home"), project.to_string_lossy().into_owned())
 }
 fn request(project: &str) -> SendRequest<'_> {
-    SendRequest { project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false }
+    SendRequest { project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false }
 }
 
 #[test]
@@ -42,7 +42,7 @@ fn intent_marker_failure_does_not_spawn_or_block_next_turn() {
     let events = lead::send(&home, &request(&project), &fail).unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })));
     assert!(!marker.exists());
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
     assert!(lead::thread_for(&home, &project, true).is_ok());
 }
 
@@ -61,7 +61,7 @@ fn invalid_helper_never_starts_a_lead() {
     let events = lead::send(&home, &request(&project), &bad).unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { .. })));
     assert!(!marker.exists());
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
     assert!(lead::thread_for(&home, &project, true).is_ok());
 }
 
@@ -81,10 +81,12 @@ fn stop_ends_contained_lead_and_clears_marker() {
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !marker.exists() { assert!(std::time::Instant::now() < deadline); std::thread::sleep(Duration::from_millis(10)); }
-    assert!(lead::thread_for(&home, &project, true).is_err());
-    assert!(lead::stop(&home, Some(&project)));
+    let thread = lead::current_thread(&home, &project).unwrap();
+    lead::thread_for(&home, &project, true).unwrap();
+    assert!(lead::is_open(&home, &project, &thread));
+    assert!(lead::stop(&home, Some(&project), None).unwrap());
     let events = worker.join().unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("중지"))));
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), Some(&thread)).unwrap()["thread"]["busy"].is_null());
     assert!(lead::thread_for(&home, &project, true).is_ok());
 }

@@ -55,17 +55,20 @@ export function tauriBackend(invoke: Invoke): Backend {
     yolo: () => invoke("yolo_get") as ReturnType<Backend["yolo"]>,
     setYolo: (change) => invoke("yolo_set", { enabled: null, maxCards: null, perHour: null, dedupeMinutes: null, ...change }) as ReturnType<Backend["setYolo"]>,
     tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
-    leadShow: (project) => invoke("lead_show", { project: project ?? null }) as Promise<LeadShow>,
+    leadShow: (project, thread) => invoke("lead_show", { project: project ?? null, thread: thread ?? null }) as Promise<LeadShow>,
     leadNote: (threadId, change) => invoke("lead_note", { threadId, change }) as Promise<void>,
     leadNew: (project) => invoke("lead_new", { project }) as Promise<{ threadId: string }>,
-    // The bytes go as the raw body; the project and name ride percent-encoded in headers.
-    leadAttach: async (project, file) =>
+    leadClose: (threadId) => invoke("lead_close", { threadId }) as Promise<void>,
+    leadWriter: (threadId) => invoke("lead_writer", { threadId }) as Promise<void>,
+    // The bytes go as the raw body; the project, name and thread ride percent-encoded in headers.
+    leadAttach: async (project, file, thread) =>
       invoke("lead_attach", new Uint8Array(await file.arrayBuffer()), {
-        headers: { "x-project": encodeURIComponent(project), "x-name": encodeURIComponent(file.name) },
+        headers: { "x-project": encodeURIComponent(project), "x-name": encodeURIComponent(file.name), ...(thread ? { "x-thread": encodeURIComponent(thread) } : {}) },
       }) as Promise<LeadAttachment>,
     leadSend: (r) =>
       invoke("lead_send", {
         project: r.project,
+        thread: r.thread ?? null,
         provider: r.provider,
         model: r.model ?? null,
         effort: r.effort ?? null,
@@ -78,7 +81,7 @@ export function tauriBackend(invoke: Invoke): Backend {
       }>,
     leadDispatch: (planId, clean) => invoke("lead_dispatch", { planId, clean }) as Promise<LeadDispatched>,
     leadDecide: (id, allow) => invoke("lead_decide", { id, allow }) as Promise<{ id: string; decision: "allow" | "deny" }>,
-    leadStop: (project) => invoke("lead_stop", { project: project ?? null }) as Promise<{ stopped: boolean }>,
+    leadStop: (project, thread) => invoke("lead_stop", { project: project ?? null, thread: thread ?? null }) as Promise<{ stopped: boolean }>,
   leadWake: (runId) => invoke("lead_wake", { runId }) as Promise<{ processed: boolean }>,
   leadRetry: (runId, messageId) => invoke("lead_retry", { runId, messageId }) as Promise<{ state: "queued" | "acknowledged" }>,
   leadAnswerApproval: (runId, messageId, text) => invoke("lead_answer_approval", { runId, messageId, text }) as Promise<{ id: string }>,

@@ -17,7 +17,7 @@ fn fixture() -> (PathBuf, String) {
 }
 
 fn request(project: &str) -> SendRequest<'_> {
-    SendRequest { project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false }
+    SendRequest { project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false }
 }
 
 fn page_text(row: &serde_json::Value) -> String {
@@ -31,6 +31,13 @@ fn page_text(row: &serde_json::Value) -> String {
 #[test]
 fn fake_child() {
     if let Some(path) = std::env::var_os("O_LEAD_STARTED_FILE") { std::fs::write(path, "started").unwrap(); }
+    if let Some(path) = std::env::var_os("O_LEAD_RECOVERY_RELEASE") {
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while !std::path::Path::new(&path).exists() {
+            assert!(std::time::Instant::now() < deadline, "fresh turns were not released");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
     if std::env::var_os("O_LEAD_SUCCESS_REPLY").is_some() { println!("\n{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"확인했습니다\"}}"); }
     if let Some(index) = std::env::var_os("O_STREAM_INDEX") {
         use std::io::{BufRead, BufReader};
@@ -82,7 +89,7 @@ fn invalid_helper_never_starts_lead_and_next_turn_can_start() {
     let events = lead::send(&home, &request(&project), &bad).unwrap();
     assert!(events.iter().any(|event| matches!(event, lead::LeadEvent::Error { .. })));
     assert!(!marker.exists());
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
     let good = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> {
         let mut launch = support::fake_worker_launch()?;
         launch.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_SUCCESS_REPLY", "1");
@@ -111,7 +118,7 @@ fn failed_spawn_intent_marker_does_not_start_lead_or_leave_turn_busy() {
     assert!(lead::send(&home, &request(&project), &spawner).unwrap().iter().any(|event| matches!(event, lead::LeadEvent::Error { .. })));
     assert!(!marker.exists());
     assert!(!running.exists());
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
 }
 
 #[test]
@@ -123,9 +130,9 @@ fn a_finished_turn_allows_the_next_turn() {
         Ok(cmd)
     };
     lead::send(&home, &request(&project), &spawner).unwrap();
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
     lead::send(&home, &request(&project), &spawner).unwrap();
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
 }
 
 #[test]
@@ -145,11 +152,14 @@ fn orphan_and_legacy_markers_never_authorize_a_kill_or_new_turn() {
         "{broken".to_string(),
     ] {
         std::fs::write(&marker, &content).unwrap();
-        assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
-        assert!(!lead::stop(&home, Some(&project)));
-        assert!(lead::new_thread(&home, &project).is_err());
+        assert_eq!(lead::show(&home, Some(&project), Some(&thread)).unwrap()["thread"]["busy"], "unknown");
+        assert!(!lead::stop(&home, Some(&project), Some(&thread)).unwrap());
+        assert!(lead::close(&home, &thread).is_err());
         let spawner = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Launch> { panic!("unexpected spawn") };
-        assert!(lead::send(&home, &request(&project), &spawner).unwrap_err().contains("종료를 확인"));
+        assert!(lead::send(&home, &SendRequest { thread: Some(&thread), ..request(&project) }, &spawner).unwrap_err().contains("종료를 확인"));
+        let next = lead::new_thread(&home, &project).unwrap();
+        assert!(lead::set_writer(&home, &next).is_err());
+        lead::close(&home, &next).unwrap();
         assert_eq!(std::fs::read_to_string(&marker).unwrap(), content);
         assert!(other.try_wait().unwrap().is_none());
     }
@@ -159,18 +169,20 @@ fn orphan_and_legacy_markers_never_authorize_a_kill_or_new_turn() {
 
 #[cfg(windows)]
 #[test]
-fn simultaneous_fresh_turns_start_at_most_one_child() {
+fn simultaneous_fresh_turns_start_independent_tabs() {
     use std::sync::{Arc, Barrier, atomic::{AtomicUsize, Ordering}};
     let (home, project) = fixture();
     let barrier = Arc::new(Barrier::new(3));
     let starts = Arc::new(AtomicUsize::new(0));
+    let release = home.with_file_name("release");
     let workers: Vec<_> = (0..2).map(|_| {
         let (home, project, barrier, starts) = (home.clone(), project.clone(), Arc::clone(&barrier), Arc::clone(&starts));
+        let release = release.clone();
         std::thread::spawn(move || {
             let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<Launch> {
                 starts.fetch_add(1, Ordering::SeqCst);
                 let mut cmd = support::fake_worker_launch()?;
-                cmd.args(["--exact", "fake_child"]).env("O_LEAD_RECOVERY_SHORT", "1");
+                cmd.args(["--exact", "fake_child", "--nocapture"]).env("O_LEAD_RECOVERY_RELEASE", &release).env("O_LEAD_SUCCESS_REPLY", "1");
                 Ok(cmd)
             };
             barrier.wait();
@@ -178,8 +190,18 @@ fn simultaneous_fresh_turns_start_at_most_one_child() {
         })
     }).collect();
     barrier.wait();
-    for worker in workers { let _ = worker.join().unwrap(); }
-    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    let deadline = std::time::Instant::now() + Duration::from_secs(5);
+    while starts.load(Ordering::SeqCst) < 2 {
+        assert!(std::time::Instant::now() < deadline, "the second fresh tab never started");
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    assert_eq!(lead::active_count(&home).unwrap(), 2);
+    std::fs::write(release, "").unwrap();
+    for worker in workers {
+        assert!(worker.join().unwrap().unwrap().iter().any(|event| matches!(event, lead::LeadEvent::Reply { .. })));
+    }
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
+    assert_eq!(lead::open_threads(&home, &project).len(), 2);
 }
 
 #[cfg(windows)]
@@ -202,11 +224,11 @@ fn live_owner_stops_its_contained_child_and_releases_the_turn() {
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(Duration::from_millis(10));
     }
-    assert!(lead::new_thread(&home, &project).is_err());
-    assert!(lead::stop(&home, Some(&project)));
+    lead::new_thread(&home, &project).unwrap();
+    assert!(lead::stop(&home, Some(&project), None).unwrap());
     worker.join().unwrap();
     assert!(!marker.exists());
-    assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+    assert!(lead::show(&home, Some(&project), Some(&thread)).unwrap()["thread"]["busy"].is_null());
 }
 
 #[cfg(windows)]

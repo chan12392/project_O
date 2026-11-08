@@ -20,7 +20,7 @@ use crate::run::yolo;
 use crate::sys::js::{js_head, js_len, now_iso};
 
 use super::prompt::{self, Forward};
-use super::{append, current_thread, read_thread, running, thread_project, LeadEvent, SendRequest};
+use super::{append, current_thread, open_threads, read_thread, running, thread_project, LeadEvent, SendRequest};
 
 /// Requests one turn may pass on, one per project.
 pub const MAX_FORWARDS: usize = 3;
@@ -48,7 +48,7 @@ fn clip(text: &str) -> String {
     serde_json::to_string(&line).unwrap_or_default()
 }
 
-/// Every listed project's state as O knows it: its lead's last request and answer, a plan not
+/// Every listed project's open-thread count and current lead's last request and answer, a plan not
 /// yet run, a question waiting for the person, and its latest runs. Untrusted data for the prompt.
 pub fn overview(home: &Path) -> String {
     let Ok(listing) = projects::list(home, &store::user_home()) else { return "프로젝트 목록을 읽지 못했습니다.".into() };
@@ -57,6 +57,7 @@ pub fn overview(home: &Path) -> String {
     let shown: Vec<_> = listing.projects.iter().filter(|p| !p.missing).take(MAX_PROJECTS).collect();
     for project in &shown {
         let mut lines = vec![format!("- {} {}", project.name, serde_json::to_string(&project.path).unwrap_or_default())];
+        lines.push(format!("  - 열린 총괄 대화: {}개 (아래는 현재 탭 기준)", open_threads(home, &project.path).len()));
         match current_thread(home, &project.path) {
             None => lines.push("  - 총괄 대화 없음".into()),
             Some(id) => {
@@ -145,18 +146,21 @@ pub fn forward(home: &Path, thread_id: &str, index: usize, spawner: &Spawner) ->
     let Some(LeadEvent::Forward { at, project, text, provider, model, effort, profile }) =
         events.iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).nth(index).cloned() else { return Err("넘길 요청이 없습니다".into()) };
     let root = (profile == Profile::ProjectO).then(clean::default_root);
-    let req = SendRequest {
-        project: &project,
-        provider,
-        model: model.as_deref(),
-        effort: effort.as_deref(),
-        text: &text,
-        attach: &[],
-        fresh: false,
-        clean: root.as_deref(),
-        yolo: yolo::read_enabled(home),
-    };
-    let sent = super::send_forwarded(home, &req, spawner, thread_id, &at, index);
+    let sent = super::select_thread(home, &project, None, false).and_then(|destination| {
+        let req = SendRequest {
+            project: &project,
+            thread: Some(&destination),
+            provider,
+            model: model.as_deref(),
+            effort: effort.as_deref(),
+            text: &text,
+            attach: &[],
+            fresh: false,
+            clean: root.as_deref(),
+            yolo: yolo::read_enabled(home),
+        };
+        super::send_forwarded(home, &req, spawner, thread_id, &at, index)
+    });
     if let Err(error) = &sent {
         let name = Path::new(&project).file_name().map_or_else(|| project.clone(), |n| n.to_string_lossy().into_owned());
         let _ = append(home, thread_id, &LeadEvent::Warning { at: now_iso(), text: format!("{name}에 요청을 넘기지 못했습니다: {error}") });

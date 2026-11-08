@@ -13,6 +13,7 @@ fn o(base: &Path, args: &[&str], stdin: &[u8]) -> Output {
         .args(args)
         .env("LOCALAPPDATA", base)
         .env("PATH", "")
+        .env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID")
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
@@ -39,7 +40,7 @@ fn setup(name: &str) -> (PathBuf, String) {
 fn help_lists_the_lead_commands() {
     let (base, _) = setup("help");
     let help = String::from_utf8_lossy(&o(&base, &["help"], b"").stdout).into_owned();
-    for line in ["o lead send --project", "o lead dispatch <planId>", "o lead stop", "o lead models --provider"] {
+    for line in ["o lead send --project", "o lead dispatch <planId>", "o lead stop", "o lead models --provider", "o lead close <threadId>", "o lead writer <threadId>", "--thread T"] {
         assert!(help.contains(line), "{line}");
     }
 }
@@ -90,4 +91,123 @@ fn show_attach_send_and_stop_through_the_cli() {
     assert_eq!(removed.status.code(), Some(1));
     assert!(String::from_utf8_lossy(&removed.stderr).contains("알 수 없는 인자: --efficiency"));
     assert_eq!(json_of(&o(&base, &["lead", "stop"], b""))["stopped"], false);
+}
+
+#[test]
+fn explicit_thread_routes_show_send_attach_and_stop() {
+    let (base, project) = setup("thread-routing");
+    let first = json_of(&o(&base, &["lead", "new", "--project", &project], b""))["threadId"].as_str().unwrap().to_string();
+    let second = json_of(&o(&base, &["lead", "new", "--project", &project], b""))["threadId"].as_str().unwrap().to_string();
+    let sent = json_of(&o(&base, &["lead", "send", "--project", &project, "--thread", &first, "첫 탭 요청"], b""));
+    assert_eq!(sent["threadId"], first);
+    assert_eq!(sent["events"][0]["text"], "첫 탭 요청");
+
+    let current = json_of(&o(&base, &["lead", "show", "--project", &project, "--json"], b""));
+    assert_eq!(current["thread"]["threadId"], first);
+    let other = json_of(&o(&base, &["lead", "show", "--thread", &second, "--json"], b""));
+    assert_eq!(other["thread"]["threadId"], second);
+    assert_eq!(other["thread"]["events"].as_array().unwrap().len(), 1);
+    assert_eq!(other["threads"].as_array().unwrap().len(), 2);
+    let current_path = base.join("project_O/leads/current.json");
+    let current_before_attach = fs::read(&current_path).unwrap();
+    assert_eq!(json_of(&o(&base, &["lead", "show", "--project", &project, "--json"], b""))["thread"]["threadId"], first);
+    let saved_other = json_of(&o(&base, &["lead", "attach", "--project", &project, "--thread", &second, "--name", "other.txt", "-"], b"second tab"));
+    assert!(Path::new(saved_other["path"].as_str().unwrap()).starts_with(base.join("project_O-lead").join(&second)));
+    assert_eq!(fs::read(&current_path).unwrap(), current_before_attach, "attaching to a tab must not select it");
+
+    let saved = json_of(&o(&base, &["lead", "attach", "--project", &project, "--thread", &first, "--name", "notes.txt", "-"], b"first tab"));
+    let path = Path::new(saved["path"].as_str().unwrap());
+    assert!(path.starts_with(base.join("project_O-lead").join(&first)));
+    assert_eq!(fs::read(path).unwrap(), b"first tab");
+    assert_eq!(json_of(&o(&base, &["lead", "stop", "--thread", &first], b""))["stopped"], false);
+
+    let other_project = base.join("other");
+    fs::create_dir_all(&other_project).unwrap();
+    let other_project = other_project.to_str().unwrap();
+    for args in [
+        vec!["lead", "show", "--project", other_project, "--thread", &first, "--json"],
+        vec!["lead", "send", "--project", other_project, "--thread", &first, "잘못된 프로젝트"],
+        vec!["lead", "attach", "--project", other_project, "--thread", &first, "--name", "notes.txt", "-"],
+        vec!["lead", "stop", "--project", other_project, "--thread", &first],
+    ] {
+        assert_eq!(o(&base, &args, b"").status.code(), Some(1), "{args:?}");
+    }
+    assert!(json_of(&o(&base, &["lead", "show", "--project", other_project, "--json"], b""))["thread"].is_null());
+}
+
+#[test]
+fn tabs_enforce_limit_and_transfer_writer_without_deleting_history() {
+    let (base, project) = setup("tab-lifecycle");
+    let mut threads = Vec::new();
+    for _ in 0..o_core::lead::MAX_OPEN {
+        threads.push(json_of(&o(&base, &["lead", "new", "--project", &project], b""))["threadId"].as_str().unwrap().to_string());
+    }
+    assert_eq!(threads.len(), 4);
+    assert_eq!(o(&base, &["lead", "new", "--project", &project], b"").status.code(), Some(1));
+    let shown = json_of(&o(&base, &["lead", "show", "--project", &project, "--json"], b""));
+    assert_eq!(shown["thread"]["threadId"], threads[3]);
+    for (index, tab) in shown["threads"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(tab["threadId"], threads[index]);
+        assert_eq!(tab["writer"], index == 0);
+    }
+    assert_eq!(shown["threads"].as_array().unwrap().len(), 4);
+
+    json_of(&o(&base, &["lead", "writer", &threads[3]], b""));
+    let written = json_of(&o(&base, &["lead", "show", "--project", &project, "--json"], b""));
+    for (index, tab) in written["threads"].as_array().unwrap().iter().enumerate() {
+        assert_eq!(tab["writer"], index == 3);
+    }
+    json_of(&o(&base, &["lead", "close", &threads[3]], b""));
+    let closed = json_of(&o(&base, &["lead", "show", "--project", &project, "--json"], b""));
+    assert_eq!(closed["thread"]["threadId"], threads[2]);
+    assert_eq!(closed["threads"].as_array().unwrap().len(), 3);
+    assert_eq!(closed["threads"][0]["writer"], true);
+    assert!(!o_core::lead::read_thread(&base.join("project_O"), &threads[3]).is_empty());
+    let fallback = json_of(&o(&base, &["lead", "show", "--thread", &threads[3], "--json"], b""));
+    assert_eq!(fallback["thread"]["threadId"], threads[2]);
+    assert_eq!(fallback["threads"], closed["threads"]);
+
+    for args in [
+        vec!["lead", "send", "--project", &project, "--thread", &threads[3], "닫힌 탭"],
+        vec!["lead", "attach", "--project", &project, "--thread", &threads[3], "--name", "closed.txt", "-"],
+        vec!["lead", "stop", "--thread", &threads[3]],
+        vec!["lead", "writer", &threads[3]],
+    ] {
+        assert_eq!(o(&base, &args, b"").status.code(), Some(1), "{args:?}");
+    }
+    // Invalid sends must not consume the newly available tab before request validation.
+    assert_eq!(o(&base, &["lead", "send", "--project", &project, "--new", "--model", "bad model", "안녕"], b"").status.code(), Some(1));
+    let fresh = json_of(&o(&base, &["lead", "send", "--project", &project, "--new", "새 탭 요청"], b""));
+    let current = json_of(&o(&base, &["lead", "show", "--project", &project, "--json"], b""));
+    assert_eq!(current["threads"].as_array().unwrap().len(), 4);
+    assert_eq!(current["thread"]["threadId"], fresh["threadId"]);
+    assert!(threads.iter().all(|thread| fresh["threadId"] != *thread));
+}
+
+#[test]
+fn agents_cannot_close_tabs_or_take_writer() {
+    let (base, project) = setup("tab-agent-refusal");
+    let first = json_of(&o(&base, &["lead", "new", "--project", &project], b""))["threadId"].as_str().unwrap().to_string();
+    let second = json_of(&o(&base, &["lead", "new", "--project", &project], b""))["threadId"].as_str().unwrap().to_string();
+    for (marker, value) in [("O_AGENT_ROLE", "lead"), ("O_AGENT_ROLE", "card"), ("O_CARD_ID", "card-1")] {
+        for action in ["close", "writer"] {
+            let output = Command::new(env!("CARGO_BIN_EXE_o"))
+                .args(["lead", action, &second])
+                .env("LOCALAPPDATA", &base).env("PATH", "")
+                .env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID").env(marker, value)
+                .output().unwrap();
+            assert_eq!(output.status.code(), Some(2), "{marker} {action}");
+            assert!(String::from_utf8_lossy(&output.stderr).contains("에이전트 안에서는"));
+        }
+    }
+    let shown = json_of(&o(&base, &["lead", "show", "--project", &project, "--json"], b""));
+    assert_eq!(shown["threads"].as_array().unwrap().len(), 2);
+    assert_eq!(shown["threads"][0]["threadId"], first);
+    assert_eq!(shown["threads"][0]["writer"], true);
+    for action in ["close", "writer"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_o"))
+            .args(["lead", action]).env("LOCALAPPDATA", &base)
+            .env("O_AGENT_ROLE", "").env("O_CARD_ID", "").output().unwrap();
+        assert_eq!(output.status.code(), Some(1));
+    }
 }

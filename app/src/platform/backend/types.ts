@@ -222,21 +222,25 @@ export interface Backend {
 
   // The lead chat (ADR-0008). `leadDispatch` starts a plan or explicitly retries a failed run.
 
-  /** The project's current lead thread and every project that has one (`o lead show --json`). */
-  leadShow(project?: string): Promise<LeadShow>;
+  /** One of the project's open lead threads (or the current one) and every project that has one (`o lead show --json`, ADR-0034). */
+  leadShow(project?: string, thread?: string): Promise<LeadShow>;
   leadNote(threadId: string, change: import("../../../../src/core/lead.ts").DesignNoteChange): Promise<void>;
-  /** Starts a new thread for the project ("새 대화"). */
+  /** Opens a new lead tab for the project ("새 대화", "새 설계"); rejects with the reason at 4 open. */
   leadNew(project: string): Promise<{ threadId: string }>;
-  /** Saves one image or document for the project's current thread; rejects with the reason. */
-  leadAttach(project: string, file: File): Promise<LeadAttachment>;
+  /** Takes a thread off the project's open tabs; its history stays. Rejects while it answers or its exit is unknown. */
+  leadClose(threadId: string): Promise<void>;
+  /** Makes an open tab the project's writer — the one that may edit files directly (ADR-0034). */
+  leadWriter(threadId: string): Promise<void>;
+  /** Saves one image or document for the project's thread; rejects with the reason. */
+  leadAttach(project: string, file: File, thread?: string): Promise<LeadAttachment>;
   /** One message; resolves when the lead has answered, with the events the turn added. */
   leadSend(request: LeadSendRequest): Promise<{ threadId: string | null; events: LeadEvent[] }>;
   /** Runs a proposed plan after the policy check; rejects with the policy's reasons when refused. */
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
   /** The person's 허용/거부 for one action the lead waits on (`o lead decide`); only the person's click, never chat text. */
   leadDecide(id: string, allow: boolean): Promise<{ id: string; decision: "allow" | "deny" }>;
-  /** Stops the project's lead while it answers. */
-  leadStop(project?: string): Promise<{ stopped: boolean }>;
+  /** Stops one lead thread while it answers (`thread`), or the project's open threads without one. */
+  leadStop(project?: string, thread?: string): Promise<{ stopped: boolean }>;
   leadWake(runId: string): Promise<{ processed: boolean }>;
   leadRetry(runId: string, messageId: string): Promise<{ state: "queued" | "acknowledged" }>;
   leadAnswerApproval(runId: string, messageId: string, text: string): Promise<{ id: string }>;
@@ -301,6 +305,8 @@ export type YoloChange = { enabled?: boolean; maxCards?: number; perHour?: numbe
 
 export interface LeadSendRequest {
   project: string;
+  /** The open tab to write to; absent goes to the project's current conversation (ADR-0034). */
+  thread?: string;
   provider: LeadProvider;
   /** A model id (`--model`); none for the CLI's default. */
   model?: string;

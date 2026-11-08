@@ -1,4 +1,5 @@
 import type { AgentId, Backend, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, TokenCounts, TokenGroup } from "./types.ts";
+import { LEAD_TAB_MAX, type LeadShow, type LeadTab } from "../../../../src/core/lead.ts";
 import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS } from "../updates.ts";
 
@@ -71,6 +72,34 @@ let demoProjects: ListedProject[] = [
   { path: "D:/work/landing", name: "landing", kind: "registered" },
 ];
 const demoList = (): ProjectList => ({ root: DEMO_ROOT, defaultRoot: true, rootExists: true, projects: demoProjects });
+
+// The preview's open lead tabs (ADR-0034): each project seeds a writer and a waiting tab so the
+// tab strip can be seen without a lead. +/×/writer change this map only; nothing reaches a lead.
+const demoTabs = new Map<string, LeadTab[]>();
+const demoOpen = (project: string): LeadTab[] => {
+  const key = folderKey(project);
+  let tabs = demoTabs.get(key);
+  if (!tabs) {
+    const tag = key.replace(/[^a-z0-9]+/g, "").slice(-6) || "demo";
+    tabs = [
+      { threadId: `20261108-090000-${tag}w`, title: "README 정리", state: "idle", busy: null, writer: true, startedAt: "2026-11-08T09:00:00.000Z" },
+      { threadId: `20261108-093000-${tag}q`, title: "로그인 오류 조사", state: "waiting", busy: "claude", writer: false, startedAt: "2026-11-08T09:30:00.000Z" },
+    ];
+    demoTabs.set(key, tabs);
+  }
+  return tabs;
+};
+demoOpen(DEMO_ROOT);
+for (const project of demoProjects) demoOpen(project.path);
+let demoTabSeq = 0;
+
+/** Every project with an open lead tab, with its aggregate state (waiting > working > idle). */
+const demoLeadProjects = (): LeadShow["projects"] =>
+  [...demoTabs.entries()].flatMap(([key, tabs]) => {
+    if (!tabs.length) return [];
+    const state: LeadTab["state"] = tabs.some((t) => t.state === "waiting") ? "waiting" : tabs.some((t) => t.state === "working") ? "working" : "idle";
+    return [{ project: key, threadId: tabs[tabs.length - 1].threadId, state }];
+  });
 const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/;
 const nameOf = (path: string) => folderKey(path).split("/").filter(Boolean).pop() ?? path;
 
@@ -280,10 +309,41 @@ export const demoBackend: Backend = {
       cachePercent: 486_000 / (227_700 + 486_000) * 100,
     },
   }),
-  // The recorded preview shows the demo's own transcripts; nothing reaches a lead.
-  leadShow: async () => ({ thread: null, projects: [] }),
+  // The recorded preview shows the demo's own transcripts and fake open tabs; nothing reaches a lead.
+  leadShow: async (project, thread) => {
+    if (!project) return { thread: null, projects: demoLeadProjects() };
+    const tabs = demoOpen(project);
+    const tab = tabs.find((t) => t.threadId === thread) ?? tabs[0];
+    return {
+      thread: tab ? { threadId: tab.threadId, project, busy: tab.busy, events: [{ t: "lead.start" as const, at: tab.startedAt, threadId: tab.threadId, project }] } : null,
+      threads: tabs,
+      projects: demoLeadProjects(),
+    };
+  },
   leadNote: async () => { throw new Error(LEAD_REFUSED); },
-  leadNew: () => Promise.reject(new Error(LEAD_REFUSED)),
+  leadNew: async (project) => {
+    const tabs = demoOpen(project);
+    if (tabs.length >= LEAD_TAB_MAX) throw new Error("열린 총괄은 최대 4개입니다");
+    const tab: LeadTab = { threadId: `${new Date().toISOString().replace(/\D/g, "").slice(0, 14)}-new${demoTabSeq++}`, title: "", state: "idle", busy: null, writer: !tabs.some((t) => t.writer), startedAt: new Date().toISOString() };
+    tabs.push(tab);
+    return { threadId: tab.threadId };
+  },
+  leadClose: async (threadId) => {
+    for (const tabs of demoTabs.values()) {
+      const at = tabs.findIndex((t) => t.threadId === threadId);
+      if (at >= 0) { tabs.splice(at, 1); return; }
+    }
+    throw new Error("열린 총괄이 아닙니다");
+  },
+  leadWriter: async (threadId) => {
+    for (const tabs of demoTabs.values()) {
+      if (tabs.some((t) => t.threadId === threadId)) {
+        for (const t of tabs) t.writer = t.threadId === threadId;
+        return;
+      }
+    }
+    throw new Error("열린 총괄이 아닙니다");
+  },
   followup: () => Promise.reject(new Error(LEAD_REFUSED)),
   reply: () => Promise.reject(new Error(LEAD_REFUSED)),
   attention: async () => {},

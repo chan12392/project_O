@@ -91,19 +91,32 @@ export function Composer({
     return () => { live = false; window.clearInterval(timer); };
   }, [api]);
   const { checking, usable, why } = useLeadAgents(api, settings.clean);
-  // Each project keeps its own draft; switching shows that project's, and an upload or a failed
-  // send lands back in the draft it came from (src/core/lead.ts `Drafts`).
+  // Each open lead conversation keeps its own draft (ADR-0034); switching tabs shows that tab's,
+  // and an upload or a failed send lands back in the draft it came from (src/core/lead.ts `Drafts`).
   const [drafts, setDrafts] = useState<Drafts>({});
-  const key = project ? draftKey(project) : "";
+  const key = project ? draftKey(project, lead.selected) : "";
   const { text, files } = draftOf(drafts, key);
   const setText = (value: string) => setDrafts((d) => editDraft(d, key, () => ({ text: value })));
   useAutoGrow(inputRef, text);
   const [notice, setNotice] = useState<string>();
-  // The project shown now, for answers that arrive later: their notice shows only there.
-  const projectNow = useRef(project);
-  projectNow.current = project;
+  // The draft on screen now, for answers that arrive later: their notice shows only there.
+  const keyNow = useRef(key);
+  keyNow.current = key;
   // A notice is about the project it was raised in.
   useEffect(() => setNotice(undefined), [key]);
+  // A draft typed before the answer named the project's thread moves to the key that answer
+  // gives; drafts between open tabs stay where they were typed.
+  const prevKey = useRef(key);
+  useEffect(() => {
+    const from = prevKey.current;
+    prevKey.current = key;
+    if (from === key || from.includes("#") || !key.includes("#")) return;
+    setDrafts((d) => {
+      const gone = draftOf(d, from);
+      if (!gone.text && !gone.files.length) return d;
+      return restoreDraft(takeDraft(d, from).drafts, key, gone);
+    });
+  }, [key]);
   /** `model` "" is the CLI's default (no `--model`). */
   const [picked, setPicked] = useState<{ agent: LeadProvider; model: string; effort: string }>();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -170,11 +183,11 @@ export function Composer({
       added.push(item);
       if (problem) continue;
       count += 1;
-      api.leadAttach(project, file).then(
+      api.leadAttach(project, file, lead.selected).then(
         (saved) => setDrafts((d) => uploadDone(d, key, gen, item.key, { saved })),
         (e) => {
           setDrafts((d) => uploadDone(d, key, gen, item.key, { error: errorText(e) }));
-          if (draftKey(projectNow.current ?? "") === key) setNotice(`${file.name}: ${errorText(e)}`);
+          if (keyNow.current === key) setNotice(`${file.name}: ${errorText(e)}`);
         },
       );
     }
@@ -200,7 +213,7 @@ export function Composer({
     } catch (e) {
       // Nothing was recorded: give the message and its attachments back, to the draft they came from.
       setDrafts((d) => restoreDraft(d, from, taken));
-      if (draftKey(projectNow.current ?? "") === from) setNotice(errorText(e));
+      if (keyNow.current === from) setNotice(errorText(e));
     }
   };
 

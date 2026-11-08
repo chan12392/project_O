@@ -1,7 +1,8 @@
-import { BookOpen, CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, Waypoints, X } from "lucide-react";
+import { BookOpen, CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, Globe, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, Waypoints, X } from "lucide-react";
 import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
 
 import { isSessionRun } from "../../../src/core/attention.ts";
+import type { LeadTab } from "../../../src/core/lead.ts";
 import { chipSummary, isRecent, sameFolder, type AttentionKind } from "../../../src/core/projects.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../lib/dismiss.ts";
@@ -11,6 +12,7 @@ import type { ScreenState } from "../data/useRun.ts";
 import { CardSummary, summaryWords } from "../features/office/CardSummary.tsx";
 import { AddFolderForm, canPickFolder, NewProjectForm, pickAndRegister } from "../features/projects/ProjectForms.tsx";
 import { AgentStateDot } from "../ui/AgentStateDot.tsx";
+import { LeadStateDot } from "../ui/LeadStateDot.tsx";
 import { backend } from "../platform/backend/index.ts";
 
 type Groups = ReturnType<typeof useProjectGroups>;
@@ -31,8 +33,12 @@ interface Props {
   now: Date;
   /** Why the project list could not be read; the sidebar then shows every folder in history. */
   listError?: string;
-  /** The projects root, for the empty list's hint. */
+  /** The projects root, for the empty list's hint and the 전체 총괄 row. */
   root?: string;
+  /** A project's aggregate lead-tab state (ADR-0034); undefined while no open tabs are known there. */
+  leadDot?: (path: string) => LeadTab["state"] | undefined;
+  /** Picks the overall lead — the lead of the projects root (ADR-0032). */
+  onOverall?: () => void;
   onProject: (path: string) => void;
   onWake: (path: string) => void;
   onRun: (path: string, runId: string) => void;
@@ -62,7 +68,7 @@ const HEAD_BUTTON = "flex size-6 items-center justify-center rounded-md text-mut
 
 /** Orca's repo sidebar: the listed projects (root, registered, test group), each with its lead and recent runs (ADR-0009). */
 export function Sidebar(props: Props) {
-  const { state, projects, groups, leadState, project, run, card, now, listError, root, onProject, onWake, onRun, onCard, onNewRequest, onSearch, onDashboard, onAutomation, onWiki, onGraph, currentScreen, onListed, onUnregister, nextCount = 0, nextOpen, onNextUp, footer } = props;
+  const { state, projects, groups, leadState, project, run, card, now, listError, root, leadDot, onOverall, onProject, onWake, onRun, onCard, onNewRequest, onSearch, onDashboard, onAutomation, onWiki, onGraph, currentScreen, onListed, onUnregister, nextCount = 0, nextOpen, onNextUp, footer } = props;
   const shown = state === "full" ? projects : [];
   const [naming, setNaming] = useState<{ project?: string } | undefined>();
   const [adding, setAdding] = useState<"new" | "folder" | undefined>();
@@ -112,12 +118,15 @@ export function Sidebar(props: Props) {
   };
 
   const isCurrent = (p: Project) => project !== undefined && sameFolder(p.path, project);
+  // The overall lead's row is current when the root's own lead is on screen (ADR-0032/0034).
+  const overallCurrent = root !== undefined && project !== undefined && sameFolder(project, root);
   const row = (p: Project) => (
     <ProjectRow
       key={p.path}
       project={p}
       groups={groups}
       lead={leadState(p.path)}
+      dot={leadDot?.(p.path)}
       current={isCurrent(p)}
       open={expanded.has(p.path)}
       run={run}
@@ -211,6 +220,21 @@ export function Sidebar(props: Props) {
       )}
 
       <div className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto px-2 pb-3" aria-busy={state === "loading"}>
+        {root && onOverall && (
+          <button
+            type="button"
+            onClick={onOverall}
+            aria-current={overallCurrent || undefined}
+            title={`프로젝트 루트의 총괄: ${root}`}
+            className="mb-1 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-[13px] hover:bg-sidebar-accent focus-ring aria-current:bg-sidebar-accent aria-current:font-medium"
+          >
+            <Globe className="size-3.5 shrink-0 text-muted-foreground" aria-hidden="true" />
+            <span className="truncate font-medium">전체 총괄</span>
+            <span className="ml-auto shrink-0">
+              <LeadStateDot state={leadDot?.(root) ?? "idle"} />
+            </span>
+          </button>
+        )}
         {state === "loading" && [0, 1].map((i) => <div key={i} className="shimmer mx-1 my-2 h-10 rounded-md" aria-hidden="true" />)}
         {listError && state === "full" && (
           <p className="px-2 py-1.5 text-2xs text-muted-foreground" title={listError}>
@@ -348,6 +372,8 @@ interface RowProps {
   project: Project;
   groups: Groups;
   lead: LeadState;
+  /** The lead's aggregate tab state when the backend reports one (ADR-0034). */
+  dot?: LeadTab["state"];
   current: boolean;
   open: boolean;
   run?: string;
@@ -362,7 +388,7 @@ interface RowProps {
   onUnregister: () => void;
 }
 
-function ProjectRow({ project, groups, lead, current, open, run, card, now, onSelect, onToggle, onWake, onRun, onCard, onNewGroup, onUnregister }: RowProps) {
+function ProjectRow({ project, groups, lead, dot, current, open, run, card, now, onSelect, onToggle, onWake, onRun, onCard, onNewGroup, onUnregister }: RowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   // Only O's own runs make a project busy: a Claude Code session open here is not one (B7).
   const live = project.runs.filter(isDirecting).length;
@@ -397,7 +423,7 @@ function ProjectRow({ project, groups, lead, current, open, run, card, now, onSe
             className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs hover:bg-sidebar-accent focus-ring"
             aria-label={`총괄, ${LEAD_WORD[lead]}${lead === "resting" ? ". 눌러서 최근 세션 불러오기" : ""}`}
           >
-            {lead === "resting" ? <Coffee className="size-3.5 text-muted-foreground" aria-hidden="true" /> : <AgentStateDot state={lead === "working" ? "running" : lead === "loading" ? "queued" : "done"} />}
+            {lead === "resting" ? <Coffee className="size-3.5 text-muted-foreground" aria-hidden="true" /> : dot ? <LeadStateDot state={dot} /> : <AgentStateDot state={lead === "working" ? "running" : lead === "loading" ? "queued" : "done"} />}
             <span className="font-medium">총괄</span>
             <span className="text-muted-foreground">{LEAD_WORD[lead]}</span>
           </button>

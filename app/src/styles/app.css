@@ -153,6 +153,13 @@
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--foreground) 18%, transparent) transparent;
 }
+/* The header's tab strip scrolls, but a bar in 36px of chrome reads as noise. */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
 .design-rewrite { animation: design-rewrite 400ms ease-out; }
 @keyframes design-rewrite { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
 .design-removed { animation: design-removed 1.8s ease-in forwards; }

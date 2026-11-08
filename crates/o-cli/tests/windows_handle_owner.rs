@@ -234,10 +234,17 @@ fn actual_cli_lead_normal_crash_stop_and_marker_failure() {
             owner.0.wait().unwrap();
             assert_eq!(unsafe { WaitForSingleObject(lead.as_raw_handle(), 10_000) }, WAIT_OBJECT_0);
             if mode == "crash" {
-                assert_eq!(o_core::lead::show(&home, Some(&project.to_string_lossy()))["thread"]["busy"], "unknown");
-                assert!(o_core::lead::thread_for(&home, &project.to_string_lossy(), true).is_err());
+                assert_eq!(o_core::lead::show(&home, Some(&project.to_string_lossy()), None).unwrap()["thread"]["busy"], "unknown");
+                let project_text = project.to_string_lossy();
+                let unknown = o_core::lead::current_thread(&home, &project_text).unwrap();
+                assert!(o_core::lead::thread_for(&home, &project_text, true).is_ok());
+                assert!(o_core::lead::open_threads(&home, &project_text).contains(&unknown));
+                let request = o_core::lead::SendRequest { project: &project_text, thread: Some(&unknown), provider: o_core::run::plan::ProviderId::Claude,
+                    model: None, effort: None, text: "retry", attach: &[], fresh: false, clean: None, yolo: false };
+                let refused = o_core::lead::send(&home, &request, &|_, _| panic!("unknown turn must not spawn")).unwrap_err();
+                assert!(refused.contains("종료"), "{refused}");
             } else {
-                assert!(o_core::lead::show(&home, Some(&project.to_string_lossy()))["thread"]["busy"].is_null());
+                assert!(o_core::lead::show(&home, Some(&project.to_string_lossy()), None).unwrap()["thread"]["busy"].is_null());
                 assert!(o_core::lead::thread_for(&home, &project.to_string_lossy(), true).is_ok());
             }
         } else if mode == "marker-fail" {

@@ -694,7 +694,7 @@ fn linux_lead_timeout_stops_owned_child_and_leaves_the_lead_usable() {
     use o_core::lead::{self, SendRequest};
     let (home, project) = fixture();
     let project = project.to_string_lossy().into_owned();
-    let req = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
+    let req = SendRequest { project: &project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
     let spawner = |_: &o_core::providers::LaunchSpec, _: &str| {
         let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1");
@@ -715,7 +715,7 @@ fn windows_lead_can_start_another_turn_after_exit() {
     use o_core::lead::{self, SendRequest};
     let (home, project) = fixture();
     let project_text = project.to_string_lossy().into_owned();
-    let req = SendRequest { project: &project_text, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
+    let req = SendRequest { project: &project_text, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
     let spawner = move |_: &o_core::providers::LaunchSpec, _: &str| {
         let mut command = support::fake_worker_launch()?;
         command.args(["--exact", "process_fixture", "--nocapture"]).env("O_RESOURCE_LOCK", project.join("running"));

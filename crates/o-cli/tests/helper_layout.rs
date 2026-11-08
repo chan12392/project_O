@@ -19,7 +19,7 @@ fn desktop_host() {
     std::fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy();
     let request = o_core::lead::SendRequest {
-        project: &project, provider: o_core::run::plan::ProviderId::Claude,
+        project: &project, thread: None, provider: o_core::run::plan::ProviderId::Claude,
         model: None, effort: Some("low"), text: "test", attach: &[], fresh: false, clean: None, yolo: false,
     };
     let marker = base.join("provider-started");

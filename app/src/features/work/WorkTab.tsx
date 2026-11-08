@@ -1,7 +1,7 @@
 import { ArrowLeft, ChevronRight, ClipboardList, KanbanSquare, LayoutDashboard, ListChecks, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { earlierPlanOutcome, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
+import { earlierPlanOutcome, LEAD_TAB_MAX, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { names, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -18,7 +18,7 @@ import { IssuesPanel } from "./IssuesPanel.tsx";
 export const WORK_VIEW: PanelViewDef = {
   label: "에이전트 작업",
   icon: KanbanSquare,
-  render: ({ run, projectRuns, card, now, onCard, lead }) => <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} lead={lead} />,
+  render: ({ run, projectRuns, card, now, onCard, lead, onNewLead }) => <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} lead={lead} onNewLead={onNewLead} />,
 };
 
 type Sub = "design" | "dashboard" | "issues";
@@ -30,6 +30,8 @@ interface SubContext {
   lead?: LeadState;
   now: Date;
   onCard: (target?: { run: string; card: string }) => void;
+  /** Opens a new lead tab for the project ("새 설계"); absent where none can be made. */
+  onNewLead?: () => Promise<void>;
 }
 
 interface SubDef {
@@ -45,7 +47,7 @@ const SUBS: SubDef[] = [
     id: "design",
     label: "설계",
     icon: ClipboardList,
-    render: ({ lead, runs, onCard }) => <DesignPanel lead={lead} runs={runs} onCard={onCard} />,
+    render: ({ lead, runs, onCard, onNewLead }) => <DesignPanel lead={lead} runs={runs} onCard={onCard} onNewLead={onNewLead} />,
   },
   {
     id: "dashboard",
@@ -65,14 +67,17 @@ const SUB_KEY = "project-o-work-tab";
 
 const loadSub = () => readStored<Sub>(SUB_KEY, "design", (saved) => SUBS.find((s) => s.id === saved)?.id);
 
-function DesignPanel({ lead, runs, onCard }: { lead?: LeadState; runs: RunView[]; onCard: Props["onCard"] }) {
+function DesignPanel({ lead, runs, onCard, onNewLead }: { lead?: LeadState; runs: RunView[]; onCard: Props["onCard"]; onNewLead?: () => Promise<void> }) {
   const [error, setError] = useState<string>();
   const [starting, setStarting] = useState(false);
   if (!lead) return <p className="text-sm text-muted-foreground">실제 프로젝트의 총괄 대화에서 설계를 확인할 수 있습니다.</p>;
   if (lead.failed) return <p role="alert" className="text-sm text-destructive">설계를 읽지 못했습니다. <button type="button" className="underline focus-ring" onClick={() => void lead.refresh()}>다시 시도</button></p>;
   if (!lead.loaded) return <p role="status" className="text-sm text-muted-foreground">설계를 불러오는 중…</p>;
+  // A new design is a new tab, not a replaced conversation (ADR-0034): it opens even while
+  // another tab answers, and stops only at the open-tabs cap.
+  const maxed = lead.tabs.length >= LEAD_TAB_MAX;
   return <div className="space-y-3">
-    <div className="flex justify-end"><button type="button" disabled={lead.busy || starting} onClick={() => { setError(undefined); setStarting(true); void lead.startNew().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))).finally(() => setStarting(false)); }} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent focus-ring disabled:opacity-50">{starting ? "시작 중…" : "새 설계"}</button></div>
+    <div className="flex justify-end"><button type="button" disabled={starting || !onNewLead || maxed} title={maxed ? "열린 총괄은 최대 4개입니다" : "새 총괄 탭을 열어 새 설계를 시작합니다"} onClick={() => { if (!onNewLead) return; setError(undefined); setStarting(true); void onNewLead().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))).finally(() => setStarting(false)); }} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent focus-ring disabled:opacity-50">{starting ? "시작 중…" : "새 설계"}</button></div>
     {error && <p role="alert" className="text-xs text-destructive">새 설계를 시작하지 못했습니다: {error}</p>}
     <DesignContent key={lead.thread?.threadId} lead={lead} runs={runs} onCard={onCard} />
   </div>;
@@ -157,13 +162,15 @@ interface Props {
   onCard: (target?: { run: string; card: string }) => void;
   now?: Date;
   lead?: LeadState;
+  /** Opens a new lead tab for the project ("새 설계"); absent where none can be made. */
+  onNewLead?: () => Promise<void>;
 }
 
 /**
  * The agent work tab: the Orchestrator app's dashboard and next up brought to
  * one O project, with the card board beside them.
  */
-export function WorkTab({ runs, open, onCard, now: given, lead }: Props) {
+export function WorkTab({ runs, open, onCard, now: given, lead, onNewLead }: Props) {
   const [sub, setSub] = useState<Sub>(loadSub);
   const now = useNow(given);
   const choose = (next: Sub) => {
@@ -191,7 +198,7 @@ export function WorkTab({ runs, open, onCard, now: given, lead }: Props) {
     );
   }
 
-  const ctx: SubContext = { runs, lead, now, onCard };
+  const ctx: SubContext = { runs, lead, now, onCard, onNewLead };
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div role="group" aria-label="에이전트 작업 보기" className="flex shrink-0 gap-1 border-b px-3 py-1.5">

@@ -134,6 +134,7 @@ const ATTACH_LIMIT = 10 * 1024 * 1024;
 /** Lead ids, efforts and plan ids as `o lead` takes them; it checks every one again. */
 const LEAD_PROVIDER = /^(claude|codex|agy)$/;
 const LEAD_EFFORT = /^(minimal|low|medium|high|xhigh|max)$/;
+const THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
 /** A waiting approval's id (`<threadId>-a<n>`, crates/o-core/src/lead/approvals.rs); `o lead decide` checks it again. */
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
@@ -186,7 +187,12 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method === "GET" && path === "/lead/show") {
-    run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : [])]));
+    const thread = query.get("thread");
+    if ((query.has("project") && !projectOk) || (thread !== null && !THREAD_ID.test(thread))) {
+      fail(400, "프로젝트 폴더 또는 대화 id가 올바르지 않습니다");
+      return true;
+    }
+    run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : []), ...(thread === null ? [] : ["--thread", thread])]));
     return true;
   }
   if (req.method === "GET" && path === "/lead/models") {
@@ -199,6 +205,12 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
+  if (path === "/lead/close" || path === "/lead/writer") {
+    const thread = query.get("thread") ?? "";
+    if (!THREAD_ID.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
+    run(o(["lead", path === "/lead/close" ? "close" : "writer", thread]));
+    return true;
+  }
   if (path === "/lead/wake") {
     const runId = query.get("run") ?? "";
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId)) { fail(400, "실행 ID가 올바르지 않습니다"); return true; }
@@ -259,12 +271,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (path === "/lead/stop") {
-    const args = leadStopArgs(project);
+    const thread = query.get("thread");
+    if (thread !== null && !THREAD_ID.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
+    const args = thread !== null && !query.has("project") ? ["lead", "stop"] : leadStopArgs(project);
     if (!args) {
       fail(400, "중지할 총괄의 프로젝트 폴더가 필요합니다");
       return true;
     }
-    run(o(args));
+    run(o([...args, ...(thread === null ? [] : ["--thread", thread])]));
     return true;
   }
   if (path === "/lead/stop-all") {
@@ -296,6 +310,8 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (path === "/lead/attach") {
+    const thread = query.get("thread");
+    if (thread !== null && !THREAD_ID.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
     const name = query.get("name") ?? "";
     if (!name) {
     fail(400, "파일 이름이 필요합니다");
@@ -303,14 +319,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
     try {
       const bytes = await body(req, ATTACH_LIMIT);
-      run(oWithInput(["lead", "attach", "--project", project, "--name", name, "-"], bytes, 60_000));
+      run(oWithInput(["lead", "attach", "--project", project, ...(thread === null ? [] : ["--thread", thread]), "--name", name, "-"], bytes, 60_000));
     } catch (e) {
       fail(413, (e as Error).message);
     }
     return true;
   }
   if (path === "/lead/send") {
-    let input: { provider?: unknown; model?: unknown; effort?: unknown; text?: unknown; attachments?: unknown; clean?: unknown };
+    let input: { thread?: unknown; provider?: unknown; model?: unknown; effort?: unknown; text?: unknown; attachments?: unknown; clean?: unknown };
     try {
       input = JSON.parse((await body(req, 256 * 1024)).toString("utf8"));
     } catch {
@@ -318,6 +334,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     fail(400, "요청 본문이 JSON이 아닙니다");
     return true;
   }
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      fail(400, "요청 본문이 객체가 아닙니다");
+      return true;
+    }
+    if (input.thread !== undefined && (typeof input.thread !== "string" || !THREAD_ID.test(input.thread))) {
+      fail(400, "대화 id 형식이 아닙니다");
+      return true;
     }
     const provider = typeof input.provider === "string" && LEAD_PROVIDER.test(input.provider) ? input.provider : "";
     const effort = typeof input.effort === "string" && LEAD_EFFORT.test(input.effort) ? ["--effort", input.effort] : [];
@@ -332,7 +356,7 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
       return true;
     }
     const model = typeof input.model === "string" && input.model ? ["--model", input.model] : [];
-    const args = ["lead", "send", "--manual-dispatch", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
+    const args = ["lead", "send", "--manual-dispatch", "--project", project, ...(typeof input.thread === "string" ? ["--thread", input.thread] : []), "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
     run(oWithInput([...args, "--profile", input.clean === true ? "project-o" : "own", "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
     return true;
   }

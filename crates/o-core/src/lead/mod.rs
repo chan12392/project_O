@@ -4,6 +4,7 @@
 //!
 //! ```text
 //! leads/current.json                 project (normalized) → its current thread id
+//! leads/open.json                    project → open tabs and the one writer (ADR-0034)
 //! leads/<threadId>/events.jsonl      the thread: lead.start · lead.user · lead.session · lead.reply
 //!                                    · lead.plan · lead.dispatch · lead.usage · lead.warning · lead.error · lead.seen
 //!                                    · lead.approval · lead.decision · lead.step
@@ -29,6 +30,7 @@ pub mod prompt;
 pub mod recovery;
 pub mod steps;
 mod status_file;
+mod tabs;
 mod turn_process;
 #[cfg(windows)]
 mod stream_status;
@@ -65,6 +67,7 @@ use crate::usage::{budget, UsageWindow};
 
 pub use approvals::decide;
 pub use files::Attachment;
+pub use tabs::{attachment_thread, close, is_open, open_threads, run_thread, select_thread, set_writer, MAX_OPEN};
 type StartRun<'a> = dyn Fn(&str) -> io::Result<()> + 'a;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -279,30 +282,7 @@ pub fn new_thread(home: &Path, project: &str) -> io::Result<String> {
 /// Changes to the list are made one at a time (an OS lock on `leads/current.lock`), so two
 /// first messages make one thread and threads started together for other projects all stay.
 pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String> {
-    fs::create_dir_all(leads_dir(home))?;
-    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock"))?;
-    lock.lock()?;
-    let mut current = read_current(home)?;
-    let key = project_key(project);
-    for id in thread_ids(home) {
-        if current.get(&key) == Some(&id) || thread_project(&read_thread(home, &id)).is_some_and(|p| project_key(&p) == key) {
-            if let Some(busy) = running(home, &id) {
-                if busy.unknown { return Err(io::Error::other(UNKNOWN)); }
-                if fresh || current.get(&key) != Some(&id) { return Err(io::Error::other(BUSY)); }
-            }
-        }
-    }
-    if let Some(id) = current.get(&key).filter(|id| !fresh && is_run_id(id)) {
-        return Ok(id.clone());
-    }
-    check_project_turns(home, project, None, false).map_err(io::Error::other)?;
-    let thread_id = new_run_id(Utc::now());
-    fs::create_dir_all(thread_dir(home, &thread_id))?;
-    append(home, &thread_id, &LeadEvent::Start { at: now_iso(), thread_id: thread_id.clone(), project: project.to_string() })?;
-    fs::write(sessions_path(home, &thread_id), "")?;
-    current.insert(key, thread_id.clone());
-    write_current(home, &current)?;
-    Ok(thread_id)
+    select_thread(home, project, None, fresh).map_err(io::Error::other)
 }
 
 fn append(home: &Path, thread_id: &str, event: &LeadEvent) -> io::Result<()> {
@@ -430,30 +410,6 @@ fn running(home: &Path, thread_id: &str) -> Option<Busy> {
     Some(Busy { marker: read_marker(home, thread_id), unknown: false })
 }
 
-// Called under current.lock; never wait for a turn lock while holding it.
-fn check_project_turns(home: &Path, project: &str, except: Option<&str>, block_busy: bool) -> Result<(), String> {
-    let entries = fs::read_dir(leads_dir(home)).map_err(|e| e.to_string())?;
-    for entry in entries {
-        let id = entry.map_err(|e| e.to_string())?.file_name().to_string_lossy().into_owned();
-        if !is_run_id(&id) || except == Some(id.as_str()) { continue; }
-        let lock = turn_lock(home, &id).map_err(|e| e.to_string())?;
-        let busy = match lock.try_lock() {
-            Ok(()) => false,
-            Err(fs::TryLockError::WouldBlock) => true,
-            Err(fs::TryLockError::Error(e)) => return Err(e.to_string()),
-        };
-        let unresolved = !busy && running_path(home, &id).exists();
-        if !unresolved && !(busy && block_busy) { continue; }
-        let Some(owner_project) = thread_project(&read_thread(home, &id)) else {
-            return Err("실행 중이거나 종료 상태가 불명인 총괄의 프로젝트를 확인할 수 없습니다".into());
-        };
-        if project_key(&owner_project) == project_key(project) {
-            return Err(if unresolved { "이전 총괄의 종료 상태가 불명입니다. 프로세스와 출력을 확인하세요" } else { BUSY }.into());
-        }
-    }
-    Ok(())
-}
-
 /// Holds a thread's one turn: an OS lock on `turn.lock` that only one holder gets, and the
 /// marker beside it. Dropped, it removes its marker and lets go of the lock.
 struct TurnSlot {
@@ -525,6 +481,7 @@ impl Drop for TurnSlot {
 /// One message to the lead.
 pub struct SendRequest<'a> {
     pub project: &'a str,
+    pub thread: Option<&'a str>,
     pub provider: ProviderId,
     pub model: Option<&'a str>,
     pub effort: Option<&'a str>,
@@ -541,6 +498,10 @@ pub struct SendRequest<'a> {
 
 /// Checks a request before anything is saved or started.
 pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
+    if let Some(thread) = req.thread {
+        if req.fresh { return Err("대화 지정과 새 대화를 함께 요청할 수 없습니다".into()); }
+        if !is_open(home, req.project, thread) { return Err("이 프로젝트의 열린 총괄 대화가 아닙니다".into()); }
+    }
     if req.provider == ProviderId::Agy { return Err(crate::policy::AGY_UNAVAILABLE.into()); }
     let provider = providers::get(req.provider);
     if provider.lead_efforts().is_empty() {
@@ -716,13 +677,35 @@ struct WorkerTurn<'a> {
     message: &'a team::Received,
 }
 
-/// Handle one queued card message for the current thread that dispatched this run.
+/// Handle one queued card message for the open thread that dispatched this run.
 /// `false` means there is no eligible message; unknown deliveries require human recovery.
 pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spawner: &Spawner) -> Result<bool, String> {
-    let Some(thread_id) = current_thread(home, project) else { return Ok(false) };
+    let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: cards.to_vec() };
+    let Some(message) = team::read(home, &speaker, false).map_err(|e| e.to_string())?.into_iter().next() else { return Ok(false) };
+    // A question the person already answered needs no model turn, even after closing.
+    if matches!(message.kind.as_str(), "question" | "approval") && answered(home, &speaker, &message)? {
+        team::transition(home, &speaker, &message.id, "acknowledged").map_err(|e| e.to_string())?;
+        return Ok(true);
+    }
+    if message.kind == "approval" { return Err("승인 요청은 대표님의 답변을 기다립니다".into()); }
+    if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
+    let Some(thread_id) = run_thread(home, project, run_id) else { return Ok(false) };
     let events = read_complete_thread(home, &thread_id)?;
-    let Some(dispatch) = events.iter().rposition(|event| matches!(event,
-        LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. } if id == run_id)) else { return Ok(false) };
+    let open = {
+        let _current = tabs::current_lock(home).map_err(|e| e.to_string())?;
+        is_open(home, project, &thread_id)
+    };
+    if !open {
+        let text = format!("분배한 총괄 대화가 닫혀 카드 질문을 전달하지 않았습니다 (실행 {run_id}, 질문 {})", message.id);
+        if !events.iter().any(|event| matches!(event, LeadEvent::Warning { text: old, .. } if *old == text)) {
+            append(home, &thread_id, &LeadEvent::Warning { at: now_iso(), text: text.clone() }).map_err(|e| e.to_string())?;
+        }
+        // No answer was sent: preserve it as unresolved and stop automatic retries.
+        team::transition(home, &speaker, &message.id, "unknown").map_err(|e| e.to_string())?;
+        return Err(text);
+    }
+    let dispatch = events.iter().rposition(|event| matches!(event,
+        LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. } if id == run_id)).unwrap_or(events.len());
     let Some((provider, model, effort, profile)) = events[..dispatch].iter().rev().find_map(|event| match event {
         LeadEvent::User { provider, model, effort, profile, .. } => Some((*provider, model.as_deref(), effort.as_deref(), *profile)),
         _ => None,
@@ -730,17 +713,8 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
     let Some(profile) = profile else { return Err("이전 총괄의 프로필이 기록되지 않아 자동 응답할 수 없습니다".into()) };
     // An effort recorded before the CLI stopped taking it (Codex `minimal`) runs at the CLI's default.
     let effort = effort.filter(|e| providers::get(provider).lead_efforts().contains(e));
-    let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: cards.to_vec() };
-    let Some(message) = team::read(home, &speaker, false).map_err(|e| e.to_string())?.into_iter().next() else { return Ok(false) };
-    // A question the person already answered (the app's answer goes as the lead's reply) needs no model turn.
-    if matches!(message.kind.as_str(), "question" | "approval") && answered(home, &speaker, &message)? {
-        team::transition(home, &speaker, &message.id, "acknowledged").map_err(|e| e.to_string())?;
-        return Ok(true);
-    }
-    if message.kind == "approval" { return Err("승인 요청은 대표님의 답변을 기다립니다".into()); }
-    if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
     let root = clean::default_root();
-    let req = SendRequest { project, provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
+    let req = SendRequest { project, thread: Some(&thread_id), provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
     send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }), false, None)?;
     if !team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.id == message.id && m.state == "acknowledged") {
         return Err("총괄 처리 결과가 불명입니다. 대화와 메시지 상태를 확인하세요".into());
@@ -766,15 +740,13 @@ pub fn wake_run(home: &Path, run_id: &str, spawner: &Spawner) -> Result<bool, St
 pub fn retry_card(home: &Path, run_id: &str, message_id: &str) -> Result<&'static str, String> {
     if !is_run_id(run_id) { return Err("실행 ID가 올바르지 않습니다".into()); }
     let plan: crate::run::plan::Plan = serde_json::from_value(store::read_plan(home, run_id).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let thread_id = run_thread(home, &plan.project, run_id).ok_or("실행을 분배한 총괄 대화가 없습니다")?;
     let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
     current.lock().map_err(|e| e.to_string())?;
-    let thread_id = current_thread(home, &plan.project).ok_or("현재 총괄 대화가 없습니다")?;
-    check_project_turns(home, &plan.project, None, true)?;
+    if !is_open(home, &plan.project, &thread_id) { return Err("분배한 총괄 대화가 닫혔습니다".into()); }
     let turn = turn_lock(home, &thread_id).map_err(|e| e.to_string())?;
     turn.try_lock().map_err(|_| "총괄이 응답 중입니다. 완료 후 상태를 확인하세요")?;
-    if !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. } if id == run_id)) {
-        return Err("현재 총괄 대화가 분배한 실행이 아닙니다".into());
-    }
+    if running_path(home, &thread_id).exists() { return Err(UNKNOWN.into()); }
     let speaker = team::Speaker { run_id: run_id.into(), me: "lead".into(), cards: plan.cards.iter().map(|card| card.id.clone()).collect() };
     let pending = team::read(home, &speaker, false).map_err(|e| e.to_string())?;
     let message = pending.first().filter(|m| m.id == message_id && matches!(m.state.as_str(), "unknown" | "delivered")).ok_or("첫 번째 처리 불명 메시지를 확인하세요")?;
@@ -793,14 +765,11 @@ fn send_forwarded(home: &Path, req: &SendRequest, spawner: &Spawner, source: &st
 #[allow(clippy::too_many_arguments)]
 fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<(&str, &str, usize)>) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
-    // The overall lead reads every project and only passes requests on (ADR-0032): never YOLO.
     let overall = worker.is_none() && overall::is_overall(home, req.project);
-    let read_only;
-    let req = if overall && req.yolo { read_only = SendRequest { yolo: false, ..*req }; &read_only } else { req };
     check_request(home, req)?;
     let thread_id = match &worker {
         Some(w) => w.thread_id.to_string(),
-        None => thread_for(home, req.project, req.fresh).map_err(|e| e.to_string())?,
+        None => select_thread(home, req.project, req.thread, req.fresh)?,
     };
     let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
     current.lock().map_err(|e| e.to_string())?;
@@ -814,24 +783,28 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             Err(e) if e.kind() == io::ErrorKind::NotFound => false,
             Err(e) => return Err(e.to_string()),
         };
-        if stopped || current_thread(home, &project).as_deref() != Some(source) {
-            return Err("원본 총괄이 중지되었거나 새 대화로 전환되어 요청을 넘기지 않았습니다".into());
+        if stopped || !is_open(home, &project, source) {
+            return Err("원본 총괄이 중지되었거나 닫혀 요청을 넘기지 않았습니다".into());
         }
         let marks = thread_dir(home, source).join("forwarded");
         fs::create_dir_all(&marks).map_err(|e| e.to_string())?;
         OpenOptions::new().write(true).create_new(true).open(marks.join(index.to_string())).map_err(|_| "이미 넘긴 요청입니다".to_string())?;
         drop(lock);
     }
-    if read_current(home).map_err(|e| e.to_string())?.get(&project_key(req.project)) != Some(&thread_id) {
-        return Err("새 대화로 전환되어 총괄을 시작하지 않았습니다".into());
+    if !is_open(home, req.project, &thread_id) {
+        return Err("총괄 대화가 닫혀 시작하지 않았습니다".into());
     }
-    check_project_turns(home, req.project, Some(&thread_id), true)?;
+    let writer = !overall && tabs::is_writer(home, req.project, &thread_id)?;
     let mut slot = TurnSlot::take(home, &thread_id, req.provider)?;
     drop(current);
+    // Writer selection and acquiring this turn are atomic; transfers reject a live turn.
+    let read_only = SendRequest { yolo: false, ..*req };
+    let req = if writer { req } else { &read_only };
+    let ask = ask && writer;
     if let Some(w) = &worker {
-        if req.yolo || store::stop_requested(home, &w.speaker.run_id) || current_thread(home, req.project).as_deref() != Some(&thread_id)
-            || !read_thread(home, &thread_id).iter().any(|e| matches!(e, LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if run_id == &w.speaker.run_id)) {
-            return Err("실행과 현재 총괄 대화가 일치하지 않습니다".into());
+        if req.yolo || store::stop_requested(home, &w.speaker.run_id) || !is_open(home, req.project, &thread_id)
+            || run_thread(home, req.project, &w.speaker.run_id).as_deref() != Some(&thread_id) {
+            return Err("실행과 열린 총괄 대화가 일치하지 않습니다".into());
         }
         read_complete_thread(home, &thread_id)?;
         let claimed = team::claim(home, w.speaker).map_err(|e| e.to_string())?;
@@ -1456,8 +1429,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: answer.clone(), reported_files: Vec::new() })?;
         let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
         current.lock().map_err(|e| e.to_string())?;
-        if store::stop_requested(home, &w.speaker.run_id) || current_thread(home, req.project).as_deref() != Some(&thread_id) {
-            emit(LeadEvent::Error { at: now_iso(), text: "새 대화로 전환되어 카드에 답을 보내지 않았습니다".into() })?;
+        if store::stop_requested(home, &w.speaker.run_id) || !is_open(home, req.project, &thread_id) {
+            emit(LeadEvent::Error { at: now_iso(), text: "실행이 중지되었거나 총괄 대화가 닫혀 카드에 답을 보내지 않았습니다".into() })?;
             return Ok(added);
         }
         if w.message.kind == "question" {
@@ -1539,12 +1512,12 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             Ok(Some(items)) => items,
         };
         if unresolved { emit(LeadEvent::Error { at: now_iso(), text: "총괄 종료 상태가 불명이라 요청을 넘기지 않았습니다".into() })?; return Ok(added); }
-        // As for follow-ups: hold current.lock so nothing goes out for a thread "새 대화" just replaced.
+        // Closing and forwarding use the same lock so a closed thread sends nothing.
         let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
         current.lock().map_err(|e| e.to_string())?;
         let stopped = fs::read_to_string(thread_dir(home, &thread_id).join("stop-all-at")).ok().and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
-        if stopped || current_thread(home, req.project).as_deref() != Some(&thread_id) {
-            emit(LeadEvent::Error { at: now_iso(), text: "중지되었거나 새 대화로 전환되어 요청을 넘기지 않았습니다".into() })?;
+        if stopped || !is_open(home, req.project, &thread_id) {
+            emit(LeadEvent::Error { at: now_iso(), text: "중지되었거나 총괄 대화가 닫혀 요청을 넘기지 않았습니다".into() })?;
             return Ok(added);
         }
         match overall::check(home, items) {
@@ -1578,8 +1551,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             if unresolved { emit(LeadEvent::Error { at: now_iso(), text: "총괄 종료 상태가 불명이라 후속 지시를 보내지 않았습니다".into() })?; return Ok(added); }
             let Some(start) = start else { emit(LeadEvent::Error { at: now_iso(), text: "이 실행 환경에서는 후속 지시를 자동 전달할 수 없습니다".into() })?; return Ok(added); };
             if !matches!(plan, Ok(None)) { emit(LeadEvent::Error { at: now_iso(), text: "새 설계와 후속 지시가 함께 있어 실행하지 않았습니다".into() })?; return Ok(added); }
-            // "새 설계" changes the current thread under current.lock: hold it while the thread is
-            // checked and the follow-ups start, so they never go out for a thread just replaced.
+            // Closing holds current.lock too, so follow-ups only start from an open thread.
             // Same order as `dispatch` (current.lock, then dispatch.lock). This turn already holds
             // turn.lock; that is safe because no current.lock holder waits on turn.lock (`dispatch`
             // only tries it, `thread_for` never takes it).
@@ -1588,8 +1560,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, &thread_id).join("dispatch.lock")).map_err(|e| e.to_string())?;
             lock.lock().map_err(|e| e.to_string())?;
             let stopped = fs::read_to_string(thread_dir(home, &thread_id).join("stop-all-at")).ok().and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
-            if stopped || current_thread(home, req.project).as_deref() != Some(&thread_id) {
-                emit(LeadEvent::Error { at: now_iso(), text: "중지되었거나 새 설계로 전환되어 후속 지시를 보내지 않았습니다".into() })?;
+            if stopped || !is_open(home, req.project, &thread_id) {
+                emit(LeadEvent::Error { at: now_iso(), text: "중지되었거나 총괄 대화가 닫혀 후속 지시를 보내지 않았습니다".into() })?;
                 return Ok(added);
             }
             let allowed: BTreeSet<_> = before.iter().filter_map(|e| match e { LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => Some(run_id.as_str()), _ => None }).collect();
@@ -1699,13 +1671,12 @@ fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, String> {
     lock.lock().map_err(|e| e.to_string())?;
     let events = read_thread(home, thread_id);
     let project = thread_project(&events).ok_or_else(|| "총괄 대화를 찾지 못했습니다".to_string())?;
-    check_project_turns(home, &project, Some(thread_id), true)?;
     let latest = events.iter().rev().find_map(|event| match event {
         LeadEvent::Plan { plan_id, .. } => Some(Some(plan_id.as_str())),
         LeadEvent::User { .. } => Some(None),
         _ => None,
     }).flatten();
-    if current_thread(home, &project).as_deref() != Some(thread_id) || latest != Some(plan_id) {
+    if !is_open(home, &project, thread_id) || latest != Some(plan_id) {
         return Err("설계가 변경되었습니다. 최신 설계를 확인한 뒤 분배하세요".to_string());
     }
     Ok(DispatchLocks { _current: current, _turn: turn, _dispatch: lock })
@@ -1818,7 +1789,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
         _ => None,
     }) else { return Ok(added) };
     let thread = plan_thread(&plan_id).ok_or("계획 id 형식이 아닙니다")?;
-    // The same locks and checks as a dispatch by hand: a newer thread, request or turn wins.
+    // The same locks and checks as a dispatch by hand: closing, a newer request or turn wins.
     // Nothing is written then, since another turn may own the thread.
     let _locks = match lock_latest(home, &plan_id) {
         Ok(locks) => locks,
@@ -1881,59 +1852,63 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
     Ok(added)
 }
 
-/// Stops the lead turn of the project's current thread (every live turn without a
-/// project): a stop request, then the CLI's process tree. `false` when none was running.
-pub fn stop(home: &Path, project: Option<&str>) -> bool {
-    let threads: Vec<String> = match project {
-        Some(project) => current_thread(home, project).into_iter().collect(),
-        None => read_current(home).unwrap_or_default().into_values().filter(|id| is_run_id(id)).collect(),
+/// Stop one addressed thread, a project's open threads, or every open thread.
+pub fn stop(home: &Path, project: Option<&str>, thread: Option<&str>) -> Result<bool, String> {
+    let _lock = tabs::current_lock(home).map_err(|e| e.to_string())?;
+    let current = read_current(home).map_err(|e| e.to_string())?;
+    let projects = tabs::read_open(home, &current).map_err(|e| e.to_string())?;
+    let threads = if let Some(id) = thread {
+        if !is_run_id(id) || !projects.iter().any(|(key, tabs)| project.is_none_or(|p| *key == project_key(p)) && tabs.open.iter().any(|open| open == id)) {
+            return Err("이 프로젝트의 열린 총괄 대화가 아닙니다".into());
+        }
+        vec![id.to_string()]
+    } else {
+        projects.into_iter().filter(|(key, _)| project.is_none_or(|p| *key == project_key(p)))
+            .flat_map(|(_, tabs)| tabs.open).filter(|id| is_run_id(id)).collect()
     };
     let mut stopped = false;
     for thread_id in threads {
-        if let Some(busy) = running(home, &thread_id) {
-            if busy.unknown { continue; }
-            // A request the turn's owner acts on: before its CLI starts it does not start it, after
-            // it ends it. Nothing is killed from here, so the owner (the app, or `o lead send`)
-            // is never ended and no pid is trusted. The marker may be a moment from being written.
-            let mut marker = busy.marker;
-            for _ in 0..20 {
-                if marker.is_some() {
-                    break;
-                }
-                thread::sleep(Duration::from_millis(10));
-                marker = read_marker(home, &thread_id);
-            }
-            let _ = fs::write(stop_path(home, &thread_id), marker.map(|m| m.token).unwrap_or_default());
-            stopped = true;
-        }
+        stopped |= stop_thread(home, &thread_id);
     }
-    stopped
+    Ok(stopped)
 }
 
-/// Stop the lead and live runs started by this project's current thread.
-pub fn stop_all(home: &Path, project: &str) -> Result<usize, String> {
-    let Some(thread) = current_thread(home, project) else { return Ok(0) };
-    let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, &thread).join("dispatch.lock")).map_err(|e| e.to_string())?;
-    lock.lock().map_err(|e| e.to_string())?;
-    fs::write(thread_dir(home, &thread).join("stop-all-at"), Utc::now().to_rfc3339()).map_err(|e| e.to_string())?;
-    let mut count = usize::from(stop(home, Some(project)));
-    let mut runs: BTreeSet<String> = read_thread(home, &thread).into_iter().filter_map(|event| match event {
-        LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if is_run_id(&run_id) => Some(run_id),
-        _ => None,
-    }).collect();
-    let references: Vec<(String, String)> = fs::read_dir(home.join("runs")).into_iter().flatten().flatten().filter_map(|entry| {
-        let id = entry.file_name().to_string_lossy().into_owned();
-        if !is_run_id(&id) { return None; }
-        let (source, _): (String, String) = serde_json::from_slice(&fs::read(entry.path().join("followup.json")).ok()?).ok()?;
-        is_run_id(&source).then_some((id, source))
-    }).collect();
-    loop {
-        let before = runs.len();
-        for (id, source) in &references { if runs.contains(source) { runs.insert(id.clone()); } }
-        if runs.len() == before { break; }
+fn stop_thread(home: &Path, thread_id: &str) -> bool {
+    if let Some(busy) = running(home, thread_id) {
+        if busy.unknown { return false; }
+        // Only the turn's owner ends its CLI; never kill an owner or trust an old PID.
+        let mut marker = busy.marker;
+        for _ in 0..20 {
+            if marker.is_some() {
+                break;
+            }
+            thread::sleep(Duration::from_millis(10));
+            marker = read_marker(home, thread_id);
+        }
+        let _ = fs::write(stop_path(home, thread_id), marker.map(|m| m.token).unwrap_or_default());
+        return true;
     }
-    for run_id in runs {
-        if store::run_is_live(home, &run_id) && crate::run::runner::stop_run(home, &run_id).map_err(|e| e.to_string())? { count += 1; }
+    false
+}
+
+/// Stop every open lead and live run in this project.
+pub fn stop_all(home: &Path, project: &str) -> Result<usize, String> {
+    let current = tabs::current_lock(home).map_err(|e| e.to_string())?;
+    let tabs = tabs::read_open(home, &read_current(home).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let key = project_key(project);
+    let mut count = 0;
+    for thread in tabs.get(&key).into_iter().flat_map(|tabs| &tabs.open).filter(|id| is_run_id(id)) {
+        let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, thread).join("dispatch.lock")).map_err(|e| e.to_string())?;
+        lock.lock().map_err(|e| e.to_string())?;
+        fs::write(thread_dir(home, thread).join("stop-all-at"), Utc::now().to_rfc3339()).map_err(|e| e.to_string())?;
+        count += usize::from(stop_thread(home, thread));
+    }
+    drop(current);
+    for run_id in store::list_runs(home).into_iter().filter(|id| is_run_id(id)) {
+        let Ok(plan) = store::read_plan(home, &run_id) else { continue };
+        let Some(run_project) = plan["project"].as_str() else { continue };
+        if project_key(run_project) == key && store::run_is_live(home, &run_id)
+            && crate::run::runner::stop_run(home, &run_id).map_err(|e| e.to_string())? { count += 1; }
     }
     Ok(count)
 }
@@ -1966,47 +1941,103 @@ pub struct ThreadView {
 pub struct LeadProject {
     pub project: String,
     pub thread_id: String,
+    pub state: String,
 }
 
-/// What `o lead show --json` prints: the project's current thread (or none), and every
-/// project that has a lead thread, newest thread first.
-pub fn show(home: &Path, project: Option<&str>) -> Value {
-    let current = read_current(home).unwrap_or_default();
-    let mut projects: Vec<LeadProject> = current
-        .values()
-        .filter(|id| is_run_id(id))
-        .filter_map(|id| Some(LeadProject { project: thread_project(&read_thread(home, id))?, thread_id: id.clone() }))
-        .collect();
-    projects.sort_by(|a, b| b.thread_id.cmp(&a.thread_id));
-    let thread_id = match project {
-        Some(project) => current_thread(home, project),
-        None => projects.first().map(|p| p.thread_id.clone()),
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LeadTab {
+    pub thread_id: String,
+    pub title: String,
+    pub state: String,
+    pub busy: Option<String>,
+    pub writer: bool,
+    pub started_at: String,
+}
+
+fn tab_view(home: &Path, id: &str, events: &[LeadEvent], writer: Option<&str>, live: &mut BTreeMap<String, bool>, selected: Option<&ThreadView>) -> LeadTab {
+    let busy = selected.map(|view| view.busy.clone()).unwrap_or_else(|| running(home, id)
+        .map(|b| if b.unknown { "unknown".into() } else { b.marker.map_or_else(|| STARTING.into(), |m| m.provider.as_str().into()) }));
+    let pending_approval = selected.filter(|view| view.busy.is_some()).map(|view| !view.approvals.is_empty())
+        .unwrap_or_else(|| !approvals::pending(home, id).is_empty());
+    let asked = events.iter().rev().find_map(|event| match event { LeadEvent::Ask { .. } => Some(true), LeadEvent::User { .. } => Some(false), _ => None }).unwrap_or(false);
+    let plan = events.iter().rev().find_map(|event| match event { LeadEvent::Plan { plan_id, ok, .. } => Some((plan_id, ok)), _ => None });
+    let pending_plan = plan.is_some_and(|(id, ok)| *ok && !events.iter().any(|event| matches!(event, LeadEvent::Dispatch { plan_id, .. } if plan_id == id)));
+    // shortcut: display checks eight recent runs; use an active-run index if older live runs must stay visible.
+    let state = if busy.as_deref() == Some("unknown") || asked || pending_plan || pending_approval { "waiting" }
+        else if busy.is_some() || events.iter().rev().filter_map(|event| match event {
+            LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => Some(run_id),
+            _ => None,
+        }).take(8).any(|run_id| is_run_id(run_id) && *live.entry(run_id.clone())
+            .or_insert_with(|| store::runner_may_be_live(home, run_id) && store::run_is_live(home, run_id))) { "working" } else { "idle" };
+    LeadTab {
+        thread_id: id.into(),
+        title: events.iter().find_map(|event| match event { LeadEvent::User { text, .. } => Some(text.lines().next().unwrap_or_default().chars().take(24).collect()), _ => None }).unwrap_or_default(),
+        state: state.into(), busy, writer: writer == Some(id),
+        started_at: events.iter().find_map(|event| match event { LeadEvent::Start { at, .. } => Some(at.clone()), _ => None }).unwrap_or_default(),
+    }
+}
+
+/// Addressed or current conversation, its open tabs, and aggregate project states.
+pub fn show(home: &Path, project: Option<&str>, requested: Option<&str>) -> Result<Value, String> {
+    if requested.is_some_and(|id| !is_run_id(id)) { return Err("총괄 대화 ID가 올바르지 않습니다".into()); }
+    let lock = tabs::current_lock(home).map_err(|e| e.to_string())?;
+    let current = read_current(home).map_err(|e| e.to_string())?;
+    let open = tabs::read_open(home, &current).map_err(|e| e.to_string())?;
+    drop(lock);
+    let history = |id: &str| {
+        let values = event_values(home, id);
+        let events: Vec<LeadEvent> = values.iter().filter_map(|value| serde_json::from_value(value.clone()).ok()).collect();
+        (values, events)
     };
-    let thread = thread_id.map(|id| {
-        let (notes, notes_error) = match notes::read(home, &id) { Ok(notes) => (notes, None), Err(error) => (Vec::new(), Some(error.to_string())) };
-        let busy = running(home, &id).map(|b| if b.unknown { "unknown".to_string() } else { b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()) });
-        let state: Value = busy.as_ref().and_then(|_| fs::read(thread_dir(home, &id).join("progress.json")).ok())
-            .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
-        let progress = state.get("steps").or_else(|| state.is_array().then_some(&state)).and_then(Value::as_array).cloned().unwrap_or_default();
-        let progress_counts = state.get("counts").cloned().unwrap_or(Value::Null);
-        let partial = state.get("partial").and_then(Value::as_str).unwrap_or_default().to_string();
-        let steps = state.get("live").and_then(Value::as_array).cloned().unwrap_or_default();
-        let approvals = if busy.as_deref().is_some_and(|b| b != "unknown") { approvals::pending(home, &id) } else { Vec::new() };
-        ThreadView {
-            project: thread_project(&read_thread(home, &id)).unwrap_or_default(),
-            busy,
-            progress,
-            progress_counts,
-            partial,
-            steps,
-            approvals,
-            notes,
-            notes_error,
-            events: event_values(home, &id),
-            thread_id: id,
-        }
+    let mut requested_history = requested.map(history);
+    let owner = requested_history.as_ref().and_then(|(_, events)| thread_project(events));
+    if let (Some(project), Some(owner)) = (project, owner.as_deref()) {
+        if project_key(project) != project_key(owner) { return Err("이 프로젝트의 총괄 대화가 아닙니다".into()); }
+    }
+    let selected_key = project.or(owner.as_deref()).map(project_key).or_else(|| current.iter()
+        .filter(|(_, id)| is_run_id(id)).max_by_key(|(_, id)| *id).map(|(key, _)| key.clone()));
+    let thread_id = selected_key.as_ref().and_then(|key| {
+        let tabs = open.get(key)?;
+        requested.filter(|id| tabs.open.iter().any(|open| open == id)).map(str::to_string)
+            .or_else(|| current.get(key).filter(|id| is_run_id(id)).cloned())
     });
-    json!({ "thread": thread, "projects": projects })
+    let mut thread = None;
+    let mut threads = Vec::new();
+    let mut projects = Vec::new();
+    let mut live = BTreeMap::new();
+    for (key, tabs) in &open {
+        let mut name = None;
+        let mut state = "idle";
+        for id in tabs.open.iter().filter(|id| is_run_id(id)) {
+            let (values, events) = if requested == Some(id.as_str()) { requested_history.take().unwrap() } else { history(id) };
+            if current.get(key) == Some(id) { name = thread_project(&events); }
+            if thread_id.as_ref() == Some(id) {
+                let (notes, notes_error) = match notes::read(home, id) { Ok(notes) => (notes, None), Err(error) => (Vec::new(), Some(error.to_string())) };
+                let busy = running(home, id).map(|b| if b.unknown { "unknown".to_string() } else { b.marker.map_or_else(|| STARTING.to_string(), |m| m.provider.as_str().to_string()) });
+                let progress: Value = busy.as_ref().and_then(|_| fs::read(thread_dir(home, id).join("progress.json")).ok())
+                    .and_then(|data| serde_json::from_slice(&data).ok()).unwrap_or_default();
+                let approvals = if busy.as_deref().is_some_and(|b| b != "unknown") { approvals::pending(home, id) } else { Vec::new() };
+                thread = Some(ThreadView {
+                    project: thread_project(&events).unwrap_or_default(), busy,
+                    progress: progress.get("steps").or_else(|| progress.is_array().then_some(&progress)).and_then(Value::as_array).cloned().unwrap_or_default(),
+                    progress_counts: progress.get("counts").cloned().unwrap_or(Value::Null),
+                    partial: progress.get("partial").and_then(Value::as_str).unwrap_or_default().to_string(),
+                    steps: progress.get("live").and_then(Value::as_array).cloned().unwrap_or_default(),
+                    approvals, notes, notes_error, events: values, thread_id: id.clone(),
+                });
+            }
+            let tab = tab_view(home, id, &events, tabs.writer.as_deref(), &mut live, thread.as_ref().filter(|view| view.thread_id == *id));
+            if tab.state == "waiting" { state = "waiting"; }
+            else if tab.state == "working" && state == "idle" { state = "working"; }
+            if selected_key.as_ref() == Some(key) { threads.push(tab); }
+        }
+        if let (Some(project), Some(id)) = (name, current.get(key)) {
+            projects.push(LeadProject { project, thread_id: id.clone(), state: state.into() });
+        }
+    }
+    projects.sort_by(|a, b| b.thread_id.cmp(&a.thread_id));
+    Ok(json!({ "thread": thread, "threads": threads, "projects": projects }))
 }
 
 fn thread_ids(home: &Path) -> Vec<String> {
@@ -2172,7 +2203,7 @@ mod status_tests {
         ].into_iter().map(|value| serde_json::from_value(value).unwrap()).collect();
         let hash = crate::run::result::digest(&serde_json::to_string(&events).unwrap());
         events.push(LeadEvent::WorkerSession { at: "now".into(), provider: ProviderId::Claude, session_id: "worker".into(), model: Some("model-a".into()), effort: Some("high".into()), profile: Profile::Own, result_tools: false, through: 1, history_hash: hash });
-        let req = SendRequest { project: "p", provider: ProviderId::Claude, model: Some("model-a"), effort: Some("high"), text: "question", attach: &[], fresh: false, clean: None, yolo: false };
+        let req = SendRequest { project: "p", thread: None, provider: ProviderId::Claude, model: Some("model-a"), effort: Some("high"), text: "question", attach: &[], fresh: false, clean: None, yolo: false };
         assert_eq!(worker_session(&events, &req, false).unwrap().unwrap().0, "worker");
         assert!(worker_session(&events, &SendRequest { model: Some("model-b"), ..req }, false).is_err());
         assert!(worker_session(&events, &SendRequest { model: None, ..req }, false).is_err());
