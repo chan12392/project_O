@@ -1,6 +1,7 @@
 @import "tailwindcss";
 @import "./orca-theme.css";
 @import "./chat-markdown.css";
+@import "./graph.css";
 
 /* Orca's chrome: Geist first; Korean falls through to Pretendard. */
 :root {

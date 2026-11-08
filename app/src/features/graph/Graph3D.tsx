@@ -226,6 +226,8 @@ export function Graph3D({ view, effects, particles, reducedMotion, onNodeClick, 
         graphRef.current = graph;
         graph
           .backgroundColor("rgba(0,0,0,0)")
+          // The library's English mouse hint; the canvas speaks for itself.
+          .showNavInfo(false)
           .nodeId("id")
           // The tooltip writes this string with innerHTML; labels can carry Deep's LLM output.
           .nodeLabel((n) => escapeHtml(n.label))
