@@ -10,6 +10,7 @@
     "sidecar": "node ../scripts/prepare-sidecar.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "preview:app": "tauri dev --config src-tauri/tauri.preview.conf.json",
     "check": "tsc --noEmit",
     "tauri": "tauri"
   },

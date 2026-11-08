@@ -1,0 +1,18 @@
+{
+  "identifier": "local.project-o.preview",
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "create": false,
+        "dragDropEnabled": false,
+        "title": "Project O 미리보기",
+        "width": 1360,
+        "height": 880,
+        "minWidth": 1100,
+        "minHeight": 700,
+        "center": true
+      }
+    ]
+  }
+}

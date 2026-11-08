@@ -99,6 +99,7 @@
 ## 데스크톱 셸 (`app/src-tauri`)
 
 - Tauri 2 셸. 크레이트 `project-o`, 실행 파일 `project_O.exe`, 창 제목 "Project O". 빌드: `cd app && npm run tauri build -- --no-bundle` → `target/release/project_O.exe`. 개발: `npm run tauri dev`(Vite 1430 포트, `tauri.conf.json`의 `devUrl`·`devCsp`와 같이 고친다).
+- 미리보기: `cd app && npm run preview:app`. 설치한 앱을 그대로 둔 채 "Project O 미리보기" 창을 따로 띄운다(`tauri.preview.conf.json`이 식별자를 바꿔 단일 실행 잠금이 겹치지 않는다. 상태 폴더는 같은 것을 쓴다). 화면 코드는 저장하면 바로 바뀌고, `app/src-tauri`·`o-core`를 고치면 셸을 다시 빌드해 창을 다시 연다. `o.exe`(o-cli)는 미리보기를 다시 시작할 때만 새로 빌드된다. 수정할 때마다 설치 파일을 만들지 않고 여기서 확인한다.
 - 화면은 프로세스를 직접 띄우지 않는다. 셸의 정해진 Tauri 명령(`app/src-tauri/src/commands/`)만 부르고, 그 명령은 `o-core`를 쓴다. 명령을 더하면 개발 서버 `/api`(`app/dev/liveRuns.ts`)와 `o` 명령에도 같은 동작을 둔다.
 - 에이전트 설치는 공식 npm 패키지만 앱에서 실행하고, 나머지는 공식 안내를 연다. 로그인은 새 콘솔 창의 공식 명령으로 한다.
 - 설치 파일(NSIS, 사용자별, `o.exe` 사이드카 포함): `pwsh scripts/build-installer.ps1`, `test_1` push마다 `release.yml`이 프리릴리스로 올린다. 설치 폴더·상태 폴더 구분과 안내는 [docs/INSTALL.md](docs/INSTALL.md).
