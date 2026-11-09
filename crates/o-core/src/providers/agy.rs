@@ -42,12 +42,7 @@ impl Provider for Agy {
         args.extend(opt("--effort", card.effort.as_deref()));
         args.push("-p".into());
         args.push(prompt);
-        LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// agy signs in through the system; no key variable is taken out.
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &[]
+        LaunchSpec { bin: "agy".into(), args, stdin: None, env }
     }
 
     fn tool_note(&self) -> Option<String> {
@@ -92,7 +87,7 @@ impl Provider for Agy {
         args.push("-p".into());
         args.push(turn.prompt.clone());
         let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
-        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env })
     }
 
     /// Every tool call approved without asking (agy's skip-permissions flag, which outranks the
@@ -106,7 +101,7 @@ impl Provider for Agy {
         args.extend(opt("--effort", card.effort.as_deref()));
         args.push("-p".into());
         args.push(prompt);
-        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env })
     }
 
     /// The lead with every tool approved: no plan mode, no sandbox, and of the read-only deny
@@ -121,7 +116,7 @@ impl Provider for Agy {
         args.push("-p".into());
         args.push(turn.prompt.clone());
         let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
-        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env })
     }
 
     /// `agy models` lists the models this sign-in may use, one `id<TAB>name` per line.
@@ -307,6 +302,7 @@ fn read_stream(text: &mut String, data: &Map<String, Value>) -> Vec<StreamSignal
                 input: num(u.get("input_tokens")),
                 cached: num(u.get("cache_read_tokens")),
                 output: num(u.get("output_tokens")) + num(u.get("thinking_tokens")),
+                complete: super::stream::reported(&[u.get("input_tokens"), u.get("cache_read_tokens"), u.get("output_tokens"), u.get("thinking_tokens")]),
             });
         }
         out.extend(limit_from_text(&text, ok));

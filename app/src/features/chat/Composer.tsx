@@ -28,6 +28,7 @@ import { updateSettings, useSettings } from "../../data/settings.ts";
 import { useLeadModels, type LeadState } from "../../data/useLead.ts";
 import { useAgentCheck } from "../../data/agents.ts";
 import type { Backend } from "../../platform/backend/index.ts";
+import { useAutoGrow } from "../../lib/autoGrow.ts";
 import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
@@ -90,18 +91,32 @@ export function Composer({
     return () => { live = false; window.clearInterval(timer); };
   }, [api]);
   const { checking, usable, why } = useLeadAgents(api, settings.clean);
-  // Each project keeps its own draft; switching shows that project's, and an upload or a failed
-  // send lands back in the draft it came from (src/core/lead.ts `Drafts`).
+  // Each open lead conversation keeps its own draft (ADR-0034); switching tabs shows that tab's,
+  // and an upload or a failed send lands back in the draft it came from (src/core/lead.ts `Drafts`).
   const [drafts, setDrafts] = useState<Drafts>({});
-  const key = project ? draftKey(project) : "";
+  const key = project ? draftKey(project, lead.selected) : "";
   const { text, files } = draftOf(drafts, key);
   const setText = (value: string) => setDrafts((d) => editDraft(d, key, () => ({ text: value })));
+  useAutoGrow(inputRef, text);
   const [notice, setNotice] = useState<string>();
-  // The project shown now, for answers that arrive later: their notice shows only there.
-  const projectNow = useRef(project);
-  projectNow.current = project;
+  // The draft on screen now, for answers that arrive later: their notice shows only there.
+  const keyNow = useRef(key);
+  keyNow.current = key;
   // A notice is about the project it was raised in.
   useEffect(() => setNotice(undefined), [key]);
+  // A draft typed before the answer named the project's thread moves to the key that answer
+  // gives; drafts between open tabs stay where they were typed.
+  const prevKey = useRef(key);
+  useEffect(() => {
+    const from = prevKey.current;
+    prevKey.current = key;
+    if (from === key || from.includes("#") || !key.includes("#")) return;
+    setDrafts((d) => {
+      const gone = draftOf(d, from);
+      if (!gone.text && !gone.files.length) return d;
+      return restoreDraft(takeDraft(d, from).drafts, key, gone);
+    });
+  }, [key]);
   /** `model` "" is the CLI's default (no `--model`). */
   const [picked, setPicked] = useState<{ agent: LeadProvider; model: string; effort: string }>();
   const fileInput = useRef<HTMLInputElement>(null);
@@ -144,7 +159,9 @@ export function Composer({
 
   const uploading = files.some((f) => !f.saved && !f.error);
   const busy = lead.busy;
-  const blocker = !project
+  const blocker = lead.thread?.busy === "unknown"
+    ? "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다"
+    : !project
     ? "프로젝트 폴더를 먼저 정하세요"
     : !checking && !agent
       ? "총괄을 맡을 에이전트가 연결되어 있지 않습니다"
@@ -152,6 +169,7 @@ export function Composer({
         ? "첨부를 올리는 중입니다"
         : undefined;
   const canSend = Boolean(text.trim()) && !blocker && !busy && Boolean(agent) && yolo !== undefined;
+  const dispatched = lead.thread?.events.some((event) => event.t === "lead.dispatch") ?? false;
 
   const addFiles = (list: FileList | File[]) => {
     if (!project) return setNotice("프로젝트 폴더를 먼저 정하세요");
@@ -165,11 +183,11 @@ export function Composer({
       added.push(item);
       if (problem) continue;
       count += 1;
-      api.leadAttach(project, file).then(
+      api.leadAttach(project, file, lead.selected).then(
         (saved) => setDrafts((d) => uploadDone(d, key, gen, item.key, { saved })),
         (e) => {
           setDrafts((d) => uploadDone(d, key, gen, item.key, { error: errorText(e) }));
-          if (draftKey(projectNow.current ?? "") === key) setNotice(`${file.name}: ${errorText(e)}`);
+          if (keyNow.current === key) setNotice(`${file.name}: ${errorText(e)}`);
         },
       );
     }
@@ -195,7 +213,7 @@ export function Composer({
     } catch (e) {
       // Nothing was recorded: give the message and its attachments back, to the draft they came from.
       setDrafts((d) => restoreDraft(d, from, taken));
-      if (draftKey(projectNow.current ?? "") === from) setNotice(errorText(e));
+      if (keyNow.current === from) setNotice(errorText(e));
     }
   };
 
@@ -280,7 +298,7 @@ export function Composer({
           }}
           onKeyDown={onKey}
           onPaste={onPaste}
-          className="block max-h-48 w-full resize-none bg-transparent px-1 text-sm text-chat-foreground outline-none placeholder:text-chat-foreground-faint"
+          className="scrollbar-sleek block max-h-[40vh] min-h-11 w-full resize-none overflow-y-auto bg-transparent px-1 text-sm text-chat-foreground outline-none placeholder:text-chat-foreground-faint"
         />
         {typing && agent && (
           <div className="mt-1.5 flex flex-wrap items-center gap-1.5 rounded-md border border-chat-composer-border bg-background/40 px-2 py-1.5">
@@ -440,12 +458,13 @@ export function Composer({
           </div>
         </div>
       </div>
+      {/* Stays mounted so a notice is announced; empty, it takes no space. */}
       <p
         id="ask-help"
         aria-live="polite"
-        className={`mx-auto mt-1.5 max-w-3xl px-1 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
+        className={`mx-auto mt-1.5 max-w-3xl px-1 empty:mt-0 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : "Enter 보내기 · Ctrl+Enter 줄바꿈 · 설계를 확인한 뒤 작업을 분배합니다")}
+        {notice ?? (lead.thread?.busy === "unknown" ? blocker : busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
       </p>
     </form>
   );

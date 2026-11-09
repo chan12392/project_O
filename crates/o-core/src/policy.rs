@@ -83,7 +83,7 @@ pub struct PolicyContext {
     /// Provider → why it spent today's usage budget (ADR-0004, see `budget`).
     pub over_budget: HashMap<ProviderId, String>,
     pub project_exists: Box<dyn Fn(&str) -> bool>,
-    /// Whether the folder is a project_O protected-branch (test_1/test_2/main) mirror checkout.
+    /// Whether the folder is a project_O protected-branch (test_1/test_1_hotfix/test_2/main_hotfix/main) mirror checkout.
     pub is_mirror: Box<dyn Fn(&str) -> bool>,
     /// O's state folder: a project may neither be inside it nor contain it.
     pub o_home: String,
@@ -307,7 +307,7 @@ pub fn check_project(project: Option<&str>, ctx: &PolicyContext) -> Vec<Violatio
             } else if (ctx.is_mirror)(project) {
                 found.add(
                     "read-only-project",
-                    format!("{project}는 project_O의 보호 브랜치(test_1·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
+                    format!("{project}는 project_O의 보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
                     None,
                 );
             } else if reaches_protected(project, ctx) {
@@ -379,6 +379,21 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
             fail(found, "plan-dependency".into(), "depends_on은 선행 작업 id의 배열이어야 합니다".into());
         }
     }
+    let resources = match raw.get("resources") {
+        None => Vec::new(),
+        Some(value) => match serde_json::from_value::<Vec<crate::run::plan::Resource>>(value.clone()) {
+            Ok(items) if items.len() <= 64 && items.iter().all(|r| {
+                if r.key.trim().is_empty() || r.key.len() > 1024 || r.key.chars().any(char::is_control) { return false; }
+                if r.kind != crate::run::plan::ResourceKind::ProjectPath { return true; }
+                let key = r.key.replace('\\', "/");
+                std::path::Path::new(&key).components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
+            }) => items,
+            _ => {
+                fail(found, "plan-resource".into(), "resources는 유효한 kind·key·mode 객체의 배열이어야 합니다".into());
+                Vec::new()
+            }
+        },
+    };
     if let Some(task) = task {
         for hit in find_hits(task, code_rules()) {
             fail(found, format!("task-{}", hit.rule), hit.reason.to_string());
@@ -396,6 +411,7 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
         model: text("model"),
         effort: text("effort"),
         depends_on: raw.get("depends_on").and_then(Value::as_array).map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+        resources,
     })
 }
 

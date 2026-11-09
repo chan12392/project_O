@@ -2,7 +2,7 @@
 
 > 2026-11-03: Antigravity 실행과 자동 조회는 공급자 정책에 따라 보류했다([ADR-0020](decisions/0020-antigravity-policy.md)). 아래 Antigravity 관련 실행 현황은 이전 기준의 기록이다.
 
-기준: 2026-11-02, `younchan-goals`의 문서 작성 전 HEAD `77a69aa`.
+기준: 2026-11-02, `<개인>-goals`의 문서 작성 전 HEAD `77a69aa`.
 현재 상태는 이 기준 소스를 읽어 확인한 구현이며, 실사용 검증 완료를 뜻하지 않는다.
 병렬 작업은 담당 범위만 전달받았으므로 아래의 구현 현황과 구분한다.
 
@@ -44,7 +44,7 @@
 - 같은 파일에서 브라우저 미리보기는 소스를 지정하지 않았고 실제 실행이 없으면 데모 기록으로 전환한다. 데스크톱 앱은 전환하지 않는다(ADR-0008). 데모 화면은 실제 작업의 증거가 아니다.
 - `crates/o-core/src/run/events.rs`에 `card.session`은 있지만 부모·자식 에이전트 관계 필드는 없다.
 
-진행 중: `younchan-office-nextup`이 목표 1–2를 담당한다. 이 기준 소스에는 그 결과가 반영되지 않았다.
+진행 중: `<개인>-office-nextup`이 목표 1–2를 담당한다. 이 기준 소스에는 그 결과가 반영되지 않았다.
 
 남은 순서:
 
@@ -67,7 +67,7 @@
 - NextUp 티켓은 기록 열기, PR 링크, 답장·중지·상태 명령 복사와 처리 표시를 지원한다.
 - `app/src/features/work/WorkTab.tsx`, `app/src/shell/SidePanel.tsx`: 실제 NextUp 입력은 선택한 프로젝트의 실행들이다.
 
-진행 중: `younchan-office-nextup`. 현재 구현은 기록에서 조건에 맞는 일을 추리는 규칙 기반 목록이다.
+진행 중: `<개인>-office-nextup`. 현재 구현은 기록에서 조건에 맞는 일을 추리는 규칙 기반 목록이다.
 
 남은 순서:
 
@@ -90,7 +90,7 @@
 - `crates/o-guard/src/hook.rs`, `scan.rs`: 보호 브랜치 직접 변경과 규칙 밖 병합을 해당 훅 경로에서 막는다.
 - `.github/workflows/branch-flow.yml`, `merge-guard.yml`: PR 방향 검사와 대표 외 보호 브랜치 병합·push 경보가 있다.
 
-진행 중: `younchan-pr-review`가 목표 3과 `o review`를 담당한다. 현재 `crates/o-cli/src/commands/`에는 이 명령이 없다.
+진행 중: `<개인>-pr-review`가 목표 3과 `o review`를 담당한다. 현재 `crates/o-cli/src/commands/`에는 이 명령이 없다.
 
 남은 순서:
 
@@ -115,7 +115,7 @@ ADR-0003의 CI 경보는 사후 감지이며 GitHub 웹 병합을 사전에 강�
 - `crates/o-core/src/run/runner.rs`: 시작 전 상한·쿨다운을 확인하고, 실행 중 한도 감지 시 같은 프로바이더의 대기 카드도 실패 처리한다.
 - `crates/o-core/src/run/plan.rs`, `providers/`: 카드에 지정된 `effort`를 검증·전달한다. `skills/o/SKILL.md`는 총괄에게 사용량 확인과 선택을 안내한다.
 
-진행 중: `younchan-budget`이 목표 4를 담당한다. 카드 수 상한과 주간 사용량 비율 예산은 서로 다른 기준이다.
+진행 중: `<개인>-budget`이 목표 4를 담당한다. 카드 수 상한과 주간 사용량 비율 예산은 서로 다른 기준이다.
 
 남은 순서:
 
@@ -139,7 +139,7 @@ ADR-0003의 CI 경보는 사후 감지이며 GitHub 웹 병합을 사전에 강�
 - `crates/o-core/src/agents/clean.rs`: 별도 홈·환경변수로 개인 훅·전역 지침·스킬·MCP·메모리·설정을 분리하고 `o agents doctor`로 점검한다.
 - `o dispatch --clean plan.json`과 `run/runner.rs`가 깨끗한 프로필 실행을 연결한다. 프로젝트 지침·상위 폴더 지침까지 모두 제거하는 것은 아니다.
 
-진행 중: `younchan-context`가 목표 5와 토큰 보고 명령 `o tokens`를 담당한다. 현재 CLI에는 `o tokens`가 없다.
+진행 중: `<개인>-context`가 목표 5와 토큰 보고 명령 `o tokens`를 담당한다. 현재 CLI에는 `o tokens`가 없다.
 
 남은 순서:
 
@@ -164,7 +164,7 @@ SQLite 색인은 현재 실행 목록/이벤트 조회용이며 의미 검색·�
 - `app/src/features/settings/Onboarding.tsx`, `Settings.tsx`, `AgentSetup.tsx`: 공식 CLI 상태 확인·설치·로그인과 깨끗한 프로필 선택이 있다.
 - `app/src/data/settings.ts`의 clean(설정 "project_O 프로필 사용") 기본값은 true이고, 상태 확인·로그인과 카드·총괄 실행에 전달된다. CLI도 기본이 `--profile project-o`다(ADR-0013).
 
-총괄 채팅(`younchan-lead`, [ADR-0008](decisions/0008-lead-chat.md)) — 남은 순서 1–3 중 1·2와 3의 일부를 구현했다:
+총괄 채팅(`<개인>-lead`, [ADR-0008](decisions/0008-lead-chat.md)) — 남은 순서 1–3 중 1·2와 3의 일부를 구현했다:
 
 - `crates/o-core/src/lead/`: 프로젝트별 총괄 스레드(`leads/<id>/events.jsonl`, "새 대화"), Claude·Codex 총괄의 읽기 전용 한 턴과 세션 재개(`Provider::lead`), 계획 블록(` ```o-plan `)을 읽어 프로젝트를 고정하고 `o dispatch`와 같은 정책으로 검사해 저장, 사람이 누른 "실행"만 다시 검사해 한 번 dispatch, 첨부(이미지·문서, O 상태 폴더 밖), 총괄 토큰을 `o tokens`의 부대 비용으로.
 - `o lead send|show|new|attach|dispatch|stop`, Tauri `lead_*`, 개발 서버 `/api/lead/*`. 앱 입력창(에이전트·노력 선택, 첨부, 중지)과 계획 카드, 설정 → 총괄. 설정의 "project_O 프로필 사용"이 총괄 실행과 계획 dispatch(`--profile project-o|own`)에 실제로 전달된다.
@@ -182,14 +182,14 @@ O는 계획된 카드를 실행·대기시킨다. 작업 분해와 프로바이�
 
 ## 병렬 작업의 통합 상태
 
-네 작업 브랜치는 `younchan-features`에 merge commit으로 합쳐졌다(goals → pr-review → budget → context → office-nextup). 통합 검토(Codex)의 높은·중간 우선 지적은 같은 브랜치에서 고쳤다.
+네 작업 브랜치는 `<개인>-features`에 merge commit으로 합쳐졌다(goals → pr-review → budget → context → office-nextup). 통합 검토(Codex)의 높은·중간 우선 지적은 같은 브랜치에서 고쳤다.
 
 | 브랜치 | 담당 | 통합 상태 | 통합 때 고친 것 |
 |---|---|---|---|
-| `younchan-budget` | 목표 4 | 병합됨 — `o budget`, `daily-budget` 정책, `card.budget`, 앱 "오늘" 고리 | 주간 창이 초기화된 뒤 이전 창 사용량으로 계속 막던 문제, 자정 이전 기록 없이 당일 창 전환을 놓치던 문제 |
-| `younchan-context` | 목표 5, `o tokens` | 병합됨 — FTS5 검색·카드 주입·`o context`·`run.context`·`o tokens --compare`·`dispatch --no-context` | 카드의 `o context`를 실행의 프로젝트로 고정(다른 프로젝트·미확정 실행 거부), 주입 조각을 비신뢰 참고 자료 구획에 넣음, 1,500자를 절 전체 상한으로 |
-| `younchan-office-nextup` | 목표 1–2 | 병합됨 — `o sessions`, `o runs --sessions`, 사무실 세션 보기, 전체 NextUp·추천 | `projects`와 그 아래 링크·정션을 따라가지 않음, `--project`·`--limit`을 세션까지 합친 목록에 적용, 세션 티켓에 O 명령을 내지 않음 |
-| `younchan-pr-review` | 목표 3, `o review` | 병합됨 — `o review`, 앱 검토 요청, `review.posted` | 검토문을 카드가 못 쓰는 O 폴더에 새 파일로 저장, head·base 커밋 기록과 게시 직전 재확인, task 전체 20,000자 배분, 앱의 깨끗한 에이전트 설정 전달, 검토 카드에는 컨텍스트 주입 안 함 |
+| `<개인>-budget` | 목표 4 | 병합됨 — `o budget`, `daily-budget` 정책, `card.budget`, 앱 "오늘" 고리 | 주간 창이 초기화된 뒤 이전 창 사용량으로 계속 막던 문제, 자정 이전 기록 없이 당일 창 전환을 놓치던 문제 |
+| `<개인>-context` | 목표 5, `o tokens` | 병합됨 — FTS5 검색·카드 주입·`o context`·`run.context`·`o tokens --compare`·`dispatch --no-context` | 카드의 `o context`를 실행의 프로젝트로 고정(다른 프로젝트·미확정 실행 거부), 주입 조각을 비신뢰 참고 자료 구획에 넣음, 1,500자를 절 전체 상한으로 |
+| `<개인>-office-nextup` | 목표 1–2 | 병합됨 — `o sessions`, `o runs --sessions`, 사무실 세션 보기, 전체 NextUp·추천 | `projects`와 그 아래 링크·정션을 따라가지 않음, `--project`·`--limit`을 세션까지 합친 목록에 적용, 세션 티켓에 O 명령을 내지 않음 |
+| `<개인>-pr-review` | 목표 3, `o review` | 병합됨 — `o review`, 앱 검토 요청, `review.posted` | 검토문을 카드가 못 쓰는 O 폴더에 새 파일로 저장, head·base 커밋 기록과 게시 직전 재확인, task 전체 20,000자 배분, 앱의 깨끗한 에이전트 설정 전달, 검토 카드에는 컨텍스트 주입 안 함 |
 
 남은 한계(다음 작업):
 

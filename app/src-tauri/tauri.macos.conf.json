@@ -1,0 +1,10 @@
+{
+  "build": {
+    "beforeDevCommand": "npm run sidecar && npm run dev:tauri",
+    "beforeBuildCommand": "npm run build && npm run sidecar"
+  },
+  "bundle": {
+    "targets": ["app"],
+    "externalBin": ["binaries/o"]
+  }
+}

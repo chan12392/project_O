@@ -1,7 +1,7 @@
-import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, OctagonX, Play, Wrench } from "lucide-react";
+import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, MessageCircleQuestion, OctagonX, Play, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
-import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
+import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -11,6 +11,8 @@ import { BUTTON_PRIMARY } from "../../ui/controls.tsx";
 import { Markdown } from "./Markdown.tsx";
 import { ImageScope } from "./ImageGallery.tsx";
 import { Notice, RunCard, useFollowBottom } from "./Thread.tsx";
+import { openQuestions } from "./QuestionDialog.tsx";
+import { LiveWork, WorkList } from "./LeadWork.tsx";
 
 /** Thread events may name an agent this build does not know; it shows as its id. */
 const LEAD_NAME: Record<string, string> = NAMES;
@@ -26,7 +28,7 @@ interface Props {
 
 /** The real lead chat (ADR-0008): messages, the lead's answers, its plans and what they started. */
 export function LeadThread({ project, lead, onCompose, onStartProject }: Props) {
-  const scroller = useFollowBottom([lead.items, lead.busy]);
+  const scroller = useFollowBottom([lead.items, lead.busy, lead.thread?.partial]);
   const [stopError, setStopError] = useState("");
   const seen = useRef<{ thread: string; replies: Set<string> } | undefined>(undefined);
   const threadId = lead.thread?.threadId;
@@ -36,8 +38,8 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
     seen.current = { thread: threadId, replies };
   }, [threadId, lead.items]);
   const known = seen.current;
-  const lastUser = lead.items.findLastIndex((item) => item.kind === "user");
-  const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "error");
+  const lastUser = lead.items.findLastIndex((item) => item.kind === "user" || item.kind === "worker");
+  const answering = lead.busy && !lead.items.slice(lastUser + 1).some((item) => item.kind === "reply" || item.kind === "ask" || item.kind === "error");
   const progressSummary = leadProgressSummary(lead.thread?.progressCounts);
   return (
     <ImageScope.Provider value={project ? { project } : undefined}><div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto bg-chat-canvas">
@@ -62,8 +64,11 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
           </Notice>
         )}
         {lead.items.map((item, i) => (
+          // The running turn's work shows live below; once answered it folds above the answer.
+          item.kind === "work" && answering && i > lastUser ? null :
           <Item key={`${threadId}-${item.kind}-${item.at}-${i}`} item={item} animate={Boolean(item.kind === "reply" && threadId && known && known.thread === threadId && !known.replies.has(`${item.at}-${i}`))} />
         ))}
+        {answering && lead.thread?.partial && <div aria-label="작성 중인 답변"><Markdown text={lead.thread.partial} /></div>}
         {project && lead.failed && lead.loaded && (
           // Read once, then a check failed: what shows may be old. One line, not the whole notice.
           <p role="status" className="flex items-center gap-2 text-xs text-status-warning-text">
@@ -79,10 +84,12 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
         {answering && (
           <div role="status" className="space-y-1 text-xs text-chat-foreground-faint">
             {progressSummary && <p className="flex items-center gap-1.5"><Wrench className="size-3 shrink-0" aria-hidden="true" /><span>{progressSummary}</span></p>}
-            {(lead.thread?.progress ?? []).map((step, i) => (
-              <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
-            ))}
-            <p>총괄 {LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…</p>
+            {(lead.thread?.steps?.length ?? 0) > 0 || (lead.thread?.approvals?.length ?? 0) > 0
+              ? <LiveWork steps={lead.thread?.steps ?? []} waiting={lead.thread?.approvals?.length ?? 0} />
+              : (lead.thread?.progress ?? []).map((step, i) => (
+                <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
+              ))}
+            <p>{lead.thread?.busy === "unknown" ? "총괄 종료 확인 필요" : lead.thread?.busy === "starting" ? "총괄 시작 중…" : `총괄 ${LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…`}</p>
           </div>
         )}
       </div>
@@ -92,6 +99,8 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
 
 function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
   switch (item.kind) {
+    case "worker":
+      return <article aria-label="작업 카드 메시지" className="rounded-lg border px-3.5 py-2.5"><p className="mb-1 text-xs text-chat-foreground-faint">카드 {item.cardId} · {item.runId} · <time dateTime={item.at}>{timeOf(item.at)}</time></p><p className="whitespace-pre-wrap break-words">{item.text}</p></article>;
     case "user":
       return (
         <div className="ml-auto max-w-[85%] rounded-lg border border-chat-user-border bg-chat-user-surface px-3.5 py-2.5">
@@ -131,6 +140,38 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
           <span className="min-w-0 whitespace-pre-wrap">{item.text}</span>
         </p>
       );
+    case "warning":
+      return (
+        <p role="status" className="flex items-start gap-2 rounded-lg border px-3.5 py-2.5 text-sm text-status-warning-text">
+          <CircleAlert className="mt-0.5 size-4 shrink-0" aria-hidden="true" />
+          <span className="min-w-0 whitespace-pre-wrap break-words">{item.text}</span>
+        </p>
+      );
+    case "ask":
+      return (
+        <article aria-label="총괄의 질문" className="rounded-lg border px-3.5 py-2.5">
+          <p className="mb-1.5 flex items-center gap-1.5 text-xs text-chat-foreground-faint">
+            <MessageCircleQuestion className="size-3.5 shrink-0" aria-hidden="true" />
+            총괄 {LEAD_NAME[item.provider] ?? item.provider}의 질문 {item.questions.length}개 · <time dateTime={item.at}>{timeOf(item.at)}</time>
+          </p>
+          {item.intro && <Markdown text={item.intro} />}
+          <ol className="mt-1.5 list-decimal space-y-0.5 pl-5 text-sm">
+            {item.questions.map((q, i) => <li key={i}>{q.question}</li>)}
+          </ol>
+          {item.answered ? (
+            <p className="mt-2 text-xs text-chat-foreground-faint">답을 보냈습니다.</p>
+          ) : (
+            <div className="mt-2 flex items-center gap-2">
+              <button type="button" onClick={() => openQuestions(`lead:${item.askId}`)} className={BUTTON_PRIMARY}>답하기</button>
+              <span className="text-xs text-chat-foreground-faint">답을 모두 고르면 총괄이 이어서 답합니다.</span>
+            </div>
+          )}
+        </article>
+      );
+    case "work":
+      return <WorkList entries={item.entries} />;
+    case "followup":
+      return <p role="status" className="text-xs text-chat-foreground-faint">{item.cardId} 에이전트의 후속 지시를 접수했습니다 · {item.runId}</p>;
     case "plan":
       return <p className="text-xs text-chat-foreground-faint">{item.title} · {item.runId ? `분배한 작업 ${item.runId}` : "오른쪽 설계에서 최신 분배안을 확인하세요."}</p>;
   }
@@ -160,8 +201,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
   const over = budget?.providers.filter((entry) => entry.state === "over" && plan.cards.some((card) => card.provider === entry.provider)) ?? [];
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
   const titleId = useId();
-  const position = lead.items.findIndex((item) => item.kind === "plan" && item.planId === plan.planId);
-  const stale = position < 0 || lead.items.slice(position + 1).some((item) => item.kind === "user" || item.kind === "plan");
+  const stale = planIsStale(lead.items, plan.planId);
   // Passed when saved, then refused by the runner's own check right before the start.
   const refused = run !== undefined && failedBeforeCards(run) && Boolean(run.blocked?.length);
   const retryable = run?.status === "failed";
@@ -209,75 +249,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
           </span>
         )}
       </header>
-      {plan.cards.length > 0 && (
-        <div className="relative overflow-x-auto">
-          {/* relative: the sr-only caption stays inside the chat instead of stretching the page. */}
-          <table className="w-full text-left text-xs">
-            <caption className="sr-only">{plan.title}의 작업 분배</caption>
-            <thead className="text-2xs text-muted-foreground">
-              <tr className="border-b">
-                <th scope="col" className="px-4 py-2 font-normal">
-                  작업
-                </th>
-                <th scope="col" className="px-2 py-2 font-normal">
-                  에이전트
-                </th>
-                <th scope="col" className="px-2 py-2 font-normal @max-md:hidden">
-                  모델 · 노력
-                </th>
-                <th scope="col" className="px-2 py-2 pr-4 font-normal">
-                  할 일
-                </th>
-              </tr>
-            </thead>
-            <tbody>
-              {plan.cards.map((card) => (
-                <tr key={card.id} className="border-b align-top last:border-b-0">
-                  <th scope="row" className="px-4 py-2.5 font-normal whitespace-nowrap">
-                    <span className="block font-mono text-foreground">{card.id}</span>
-                    {card.role && <span className="block text-2xs text-muted-foreground">{card.role}</span>}
-                  </th>
-                  <td className="px-2 py-2.5 whitespace-nowrap">{PROVIDER_NAME[card.provider as keyof typeof PROVIDER_NAME] ?? card.provider}</td>
-                  <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground @max-md:hidden">
-                    {card.model || "기본 모델"}
-                    {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
-                  </td>
-                  <td className="px-2 py-2.5 pr-4">
-                    <CardTask task={card.task} />
-                    {Boolean(card.depends_on?.length) && <p className="mt-1 text-2xs text-muted-foreground">선행: {card.depends_on?.join(", ")}</p>}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {plan.problems.length > 0 && (
-        <div role="note" className="border-t px-4 py-3 text-xs" aria-label="계획 형식 위반">
-          <p className="flex items-center gap-1.5 font-medium text-destructive">
-            <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
-            계획의 형식이 올바르지 않아 일부를 보이지 않습니다. 실행할 수 없습니다.
-          </p>
-          <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-muted-foreground">
-            {plan.problems.map((p, i) => (
-              <li key={i}>{p}</li>
-            ))}
-          </ul>
-        </div>
-      )}
-      {!plan.ok && plan.violations.length > 0 && (
-        <ul className="space-y-1 border-t px-4 py-3 text-xs" aria-label="정책 위반">
-          {plan.violations.map((v, i) => (
-            <li key={i} className="flex gap-2">
-              <span className="shrink-0 font-mono text-destructive">[{v.rule}]</span>
-              <span className="min-w-0">
-                {v.cardId && <span className="font-mono">{v.cardId}: </span>}
-                {v.message}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+      <PlanDetails plan={plan} />
       {!plan.runId && over.length > 0 && <div role="note" className="border-t px-4 py-3 text-xs text-destructive">
         <p>최근 확인한 예산이 소진되어 실행이 차단될 수 있습니다. 실행 직전에 다시 검사합니다.</p>
         {over.map((entry) => <p key={entry.provider} className="mt-1">{entry.message}</p>)}
@@ -333,6 +305,87 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
         </div>
       )}
     </section>
+  );
+}
+
+/**
+ * What a plan proposes: its cards with their dependencies, shape problems and policy violations.
+ * Read-only, so an earlier plan stays readable after a newer one replaced it (#40); running is PlanCard's.
+ */
+export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }> }) {
+  return (
+    <>
+      {plan.cards.length > 0 && (
+        <div className="relative overflow-x-auto">
+          {/* relative: the sr-only caption stays inside the chat instead of stretching the page. */}
+          <table className="w-full text-left text-xs">
+            <caption className="sr-only">{plan.title}의 작업 분배</caption>
+            <thead className="text-2xs text-muted-foreground">
+              <tr className="border-b">
+                <th scope="col" className="px-4 py-2 font-normal">
+                  작업
+                </th>
+                <th scope="col" className="px-2 py-2 font-normal">
+                  에이전트
+                </th>
+                <th scope="col" className="px-2 py-2 font-normal @max-md:hidden">
+                  모델 · 노력
+                </th>
+                <th scope="col" className="px-2 py-2 pr-4 font-normal">
+                  할 일
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              {plan.cards.map((card) => (
+                <tr key={card.id} className="border-b align-top last:border-b-0">
+                  <th scope="row" className="px-4 py-2.5 font-normal whitespace-nowrap">
+                    <span className="block font-mono text-foreground">{card.id}</span>
+                    {card.role && <span className="block text-2xs text-muted-foreground">{card.role}</span>}
+                  </th>
+                  <td className="px-2 py-2.5 whitespace-nowrap">{PROVIDER_NAME[card.provider as keyof typeof PROVIDER_NAME] ?? card.provider}</td>
+                  <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground @max-md:hidden">
+                    {card.model || "기본 모델"}
+                    {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
+                  </td>
+                  <td className="px-2 py-2.5 pr-4">
+                    <CardTask task={card.task} />
+                    {Boolean(card.depends_on?.length) && <p className="mt-1 text-2xs text-muted-foreground">선행: {card.depends_on?.join(", ")}</p>}
+                    <p className="mt-1 text-2xs text-muted-foreground break-all">자원: {card.resources?.length ? card.resources.map((r) => `${r.kind === "project-path" ? "파일" : "외부"} ${r.key} (${r.mode === "read" ? "읽기" : "쓰기"})`).join(", ") : "미선언 · 독점 실행"}</p>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {plan.problems.length > 0 && (
+        <div role="note" className="border-t px-4 py-3 text-xs" aria-label="계획 형식 위반">
+          <p className="flex items-center gap-1.5 font-medium text-destructive">
+            <CircleAlert className="size-3.5 shrink-0" aria-hidden="true" />
+            계획의 형식이 올바르지 않아 일부를 보이지 않습니다. 실행할 수 없습니다.
+          </p>
+          <ul className="mt-1.5 list-disc space-y-0.5 pl-5 text-muted-foreground">
+            {plan.problems.map((p, i) => (
+              <li key={i}>{p}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      {!plan.ok && plan.violations.length > 0 && (
+        <ul className="space-y-1 border-t px-4 py-3 text-xs" aria-label="정책 위반">
+          {plan.violations.map((v, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="shrink-0 font-mono text-destructive">[{v.rule}]</span>
+              <span className="min-w-0">
+                {v.cardId && <span className="font-mono">{v.cardId}: </span>}
+                {v.message}
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 

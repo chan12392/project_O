@@ -11,7 +11,7 @@
 //!
 //! OpenCode uses its own configured providers (OpenCode Console/Go, OpenRouter, a person's
 //! own API keys). A Claude subscription must not be connected to it (Anthropic does not
-//! allow Claude.ai sign-in in third-party apps), and O never passes Claude credentials.
+//! allow Claude.ai sign-in in third-party apps).
 //! It has no usage probe, so the daily budget (ADR-0004) does not apply to it.
 
 use std::collections::BTreeMap;
@@ -26,6 +26,7 @@ use serde_json::{json, Map, Value};
 use super::stream::{is_limit_text, num, short, tool_summary};
 use super::{list_command, strings, LaunchSpec, ModelChoice, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
+use crate::agents::clean;
 use crate::agents::catalog::connection;
 use crate::context::CONTEXT_COMMAND;
 use crate::run::events::StreamSignal;
@@ -34,6 +35,28 @@ use crate::run::store::to_pretty;
 use crate::sys::{proc, resolve::resolve_cli};
 
 pub struct OpenCode;
+
+/// `run --session` can create a missing id, so require the official list to contain it first.
+pub fn check_session(root: Option<&Path>, cwd: &Path, session: &str) -> Result<(), String> {
+    crate::sys::resolve::ensure_paths();
+    let cli = resolve_cli("opencode").ok_or("OpenCode CLI를 찾지 못했습니다")?;
+    let mut command = Command::new(cli.command);
+    command.args(cli.prefix).args(["session", "list", "--format", "json", "--max-count", "10000", STANDALONE]).current_dir(cwd);
+    if let Some(root) = root {
+        command.env_clear().envs(clean::environment(root, ProviderId::OpenCode).map_err(|e| e.to_string())?);
+    }
+    let (status, output, _) = proc::capture(&mut command, Duration::from_secs(30)).map_err(|_| "OpenCode 세션 목록을 확인하지 못했습니다")?;
+    if !status.success() || !session_in_list(&output, cwd, session) { return Err("기존 OpenCode 세션을 확인하지 못해 새 세션을 만들지 않았습니다".into()); }
+    Ok(())
+}
+
+fn session_in_list(output: &str, cwd: &Path, session: &str) -> bool {
+    let Some(folder) = cwd.canonicalize().ok() else { return false };
+    serde_json::from_str::<Value>(output).ok().and_then(|v| v.as_array().cloned()).is_some_and(|entries| entries.iter().any(|item| {
+        item.get("id").and_then(Value::as_str) == Some(session)
+            && item.get("directory").and_then(Value::as_str).and_then(|path| Path::new(path).canonicalize().ok()).as_ref() == Some(&folder)
+    }))
+}
 
 /// 공식 상태 명령의 연결 종류만 확인하며 출력은 저장하지 않는다.
 pub fn check_auth(root: Option<&Path>) -> Result<(), String> {
@@ -44,8 +67,6 @@ pub fn check_auth(root: Option<&Path>) -> Result<(), String> {
     if let Some(root) = root {
         command.env_clear().envs(crate::agents::clean::environment(root, ProviderId::OpenCode).map_err(|e| e.to_string())?);
         command.current_dir(crate::agents::clean::profile_home(root, ProviderId::OpenCode));
-    } else {
-        command.env_clear().envs(crate::agents::clean::own_profile_environment());
     }
     let (status, output, _) = proc::capture(&mut command, Duration::from_secs(30)).map_err(|_| "OpenCode 연결 상태를 확인하지 못했습니다")?;
     if !status.success() { return Err("OpenCode 연결 상태를 확인하지 못했습니다".into()); }
@@ -89,14 +110,7 @@ impl Provider for OpenCode {
             };
             args.extend([spec.model_flag.to_string(), model]);
         }
-        LaunchSpec { bin: "opencode".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// OpenCode reads provider keys from the environment (`{env:…}` in its config). Claude's are
-    /// taken out so no Claude credential ever reaches it (ADR-0015); OpenAI's and OpenRouter's
-    /// so a leftover key does not quietly bill an API.
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]
+        LaunchSpec { bin: "opencode".into(), args, stdin: Some(prompt), env }
     }
 
     fn tool_note(&self) -> Option<String> {
@@ -127,7 +141,7 @@ impl Provider for OpenCode {
 
     /// `opencode models --standalone`: one `provider/model` per line.
     fn card_models(&self) -> Option<Result<Vec<ModelChoice>, String>> {
-        Some(list_command("opencode", connection("opencode").models, ProviderId::OpenCode, &[]).map(|out| parse_models(&out)))
+        Some(list_command("opencode", connection("opencode").models, &[]).map(|out| parse_models(&out)))
     }
 
     // https://opencode.ai/v2/docs/ (v2 is the npm package @opencode/cli; v1's opencode-ai is another package)
@@ -192,6 +206,36 @@ impl Provider for OpenCode {
             flag(has_content(&dir.join(name)), format!("{} 폴더에 내용이 있음", dir.join(name).to_string_lossy()));
         }
     }
+}
+
+/// Project config OpenCode loads on its own: `opencode.json(c)` and `.opencode/` (its config and
+/// auto-discovered `.opencode/plugins/`), "from the current directory to the filesystem root"
+/// (opencode.ai/v2/docs/config). A plugin's setup runs when it loads (docs/build/plugins/server),
+/// whatever the permission rules say, and no documented flag or variable turns this discovery off.
+const PROJECT_CONFIG: [&str; 3] = ["opencode.json", "opencode.jsonc", ".opencode"];
+
+/// The first OpenCode project config a run in `cwd` would load, nearest folder first (#37).
+/// A name that can't be checked (anything but "not found") counts as found: fail closed.
+pub fn project_config(cwd: &Path) -> Option<std::path::PathBuf> {
+    cwd.ancestors().flat_map(|dir| PROJECT_CONFIG.map(|name| dir.join(name))).find(|path| match fs::symlink_metadata(path) {
+        Ok(_) => !install_folder_only(path),
+        Err(e) => e.kind() != io::ErrorKind::NotFound,
+    })
+}
+
+/// OpenCode's install script puts its binary in `~/.opencode/bin`: a `.opencode` holding only
+/// that is not project config. Anything else in it, or a folder that can't be read, still counts.
+fn install_folder_only(path: &Path) -> bool {
+    path.file_name().is_some_and(|name| name == ".opencode")
+        && std::fs::read_dir(path).is_ok_and(|entries| entries.into_iter().all(|entry| entry.is_ok_and(|e| e.file_name() == "bin")))
+}
+
+/// Why a card without YOLO does not start where `project_config` found something.
+pub fn project_config_refusal(found: &Path) -> String {
+    format!(
+        "{}이 있어 OpenCode 카드를 시작하지 않았습니다 (프로젝트 설정·플러그인이 권한 규칙과 별개로 실행될 수 있음). 그 파일을 치우거나 다른 에이전트를 고르세요",
+        found.to_string_lossy()
+    )
 }
 
 fn config_dir(home: &Path) -> std::path::PathBuf {
@@ -300,6 +344,7 @@ fn read_stream(session: &mut bool, answer: &mut String, data: &Map<String, Value
                     input: num(tokens.get("input")) + num(cache.and_then(|c| c.get("write"))),
                     cached: num(cache.and_then(|c| c.get("read"))),
                     output: num(tokens.get("output")) + num(tokens.get("reasoning")),
+                    complete: super::stream::reported(&[tokens.get("input"), cache.and_then(|c| c.get("write")), cache.and_then(|c| c.get("read")), tokens.get("output"), tokens.get("reasoning")]),
                 });
             }
         }
@@ -316,4 +361,42 @@ fn read_stream(session: &mut bool, answer: &mut String, data: &Map<String, Value
         _ => {}
     }
     out
+}
+
+#[cfg(test)]
+mod session_tests {
+    use super::*;
+
+    #[test]
+    fn only_an_existing_session_in_the_workspace_passes() {
+        let cwd = std::env::temp_dir().canonicalize().unwrap();
+        let list = json!([{ "id": "ses_123", "directory": cwd }]).to_string();
+        assert!(session_in_list(&list, &cwd, "ses_123"));
+        assert!(!session_in_list(&list, &cwd, "ses_missing"));
+        assert!(!session_in_list("{}", &cwd, "ses_123"));
+    }
+
+    #[test]
+    fn project_config_is_refused_before_the_cli_starts() {
+        let root = std::env::temp_dir().join(format!("o-opencode-config-{}", std::process::id()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::write(root.join("opencode.json"), "{}").unwrap();
+        assert_eq!(project_config(&project), Some(root.join("opencode.json")));
+        fs::remove_file(root.join("opencode.json")).unwrap();
+        fs::remove_dir(project).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn the_install_folder_is_not_project_config() {
+        let root = std::env::temp_dir().join(format!("o-opencode-install-{}", std::process::id()));
+        let project = root.join("project");
+        fs::create_dir_all(&project).unwrap();
+        fs::create_dir_all(root.join(".opencode").join("bin")).unwrap();
+        assert!(project_config(&project).is_none_or(|found| !found.starts_with(&root)));
+        fs::create_dir_all(root.join(".opencode").join("plugin")).unwrap();
+        assert_eq!(project_config(&project), Some(root.join(".opencode")));
+        fs::remove_dir_all(root).unwrap();
+    }
 }

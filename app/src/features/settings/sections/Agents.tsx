@@ -62,7 +62,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           </div>
         </div>
         <div className="mt-3">
-          <AgentList state={agents} />
+          <AgentList state={agents} showApiKeyWarning />
         </div>
       </div>
       <AgentCatalog api={api} />

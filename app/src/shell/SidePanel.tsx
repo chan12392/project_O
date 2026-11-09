@@ -24,6 +24,8 @@ export interface PanelViewProps {
   card?: string;
   /** Opens a card's record in the work view, or goes back to the board with undefined. */
   onCard: (target?: { run: string; card: string }) => void;
+  /** "새 설계"/"+": opens a new lead tab for this project and selects it; rejects with the reason (ADR-0034). */
+  onNewLead?: () => Promise<void>;
 }
 
 /** One view of the side panel: its tab and what it draws. */

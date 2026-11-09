@@ -29,7 +29,7 @@ project_O 데스크톱 앱(`project_O.exe`)과 `o` CLI(`o.exe`)를 설치 파일
 
 - Tauri의 사용자별 기본 설치 폴더는 `%LOCALAPPDATA%\<제품 이름>` = `%LOCALAPPDATA%\project_O`로, O 상태 폴더와 겹친다. 그래서 설치 파일이 기본 폴더를 `%LOCALAPPDATA%\Programs\project_O`로 옮긴다(`scripts/installer/hooks.nsh`). 설치 화면에서 상태 폴더를 직접 골라도 같은 곳으로 바꾼다.
 - 시작 메뉴에 `project_O`, 바탕 화면에 바로가기가 생긴다(설치 마지막 화면에서 바탕 화면 바로가기를 끌 수 있다).
-- 앱은 시작할 때 자기 폴더를 PATH 맨 앞에 붙인다. 그래서 앱이 띄우는 에이전트 CLI·`o dispatch`·카드의 `o msg`/`o context`는 `cargo install` 없이도 함께 설치된 `o.exe`를 쓴다. 터미널에서 `o`를 쓰려면 저장소에서 `cargo install --path crates/o-cli`를 하거나 앱 폴더를 사용자 PATH에 더한다.
+- 앱과 `o.exe`는 시작할 때 자기 폴더를 그 프로세스의 PATH 맨 앞에 붙인다(저장된 PATH는 바꾸지 않는다). 그래서 앱이나 예약 작업의 `o.exe`가 띄우는 에이전트 CLI·`o dispatch`·카드의 `o msg`/`o context`는 `cargo install` 없이도 함께 설치된 `o.exe`를 쓴다. 터미널에서 `o`를 쓰려면 저장소에서 `cargo install --path crates/o-cli`를 하거나 앱 폴더를 사용자 PATH에 더한다.
 - 조용한 설치: `project_O_<버전>_x64-setup.exe /S`. 폴더를 바꾸려면 `/D=<폴더>`를 맨 끝에 따옴표 없이 붙인다.
 
 ## 처음 실행
@@ -62,7 +62,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 
 릴리스 빌드는 커밋 SHA와 UTC 빌드 시각을 포함하며 설정 → 정보에 표시한다. 앱 시작 10초 뒤와 이후 6시간마다 사용자 PC의 `gh`로 고정 저장소 `chan12392/project_O`의 최근 릴리스 20개를 확인한다. `test_1-<yyyyMMdd>-<소문자 sha7>` 프리릴리스 중 릴리스 워크플로(`github-actions[bot]`)가 태그의 커밋으로 올렸고, GitHub가 SHA-256 digest를 준 유효한 `project_O_<숫자.숫자.숫자>_x64-setup.exe`가 있는 가장 최근 게시본을 고른다. 그 커밋이 `test_1`에 포함됐는지(`gh api …/compare/test_1...<sha>`가 identical·behind) 확인하지 못하면 제안하지 않는다. **커밋이 다르고 게시 시각이 현재 빌드보다 나중일 때** 알림을 띄운다. 로컬 빌드는 자동 확인하지 않고 정보 화면에서만 확인한다.
 
-`gh`가 없거나 로그인·권한·네트워크 문제면 자동 확인은 팝업 없이 끝나고, **설정 → 정보 → 앱 업데이트**에 gh 필요 안내와 마지막 자동 확인 시각·실패 이유가 남는다(`update_status`). 수동 **업데이트 확인**은 `gh auth login --hostname github.com` 안내와 [릴리스 다운로드 페이지](https://github.com/chan12392/project_O/releases)를 보여 준다. 개발 서버와 데모는 데스크톱 앱에서만 확인 가능하다고 안내한다.
+`gh`가 없거나 로그인·권한·네트워크 문제면 자동 확인은 팝업 없이 끝나고, **설정 → 정보 → 앱 업데이트**에 gh 필요 안내와 마지막 자동 확인 시각·실패 이유가 남는다(`update_status`). 수동 **업데이트 확인**은 [릴리스 다운로드 페이지](https://github.com/chan12392/project_O/releases)와 `gh auth login --hostname github.com` 안내를 보여 준다. 저장소가 공개라 릴리스 페이지에서는 로그인 없이 설치 파일을 직접 받을 수 있다. 앱 안의 자동 확인과 **지금 업데이트**는 지금처럼 로그인한 `gh`가 있어야 한다. 개발 서버와 데모는 데스크톱 앱에서만 확인 가능하다고 안내한다.
 
 **지금 업데이트**를 눌러야 다운로드한다. `gh release download`가 새 임시 폴더에 받은 설치 파일의 이름·크기와 릴리스 자산의 SHA-256 digest를 검증한 후 대화형 설치기를 열고 앱을 종료한다. 설치 완료 화면에서 앱을 다시 열 수 있다. 기존 설치 위치와 데이터는 유지된다. 다운로드 중 나중에/Esc를 누르면 다운로드(`gh`)를 바로 멈추고 설치하지 않는다. 다운로드 중에 다시 누른 "지금 업데이트"는 앞선 취소를 되돌리지 않는다. 오류는 팝업에 표시하고 재시도할 수 있다. **이 버전 건너뛰기**는 이 PC의 앱 설정에 태그를 기억하며, 수동 확인은 건너뛴 버전도 보여 준다.
 
@@ -79,7 +79,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 | 항목 | 값 |
 |---|---|
 | Tauri 설정 | `app/src-tauri/tauri.conf.json`의 `bundle`(NSIS만, `installMode: currentUser`, 한국어, 게시자·저작권 `Project O`) + 설치 빌드에서만 합치는 `scripts/installer/tauri.installer.json`(`externalBin: binaries/o`, 사이드카 준비) |
-| 사이드카 | `scripts/prepare-sidecar.mjs`(`npm --prefix app run sidecar`)가 release `o.exe`를 `app/src-tauri/binaries/o-<triple>.exe`로 복사(gitignore). 일반 `cargo build`·`tauri dev`에는 필요 없다 |
+| 사이드카 | `scripts/prepare-sidecar.mjs`(`npm --prefix app run sidecar`)가 release `o.exe`를 `app/src-tauri/binaries/o-<triple>.exe`로 복사(gitignore). `tauri dev`와 `--no-bundle` 빌드는 대신 같은 출력 폴더의 CLI를 빌드한다. |
 | NSIS 훅 | `scripts/installer/hooks.nsh` — 기본 폴더를 상태 폴더 밖으로 옮긴다 |
 | 설치 폴더 | `%LOCALAPPDATA%\Programs\project_O` (`/D=`로 바꾼 경우 그 폴더) |
 | 제거 레지스트리 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\project_O` — `UninstallString` = `"<설치 폴더>\uninstall.exe"`, `InstallLocation`, `DisplayVersion` |

@@ -26,7 +26,7 @@ pub const CHECK: Command = Command {
 pub const DISPATCH: Command = Command {
     name: "dispatch",
     usage: "  o dispatch [--profile project-o|own] [--no-context] [--mode yolo|normal] [plan.json|-]
-                             정책 검사 후 백그라운드 실행, runId 출력
+                             정책·작업 폴더 검사 후 카드별로 분리해 백그라운드 실행, runId 출력
                              --profile (project_O 프로필 사용, 기본 project-o — ADR-0013):
                                project-o: 카드를 O의 깨끗한 에이전트 프로필로 실행 (o agents)
                                own      : 이 PC의 평소 CLI 설정(스킬·훅·메모리) 그대로
@@ -57,13 +57,13 @@ pub const RUN: Command = Command {
     name: "_run",
     usage: "",
     run: |home, args| {
-        run_id_arg(args.first().map(String::as_str)).map_or(1, |id| match runner::run_detached(home, id) {
+        run_id_arg(args.first().map(String::as_str)).map_or(1, |id| if store::run_dir(home, id).join("followup.json").exists() { fail("후속 작업은 전용 실행기로 시작해야 합니다") } else { match runner::run_detached(home, id) {
             Ok(()) => 0,
             Err(message) => {
                 eprintln!("{message}");
                 1
             }
-        })
+        }})
     },
 };
 
@@ -104,10 +104,14 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
     if !dispatch {
         let cards: Vec<String> = plan.cards.iter().map(|c| format!("{}→{}", c.id, c.provider)).collect();
         println!("정책 통과: 카드 {}개 ({})", plan.cards.len(), cards.join(", "));
+        for card in &plan.cards {
+            let resources = if card.resources.is_empty() { "미선언 · 독점 실행".to_string() } else { serde_json::to_string(&card.resources).unwrap_or_default() };
+            println!("{} 자원: {}", card.id, resources);
+        }
         return 0;
     }
     let run_id = store::new_run_id(now);
-    let created = store::create_run(home, &run_id, &plan).and_then(|()| store::mark_mode(home, &run_id, &mode));
+    let created = runner::prepare_isolated(home, &run_id, &plan, &mode);
     if let Err(error) = created {
         return fail(&error.to_string());
     }
@@ -119,7 +123,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
     let cards: Vec<&str> = plan.cards.iter().map(|c| c.id.as_str()).collect();
     println!(
         "{}",
-        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "profile": mode.profile, "clean": mode.clean(), "context": mode.context, "yolo": mode.yolo })
+        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "isolated": true, "profile": mode.profile, "clean": mode.clean(), "context": mode.context, "yolo": mode.yolo })
     );
     0
 }

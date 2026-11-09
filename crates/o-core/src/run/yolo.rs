@@ -155,7 +155,7 @@ pub fn resolve(home: &Path, flag: Option<bool>) -> bool {
     flag.unwrap_or_else(|| read_enabled(home))
 }
 
-/// An earlier auto-run of the same lead thread: when, and which plan (`plan_hash`).
+/// An earlier auto-run of the same lead thread that started: when, and which plan (`plan_hash`).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PastAutoRun {
     pub at: DateTime<Utc>,

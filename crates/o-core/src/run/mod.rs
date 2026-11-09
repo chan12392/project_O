@@ -5,12 +5,16 @@
 //! and processes.
 
 pub mod events;
+pub mod followup;
+mod resources;
 pub mod index;
 pub mod mode;
 pub mod plan;
+pub mod result;
 pub mod runner;
 pub mod snapshot;
 pub mod store;
 pub mod team;
 pub mod yolo;
 pub(crate) mod workspaces;
+pub use workspaces::review_changes;

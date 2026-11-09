@@ -51,11 +51,14 @@ pub enum LogKind {
     Queued,
     Tool,
     Message,
+    Input,
     Limit,
     End,
     Team,
     /// The runner lowered the card's effort for the daily usage budget.
     Budget,
+    /// The project skills and O harness blocks the card's prompt got.
+    Guides,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -122,6 +125,14 @@ pub struct CardView {
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct TeamMessage {
     pub at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub kind: Option<String>,
+    #[serde(rename = "replyTo", skip_serializing_if = "Option::is_none")]
+    pub reply_to: Option<String>,
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub recipients: std::collections::BTreeMap<String, String>,
     pub from: String,
     pub to: String,
     pub text: String,
@@ -239,8 +250,8 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
         }
         let Some(run) = run.as_mut() else { continue };
         match e {
-            OEvent::Msg { at, from, to, text } => {
-                run.messages.push(TeamMessage { at: at.clone(), from: from.clone(), to: to.clone(), text: text.clone() });
+            OEvent::Msg { at, from, to, text, id, kind, reply_to } => {
+                run.messages.push(TeamMessage { at: at.clone(), from: from.clone(), to: to.clone(), text: text.clone(), id: id.clone(), kind: kind.clone(), reply_to: reply_to.clone(), recipients: Default::default() });
                 for card in &mut run.cards {
                     if card.id == *from || card.id == *to || (to == "all" && card.id != *from) {
                         card.log.push(CardLogEntry {
@@ -251,6 +262,12 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                             team: Some(TeamParties { from: from.clone(), to: to.clone() }),
                         });
                     }
+                }
+                continue;
+            }
+            OEvent::MsgState { id, recipient, state, .. } => {
+                if let Some(message) = run.messages.iter_mut().find(|m| m.id.as_deref() == Some(id)) {
+                    message.recipients.insert(recipient.clone(), state.clone());
                 }
                 continue;
             }
@@ -279,11 +296,13 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
             | OEvent::CardStart { card_id, .. }
             | OEvent::CardSession { card_id, .. }
             | OEvent::CardMessage { card_id, .. }
+            | OEvent::CardInput { card_id, .. }
             | OEvent::CardTool { card_id, .. }
             | OEvent::CardLimit { card_id, .. }
             | OEvent::CardEnd { card_id, .. }
             | OEvent::CardUsage { card_id, .. }
-            | OEvent::CardBudget { card_id, .. } => card_id,
+            | OEvent::CardBudget { card_id, .. }
+            | OEvent::CardGuides { card_id, .. } => card_id,
             _ => continue,
         };
         let Some(card) = run.cards.iter_mut().find(|c| c.id == *card_id) else { continue };
@@ -308,6 +327,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.activity = first_line(text);
                 card.log.push(entry(at, LogKind::Message, text.clone()));
             }
+            OEvent::CardInput { at, text, .. } => card.log.push(entry(at, LogKind::Input, text.clone())),
             OEvent::CardLimit { at, until, .. } => {
                 card.activity = format!("사용량 한도: {until}까지 차단");
                 card.log.push(entry(at, LogKind::Limit, card.activity.clone()));
@@ -317,6 +337,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.effort = Some(effort_to.clone());
                 card.log.push(entry(at, LogKind::Budget, card.activity.clone()));
             }
+            OEvent::CardGuides { at, skills, harness, .. } => card.log.push(entry(at, LogKind::Guides, guides_text(skills, harness))),
             OEvent::CardUsage { input, cached, output, .. } => {
                 card.usage.input += input;
                 card.usage.cached += cached;
@@ -340,6 +361,13 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
 /// "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budgetText` in src/core/snapshot.ts.
 pub fn budget_text(from: Option<&str>, to: &str, spent: f64, allowance: f64) -> String {
     format!("사용 예산: effort {} → {to} (오늘 {}/{}%p)", from.unwrap_or("기본"), crate::sys::js::number_text(spent), crate::sys::js::number_text(allowance))
+}
+
+/// "넣은 지침: 하네스 game · 스킬 ui, test", as `guidesText` in src/core/snapshot.ts.
+pub fn guides_text(skills: &[String], harness: &[String]) -> String {
+    let parts: Vec<String> = [("하네스", harness), ("스킬", skills)].into_iter()
+        .filter(|(_, names)| !names.is_empty()).map(|(word, names)| format!("{word} {}", names.join(", "))).collect();
+    format!("넣은 지침: {}", parts.join(" · "))
 }
 
 /// Tool names as each CLI reports them, grouped into what a person would call the act.

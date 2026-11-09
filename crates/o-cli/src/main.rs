@@ -7,14 +7,31 @@ use o_core::run::store::default_home;
 mod commands;
 
 fn main() {
+    #[cfg(target_os = "macos")]
+    {
+        let args: Vec<_> = std::env::args_os().skip(1).collect();
+        if args.first().is_some_and(|arg| arg == "--o-mac-worker") {
+            std::process::exit(i32::from(o_core::sys::macos_worker::run_helper(&args[1..]).is_err()));
+        }
+    }
+    #[cfg(windows)]
+    {
+        let args: Vec<_> = std::env::args_os().skip(1).collect();
+        if args.first().is_some_and(|arg| arg == "--o-handle-owner") {
+            std::process::exit(i32::from(o_core::sys::win_launch::run_handle_owner(&args[1..]).is_err()));
+        }
+    }
+    // Children (`o _run`, agent CLIs, cards running `o msg`/`o context`) find this `o`, also
+    // when a scheduled task starts it by its full path with its folder not on PATH.
+    o_core::sys::resolve::own_folder_first_on_path();
     let args: Vec<String> = std::env::args().skip(1).collect();
     std::process::exit(run(&args));
 }
 
 fn run(args: &[String]) -> i32 {
     if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
-        let blocked = matches!(args.first().map(String::as_str), Some("dispatch" | "_run" | "review" | "_review" | "image" | "schedule"))
-            || matches!((args.first().map(String::as_str), args.get(1).map(String::as_str)), (Some("lead"), Some("send" | "dispatch" | "note")) | (Some("projects"), Some("open")));
+        let blocked = matches!(args.first().map(String::as_str), Some("dispatch" | "followup" | "_run" | "_lead-watch" | "_followup" | "review" | "_review" | "image" | "schedule" | "changes"))
+            || matches!((args.first().map(String::as_str), args.get(1).map(String::as_str)), (Some("lead"), Some("send" | "dispatch" | "note" | "wake" | "retry" | "decide")) | (Some("projects"), Some("open")) | (Some("issues"), Some("record" | "classify" | "resolve" | "reopen")));
         if blocked {
             eprintln!("에이전트 안에서는 작업을 시작할 수 없습니다. 사용자가 실행해 주세요.");
             return 2;

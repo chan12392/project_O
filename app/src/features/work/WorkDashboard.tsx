@@ -29,7 +29,7 @@ export function WorkDashboard({ runs, now, onCard, global = false }: Props) {
           <Metric label="작업 중" value={stats.running} hint={`${runs.filter((r) => r.status === "running").length}개 실행`} tone="text-agent-working" />
           <Metric label="멈춤" value={stats.stopped} hint="실패·중지" tone={stats.stopped > 0 ? "text-destructive" : "text-muted-foreground"} />
           <Metric label="PR" value={stats.prs} hint="에이전트가 보고한 PR" tone="text-callout-note" />
-          <Metric label="오늘 카드" value={stats.cardsToday} hint={stats.tokensToday > 0 ? `${compact.format(stats.tokensToday)} 토큰` : "토큰 보고 없음"} />
+      <Metric label="오늘 카드" value={stats.cardsToday} hint={stats.tokensToday > 0 ? `보고된 ${compact.format(stats.tokensToday)} 토큰 (누락 가능)` : "토큰 0 또는 미보고"} />
         </div>
       </div>
 

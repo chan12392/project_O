@@ -79,6 +79,23 @@ fn clean_env_keeps_system_variables_and_points_home_at_the_profile() {
 }
 
 #[test]
+fn clean_profiles_pass_only_their_provider_auth_environment() {
+    let parent = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "UNRELATED_SECRET"]
+        .map(|name| (name.to_string(), format!("fixture-{name}")));
+    let home = Path::new("profile");
+    for (provider, expected) in [
+        (ProviderId::Claude, &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"][..]),
+        (ProviderId::Codex, &["CODEX_API_KEY", "OPENAI_API_KEY"][..]),
+        (ProviderId::OpenCode, &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"][..]),
+    ] {
+        let env = clean_env_from(parent.clone(), home, provider);
+        for (name, value) in &parent {
+            assert_eq!(env.get(name), expected.contains(&name.as_str()).then_some(value), "{provider:?}: {name}");
+        }
+    }
+}
+
+#[test]
 fn profiles_live_next_to_the_state_folder_not_inside_it() {
     let base = Path::new("C:/Users/me/AppData/Local");
     let root = root_in(base);
@@ -268,20 +285,16 @@ fn devin_gets_no_clean_profile_and_says_why() {
 }
 
 #[test]
-fn trust_preflight_only_creates_new_clean_codex_configuration() {
-    use o_core::agents::clean::trust_preflight;
+fn new_clean_codex_profile_never_trusts_a_project() {
+    // #35: an untrusted project's `.codex/` layers (config, MCP servers, hooks) are skipped by
+    // Codex, so a new profile must not mark the first project trusted on the person's behalf.
+    use o_core::agents::clean::environment;
     let base = temp("trust");
     let root = base.join("project_O-agents");
-    let project = base.join("project");
-    std::fs::create_dir_all(&project).unwrap();
     let home = ensure_profile(&root, ProviderId::Codex, &base).unwrap();
-    trust_preflight(&root, ProviderId::Codex, &project).unwrap();
-    let config = home.join(".codex/config.toml");
-    let created = std::fs::read_to_string(&config).unwrap();
-    assert!(created.contains("trust_level = \"trusted\""));
-    std::fs::write(&config, "# user configuration\n").unwrap();
-    trust_preflight(&root, ProviderId::Codex, &project).unwrap();
-    assert_eq!(std::fs::read_to_string(config).unwrap(), "# user configuration\n");
-    trust_preflight(&root, ProviderId::Claude, &project).unwrap();
-    assert!(!profile_home(&root, ProviderId::Claude).exists());
+    assert!(environment(&root, ProviderId::Codex).is_ok());
+    assert!(!home.join(".codex/config.toml").exists());
+    std::fs::write(home.join(".codex/config.toml"), "# user configuration\n").unwrap();
+    assert!(environment(&root, ProviderId::Codex).is_ok());
+    assert_eq!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(), "# user configuration\n");
 }

@@ -34,6 +34,7 @@ pub struct AgentStatus {
     pub path: Option<String>,
     /// `None` (null) when the CLI's status check could not tell.
     pub logged_in: Option<bool>,
+    pub api_key_env: Vec<&'static str>,
     pub install_hint: String,
     pub can_install: bool,
     pub install_url: String,
@@ -44,6 +45,24 @@ pub struct AgentStatus {
     /// is then read from the person's own setup, and its cards are refused while the profile is on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_unsupported: Option<String>,
+}
+
+/// Authentication environment names understood by each CLI; values stay with the CLI.
+pub fn auth_env_names(provider: ProviderId) -> &'static [&'static str] {
+    match provider {
+        ProviderId::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+        ProviderId::Codex => &["CODEX_API_KEY", "OPENAI_API_KEY"],
+        ProviderId::OpenCode => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+        ProviderId::Devin => &["WINDSURF_API_KEY"],
+        ProviderId::Agy => &[],
+    }
+}
+
+pub fn present_auth_env(provider: ProviderId) -> Vec<&'static str> {
+    let names: Vec<_> = std::env::vars_os().map(|(name, _)| name).collect();
+    auth_env_names(provider).iter().copied().filter(|expected| names.iter().any(|name| name.to_str().is_some_and(|name| {
+        if cfg!(windows) { name.eq_ignore_ascii_case(expected) } else { name == *expected }
+    }))).collect()
 }
 
 /// What an install or sign-in did (`ActionResult` in app/src/platform/backend/types.ts).
@@ -103,8 +122,6 @@ fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> Lo
     let p = providers::get(provider);
     let mut command = cli_command(cli, p.status_args());
     command.envs(p.check_env().iter().copied());
-    // A leftover API key would read as signed in, though cards never get it.
-    providers::without_api_keys(&mut command, provider);
     let home = user_home();
     if home.is_dir() {
         command.current_dir(home);
@@ -142,6 +159,7 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
         version,
         path: found.filter(|_| cli.is_some()).map(|p| p.to_string_lossy().into_owned()),
         logged_in,
+        api_key_env: present_auth_env(provider),
         install_hint,
         can_install: npm_ready,
         install_url: o.url.into(),
@@ -207,7 +225,11 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
     let mut argv = cli.prefix.clone();
     argv.extend(args.iter().map(|a| a.to_string()));
     let started = if clean {
-        clean::environment(root, provider).and_then(|env| proc::spawn_console(&cli.command, &argv, Some(&env), Some(&clean::profile_home(root, provider))))
+        #[cfg(target_os = "macos")]
+        let root = std::path::absolute(root);
+        #[cfg(not(target_os = "macos"))]
+        let root: std::io::Result<_> = Ok(root.to_path_buf());
+        root.and_then(|root| clean::environment(&root, provider).and_then(|env| proc::spawn_console(&cli.command, &argv, Some(&env), Some(&clean::profile_home(&root, provider)))))
     } else {
         proc::spawn_console(&cli.command, &argv, None, None)
     };
@@ -219,6 +241,22 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
         }
         Err(error) => ActionResult::new(false, format!("{shown} 창을 열지 못했습니다: {error}")),
     }
+}
+
+/// Opens an independent shell; the user starts any agent themselves.
+pub fn open_terminal() -> ActionResult {
+    #[cfg(windows)]
+    {
+        let system = std::env::var_os("SystemRoot").map(std::path::PathBuf::from)
+            .unwrap_or_else(|| std::path::PathBuf::from(r"C:\Windows"));
+        let shell = system.join(r"System32\WindowsPowerShell\v1.0\powershell.exe");
+        match proc::spawn_console(&shell, &[], None, None) {
+            Ok(()) => ActionResult::new(true, "터미널을 열었습니다. 사용할 폴더로 이동한 뒤 agy를 직접 입력하세요."),
+            Err(error) => ActionResult::new(false, format!("터미널을 열지 못했습니다: {error}")),
+        }
+    }
+    #[cfg(not(windows))]
+    ActionResult::new(false, "터미널 열기는 Windows에서 지원합니다. 직접 터미널을 열어 agy를 입력하세요.")
 }
 
 /// Only an https address with a host goes to the browser.

@@ -16,7 +16,7 @@ use crate::installer_paths::{fresh_dir, no_links};
 pub const REPOSITORY: &str = "chan12392/project_O";
 pub const BUILD_SHA: &str = match option_env!("PROJECT_O_BUILD_SHA") { Some(v) => v, None => "" };
 pub const BUILD_TIME: &str = match option_env!("PROJECT_O_BUILD_TIME") { Some(v) => v, None => "" };
-const HELP: &str = "GitHub CLI(gh)를 설치하고 gh auth login --hostname github.com으로 로그인해 주세요. https://github.com/chan12392/project_O/releases 에서 직접 받을 수도 있습니다.";
+const HELP: &str = "https://github.com/chan12392/project_O/releases 에서 로그인 없이 직접 받을 수 있습니다. 앱에서 업데이트하려면 GitHub CLI(gh)를 설치하고 gh auth login --hostname github.com으로 로그인해 주세요.";
 const MAX_SETUP_SIZE: u64 = 1024 * 1024 * 1024;
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Atest_1-[0-9]{8}-[0-9a-f]{7}\z").unwrap());
 static ASSET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Aproject_O_[0-9]+\.[0-9]+\.[0-9]+_x64-setup\.exe\z").unwrap());
@@ -367,6 +367,8 @@ mod tests {
         assert_eq!(last_check(&Ok(None), "t".into()).tag, None);
         let failed = last_check(&Err(HELP.into()), "t".into());
         assert_eq!(failed.error.as_deref(), Some(HELP));
+        assert!(HELP.contains("로그인 없이 직접"));
+        assert!(HELP.contains("앱에서 업데이트하려면"));
         assert!(HELP.contains("gh auth login"));
     }
 

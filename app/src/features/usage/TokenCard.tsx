@@ -7,12 +7,12 @@ const api = backend(new URLSearchParams(window.location.search).get("source") ==
 
 type Load = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; report: TokenReport };
 
-/** How much less (or more) the shared-context clean agents spend per card than the default harness. */
+/** Observed difference only: plans, models and cache conditions are not controlled here. */
 function verdict({ baseline, shared }: TokenReport["compare"]): string | undefined {
   if (!baseline || !shared || baseline.perCard.total === 0) return undefined;
   const pct = Math.round(((shared.perCard.total - baseline.perCard.total) / baseline.perCard.total) * 100);
-  if (pct === 0) return "깨끗한+세션 공유와 기본 하네스의 카드당 토큰이 같습니다";
-  return `깨끗한+세션 공유가 기본 하네스보다 카드당 ${Math.abs(pct)}% ${pct < 0 ? "적게" : "많이"} 씁니다`;
+  if (pct === 0) return "기록된 카드당 평균은 같습니다. 작업과 실행 조건이 다를 수 있습니다.";
+  return `기록된 카드당 평균은 ${Math.abs(pct)}% ${pct < 0 ? "적습니다" : "많습니다"}. 작업과 실행 조건이 다를 수 있어 절감 효과로 단정할 수 없습니다.`;
 }
 
 /** Cards finish while the dashboard stays open: read the report again this often while the page is visible. */
@@ -76,12 +76,31 @@ export function TokenCard({ project }: { project?: string }) {
         <p className="mt-2 text-xs text-muted-foreground">불러오는 중…</p>
       ) : load.state === "error" ? (
         <p className="mt-2 text-xs text-muted-foreground">토큰 기록을 읽지 못했습니다: {load.message}</p>
-      ) : load.report.groups.length === 0 ? (
-        <p className="mt-2 text-xs text-muted-foreground">아직 토큰을 보고한 카드가 없습니다. 카드가 끝나면 CLI가 보고한 사용량이 여기에 모입니다.</p>
       ) : (
-        <Groups report={load.report} />
+        <>
+          <Coverage report={load.report} />
+          {load.report.groups.length === 0 ? (
+            <p className="mt-2 text-xs text-muted-foreground">아직 토큰을 보고한 카드가 없습니다. CLI가 사용량을 보고하면 여기에 표시됩니다.</p>
+          ) : (
+            <Groups report={load.report} />
+          )}
+        </>
       )}
     </section>
+  );
+}
+
+function Coverage({ report }: { report: TokenReport }) {
+  const s = report.summary;
+  if (!s) return <p className="mt-2 text-xs text-muted-foreground">사용량 누락 여부를 확인할 수 없습니다. 최신 O로 업데이트해 주세요.</p>;
+  const cache = s.cachePercent == null ? "미측정" : `${s.cachePercent.toFixed(1)}%`;
+  return (
+    <div className="mt-2 text-xs text-muted-foreground">
+      <p>완전하게 보고된 총괄·카드 합계 {compact.format(s.reported.total)} · 입력 캐시 비율 {cache}</p>
+      <p>카드 사용량: 보고 {s.reportedCards} · 미보고 {s.unreportedCards} · 일부 누락 {s.incompleteCards}</p>
+      {report.lead?.requested !== undefined && report.lead.unreported !== undefined ? <p>총괄 요청: {report.lead.requested} · 사용량 이벤트 없음 {report.lead.unreported} · 일부 누락 또는 불명 {report.lead.incomplete ?? "미확인"} (실행 전 실패·진행 중 포함)</p> : <p>총괄의 미보고 사용량은 확인되지 않습니다.</p>}
+      <p>미보고에는 대기 중 카드가 포함됩니다. 불완전·불명 기록은 평균과 요약 합계에서 제외합니다.</p>
+    </div>
   );
 }
 

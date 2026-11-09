@@ -3,8 +3,8 @@
 //!
 //! It refuses: shell commands that touch provider credentials or disable a
 //! CLI's permission checks, code edits that introduce those, commits or
-//! pushes to the protected branches (test_1, test_2, main), PR merges into
-//! test_1/main by anyone but the owner, branch names outside the
+//! pushes to the protected branches (test_1, test_1_hotfix, test_2, main_hotfix, main), PR merges into
+//! test_1_hotfix/main_hotfix/main by anyone but the owner, branch names outside the
 //! <personal>-<topic> rule, and any change inside a protected-branch checkout
 //! (those are pull-only mirrors).
 
@@ -23,10 +23,14 @@ use crate::rules::{
 };
 
 /// Keep in sync with .github/workflows/branch-flow.yml.
-pub const PERSONAL_BRANCHES: [&str; 2] = ["younchan", "yongwoo"];
+pub const PERSONAL_BRANCHES: [&str; 3] = ["younchan", "yongwoo", "eunmi"];
 
 /// The free integration branch: anyone may merge PRs into it.
 const FREE_MERGE_BRANCH: &str = "test_2";
+
+/// Any member may merge into it once another member approved the PR: the GitHub ruleset
+/// on test_1 enforces that approval (the owner bypasses it), so the hook does not (ADR-0031).
+const APPROVAL_MERGE_BRANCH: &str = "test_1";
 
 static BRANCH_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"^({})(-[a-z0-9][a-z0-9._-]*)?$", PERSONAL_BRANCHES.join("|"))).unwrap());
@@ -37,7 +41,7 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
-static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|_run|review|_review|lead\s+(?:send|dispatch))\b"#).unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
 static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
@@ -75,6 +79,10 @@ static GH_MERGE_CALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgh\s+(?:
 static API_PR_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge/?$").unwrap());
 static API_MERGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/[^/\s]+/[^/\s]+/merges/?$").unwrap());
 static GRAPHQL_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b").unwrap());
+/// A program that runs a string as a command, so single quotes handed to it do not keep a call literal.
+static STRING_RUNNER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:bash|sh|zsh|dash|ksh|fish|pwsh|powershell|cmd|eval|iex|invoke-expression|invoke-command|start-process|ssh|wsl|sudo|su|xargs|watch|python3?|py|node|perl|ruby)\b").unwrap()
+});
 /// Credentials named on the command line make gh act as someone the login lookup never saw.
 static GH_IDENTITY_OVERRIDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_HOST)\b|--hostname\b").unwrap());
 
@@ -97,7 +105,7 @@ pub trait GitProbe {
 }
 
 const READ_ONLY_REASON: &str =
-    "project_O의 test_1·test_2·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
+    "project_O의 test_1·test_1_hotfix·test_2·main_hotfix·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
 
 /// Reviews one tool call (`{ tool_name, tool_input, cwd }`); every returned reason blocks it.
 pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
@@ -130,7 +138,7 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         } else if let Err(unknown) = &targets {
             if !read_only_shell_reasons(&command).is_empty() {
                 reasons.push(format!(
-                    "명령이 고칠 수 있는 폴더를 확인하지 못했습니다({unknown}). 거울(test_1·test_2·main 작업 폴더)일 수 있어 읽기 전용 명령만 허용합니다. 경로를 변수 없이 그대로 적으세요"
+                    "명령이 고칠 수 있는 폴더를 확인하지 못했습니다({unknown}). 거울(test_1·test_1_hotfix·test_2·main_hotfix·main 작업 폴더)일 수 있어 읽기 전용 명령만 허용합니다. 경로를 변수 없이 그대로 적으세요"
                 ));
             }
         }
@@ -188,7 +196,7 @@ fn git_reasons(command: &str, current_branch: &dyn Fn() -> String) -> Vec<String
         if PUSH_WORD.is_match(segment) {
             if let Some(target) = PUSH_TO_PROTECTED.captures(segment) {
                 reasons.push(format!(
-                    "{}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 → test_1 → main)",
+                    "{}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main, 정식 핫픽스는 main_hotfix → main)",
                     &target[1]
                 ));
             } else if !PUSH_WITH_TARGET.is_match(segment) && is_protected(&current_branch()) {
@@ -225,17 +233,26 @@ enum MergeTarget {
     Base(Option<String>),
 }
 
-/// Merges into test_1/main are the owner's: `gh pr merge` and gh's direct merge APIs
-/// pass only when the base is confirmed free (test_2, a personal or work branch)
-/// or the signed-in gh user is the owner. Any lookup that fails blocks.
+/// Merges into test_1_hotfix/main_hotfix/main are the owner's: `gh pr merge` and gh's direct merge APIs
+/// pass only when the base is confirmed free (test_2, test_1, a personal or work branch)
+/// or the signed-in gh user is the owner. Any lookup that fails blocks, the owner's too:
+/// a PR whose base can't be read is refused before the owner check.
 fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
     let mut reasons = Vec::new();
-    for (is_pr_merge, arguments) in gh_calls(command) {
+    for (is_pr_merge, arguments, starts_command) in gh_calls(command) {
         let Some(target) = merge_target(is_pr_merge, arguments) else { continue };
         let base = match &target {
             MergeTarget::Pr { selector, repo } => git.pr_base(cwd, selector.as_deref(), repo.as_deref()),
             MergeTarget::Base(base) => base.clone(),
         };
+        // Only a call that starts a command: the words quoted in a commit message or PR body
+        // name no PR, and for those the owner check below still decides.
+        if starts_command && base.is_none() && matches!(target, MergeTarget::Pr { .. }) {
+            reasons.push(format!(
+                "병합할 PR의 base 브랜치를 확인하지 못했습니다(gh pr view 실패). 보호 브랜치 병합일 수 있어 막습니다. test_1_hotfix·main_hotfix·main 병합은 대표({OWNER})만 합니다"
+            ));
+            continue;
+        }
         if base.as_deref().is_some_and(is_free_base) {
             continue;
         }
@@ -245,37 +262,71 @@ fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
             continue;
         }
         let into = base.clone().unwrap_or_else(|| "확인 못 한 브랜치".to_string());
-        reasons.push(match (&base, &login) {
-            (None, _) if matches!(target, MergeTarget::Pr { .. }) => format!(
-                "병합할 PR의 base 브랜치를 확인하지 못했습니다(gh pr view 실패). test_1·main 병합일 수 있어 막습니다. test_1·main 병합은 대표({OWNER})만 합니다"
+        reasons.push(match &login {
+            None => format!(
+                "gh 로그인 계정을 확인하지 못해 {into} 병합을 막습니다(gh api user 실패 또는 명령에 토큰 지정). test_1_hotfix·main_hotfix·main 병합은 대표({OWNER})만 합니다"
             ),
-            (_, None) => format!(
-                "gh 로그인 계정을 확인하지 못해 {into} 병합을 막습니다(gh api user 실패 또는 명령에 토큰 지정). test_1·main 병합은 대표({OWNER})만 합니다"
-            ),
-            (_, Some(user)) => format!(
-                "{into}에는 대표({OWNER})만 병합할 수 있습니다(지금 gh 로그인: {user}). test_2 병합은 누구나 하고, test_2 → test_1 → main은 대표가 병합합니다"
+            Some(user) => format!(
+                "{into}에는 대표({OWNER})만 병합할 수 있습니다(지금 gh 로그인: {user}). test_2는 누구나, test_1은 다른 팀원 1명이 승인한 뒤 누구나 병합하고, test_1_hotfix·main_hotfix·main은 대표가 병합합니다"
             ),
         });
     }
     reasons
 }
 
-/// test_2 and the personal/work branches are free to merge into; anything else needs the owner.
+/// test_2, test_1 and the personal/work branches are free to merge into here (test_1's
+/// approval is GitHub's to enforce); anything else needs the owner.
 fn is_free_base(base: &str) -> bool {
-    base == FREE_MERGE_BRANCH || BRANCH_NAME.is_match(base)
+    base == FREE_MERGE_BRANCH || base == APPROVAL_MERGE_BRANCH || BRANCH_NAME.is_match(base)
 }
 
 /// Each `gh pr merge` (`true`) or `gh api` (`false`) call with its arguments: the text from the call
 /// to the first `;`, `&`, `|` or line break (LF, CR) outside quotes. Calls are found anywhere, so a
-/// line break or quoting cannot hide one; one inside an `echo` only costs a lookup.
-fn gh_calls(command: &str) -> Vec<(bool, &str)> {
+/// line break or quoting cannot hide one; one inside an `echo` only costs a lookup. The third value
+/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, a backtick or a line break before it)
+/// and is not literal text inside single quotes (#56).
+fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
     GH_MERGE_CALL
         .captures_iter(command)
         .map(|c| {
-            let rest = &command[c.get(0).unwrap().end()..];
-            (c.get(1).is_some(), &rest[..unquoted_end(rest)])
+            let whole = c.get(0).unwrap();
+            let rest = &command[whole.end()..];
+            let before = command[..whole.start()].trim_end_matches([' ', '\t']);
+            let starts_command = (before.is_empty() || before.ends_with([';', '&', '|', '(', '`', '\n', '\r']))
+                && !in_literal_quote(command, whole.start());
+            (c.get(1).is_some(), &rest[..unquoted_end(rest)], starts_command)
         })
         .collect()
+}
+
+/// Whether `at` lies inside single quotes, where bash and PowerShell run nothing. Read with both
+/// escape characters (bash `\`, PowerShell `` ` ``) and true only when both readings agree. Double
+/// quotes do not count (`$(…)` runs inside them), nor does text handed to a program that runs a string.
+/// Quoting this reading cannot follow (command substitutions, `$'…'`, here-documents, comments, curly quotes)
+/// counts as not literal, so the call keeps its full check.
+fn in_literal_quote(command: &str, at: usize) -> bool {
+    const CURLY_QUOTES: [char; 7] = ['\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}'];
+    if STRING_RUNNER.is_match(command) || command.contains("$(") || command.contains('`') || command.contains("$'") || command.contains("<<") || command.contains(CURLY_QUOTES) {
+        return false;
+    }
+    ['\\', '`'].into_iter().all(|escape| {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for c in command[..at].chars() {
+            match quote {
+                Some('\'') if c == '\'' => quote = None,
+                Some('\'') => {}
+                _ if escaped => escaped = false,
+                _ if c == escape => escaped = true,
+                Some(_) if c == '"' => quote = None,
+                Some(_) => {}
+                None if c == '"' || c == '\'' => quote = Some(c),
+                None if c == '#' => return false,
+                None => {}
+            }
+        }
+        quote == Some('\'')
+    })
 }
 
 /// Where the command part starting `text` ends: the first `;`, `&`, `|`, LF or CR outside quotes.
@@ -381,7 +432,7 @@ fn shell_words(text: &str) -> Vec<String> {
 /// nested `bash -c "cd ../x && …"` is seen too. `Err` says why the targets can't be told: a move or
 /// path built from an unknown variable or substitution, `cd -`, or more than `MAX_SHELL_TARGETS`.
 /// Plain relative words inside the current folder stay in the folder already checked.
-fn shell_targets(command: &str, cwd: &str) -> Result<Vec<String>, String> {
+pub fn shell_targets(command: &str, cwd: &str) -> Result<Vec<String>, String> {
     let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).ok();
     let home = home.as_deref();
     let mut targets: Vec<String> = Vec::new();
@@ -464,7 +515,7 @@ fn split_unquoted(text: &str) -> Vec<&str> {
 
 /// `word` as an absolute forward-slash path from `base`, expanding a leading `~` or environment
 /// variable; `None` when that can't be done (unknown variable, `~user`, a `$` or `%VAR%` left inside).
-fn resolve(word: &str, base: &str, home: Option<&str>) -> Option<String> {
+pub fn resolve(word: &str, base: &str, home: Option<&str>) -> Option<String> {
     let word = word.replace('\\', "/");
     let expanded = if let Some(rest) = word.strip_prefix('~') {
         if !(rest.is_empty() || rest.starts_with('/')) {
@@ -723,6 +774,14 @@ pub fn hook_main() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn agent_cannot_stop_leads() {
+        assert!(AGENT_DISPATCH.is_match("o lead stop"));
+        assert!(AGENT_DISPATCH.is_match("o lead stop-all"));
+        assert!(!AGENT_DISPATCH.is_match("o lead status"));
+        assert!(AGENT_DISPATCH.is_match("o _lead-forward 20261107-x 0"));
+    }
 
     #[test]
     fn lone_ampersand_is_found_but_chains_and_redirects_are_not() {

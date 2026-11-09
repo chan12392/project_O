@@ -14,13 +14,12 @@
 //! ```
 //!
 //! A clean launch sees a short list of system variables plus that home, and
-//! nothing else from the parent. Sign-in stays the CLI's own: O never creates
+//! its provider's authentication variables, and nothing else from the parent. Sign-in stays the CLI's own: O never creates
 //! or reads login files, and login state comes only from each CLI's status command.
 
 use std::collections::BTreeMap;
 use std::fs;
 use std::io;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -63,20 +62,10 @@ fn keeps(name: &str) -> bool {
     KEEP.contains(&name.as_str()) || KEEP_PREFIX.iter().any(|p| name.starts_with(p))
 }
 
-/// OpenCode의 평소 프로필은 유지하되 프로세스에 개인 인증 환경변수는 전달하지 않는다.
-pub fn own_profile_environment() -> BTreeMap<String, String> {
-    std::env::vars_os().filter_map(|(key, value)| {
-        let key = key.into_string().ok()?;
-        let upper = key.to_ascii_uppercase();
-        let profile = matches!(upper.as_str(), "HOME" | "USERPROFILE" | "HOMEDRIVE" | "HOMEPATH" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME" | "XDG_CACHE_HOME");
-        (keeps(&key) || profile).then(|| value.into_string().ok().map(|value| (key, value))).flatten()
-    }).collect()
-}
-
 /// The whole environment of a clean CLI: the kept system variables of `parent`,
 /// the profile home as the user's home, and the provider's own pointer into it.
 pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: &Path, provider: ProviderId) -> BTreeMap<String, String> {
-    let mut env: BTreeMap<String, String> = parent.into_iter().filter(|(name, _)| keeps(name)).collect();
+    let mut env: BTreeMap<String, String> = parent.into_iter().filter(|(name, _)| keeps(name) || super::auth_env_names(provider).iter().any(|auth| name.eq_ignore_ascii_case(auth))).collect();
     let text = home.to_string_lossy().into_owned();
     env.insert("USERPROFILE".into(), text.clone());
     env.insert("HOME".into(), text.clone());
@@ -116,27 +105,6 @@ pub fn ensure_profile(root: &Path, provider: ProviderId, real_home: &Path) -> io
     fs::create_dir_all(&home)?;
     providers::get(provider).prepare_profile(&home, real_home)?;
     Ok(home)
-}
-
-/// Trust the first project in a new Codex profile without reading or overwriting any existing configuration.
-/// Existing configuration is left to the CLI because it may have been changed by the user.
-pub fn trust_preflight(root: &Path, provider: ProviderId, project: &Path) -> io::Result<()> {
-    if provider != ProviderId::Codex || root.file_name().is_none_or(|name| name != "project_O-agents") { return Ok(()); }
-    let project = project.canonicalize()?;
-    let real_home = user_home().canonicalize()?;
-    if !project.is_dir() || real_home.starts_with(&project) { return Ok(()); }
-    let root = root.canonicalize()?;
-    let config_dir = profile_home(&root, provider).join(".codex");
-    let actual = config_dir.canonicalize()?;
-    if actual != config_dir { return Ok(()); }
-    let path = project.to_string_lossy();
-    let key = serde_json::to_string(path.as_ref()).map_err(io::Error::other)?;
-    let mut file = match fs::OpenOptions::new().write(true).create_new(true).open(actual.join("config.toml")) {
-        Ok(file) => file,
-        Err(e) if e.kind() == io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(e) => return Err(e),
-    };
-    write!(file, "[projects.{key}]\ntrust_level = \"trusted\"\n")
 }
 
 /// The official CLI with the clean environment, run in the current folder.
@@ -317,6 +285,7 @@ pub struct ProfileReport {
     #[serde(flatten)]
     pub login: LoginState,
     pub issues: Vec<String>,
+    pub api_key_env: Vec<&'static str>,
 }
 
 /// `o agents doctor`: every profile's login state and cleanliness. The status
@@ -328,7 +297,7 @@ pub fn doctor(root: &Path) -> Vec<ProfileReport> {
             .into_iter()
             .map(|(provider, check)| {
                 let login = check.join().unwrap_or_else(|_| LoginState { logged_in: None, detail: "내부 오류".into() });
-                ProfileReport { provider, home: profile_home(root, provider).to_string_lossy().into_owned(), login, issues: inspect(root, provider) }
+                ProfileReport { provider, home: profile_home(root, provider).to_string_lossy().into_owned(), login, issues: inspect(root, provider), api_key_env: super::present_auth_env(provider) }
             })
             .collect()
     })

@@ -32,7 +32,8 @@ description: Split a multi-part request into work cards and hand them to agent C
   - 모델 이름은 그 CLI가 받는 것만 쓴다. 확실하지 않으면 `model`을 비워 CLI 기본 모델에 맡기고 `effort`로만 조절한다.
   - 사용자에게 전달을 보고할 때 카드마다 왜 그 에이전트·모델을 골랐는지 한 줄씩 적는다.
 - `role`은 선택 사항인 사람용 이름표다("코딩", "검토" 등). 모델이나 권한과 아무 관계가 없다. 없으면 화면에 카드 id로 보인다.
-- 허용 필드는 `id, provider, task, role, model, effort`뿐이다. 실행 파일·인자·환경변수·계정은 넣을 수 없다.
+- 허용 필드는 `id, provider, task, role, model, effort, depends_on, resources`다. 실행 파일·인자·환경변수·계정은 넣을 수 없다.
+- `resources`는 `[{"kind":"project-path","key":"src/ui","mode":"write"},{"kind":"external","key":"service:shared","mode":"read"}]` 형식이다. 프로젝트 상대 경로 또는 공유 외부 키의 읽기·쓰기를 모두 선언하며, 빠뜨릴 가능성이 있으면 생략해 전체 자원을 독점한다.
 - `task`는 짧고 자족적으로 쓴다: 목표, 범위(파일·폴더), 완료 기준. 다른 카드와 주고받아야 할 것이 있으면 task에 적는다("끝나면 ui 카드에게 바꾼 파일을 알려 줄 것").
 - 이전 작업은 O가 카드마다 task와 관련된 조각만(최대 1,500자) 자동으로 넣는다. 그러니 task에 지난 결과를 길게 옮겨 적지 않는다. 계획 전에 `o context "<핵심어>"`로 이 프로젝트에서 이미 한 일을 확인하고, 다음 카드들이 꼭 알아야 할 결정은 `o context add "내용"`으로 남긴다.
 

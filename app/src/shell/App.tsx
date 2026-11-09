@@ -1,7 +1,9 @@
-import { MessageSquarePlus, PanelRightOpen, SquareArrowOutUpRight, X } from "lucide-react";
+import { PanelRightOpen, SquareArrowOutUpRight, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 import { isSessionRun, nextUp, type NextItem } from "../../../src/core/attention.ts";
+import { agentPanes } from "../../../src/core/followup.ts";
+import type { LeadTab } from "../../../src/core/lead.ts";
 import { listedRuns, ownerOf, sameFolder } from "../../../src/core/projects.ts";
 import {
   changeProjects,
@@ -14,14 +16,19 @@ import {
   useProjectSource,
   type Project,
 } from "../data/projects.ts";
+import { rememberedThread, rememberThread } from "../data/leadThreads.ts";
 import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow } from "../data/settings.ts";
 import { useLead } from "../data/useLead.ts";
 import { useRunSource } from "../data/useLiveRuns.ts";
 import { readParams, writeParam, type PanelView, type ScreenState } from "../data/useRun.ts";
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
+import { LeadTabs } from "../features/chat/LeadTabs.tsx";
 import { LeadThread } from "../features/chat/LeadThread.tsx";
+import { LeadApprovalCard, useApprovalAlert } from "../features/chat/LeadApprovalCard.tsx";
+import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
+import { GraphScreen } from "../features/graph/GraphScreen.tsx";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
 import { NewRequest } from "../features/projects/NewRequest.tsx";
@@ -30,6 +37,7 @@ import { AccountMenu, SETTINGS_BUTTON_ID } from "../features/settings/AccountMen
 import { Onboarding } from "../features/settings/Onboarding.tsx";
 import type { SettingsSection } from "../features/settings/sections/index.ts";
 import { Settings } from "../features/settings/Settings.tsx";
+import { AgentPanes } from "../features/work/AgentPanes.tsx";
 import { AllNextUp } from "../features/work/AllNextUp.tsx";
 import { WorkDashboard } from "../features/work/WorkDashboard.tsx";
 import { Automation } from "../features/work/Automation.tsx";
@@ -50,7 +58,7 @@ const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
 const api = backend(!window.__TAURI_INTERNALS__ && new URLSearchParams(window.location.search).get("source") === "demo");
 
-type Screen = "app" | "onboarding" | "settings" | "nextup" | "new" | "search" | "dashboard" | "automation";
+type Screen = "app" | "onboarding" | "settings" | "nextup" | "new" | "search" | "dashboard" | "automation" | "wiki" | "graph";
 
 export function App() {
   return initial.popout ? <PopoutPanel /> : <MainWindow />;
@@ -69,10 +77,15 @@ function useSelection(send: (selection: Selection) => void) {
     run: initial.run,
     view: initial.view,
     card: initial.card,
+    thread: initial.thread,
   }));
   const latest = useRef(selection);
   const apply = (next: Partial<Selection>) => {
     const merged = { ...latest.current, ...next };
+    // A project picked without a tab opens the one last looked at there (ADR-0034);
+    // a tab pick is remembered for that project in both windows.
+    if ("project" in next && !("thread" in next)) merged.thread = merged.project ? rememberedThread(merged.project) : undefined;
+    if ("thread" in next && merged.project) rememberThread(merged.project, merged.thread);
     latest.current = merged;
     setSelection(merged);
     return merged;
@@ -82,6 +95,7 @@ function useSelection(send: (selection: Selection) => void) {
     writeParam("run", selection.run);
     writeParam("view", selection.view);
     writeParam("card", selection.card);
+    writeParam("thread", selection.thread);
   }, [selection]);
   return {
     selection,
@@ -97,12 +111,17 @@ type Run = ReturnType<typeof useRunSource>["runs"][number];
  * one holding the chosen run, else the newest), and the run shown in its lead chat
  * (the chosen one, else the project's newest).
  */
-function resolve(runs: Run[], projects: Project[], selection: Selection) {
+function resolve(runs: Run[], projects: Project[], selection: Selection, root?: string) {
   const chosen = runs.find((r) => r.view.runId === selection.run);
   const wanted = selection.project ?? chosen?.view.project;
-  const project = (wanted ? projects.find((p) => sameFolder(p.path, wanted)) ?? ownerOf(projects, wanted) : undefined) ?? projects[0];
-  const current = chosen && (!project || ownerOf([project], chosen.view.project)) ? chosen : runs.find((r) => r.view.runId === project?.runs[0]?.runId);
-  return { project, current };
+  // The projects root is not a listed project: the overall lead gets a stand-in project entry
+  // (ADR-0032/0034) — no runs under it, its name is the row's "전체 총괄".
+  const overall = wanted !== undefined && root !== undefined && sameFolder(wanted, root);
+  const project: Project | undefined = overall
+    ? { path: root, name: "전체 총괄", kind: "root", runs: [] }
+    : ((wanted ? projects.find((p) => sameFolder(p.path, wanted)) ?? ownerOf(projects, wanted) : undefined) ?? projects[0]);
+  const current = !overall && chosen && (!project || ownerOf([project], chosen.view.project)) ? chosen : runs.find((r) => r.view.runId === project?.runs[0]?.runId);
+  return { project, current, overall };
 }
 
 /** The listed projects with their runs; every folder in history while the list cannot be read. */
@@ -123,6 +142,7 @@ function useProjects(runs: Run[], threads: { project: string; threadId: string }
 
 /** Orca's window: run sidebar, then the lead chat and a chosen view side by side, status bar below. */
 function MainWindow() {
+  const [agentRun, setAgentRun] = useState<string>();
   const [chosenState, setState] = useState<ScreenState>(initial.state);
   const data = useRunSource(initial.run, initial.start);
   const { runs, replayingId, restart } = data;
@@ -142,9 +162,36 @@ function MainWindow() {
   const [threads, setThreads] = useState<{ project: string; threadId: string }[]>([]);
   const extra = useMemo(() => (live ? [...threads.map((t) => t.project), selection.project] : []), [live, threads, selection.project]);
   const { projects, list, error: listError } = useProjects(runs, threads, extra);
-  const resolved = useMemo(() => resolve(runs, projects, selection), [runs, projects, selection]);
-  const { project } = resolved;
-  const lead = useLead(api, project?.path, live);
+  const root = list?.root;
+  const resolved = useMemo(() => resolve(runs, projects, selection, root), [runs, projects, selection, root]);
+  const { project, overall } = resolved;
+  // The recorded preview polls the demo's own lead data, so its tabs show without a backend (ADR-0034).
+  const leadEnabled = live || api === demoBackend;
+  // The tab picked for the project on screen: the selection's own when it names this project,
+  // else the one remembered for it (ADR-0034).
+  const leadThread = project?.path
+    ? selection.project && sameFolder(selection.project, project.path)
+      ? selection.thread
+      : rememberedThread(project.path)
+    : undefined;
+  const lead = useLead(api, project?.path, leadThread, leadEnabled);
+  useApprovalAlert(lead, api);
+  // A picked tab that closed (or a backend that fell back to the project's current thread) makes
+  // the answer's thread the pick; the correction then lands in selection, memory and URL at once.
+  useEffect(() => {
+    if (!project?.path || !lead.loaded || lead.selected === leadThread) return;
+    const next = lead.selected;
+    if (selection.project && sameFolder(selection.project, project.path)) select({ thread: next });
+    else rememberThread(project.path, next);
+  }, [project?.path, lead.loaded, lead.selected, leadThread, selection.project]);
+  const lastLeadThread = useRef<{ project: string; thread?: string } | undefined>(undefined);
+  useEffect(() => {
+    if (!project?.path || !lead.loaded) return;
+    const previous = lastLeadThread.current;
+    const thread = lead.thread?.threadId;
+    if (previous && sameFolder(previous.project, project.path) && previous.thread !== thread) setAgentRun(undefined);
+    lastLeadThread.current = { project: project.path, thread };
+  }, [project?.path, lead.loaded, lead.thread?.threadId]);
   const leadKey = JSON.stringify(lead.projects);
   useEffect(() => setThreads(JSON.parse(leadKey) as { project: string; threadId: string }[]), [leadKey]);
   const leads = useLeads(projects);
@@ -207,8 +254,14 @@ function MainWindow() {
   const compose = () => requestAnimationFrame(() => askRef.current?.focus());
   const openProject = (path: string) => {
     setScreen("app");
+    setAgentRun(undefined);
     select({ project: path, run: undefined, card: undefined });
     compose();
+  };
+  /** "+"/"새 설계": a new lead tab for this project, then it is the one on screen (ADR-0034). */
+  const newThread = async () => {
+    const threadId = await lead.startNew();
+    if (threadId) select({ thread: threadId });
   };
   const retry = () => {
     setState("full");
@@ -265,6 +318,7 @@ function MainWindow() {
       </a>
       <UpdatePrompt api={api} />
       <ClosePrompt onSettings={openSettings} />
+      <QuestionDialog api={api} lead={lead} runs={runViews} live={live} />
       {/* Settings takes the sidebar's and main area's place; both stay mounted underneath to keep their state. */}
       {screen === "settings" && (
         <Settings api={api} section={section} source={source} onSection={setSection} onBack={closeSettings} onOnboarding={() => setScreen("onboarding")} />
@@ -281,18 +335,33 @@ function MainWindow() {
           card={selection.card}
           now={now}
           listError={listError}
-          root={list?.root}
+          root={root}
+          // A project's open lead tabs add up to one state (ADR-0034); the aggregate entry is absent for quiet folders.
+          leadDot={(path) => lead.projects.find((p) => sameFolder(p.project, path))?.state}
+          onOverall={
+            root
+              ? () => {
+                  setScreen("app");
+                  setAgentRun(undefined);
+                  select({ project: root, run: undefined, card: undefined });
+                  compose();
+                }
+              : undefined
+          }
           // Picking something in the sidebar leaves onboarding for the chat (onboarding stays unfinished).
           onProject={(path) => {
             setScreen("app");
+            setAgentRun(undefined);
             select({ project: path, run: undefined, card: undefined });
           }}
           onWake={(path) => {
             setScreen("app");
+            setAgentRun(undefined);
             wake(path);
           }}
           onRun={(path, run) => {
             setScreen("app");
+            setAgentRun(run);
             select({ project: path, run, card: undefined });
             leads.wake(path);
           }}
@@ -304,6 +373,8 @@ function MainWindow() {
           onSearch={() => setScreen("search")}
           onDashboard={() => setScreen("dashboard")}
           onAutomation={() => setScreen("automation")}
+          onWiki={() => setScreen("wiki")}
+          onGraph={() => setScreen("graph")}
           currentScreen={screen}
           onListed={openProject}
           onUnregister={(path) => void unregister(path)}
@@ -322,6 +393,8 @@ function MainWindow() {
         />
       </div>
       {screen === "onboarding" && <Onboarding api={api} onDone={finishOnboarding} onSettings={() => openSettings("agents")} />}
+      {screen === "wiki" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">WIKI</header><p className="p-5 text-sm text-muted-foreground">위키는 준비 중입니다.</p></section>}
+      {screen === "graph" && <GraphScreen api={api} projects={projects} current={project?.path} />}
       {screen === "automation" && <Automation api={api} projects={projects} current={project?.path} />}
       {screen === "dashboard" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">대시보드</header><div className="mx-auto max-w-5xl p-5"><WorkDashboard runs={views} now={now} global onCard={(run, card) => { setScreen("app"); openCard(run, card); }} /></div></section>}
       {screen === "search" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">검색</header><div className="mx-auto max-w-3xl space-y-4 p-5"><input autoFocus aria-label="프로젝트와 작업 검색" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="프로젝트 또는 작업 검색" className="w-full rounded-md border bg-background px-3 py-2 text-sm focus-ring" />{query.trim() && <><h2 className="text-xs font-semibold text-muted-foreground">프로젝트</h2>{projects.filter((p) => `${p.name} ${p.path}`.toLowerCase().includes(query.toLowerCase())).map((p) => <button key={p.path} type="button" onClick={() => openProject(p.path)} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{p.name}<span className="ml-2 text-xs text-muted-foreground">{p.path}</span></button>)}<h2 className="text-xs font-semibold text-muted-foreground">작업</h2>{views.flatMap((run) => run.cards.filter((card) => `${run.title} ${card.label} ${card.activity}`.toLowerCase().includes(query.toLowerCase())).map((card) => <button key={`${run.runId}/${card.id}`} type="button" onClick={() => { setScreen("app"); openCard(run.runId, card.id); }} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{card.label}<span className="ml-2 text-xs text-muted-foreground">{run.title}</span></button>))}</>}</div></section>}
@@ -339,30 +412,35 @@ function MainWindow() {
       )}
       {screen === "new" && <NewRequest projects={projects} current={project?.path} onPick={openProject} />}
       <main ref={layout.container} hidden={screen !== "app"} className="flex min-h-0 min-w-0 max-lg:flex-col">
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
+        {agentRun && current?.view.runId === agentRun ? (
+          <AgentPanes key={agentRun} title={current.view.title} panes={agentPanes(runs.map((entry) => entry.view), current.view.runId)} api={api} onClose={() => setAgentRun(undefined)} />
+        ) : (
+        <section id="lead-chat-panel" role="tabpanel" className="flex min-h-0 min-w-0 flex-1 flex-col" aria-label="총괄과의 대화">
           <header className="flex h-9 shrink-0 items-center gap-2 border-b bg-tab-bar px-4 text-xs">
-            <span className="min-w-0 truncate font-medium text-tab-active-foreground" title={project?.path}>
-              {project ? `${project.name} 총괄` : "총괄"}
-            </span>
-            {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs whitespace-nowrap text-muted-foreground">{lead.busy ? "답하는 중" : LEAD_WORD[leadState]}</span>}
+            {leadEnabled ? (
+              <LeadTabs
+                name={overall ? "전체 총괄" : project ? `${project.name} 총괄` : "총괄"}
+                path={project?.path}
+                lead={lead}
+                canNew={Boolean(project)}
+                onNew={newThread}
+                onSelect={(thread) => select({ thread })}
+                onClose={(tab: LeadTab) => lead.close(tab.threadId)}
+                onWriter={(tab: LeadTab) => lead.makeWriter(tab.threadId)}
+                onError={setHeaderError}
+              />
+            ) : (
+              <>
+                <span className="min-w-0 truncate font-medium text-tab-active-foreground" title={project?.path}>
+                  {project ? `${project.name} 총괄` : "총괄"}
+                </span>
+                {project && <span className="shrink-0 rounded-sm bg-muted px-1 text-3xs whitespace-nowrap text-muted-foreground" title={lead.thread?.busy === "unknown" ? "이전 총괄 프로세스의 종료를 확인할 수 없어 새 총괄을 시작할 수 없습니다" : undefined}>{lead.thread?.busy === "unknown" ? "종료 불명" : lead.busy ? "답하는 중" : LEAD_WORD[leadState]}</span>}
+              </>
+            )}
             {/* The demo's chat is one run's transcript; a real lead chat spans runs, so no run title rides next to it (U12). */}
             {!live && current && (leadState === "working" || leadState === "ready") && <span className="min-w-0 truncate text-muted-foreground">{current.view.title}</span>}
             <span className="ml-auto flex shrink-0 items-center gap-1">
               {project && <WhoIsWorking runs={project.runs} onOpen={openCard} />}
-              {live && project && lead.items.length > 0 && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    setHeaderError(undefined);
-                    lead.startNew().then(compose, (e: unknown) => setHeaderError(`새 대화를 시작하지 못했습니다: ${e instanceof Error ? e.message : String(e)}`));
-                  }}
-                  disabled={lead.busy}
-                  title="이 프로젝트의 총괄과 새 대화를 시작합니다 (지난 대화는 남습니다)"
-                  className="flex h-6 items-center gap-1 rounded-md border px-2 whitespace-nowrap hover:bg-accent focus-ring disabled:cursor-not-allowed disabled:opacity-50"
-                >
-                  <MessageSquarePlus className="size-3.5 shrink-0" aria-hidden="true" />새 대화
-                </button>
-              )}
               {layout.popped && (
                 <button type="button" onClick={layout.dock} title="별도 창에서 보는 중, 다시 붙이기" className="flex h-6 items-center gap-1 rounded-md border px-2 whitespace-nowrap hover:bg-accent focus-ring">
                   <SquareArrowOutUpRight className="size-3.5 shrink-0" aria-hidden="true" />
@@ -423,8 +501,10 @@ function MainWindow() {
               />
             </div>
           )}
+          {live && state !== "error" && <div className="shrink-0 bg-chat-canvas px-6"><LeadApprovalCard lead={lead} api={api} /></div>}
           <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
         </section>
+        )}
         {showPanel && (
           <>
             <div
@@ -454,6 +534,7 @@ function MainWindow() {
                 onCard={(target) => (target ? openCard(target.run, target.card) : select({ card: undefined }))}
                 onClose={() => layout.setOpen(false)}
                 onPopout={() => layout.popout({ ...selection, project: project?.path, run: current?.view.runId }, source === "pending" ? undefined : source)}
+                onNewLead={leadEnabled && project ? newThread : undefined}
               />
             </div>
           </>
@@ -474,9 +555,18 @@ function PopoutPanel() {
   useProjectSource(data.pending ? undefined : data.live ? api : demoBackend);
   const send = usePopoutChannel((s) => receive(s));
   const { selection, select, receive } = useSelection(send);
-  const { projects } = useProjects(runs, [], []);
-  const { project, current } = resolve(runs, projects, selection);
-  const lead = useLead(api, project?.path ?? selection.project, !data.pending && Boolean(data.live));
+  const { projects, list } = useProjects(runs, [], []);
+  const { project, current } = resolve(runs, projects, selection, list?.root);
+  // The pop-out follows the same tab as the main window: the selection's own when it names the
+  // project on screen, else the remembered one (ADR-0034).
+  const leadPath = project?.path ?? selection.project;
+  const leadThread = leadPath && selection.project && sameFolder(selection.project, leadPath) ? selection.thread : leadPath ? rememberedThread(leadPath) : undefined;
+  const lead = useLead(api, leadPath, leadThread, !data.pending && Boolean(data.live));
+  /** "새 설계" here opens a tab the same way + in the main window does, then both windows select it. */
+  const newThread = async () => {
+    const threadId = await lead.startNew();
+    if (threadId) select({ thread: threadId });
+  };
   // The main window's run until this window has read it: never quietly another run (B15).
   const waiting = Boolean(selection.run) && !runs.some((r) => r.view.runId === selection.run);
   useEffect(() => {
@@ -504,6 +594,7 @@ function PopoutPanel() {
         onCard={(target) =>
           select(target ? { project: runs.find((r) => r.view.runId === target.run)?.view.project, run: target.run, card: target.card, view: "work" } : { card: undefined })
         }
+        onNewLead={data.live && project ? newThread : undefined}
       />
     </div>
   );

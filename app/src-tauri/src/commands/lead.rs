@@ -1,5 +1,5 @@
-//! The lead chat (ADR-0008): `o lead show|send|new|attach|dispatch|stop`, dev `/api/lead/*`.
-//! A turn runs the lead CLI read-only through o-core on a blocking thread; a plan is
+//! The lead chat (ADR-0008, ADR-0034): `o lead`, dev `/api/lead/*`.
+//! A turn runs the lead CLI through o-core on a blocking thread; a plan is
 //! dispatched by `o _run` in the background, as `o dispatch` does.
 
 use std::collections::BTreeMap;
@@ -28,10 +28,10 @@ fn project_arg(project: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The project's current lead thread and every project with one (`o lead show --json`).
+/// The selected lead thread, its project's open tabs, and every project with one (`o lead show --json`).
 #[tauri::command]
-pub async fn lead_show(project: Option<String>) -> Result<Value, String> {
-    blocking(move || lead::show(&store::default_home(), project.as_deref())).await
+pub async fn lead_show(project: Option<String>, thread: Option<String>) -> Result<Value, String> {
+    blocking(move || lead::show(&store::default_home(), project.as_deref(), thread.as_deref())).await?
 }
 
 /// Starts a new thread for the project ("새 대화", `o lead new`).
@@ -43,6 +43,16 @@ pub async fn lead_new(project: String) -> Result<Value, String> {
         Ok(json!({ "threadId": thread, "project": project }))
     })
     .await?
+}
+
+#[tauri::command]
+pub async fn lead_close(thread_id: String) -> Result<(), String> {
+    blocking(move || lead::close(&store::default_home(), &thread_id)).await?
+}
+
+#[tauri::command]
+pub async fn lead_writer(thread_id: String) -> Result<(), String> {
+    blocking(move || lead::set_writer(&store::default_home(), &thread_id)).await?
 }
 
 /// Percent-decoding for the header values the screen encodes (`encodeURIComponent`).
@@ -64,15 +74,16 @@ fn decode(text: &str) -> Result<String, String> {
 }
 
 /// Saves one attachment: the bytes are the raw request body, the project and file name
-/// come percent-encoded in the `x-project` and `x-name` headers (`o lead attach`).
+/// come percent-encoded in `x-project` and `x-name`, with optional `x-thread` (`o lead attach`).
 #[tauri::command]
 pub async fn lead_attach(request: tauri::ipc::Request<'_>) -> Result<Value, String> {
     let tauri::ipc::InvokeBody::Raw(bytes) = request.body() else {
         return Err("첨부는 파일 내용 그대로 보내야 합니다".into());
     };
-    let header = |name: &str| request.headers().get(name).and_then(|v| v.to_str().ok()).map(decode).transpose();
+    let header = |name: &str| request.headers().get(name).map(|v| v.to_str().map_err(|_| "잘못된 머리글 값".to_string()).and_then(decode)).transpose();
     let project = header("x-project")?.ok_or("x-project가 필요합니다")?;
     let name = header("x-name")?.ok_or("x-name이 필요합니다")?;
+    let thread = header("x-thread")?;
     project_arg(&project)?;
     if bytes.len() as u64 > files::MAX_BYTES {
         return Err("첨부 파일은 하나에 10MB까지입니다".into());
@@ -81,7 +92,7 @@ pub async fn lead_attach(request: tauri::ipc::Request<'_>) -> Result<Value, Stri
     blocking(move || {
         let home = store::default_home();
         lead::check_folder(&home, &project)?;
-        let thread = lead::thread_for(&home, &project, false).map_err(|e| e.to_string())?;
+        let thread = lead::attachment_thread(&home, &project, thread.as_deref())?;
         files::save(&home, &thread, &name, &bytes).map(|a| json!(a))
     })
     .await?
@@ -94,8 +105,10 @@ pub async fn lead_note(thread_id: String, change: o_core::lead::notes::Change) -
 
 /// One message to the lead (`o lead send`); returns when the lead has answered.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub async fn lead_send(
     project: String,
+    thread: Option<String>,
     provider: String,
     model: Option<String>,
     effort: Option<String>,
@@ -109,8 +122,9 @@ pub async fn lead_send(
         let home = store::default_home();
         let attach: Vec<PathBuf> = attachments.iter().map(PathBuf::from).collect();
         let root = clean.then(clean::default_root);
-        let req = SendRequest {
+        let mut req = SendRequest {
             project: &project,
+            thread: thread.as_deref(),
             provider,
             model: model.as_deref(),
             effort: effort.as_deref(),
@@ -120,8 +134,13 @@ pub async fn lead_send(
             clean: root.as_deref(),
             yolo: o_core::run::yolo::read_enabled(&home),
         };
-        let events = lead::send(&home, &req, &official_command)?;
-        Ok(json!({ "threadId": lead::current_thread(&home, &project), "events": events }))
+        lead::check_request(&home, &req)?;
+        let thread = lead::select_thread(&home, &project, req.thread, req.fresh)?;
+        req.thread = Some(&thread);
+        req.fresh = false;
+        let events = lead::send_with_followups(&home, &req, &official_command, &super::runs::start_followup)?;
+        lead::overall::pass_on(&home, &thread, &events, &super::runs::start_forward);
+        Ok(json!({ "threadId": thread, "events": events }))
     })
     .await?
 }
@@ -175,10 +194,41 @@ pub async fn lead_models(provider: String) -> Result<Value, String> {
     Ok(json!({ "provider": provider, "models": models }))
 }
 
-/// Stops the project's lead while it answers (`o lead stop`).
+/// The person's 허용/거부 for one action the lead waits on (`o lead decide`, ADR-0008 개정 3).
 #[tauri::command]
-pub async fn lead_stop(project: Option<String>) -> Result<Value, String> {
-    blocking(move || json!({ "stopped": lead::stop(&store::default_home(), project.as_deref()) })).await
+pub async fn lead_decide(id: String, allow: bool) -> Result<Value, String> {
+    blocking(move || lead::decide(&store::default_home(), &id, allow).map(|()| json!({ "id": id, "decision": if allow { "allow" } else { "deny" } }))).await?
+}
+
+/// Stops the selected thread, a project's open tabs, or every open tab (`o lead stop`).
+#[tauri::command]
+pub async fn lead_stop(project: Option<String>, thread: Option<String>) -> Result<Value, String> {
+    blocking(move || lead::stop(&store::default_home(), project.as_deref(), thread.as_deref()).map(|stopped| json!({ "stopped": stopped }))).await?
+}
+
+#[tauri::command]
+pub async fn lead_wake(run_id: String) -> Result<Value, String> {
+    blocking(move || lead::wake_run(&store::default_home(), &run_id, &official_command).map(|processed| json!({ "processed": processed }))).await?
+}
+
+#[tauri::command]
+pub async fn lead_retry(run_id: String, message_id: String) -> Result<Value, String> {
+    blocking(move || lead::retry_card(&store::default_home(), &run_id, &message_id).map(|state| json!({ "state": state }))).await?
+}
+
+#[tauri::command]
+pub async fn lead_answer_approval(run_id: String, message_id: String, text: String) -> Result<Value, String> {
+    blocking(move || {
+        use o_core::run::team::{self, Caller, Refused};
+        let home = store::default_home();
+        let speaker = team::speaker(&home, Caller { env_card: None, env_run: None, flag_run: Some(run_id), flag_as: Some("lead".into()) })?;
+        team::answer_approval(&home, &speaker, &message_id, &text)
+            .map(|id| json!({ "id": id }))
+            .map_err(|e| match e {
+                Refused::Policy(violations) => violations.into_iter().map(|v| v.message).collect::<Vec<_>>().join("\n"),
+                Refused::Io(error) => error.to_string(),
+            })
+    }).await?
 }
 
 #[tauri::command]

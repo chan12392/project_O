@@ -92,6 +92,8 @@ export function readParams() {
     // The team chat now lives under the office; older links with view=team land there.
     view: view === "team" ? "office" : (PANEL_VIEWS.find((v) => v === view) ?? PANEL_VIEWS[0]),
     card: params.get("card") ?? undefined,
+    // The project's open lead tab (ADR-0034).
+    thread: params.get("thread") ?? undefined,
     start: Number.isFinite(t) && t > 0 ? Math.min(1, t) : 0,
     popout: params.get("popout") === "panel",
   };

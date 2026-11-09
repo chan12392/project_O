@@ -13,13 +13,17 @@ mod budget;
 mod context;
 mod dispatch;
 mod events;
+mod followup;
 mod guard;
+mod graph;
 mod images;
+mod issues;
 mod lead;
 mod mirror;
 mod msg;
 mod projects;
 mod review;
+mod resources;
 mod runs;
 mod schedule;
 mod sessions;
@@ -40,13 +44,17 @@ pub struct Command {
 pub const COMMANDS: &[Command] = &[
     dispatch::CHECK,
     dispatch::DISPATCH,
+    followup::FOLLOWUP,
     status::STATUS,
+    status::CHANGES,
     events::EVENTS,
     stop::STOP,
     msg::MSG,
     lead::LEAD,
     images::IMAGE,
+    issues::ISSUES,
     review::REVIEW,
+    resources::RESOURCES,
     context::CONTEXT,
     tokens::TOKENS,
     usage::USAGE,
@@ -56,12 +64,17 @@ pub const COMMANDS: &[Command] = &[
     sessions::SESSIONS,
     schedule::SCHEDULE,
     projects::PROJECTS,
+    graph::GRAPH,
     guard::HOOK,
     guard::SCAN,
     mirror::SYNC_MIRROR,
     agents::AGENTS,
     about::ABOUT,
     dispatch::RUN,
+    lead::WATCH,
+    lead::APPROVE,
+    lead::FORWARD,
+    followup::RUN_FOLLOWUP,
     review::REVIEW_BACKGROUND,
 ];
 

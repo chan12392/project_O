@@ -1,13 +1,13 @@
-//! Codex: `codex exec --json` in a workspace-write sandbox, the prompt on stdin;
-//! usage from a short-lived read-only `codex app-server`.
+//! Codex: app-server for the read-only lead (read-only exec on a CLI without it), exec for
+//! cards and the YOLO lead.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::{self, BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
-use std::sync::LazyLock;
+use std::sync::{LazyLock, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -21,7 +21,7 @@ use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
 use crate::sys::js::{coalesce, iso_from_secs, js_string, number_text};
-use crate::sys::proc::Contained;
+use crate::sys::proc::{capture, Contained};
 use crate::sys::resolve::resolve_cli;
 use crate::usage::UsageWindow;
 
@@ -29,20 +29,17 @@ pub struct Codex;
 
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
+    /// O never marks a project trusted (#35): Codex then skips the project's `.codex/` layers
+    /// (config, MCP servers, hooks), and `--skip-git-repo-check` lets it run outside a Git repository.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
-        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir]));
+        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir, "--skip-git-repo-check"]));
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// `codex exec` puts this ahead of the saved ChatGPT login (codex-rs/login/src/auth/manager.rs).
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &["CODEX_API_KEY"]
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env }
     }
 
     fn tool_note(&self) -> Option<String> {
@@ -58,15 +55,20 @@ impl Provider for Codex {
     }
 
     fn lead_efforts(&self) -> &'static [&'static str] {
-        &["minimal", "low", "medium", "high", "xhigh"]
+        &["low", "medium", "high", "xhigh"]
     }
 
-    /// A read-only sandbox in the project (it reads anywhere, writes nowhere); a later turn
-    /// resumes the session with `exec resume <id>`. Images go first (`-i` takes several
-    /// values, so a flag must follow them), the prompt is read from stdin (`-`).
+    /// The lead drives app-server over stdio; turn settings are sent through its protocol.
+    /// A CLI without app-server gets the earlier read-only `exec` lead: a read-only sandbox in
+    /// the project (it reads anywhere, writes nowhere), resumed with `exec resume <id>`.
     fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
         // A trusted project's `.codex/` may add hooks; `--disable hooks` (`-c features.hooks=false`,
-        // `codex exec --help`) outranks every config layer, so none runs before a plan is approved.
+        // `codex app-server --help`, `codex exec --help`) outranks every config layer, so none runs
+        // before a plan is approved.
+        if turn.app_server {
+            return Some(LaunchSpec { bin: "codex".into(), args: strings(&["app-server", "--disable", "hooks"]),
+                stdin: None, env: BTreeMap::new() });
+        }
         let head = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
         Some(self.lead_with(head, turn))
     }
@@ -82,16 +84,17 @@ impl Provider for Codex {
     /// Without a sandbox there is nothing to open for `o msg`, so the run folder is not added.
     fn yolo_launch(&self, card: &Card, plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
         let mut args = strings(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", &plan.project]);
+        args.push("--skip-git-repo-check".into());
         args.extend(opt("-m", card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env })
     }
 
     /// `codex debug models` (in `codex --help`) prints the CLI's model catalog as JSON.
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
-        list_command("codex", connection("codex").models, ProviderId::Codex, &[]).map(|out| parse_codex_models(&out))
+        list_command("codex", connection("codex").models, &[]).map(|out| parse_codex_models(&out))
     }
 
     // https://github.com/openai/codex (npm, Homebrew, Windows installer)
@@ -174,8 +177,60 @@ impl Codex {
             }
         }
         args.push("-".into());
-        LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) }
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() }
     }
+}
+
+/// The arguments that ask the CLI whether it has `app-server` (`supports_app_server`).
+pub const APP_SERVER_PROBE: [&str; 2] = ["app-server", "--help"];
+
+/// The probe's launch, built by the lead's spawner like the turn itself.
+pub fn app_server_probe() -> LaunchSpec {
+    LaunchSpec { bin: "codex".into(), args: strings(&APP_SERVER_PROBE), stdin: None, env: BTreeMap::new() }
+}
+
+/// Versions before 0.166.0 have not been verified for the ephemeral model probe.
+pub fn default_model_probe() -> LaunchSpec {
+    LaunchSpec { bin: "codex".into(), args: strings(&["--version"]), stdin: None, env: BTreeMap::new() }
+}
+
+fn supports_ephemeral_version(version: &str) -> bool {
+    let Some(version) = version.trim().strip_prefix("codex-cli ") else { return false };
+    let parts: Vec<_> = version.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty() || !part.bytes().all(|b| b.is_ascii_digit())) { return false; }
+    let Ok(parts) = parts.into_iter().map(str::parse::<u64>).collect::<Result<Vec<_>, _>>() else { return false };
+    (parts[0], parts[1], parts[2]) >= (0, 166, 0)
+}
+
+pub fn supports_default_model_probe(mut command: Command) -> bool {
+    let key = format!("default-model {:?} {:?}", command.get_program(), command.get_args().collect::<Vec<_>>());
+    let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(known) = probed.get(&key) { return *known; }
+    let supported = matches!(capture(&mut command, PROBE_TIMEOUT), Ok((status, stdout, _)) if status.success() && supports_ephemeral_version(&stdout));
+    probed.insert(key, supported);
+    supported
+}
+
+const PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// Probe results per CLI command line (the resolved program and its arguments).
+static PROBED: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Whether `command` (`codex app-server --help`, from `app_server_probe`) shows the
+/// app-server subcommand's help: once per CLI command line per process, no shell, no window,
+/// no stdin, within `PROBE_TIMEOUT`. A CLI without the subcommand reads `app-server` as a
+/// prompt and prints the top-level help, so success alone is not enough. A failed or slow
+/// probe counts as no app-server: the lead then uses the read-only `exec` launch.
+pub fn supports_app_server(mut command: Command) -> bool {
+    let key = format!("{:?} {:?}", command.get_program(), command.get_args().collect::<Vec<_>>());
+    let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(known) = probed.get(&key) {
+        return *known;
+    }
+    let supported = matches!(capture(&mut command, PROBE_TIMEOUT),
+        Ok((status, stdout, _)) if status.success() && stdout.lines().any(|line| line.contains("Usage:") && line.contains("app-server")));
+    probed.insert(key, supported);
+    supported
 }
 
 static HOOK_OR_MCP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*(?:\[\[?\s*)?(?:mcp_servers|hooks)\b").unwrap());
@@ -192,8 +247,6 @@ fn app_server_windows() -> Result<Vec<UsageWindow>, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    // The windows of the ChatGPT sign-in cards use, not of a leftover API key.
-    super::without_api_keys(&mut command, ProviderId::Codex);
     let mut probe = Contained::spawn(&mut command).map_err(|e| e.to_string())?;
     let mut stdin = probe.child.stdin.take().ok_or("codex app-server stdin")?;
     let stdout = probe.child.stdout.take().ok_or("codex app-server stdout")?;
@@ -292,6 +345,9 @@ static PATH_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"[\\/]+").unwr
 
 fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
+    if kind == Some("o.approval_denied") {
+        return vec![StreamSignal::Tool { name: "권한".into(), summary: "총괄 모드에서 승인 요청을 거절했습니다".into() }];
+    }
     if kind == Some("thread.started") {
         if let Some(id) = data.get("thread_id").and_then(Value::as_str) {
             return vec![StreamSignal::Session { session_id: id.to_string() }];
@@ -307,10 +363,16 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                 }
             }
             Some("command_execution") => {
+                if item.get("status").and_then(Value::as_str) == Some("declined") {
+                    return tool("권한", "명령 실행 요청이 거절됐습니다".into());
+                }
                 let command = coalesce([item.get("command")]).map(js_string).unwrap_or_default();
                 return tool("shell", short(&unwrap_shell(&command)));
             }
             Some("file_change") => {
+                if item.get("status").and_then(Value::as_str) == Some("declined") {
+                    return tool("권한", "파일 변경 요청이 거절됐습니다".into());
+                }
                 // File names only: full Windows paths of two files already overflow the summary's length.
                 let changes: Vec<Value> = item
                     .get("changes")
@@ -324,7 +386,9 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                                 let name = PATH_SPLIT.split(&path).last().unwrap_or_default().to_string();
                                 let mut change = Map::new();
                                 change.insert("path".into(), Value::String(name));
+                                // app-server (v2) sends `{"type":"add"}`; exec sends the bare string.
                                 if let Some(kind) = c.get("kind") {
+                                    let kind = kind.get("type").filter(|t| t.is_string()).unwrap_or(kind);
                                     change.insert("kind".into(), kind.clone());
                                 }
                                 Value::Object(change)
@@ -340,11 +404,17 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
         }
         return Vec::new();
     }
+    if kind == Some("turn.usage") {
+        if let Some(u) = data.get("usage").and_then(Value::as_object) {
+            let cached = num(u.get("cached_input_tokens"));
+            return vec![StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")), complete: super::stream::reported(&[u.get("input_tokens"), u.get("cached_input_tokens"), u.get("output_tokens")]) && cached <= num(u.get("input_tokens")) }];
+        }
+    }
     if kind == Some("turn.completed") {
         let mut out = Vec::new();
         if let Some(u) = data.get("usage").and_then(Value::as_object) {
             let cached = num(u.get("cached_input_tokens"));
-            out.push(StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")) });
+            out.push(StreamSignal::Usage { input: (num(u.get("input_tokens")) - cached).max(0.0), cached, output: num(u.get("output_tokens")), complete: super::stream::reported(&[u.get("input_tokens"), u.get("cached_input_tokens"), u.get("output_tokens")]) && cached <= num(u.get("input_tokens")) });
         }
         out.push(StreamSignal::Final { ok: true, text: String::new() });
         return out;
@@ -374,4 +444,18 @@ pub fn unwrap_shell(command: &str) -> String {
     let inner = found[1].trim();
     let quoted = inner.len() >= 2 && ((inner.starts_with('"') && inner.ends_with('"')) || (inner.starts_with('\'') && inner.ends_with('\'')));
     if quoted { inner[1..inner.len() - 1].to_string() } else { inner.to_string() }
+}
+
+#[cfg(test)]
+mod default_model_version_tests {
+    use super::supports_ephemeral_version;
+
+    #[test]
+    fn only_known_or_newer_release_versions_enable_the_probe() {
+        assert!(supports_ephemeral_version("codex-cli 0.166.0\n"));
+        assert!(supports_ephemeral_version("codex-cli 0.167.1"));
+        assert!(!supports_ephemeral_version("codex-cli 0.165.9"));
+        assert!(!supports_ephemeral_version("codex-cli 0.166.0-alpha"));
+        assert!(!supports_ephemeral_version("not codex"));
+    }
 }

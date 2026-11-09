@@ -10,7 +10,7 @@ export type CardState = "waiting" | "queued" | "running" | CardStatus;
 export interface CardLogEntry {
   at: string;
   /** "budget": the runner lowered the card's effort for the daily usage budget. */
-  kind: "queued" | "tool" | "message" | "limit" | "end" | "team" | "budget";
+  kind: "queued" | "tool" | "message" | "input" | "limit" | "end" | "team" | "budget" | "guides";
   text: string;
   /** For tool entries: the act in words and the raw detail the CLI reported. */
   tool?: { word: string; detail: string };
@@ -20,6 +20,10 @@ export interface CardLogEntry {
 
 interface TeamMessage {
   at: string;
+  id?: string;
+  kind?: "message" | "question" | "approval";
+  replyTo?: string;
+  recipients?: Record<string, "stored" | "delivered" | "unknown" | "acknowledged" | "cancelled">;
   from: string;
   to: string;
   text: string;
@@ -65,6 +69,7 @@ export interface RunView {
   startedAt: string;
   endedAt?: string;
   status: "running" | "done" | "failed" | "stopped";
+  followup?: { sourceRunId: string; cardId: string };
   cards: CardView[];
   /** The run's team channel, in order. */
   messages: TeamMessage[];
@@ -136,9 +141,12 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (!run) continue;
     if (e.t === "msg") {
-      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text });
+      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text, ...(e.id ? { id: e.id } : {}), ...(e.kind ? { kind: e.kind } : {}), ...(e.replyTo ? { replyTo: e.replyTo } : {}) });
+      // An external session's "lead to all" lines are its main thread talking, not words sent to
+      // each subagent: they stay in the team chat instead of repeating in every card's transcript.
+      const monologue = run.runId.startsWith("session-") && e.from === "lead" && e.to === "all";
       for (const card of run.cards) {
-        if (card.id === e.from || card.id === e.to || (e.to === "all" && card.id !== e.from)) {
+        if (card.id === e.from || card.id === e.to || (e.to === "all" && card.id !== e.from && !monologue)) {
           card.log.push({ at: e.at, kind: "team", text: e.text, team: { from: e.from, to: e.to } });
         }
       }
@@ -149,12 +157,21 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       run.endedAt = e.at;
       continue;
     }
+    if (e.t === "run.followup") {
+      run.followup = { sourceRunId: e.sourceRunId, cardId: e.cardId };
+      continue;
+    }
     if (e.t === "quota") {
       run.quotas = [...run.quotas.filter((q) => q.provider !== e.provider || q.window !== e.window), { provider: e.provider, window: e.window, used: e.used, resetsAt: e.resetsAt, at: e.at }];
       continue;
     }
     if (e.t === "run.blocked") {
       run.blocked = e.violations;
+      continue;
+    }
+    if (e.t === "msg.state") {
+      const message = run.messages.find((m) => m.id === e.id);
+      if (message) message.recipients = { ...message.recipients, [e.recipient]: e.state };
       continue;
     }
     if (e.t === "review.posted") continue;
@@ -180,6 +197,9 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.activity = firstLine(e.text);
         card.log.push({ at: e.at, kind: "message", text: e.text });
         break;
+      case "card.input":
+        card.log.push({ at: e.at, kind: "input", text: e.text });
+        break;
       case "card.limit":
         card.activity = `사용량 한도: ${e.until}까지 차단`;
         card.log.push({ at: e.at, kind: "limit", text: card.activity });
@@ -188,6 +208,9 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.activity = budgetText(e.effortFrom, e.effortTo, e.spent, e.allowance);
         card.effort = e.effortTo;
         card.log.push({ at: e.at, kind: "budget", text: card.activity });
+        break;
+      case "card.guides":
+        card.log.push({ at: e.at, kind: "guides", text: guidesText(e.skills, e.harness) });
         break;
       case "card.usage":
         card.usage = { input: card.usage.input + e.input, cached: card.usage.cached + e.cached, output: card.usage.output + e.output };
@@ -205,6 +228,12 @@ export function snapshot(events: OEvent[]): RunView | undefined {
 }
 
 /** "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budget_text` in crates/o-core/src/run/snapshot.rs. */
+/** "넣은 지침: 하네스 game · 스킬 ui, test", as `guides_text` in crates/o-core/src/run/snapshot.rs. */
+export function guidesText(skills: string[], harness: string[]): string {
+  const parts = ([["하네스", harness], ["스킬", skills]] as const).filter(([, names]) => names.length > 0).map(([word, names]) => `${word} ${names.join(", ")}`);
+  return `넣은 지침: ${parts.join(" · ")}`;
+}
+
 export function budgetText(from: string | undefined, to: string, spent: number, allowance: number): string {
   return `사용 예산: effort ${from ?? "기본"} → ${to} (오늘 ${spent}/${allowance}%p)`;
 }

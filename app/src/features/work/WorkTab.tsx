@@ -1,25 +1,28 @@
-import { ArrowLeft, ClipboardList, KanbanSquare, LayoutDashboard, type LucideIcon } from "lucide-react";
+import { ArrowLeft, ChevronRight, ClipboardList, KanbanSquare, LayoutDashboard, ListChecks, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
+import { earlierPlanOutcome, LEAD_TAB_MAX, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
-import { names } from "../../lib/format.ts";
+import { names, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { readStored, writeStored } from "../../lib/storage.ts";
 import type { PanelViewDef } from "../../shell/SidePanel.tsx";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
-import { PlanCard } from "../chat/LeadThread.tsx";
+import { PlanCard, PlanDetails } from "../chat/LeadThread.tsx";
 import { Markdown } from "../chat/Markdown.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
 import { DesignAnnotations } from "./DesignAnnotations.tsx";
+import { IssuesPanel } from "./IssuesPanel.tsx";
 
 /** The side panel's "에이전트 작업" view. */
 export const WORK_VIEW: PanelViewDef = {
   label: "에이전트 작업",
   icon: KanbanSquare,
-  render: ({ run, projectRuns, card, now, onCard, lead }) => <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} lead={lead} />,
+  render: ({ run, projectRuns, card, now, onCard, lead, onNewLead }) => <WorkTab runs={projectRuns} open={run && card ? { run: run.runId, card } : undefined} onCard={onCard} now={now} lead={lead} onNewLead={onNewLead} />,
 };
 
-type Sub = "design" | "dashboard";
+type Sub = "design" | "dashboard" | "issues";
+type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
 
 /** What every sub-view of the work tab is drawn from. */
 interface SubContext {
@@ -27,6 +30,8 @@ interface SubContext {
   lead?: LeadState;
   now: Date;
   onCard: (target?: { run: string; card: string }) => void;
+  /** Opens a new lead tab for the project ("새 설계"); absent where none can be made. */
+  onNewLead?: () => Promise<void>;
 }
 
 interface SubDef {
@@ -42,7 +47,7 @@ const SUBS: SubDef[] = [
     id: "design",
     label: "설계",
     icon: ClipboardList,
-    render: ({ lead, runs, onCard }) => <DesignPanel lead={lead} runs={runs} onCard={onCard} />,
+    render: ({ lead, runs, onCard, onNewLead }) => <DesignPanel lead={lead} runs={runs} onCard={onCard} onNewLead={onNewLead} />,
   },
   {
     id: "dashboard",
@@ -56,16 +61,26 @@ const SUBS: SubDef[] = [
       />
     ),
   },
+  { id: "issues", label: "이슈", icon: ListChecks, render: ({ runs }) => <IssuesPanel runs={runs} /> },
 ];
 const SUB_KEY = "project-o-work-tab";
 
 const loadSub = () => readStored<Sub>(SUB_KEY, "design", (saved) => SUBS.find((s) => s.id === saved)?.id);
 
-function DesignPanel({ lead, runs, onCard }: { lead?: LeadState; runs: RunView[]; onCard: Props["onCard"] }) {
+function DesignPanel({ lead, runs, onCard, onNewLead }: { lead?: LeadState; runs: RunView[]; onCard: Props["onCard"]; onNewLead?: () => Promise<void> }) {
+  const [error, setError] = useState<string>();
+  const [starting, setStarting] = useState(false);
   if (!lead) return <p className="text-sm text-muted-foreground">실제 프로젝트의 총괄 대화에서 설계를 확인할 수 있습니다.</p>;
   if (lead.failed) return <p role="alert" className="text-sm text-destructive">설계를 읽지 못했습니다. <button type="button" className="underline focus-ring" onClick={() => void lead.refresh()}>다시 시도</button></p>;
   if (!lead.loaded) return <p role="status" className="text-sm text-muted-foreground">설계를 불러오는 중…</p>;
-  return <DesignContent key={lead.thread?.threadId} lead={lead} runs={runs} onCard={onCard} />;
+  // A new design is a new tab, not a replaced conversation (ADR-0034): it opens even while
+  // another tab answers, and stops only at the open-tabs cap.
+  const maxed = lead.tabs.length >= LEAD_TAB_MAX;
+  return <div className="space-y-3">
+    <div className="flex justify-end"><button type="button" disabled={starting || !onNewLead || maxed} title={maxed ? "열린 총괄은 최대 4개입니다" : "새 총괄 탭을 열어 새 설계를 시작합니다"} onClick={() => { if (!onNewLead) return; setError(undefined); setStarting(true); void onNewLead().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))).finally(() => setStarting(false)); }} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent focus-ring disabled:opacity-50">{starting ? "시작 중…" : "새 설계"}</button></div>
+    {error && <p role="alert" className="text-xs text-destructive">새 설계를 시작하지 못했습니다: {error}</p>}
+    <DesignContent key={lead.thread?.threadId} lead={lead} runs={runs} onCard={onCard} />
+  </div>;
 }
 
 function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[]; onCard: Props["onCard"] }) {
@@ -88,8 +103,7 @@ function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[
       {removed.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계에서 바뀐 내용 {removed.length}개</summary><ul className="mt-1 space-y-1">{removed.map((line, i) => <li key={i}><del>{line}</del></li>)}</ul></details>}
     </section>
   );
-  const plans = lead.items.filter((item) => item.kind === "plan");
-  const latest = plans.at(-1);
+  const { latest, earlier: earlierPlans } = leadPlans(lead.items);
   if (!latest) return <DesignAnnotations lead={lead}>{summary}<p className="text-sm text-muted-foreground">총괄과 작업을 논의하면 제안된 작업이 여기에 나타납니다.</p></DesignAnnotations>;
   const previous = lead.items[lead.items.indexOf(latest) - 1];
   return (
@@ -98,8 +112,25 @@ function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[
       {summary}
       {previous?.kind === "reply" && <details className="text-sm"><summary className="cursor-pointer text-xs text-muted-foreground focus-ring">총괄 설명과 미결정 사항</summary><div className="mt-2"><Markdown text={previous.text} /></div></details>}
       <PlanCard plan={latest} lead={lead} run={runs.find((run) => run.runId === latest.runId)} onOpenCard={(run, card) => onCard({ run, card })} />
-      {plans.length > 1 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계 {plans.length - 1}개</summary><ol className="mt-2 space-y-1 pl-4">{plans.slice(0, -1).reverse().map((plan) => <li key={plan.planId}>{plan.title}</li>)}</ol></details>}
+      {earlierPlans.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계 {earlierPlans.length}개</summary><ol className="mt-2 space-y-2">{earlierPlans.map((plan) => <li key={plan.planId}><EarlierPlan plan={plan} /></li>)}</ol></details>}
     </DesignAnnotations>
+  );
+}
+
+/** A plan a newer one replaced: opened, it reads like the latest one, without a way to run it (#40). */
+function EarlierPlan({ plan }: { plan: LeadPlan }) {
+  return (
+    <details className="group @container overflow-hidden rounded-lg border bg-card text-card-foreground">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-2 focus-ring focus-visible:ring-inset">
+        <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" aria-hidden="true" />
+        <span className="min-w-0 flex-1 truncate" title={plan.title}>{plan.title}</span>
+        <span className="shrink-0 text-2xs text-muted-foreground">{earlierPlanOutcome(plan)} · 작업 {plan.cards.length}개 · <time dateTime={plan.at}>{timeOf(plan.at)}</time></span>
+      </summary>
+      <div className="border-t">
+        <PlanDetails plan={plan} />
+        <p className="border-t px-4 py-2 text-xs text-muted-foreground">이전 설계는 실행할 수 없습니다. 다시 하려면 총괄에게 최신 설계로 요청하세요.</p>
+      </div>
+    </details>
   );
 }
 
@@ -131,13 +162,15 @@ interface Props {
   onCard: (target?: { run: string; card: string }) => void;
   now?: Date;
   lead?: LeadState;
+  /** Opens a new lead tab for the project ("새 설계"); absent where none can be made. */
+  onNewLead?: () => Promise<void>;
 }
 
 /**
  * The agent work tab: the Orchestrator app's dashboard and next up brought to
  * one O project, with the card board beside them.
  */
-export function WorkTab({ runs, open, onCard, now: given, lead }: Props) {
+export function WorkTab({ runs, open, onCard, now: given, lead, onNewLead }: Props) {
   const [sub, setSub] = useState<Sub>(loadSub);
   const now = useNow(given);
   const choose = (next: Sub) => {
@@ -165,7 +198,7 @@ export function WorkTab({ runs, open, onCard, now: given, lead }: Props) {
     );
   }
 
-  const ctx: SubContext = { runs, lead, now, onCard };
+  const ctx: SubContext = { runs, lead, now, onCard, onNewLead };
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div role="group" aria-label="에이전트 작업 보기" className="flex shrink-0 gap-1 border-b px-3 py-1.5">
@@ -185,7 +218,7 @@ export function WorkTab({ runs, open, onCard, now: given, lead }: Props) {
         })}
       </div>
       <div className="scrollbar-sleek min-h-0 flex-1 overflow-auto bg-chat-canvas p-4">
-        {runs.length === 0 && current.id !== "design" ? (
+        {runs.length === 0 && current.id === "dashboard" ? (
           <p className="text-sm text-muted-foreground">이 프로젝트에는 아직 작업이 없습니다.</p>
         ) : (
           <>

@@ -12,6 +12,7 @@ use super::{opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider,
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
 use crate::agents::catalog::connection;
 use crate::context::CONTEXT_COMMAND;
+use crate::lead::approvals;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan};
 use crate::run::store::to_pretty;
@@ -24,7 +25,10 @@ const LEAD_TOOLS: &str = "Read,Grep,Glob";
 
 /// The lead run's own settings: no hook runs (project settings could turn them back on,
 /// which `--setting-sources user` keeps them from doing).
-const LEAD_SETTINGS: &str = r#"{"disableAllHooks":true}"#;
+fn lead_settings() -> String {
+    let deny: Vec<String> = o_guard::rules::CREDENTIAL_DENY_PATHS.iter().map(|path| format!("Read({path})")).collect();
+    json!({ "disableAllHooks": true, "permissions": { "deny": deny } }).to_string()
+}
 
 /// The tools O's guard hook (`o hook`) looks at: the same list as this repository's
 /// `.claude/settings.json`.
@@ -42,6 +46,38 @@ fn guard_settings() -> String {
 /// Deny rules for the commands no agent may run; they hold in every permission mode.
 fn denied_commands() -> Vec<String> {
     AGENT_ONLY_COMMANDS.iter().map(|c| format!("Bash({c}*)")).collect()
+}
+
+/// The same commands denied in either shell tool an approving lead has.
+fn denied_shell_commands() -> Vec<String> {
+    let mut rules = denied_commands();
+    if cfg!(windows) { rules.extend(AGENT_ONLY_COMMANDS.iter().map(|c| format!("PowerShell({c}*)"))); }
+    rules
+}
+
+/// An approving lead's tools: the read ones, and those that wait for the person. Claude Code
+/// has its PowerShell tool on Windows only.
+fn approved_tools() -> Vec<&'static str> {
+    let mut tools = vec!["Read", "Grep", "Glob", "Edit", "Write", "Bash"];
+    if cfg!(windows) { tools.push("PowerShell"); }
+    tools.extend(["WebSearch", "WebFetch"]);
+    tools
+}
+
+/// The tools an approving lead's own settings always ask for (`permissions.ask` wins over an
+/// allow rule of the person's settings), with hooks off as in the read-only lead.
+const ASKED_TOOLS: [&str; 7] = ["Bash", "PowerShell", "Edit", "Write", "NotebookEdit", "WebFetch", "WebSearch"];
+
+fn approval_settings() -> String {
+    let mut settings: Value = serde_json::from_str(&lead_settings()).expect("lead settings");
+    settings["permissions"]["ask"] = json!(ASKED_TOOLS);
+    settings.to_string()
+}
+
+/// `--mcp-config` with O's approval server as the only server.
+fn approval_server(command: &[String]) -> String {
+    let (program, args) = command.split_first().map_or(("o", &[][..]), |(p, a)| (p.as_str(), a));
+    json!({ "mcpServers": { approvals::SERVER: { "type": "stdio", "command": program, "args": args } } }).to_string()
 }
 
 /// The start of a YOLO launch: print mode, no permission prompts, the denied commands.
@@ -72,12 +108,7 @@ impl Provider for Claude {
         args.push(format!("Bash({CONTEXT_COMMAND} *)"));
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
-        LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// `claude -p` always uses these when present (code.claude.com/docs/en/authentication).
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
+        LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env }
     }
 
     /// Headless runs cannot answer permission prompts, so a denied command ends the turn.
@@ -90,7 +121,8 @@ impl Provider for Claude {
     }
 
     fn stream_reader(&self) -> ReadLine {
-        Box::new(read_stream)
+        let mut reset_given = false;
+        Box::new(move |data| read_stream(&mut reset_given, data))
     }
 
     fn lead_efforts(&self) -> &'static [&'static str] {
@@ -104,15 +136,30 @@ impl Provider for Claude {
     /// (code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder), so the
     /// project's settings are not read (`--setting-sources user`; the clean profile's
     /// settings are the user ones) and hooks are off for the run, first turn or resumed.
+    ///
+    /// With an approver (ADR-0008 개정 3) the write, shell and web tools exist too, but only the
+    /// read tools are allowed without a prompt; every other call goes to O's approval server
+    /// (`--permission-prompt-tool`, the only MCP server loaded), and the run's settings ask for
+    /// those tools so no allow rule of the person's own settings lets one through unasked.
     fn lead(&self, turn: &LeadTurn) -> Option<LaunchSpec> {
         let mut args = strings(&["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default"]);
-        args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
-        args.extend(strings(&["--setting-sources", "user", "--settings", LEAD_SETTINGS]));
+        match &turn.approver {
+            None => {
+                args.extend(strings(&["--tools", LEAD_TOOLS, "--allowedTools", LEAD_TOOLS, "--strict-mcp-config"]));
+                args.extend(strings(&["--setting-sources", "user", "--settings", &lead_settings()]));
+            }
+            Some(command) => {
+                args.extend(strings(&["--tools", &approved_tools().join(","), "--allowedTools", LEAD_TOOLS, "--disallowedTools"]));
+                args.extend(denied_shell_commands());
+                args.extend(strings(&["--strict-mcp-config", "--mcp-config", &approval_server(command), "--permission-prompt-tool", &approvals::prompt_tool()]));
+                args.extend(strings(&["--setting-sources", "user", "--settings", &approval_settings()]));
+            }
+        }
         args.extend(opt("--resume", turn.session));
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));
         args.extend(opt("--add-dir", turn.files_dir));
-        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
     }
 
     /// Every tool, no permission prompt (`bypassPermissions`, the same as Claude's
@@ -123,7 +170,7 @@ impl Provider for Claude {
         args.extend(strings(&["--settings", &guard_settings()]));
         args.extend(opt("--model", card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
-        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env })
     }
 
     /// The lead with every tool and no prompts. The project's settings stay unread (as in
@@ -136,7 +183,7 @@ impl Provider for Claude {
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));
         args.extend(opt("--add-dir", turn.files_dir));
-        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
     }
 
     /// Claude Code has no model list command; `--model` takes these aliases for the latest
@@ -243,7 +290,9 @@ fn mcp_in_state(state: &Value) -> bool {
     servers(state) || state.get("projects").and_then(Value::as_object).is_some_and(|p| p.values().any(servers))
 }
 
-fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
+/// `reset_given`: a rejected `rate_limit_event` already gave this card's reset time, so the
+/// failure text that follows must not set one of its own.
+fn read_stream(reset_given: &mut bool, data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
     if kind == Some("system") && data.get("subtype").and_then(Value::as_str) == Some("init") {
         if let Some(id) = data.get("session_id").and_then(Value::as_str) {
@@ -291,6 +340,7 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
             if info.get("status").and_then(Value::as_str) == Some("rejected") {
                 if let Some(resets) = info.get("resetsAt").and_then(Value::as_f64) {
                     out.push(StreamSignal::Limit { until: iso_from_secs(resets) });
+                    *reset_given = true;
                 }
             }
             return out;
@@ -304,11 +354,16 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                 input: num(u.get("input_tokens")) + num(u.get("cache_creation_input_tokens")),
                 cached: num(u.get("cache_read_input_tokens")),
                 output: num(u.get("output_tokens")),
+                complete: super::stream::reported(&[u.get("input_tokens"), u.get("cache_creation_input_tokens"), u.get("cache_read_input_tokens"), u.get("output_tokens")]),
             });
         }
         let text = coalesce([data.get("result")]).map(js_string).unwrap_or_default().trim().to_string();
         // Usually a rejected rate_limit_event comes first; the text still catches a limit without one.
-        out.extend(limit_from_text(&text, ok));
+        // After that event its reset time stands: a wait read from the wording ("try again in
+        // 1 hour", rounded or repeated late) must not stretch it.
+        if !*reset_given {
+            out.extend(limit_from_text(&text, ok));
+        }
         out.push(StreamSignal::Final { ok, text });
         return out;
     }

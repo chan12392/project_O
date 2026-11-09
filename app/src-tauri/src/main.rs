@@ -8,19 +8,9 @@
 mod commands;
 mod installer_paths;
 
-/// Puts this exe's folder first on PATH, so every child (agent CLIs, `o dispatch`, cards
-/// running `o msg`/`o context`) finds the `o.exe` installed beside project_O.exe, even when
-/// `o` was never `cargo install`ed. Runs first in `main`, before any thread exists.
-fn own_folder_first_on_path() {
-    let Some(dir) = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|d| d.to_path_buf())) else { return };
-    let rest: Vec<_> = std::env::var_os("PATH").map(|p| std::env::split_paths(&p).filter(|p| *p != dir).collect()).unwrap_or_default();
-    if let Ok(path) = std::env::join_paths(std::iter::once(dir).chain(rest)) {
-        std::env::set_var("PATH", path);
-    }
-}
-
 fn main() {
-    own_folder_first_on_path();
+    // Children find the o.exe installed beside project_O.exe (the same init as `o`).
+    o_core::sys::resolve::own_folder_first_on_path();
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _, _| commands::window::show_main(app)))
         .plugin(tauri_plugin_notification::init())
@@ -30,6 +20,7 @@ fn main() {
             commands::window::setup_tray(app.handle())?;
             commands::window::open_main(app.handle())?;
             commands::update::start_checks();
+            std::thread::spawn(|| o_core::lead::recovery::watch(o_core::run::store::default_home(), std::sync::Arc::new(o_core::run::runner::official_command)));
             Ok(())
         })
         .invoke_handler(commands::handler())

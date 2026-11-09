@@ -37,7 +37,8 @@ use crate::run::store::RunRecord;
 
 /// 2: `runs.prefix_hash` and `runs.modified`, so a rewritten file is told from an appended one.
 /// 3: `slots`, the card slots runners hold from before a CLI starts until it ends.
-const SCHEMA_VERSION: i64 = 3;
+/// 7: Linux and macOS reservation owners include their boot scope.
+const SCHEMA_VERSION: i64 = 7;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
@@ -52,6 +53,7 @@ CREATE TABLE IF NOT EXISTS events (run_id TEXT NOT NULL, seq INTEGER NOT NULL, j
 CREATE TABLE IF NOT EXISTS starts (run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS starts_by_at ON starts (at);
 CREATE TABLE IF NOT EXISTS slots (id INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, card_id TEXT NOT NULL, provider TEXT NOT NULL, owner INTEGER NOT NULL, pid INTEGER NOT NULL DEFAULT 0);
+CREATE TABLE IF NOT EXISTS resource_leases (slot_id INTEGER PRIMARY KEY, run_id TEXT NOT NULL, card_id TEXT NOT NULL, resources TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS cooldowns (provider TEXT PRIMARY KEY, until TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS blocked (at TEXT NOT NULL, title TEXT, violations TEXT NOT NULL);
 ";
@@ -68,7 +70,7 @@ pub fn open(home: &Path) -> io::Result<Connection> {
     // Sticks to the file; a no-op once set. Losing the race to another opener only means trying again next time.
     let _ = conn.pragma_update_and_check(None, "journal_mode", "WAL", |row| row.get::<_, String>(0));
     // In WAL mode a crash can lose the last commits but never corrupts the file.
-    conn.pragma_update(None, "synchronous", "NORMAL").map_err(sql)?;
+    conn.pragma_update(None, "synchronous", "FULL").map_err(sql)?;
     let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0)).map_err(sql)?;
     if version < SCHEMA_VERSION {
         let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
@@ -82,6 +84,26 @@ pub fn open(home: &Path) -> io::Result<Connection> {
                  ALTER TABLE runs ADD COLUMN modified INTEGER NOT NULL DEFAULT -1;",
             )
             .map_err(sql)?;
+        }
+        let has_owner: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'owner_pid')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_owner {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN owner_pid INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN owner_started INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN worker_pid INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN worker_started INTEGER;").map_err(sql)?;
+        }
+        let has_phase: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'spawn_intent')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_phase {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN spawn_intent INTEGER;\n\
+                ALTER TABLE resource_leases ADD COLUMN start_id INTEGER;").map_err(sql)?;
+        }
+        let has_exit: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'exit_confirmed')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_exit {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN exit_confirmed INTEGER;").map_err(sql)?;
+        }
+        let has_scope: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'owner_scope')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_scope {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN owner_scope TEXT;").map_err(sql)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql)?;
         tx.commit().map_err(sql)?;

@@ -59,6 +59,15 @@ pub async fn hide_main(app: AppHandle) -> Result<(), String> {
     app.get_webview_window(MAIN).ok_or("메인 창이 없습니다")?.hide().map_err(|e| e.to_string())
 }
 
+/// A question waits on the person: the taskbar button flashes while the main window is
+/// minimized or behind others (a window hidden in the tray has no button; its toast tells).
+#[tauri::command]
+pub async fn attention(app: AppHandle) -> Result<(), String> {
+    let window = app.get_webview_window(MAIN).ok_or("메인 창이 없습니다")?;
+    if window.is_focused().unwrap_or(false) { return Ok(()); }
+    window.request_user_attention(Some(tauri::UserAttentionType::Critical)).map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 pub async fn quit_activity() -> Result<serde_json::Value, String> {
     super::blocking(|| quit_activity_in(&o_core::run::store::default_home())).await?
@@ -259,10 +268,12 @@ mod tests {
         let project = crate::commands::temp("quit-project");
         let project = project.to_string_lossy().into_owned();
         let thread = o_core::lead::start(&home, &project).unwrap();
+        // Create the newer thread before making the old one busy. Starting a
+        // new thread while a turn is live is now correctly refused by lead.
+        o_core::lead::start(&home, &project).unwrap();
         let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
             .open(o_core::lead::thread_dir(&home, &thread).join("turn.lock")).unwrap();
         lock.try_lock().unwrap();
-        o_core::lead::start(&home, &project).unwrap();
         std::fs::create_dir_all(home.join("runs").join("r1")).unwrap();
         append_event(&home, "r1", &OEvent::RunStart { at: "2026-11-02T00:00:00Z".into(), run_id: "r1".into(), title: "t".into(), project, cards: vec![] }).unwrap();
         mark_active(&home, &ActiveMarker { run_id: "r1".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() }).unwrap();

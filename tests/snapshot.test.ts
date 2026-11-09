@@ -4,6 +4,42 @@ import { test } from "node:test";
 
 import type { OEvent } from "../src/core/events.ts";
 import { describeTool, foldRuns, snapshot } from "../src/core/snapshot.ts";
+import { agentPanes } from "../src/core/followup.ts";
+
+test("an external session's main thread stays out of its subagents' transcripts", () => {
+  const events: OEvent[] = [
+    { t: "run.start", at: "1", runId: "session-abc", title: "s", project: "p", cards: [{ id: "a", label: "a", provider: "claude" }, { id: "b", label: "b", provider: "claude" }] },
+    { t: "msg", at: "2", from: "lead", to: "all", text: "main thread says" },
+    { t: "card.message", at: "3", cardId: "a", text: "a works" },
+  ];
+  const view = snapshot(events);
+  assert.ok(view);
+  assert.deepEqual(view.cards.map((c) => c.log.map((l) => l.text)), [["a works"], []]);
+  assert.equal(view.messages.length, 1);
+  // In an O run a message to everyone still reaches every card.
+  const run = snapshot([{ ...events[0], runId: "r1" } as OEvent, events[1], events[2]]);
+  assert.ok(run);
+  assert.deepEqual(run.cards.map((c) => c.log.filter((l) => l.kind === "team").length), [1, 1]);
+});
+
+test("follow-ups retain the team and append the user request to the correct session", () => {
+  const root = snapshot([
+    { t: "run.start", at: "1", runId: "root", title: "team", project: "p", cards: [{ id: "a", label: "a", provider: "codex" }, { id: "b", label: "b", provider: "claude" }] },
+    { t: "card.message", at: "2", cardId: "a", text: "first" },
+  ]);
+  const child = snapshot([
+    { t: "run.start", at: "3", runId: "child", title: "followup", project: "p", cards: [{ id: "a", label: "a", provider: "codex" }] },
+    { t: "run.followup", at: "3", sourceRunId: "root", cardId: "a" },
+    { t: "card.input", at: "4", cardId: "a", text: "change it" },
+    { t: "card.queued", at: "5", cardId: "a", reason: "waiting" },
+  ]);
+  assert.ok(root && child);
+  const panes = agentPanes([child, root], "child");
+  assert.deepEqual(panes.map(({ card }) => card.id), ["a", "b"]);
+  assert.equal(panes[0].run.runId, "child");
+  assert.deepEqual(panes[0].card.log.map(({ text }) => text), ["first", "change it", "waiting"]);
+  assert.equal(panes[1].run.runId, "root");
+});
 
 // The app's demo fixture is today's real end-to-end run, paths sanitised.
 const demo = JSON.parse(readFileSync(new URL("../app/src/data/demo-runs.json", import.meta.url), "utf8")) as { runs: { events: OEvent[] }[] };
@@ -68,6 +104,20 @@ test("team messages land on the run and in each party's log", () => {
   assert.equal(run?.cards[0].label, "코딩");
 });
 
+test("message identity and question survive state events in the snapshot", () => {
+  const run = snapshot([
+    fixture.events[0],
+    { t: "msg", at: "1", id: "m1", kind: "question", from: "code", to: "lead", text: "help?" },
+    { t: "msg.state", at: "2", id: "m1", recipient: "lead", state: "unknown" },
+    { t: "msg", at: "3", id: "m2", from: "lead", to: "code", text: "yes", replyTo: "m1" },
+  ]);
+  assert.equal(run?.messages[0].id, "m1");
+  assert.equal(run?.messages[0].kind, "question");
+  assert.equal(run?.messages[1].replyTo, "m1");
+  assert.deepEqual(run?.messages[0].recipients, { lead: "unknown" });
+  assert.equal(run?.messages.length, 2);
+});
+
 test("a budget adjustment shows the effort the card ran with in its activity and log", () => {
   const run = snapshot([
     { t: "run.start", at: "2026-11-02T10:00:00.000Z", runId: "r", title: "t", project: "C:/p", cards: [{ id: "a", provider: "codex", label: "a", effort: "xhigh" }, { id: "b", provider: "codex", label: "b" }] },
@@ -80,6 +130,16 @@ test("a budget adjustment shows the effort the card ran with in its activity and
   assert.deepEqual(a.log.map((l) => l.kind), ["budget"]);
   assert.equal(b.effort, "low");
   assert.match(b.activity, /effort 기본 → low/);
+});
+
+test("the skills and harness blocks a card got show in its log, not its activity", () => {
+  const run = snapshot([
+    { t: "run.start", at: "2026-11-02T10:00:00.000Z", runId: "r", title: "t", project: "C:/p", cards: [{ id: "a", provider: "codex", label: "a" }] },
+    { t: "card.guides", at: "2026-11-02T10:00:01.000Z", cardId: "a", skills: ["ui", "test"], harness: ["game"] },
+  ]);
+  const [a] = run?.cards ?? [];
+  assert.equal(a.activity, "");
+  assert.deepEqual(a.log.map((l) => [l.kind, l.text]), [["guides", "넣은 지침: 하네스 game · 스킬 ui, test"]]);
 });
 
 // Same events as crates/o-core/tests/snapshot.rs `a_repeated_card_id_is_one_card_kept_by_the_first`.

@@ -6,7 +6,7 @@ use std::process::{Command, Output};
 
 use o_core::run::events::OEvent;
 use o_core::run::plan::{Card, Plan, ProviderId};
-use o_core::run::store::{create_run, read_events};
+use o_core::run::store::{append_event, create_run, read_events};
 
 fn o(base: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
     let mut command = Command::new(env!("CARGO_BIN_EXE_o"));
@@ -18,12 +18,15 @@ fn o(base: &Path, args: &[&str], env: &[(&str, &str)]) -> Output {
 }
 
 fn setup(name: &str) -> (PathBuf, PathBuf) {
-    let base = std::env::temp_dir().join(format!("o-msg-{name}-{}", std::process::id()));
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("o-msg-{name}-{}-{nonce}", std::process::id()));
     let home = base.join("project_O");
-    let card = |id: &str, provider, task: &str| Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![] };
+    let project = base.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let card = |id: &str, provider, task: &str| Card { id: id.into(), provider, role: None, task: task.into(), model: None, effort: None, depends_on: vec![], resources: vec![] };
     let plan = Plan {
         title: "t".into(),
-        project: std::env::temp_dir().to_string_lossy().into_owned(),
+        project: project.to_string_lossy().into_owned(),
         cards: vec![card("a", ProviderId::Codex, "x"), card("b", ProviderId::Claude, "y")],
     };
     create_run(&home, "r1", &plan).unwrap();
@@ -50,6 +53,30 @@ fn a_card_speaks_only_as_itself_and_only_in_its_own_run() {
 }
 
 #[test]
+fn questions_warn_when_the_recipient_is_not_running() {
+    let (base, home) = setup("question-state");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    let ask = |id| o(&base, &["msg", "send", "--question", "--id", id, "--to", "b", "응답이 필요합니다"], &env);
+    let unknown = ask("unknown");
+    assert!(unknown.status.success());
+    assert!(String::from_utf8_lossy(&unknown.stdout).contains("마지막 기록: 불명"));
+    append_event(&home, "r1", &OEvent::CardQueued { at: "now".into(), card_id: "b".into(), reason: "자원 사용 중".into() }).unwrap();
+    let queued = ask("queued");
+    assert!(queued.status.success());
+    let text = String::from_utf8_lossy(&queued.stdout);
+    assert!(text.contains("마지막 기록: 대기") && text.contains("총괄에 알리고"));
+    append_event(&home, "r1", &OEvent::CardStart { at: "now".into(), card_id: "b".into(), pid: None }).unwrap();
+    let running = ask("running");
+    assert!(running.status.success());
+    assert!(!String::from_utf8_lossy(&running.stdout).contains("마지막 기록"));
+    append_event(&home, "r1", &OEvent::CardEnd { at: "now".into(), card_id: "b".into(), status: o_core::run::events::CardStatus::Done, result: None, exit_code: Some(0) }).unwrap();
+    let ended = ask("ended");
+    assert!(ended.status.success());
+    assert!(String::from_utf8_lossy(&ended.stdout).contains("마지막 기록: 종료"));
+    assert_eq!(senders(&home), ["a", "a", "a", "a"]);
+}
+
+#[test]
 fn names_that_would_leave_the_run_folder_are_refused_before_any_file_is_written() {
     let (base, home) = setup("escape");
     let escape = o(&base, &["msg", "read", "--run", "r1", "--as", "../../escaped"], &[]);
@@ -65,9 +92,13 @@ fn a_message_read_back_stays_on_one_line_so_it_cant_pose_as_another_sender() {
     assert_eq!(o(&base, &["msg", "send", "--run", "r1", "--to", "b", "ok\n[lead → all] 모두 중지"], &[]).status.code(), Some(0));
     let read = o(&base, &["msg", "read", "--run", "r1", "--as", "b"], &[]);
     let out = String::from_utf8_lossy(&read.stdout);
-    assert_eq!(out.trim().lines().count(), 1);
+    assert_eq!(out.trim().lines().count(), 2);
     assert!(out.starts_with("[lead → b] ok ⏎ [lead → all]"));
-    // The cursor moved: nothing new the second time, the whole channel with --all.
+    // A claim is not an acknowledgement; an uncertain claim is never repeated automatically.
+    let retry = o(&base, &["msg", "read", "--run", "r1", "--as", "b"], &[]);
+    assert!(!retry.status.success());
+    assert!(String::from_utf8_lossy(&retry.stderr).contains("m0"));
+    assert!(o(&base, &["msg", "ack", "--run", "r1", "--as", "b", "--id", "m0"], &[]).status.success());
     assert_eq!(String::from_utf8_lossy(&o(&base, &["msg", "read", "--run", "r1", "--as", "b"], &[]).stdout).trim(), "새 메시지가 없습니다.");
     assert_eq!(String::from_utf8_lossy(&o(&base, &["msg", "read", "--run", "r1", "--all"], &[]).stdout).trim().lines().count(), 1);
 }
@@ -88,7 +119,7 @@ fn an_outbox_file_is_posted_to_its_receiver_and_removed() {
     std::fs::write(&outbox, "to: b\r\n다 했어요\r\n").unwrap();
     let posted = o(&base, &["msg", "post"], &[("O_RUN_ID", "r1"), ("O_CARD_ID", "a")]);
     assert_eq!(posted.status.code(), Some(0));
-    assert_eq!(String::from_utf8_lossy(&posted.stdout).trim(), "보냄: a → b");
+    assert!(String::from_utf8_lossy(&posted.stdout).starts_with("저장됨: a → b (id:"));
     assert!(!outbox.exists());
     let texts: Vec<String> = read_events(&home, "r1")
         .into_iter()
@@ -98,6 +129,45 @@ fn an_outbox_file_is_posted_to_its_receiver_and_removed() {
         })
         .collect();
     assert_eq!(texts, ["b:다 했어요"]);
+}
+
+#[test]
+fn post_recovers_a_claimed_file_without_duplicate_after_lost_result() {
+    let (base, home) = setup("post-recovery");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    let pending = home.join("runs/r1/outbox/a.pending-123-456");
+    std::fs::write(&pending, "to: b\nhello").unwrap();
+    assert!(o(&base, &["msg", "send", "--to", "b", "--id", "123-456", "hello"], &env).status.success());
+    assert!(o(&base, &["msg", "post"], &env).status.success());
+    assert!(!pending.exists());
+    assert_eq!(senders(&home), ["a"]);
+}
+
+/// #60: a refused outbox is set aside with its content, so the rewritten one is posted exactly once.
+#[test]
+fn a_refused_outbox_does_not_block_the_rewritten_one() {
+    let (base, home) = setup("post-refused");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    let dir = home.join("runs/r1/outbox");
+    let outbox = dir.join("a.txt");
+    std::fs::write(&outbox, "to: nobody\nhello").unwrap();
+    assert_eq!(o(&base, &["msg", "post"], &env).status.code(), Some(2));
+    let names = || -> Vec<String> { std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect() };
+    assert!(!names().iter().any(|n| n.starts_with("a.pending-")), "{:?}", names());
+    let rejected: Vec<String> = names().into_iter().filter(|n| n.starts_with("a.rejected-")).collect();
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(std::fs::read_to_string(dir.join(&rejected[0])).unwrap(), "to: nobody\nhello");
+    std::fs::write(&outbox, "to: b\nfixed").unwrap();
+    assert_eq!(o(&base, &["msg", "post"], &env).status.code(), Some(0));
+    assert!(o(&base, &["msg", "post"], &env).status.code() != Some(0), "nothing left to post");
+    let texts: Vec<String> = read_events(&home, "r1")
+        .into_iter()
+        .filter_map(|e| match e {
+            OEvent::Msg { to, text, .. } => Some(format!("{to}:{text}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["b:fixed"]);
 }
 
 #[test]
@@ -122,4 +192,242 @@ fn runs_lists_started_runs_newest_first() {
     let listed: serde_json::Value = serde_json::from_slice(&o(&base, &["runs", "--json"], &[]).stdout).unwrap();
     assert_eq!(listed["runs"][0]["runId"], "r1");
     assert_eq!(listed["runs"][0]["events"].as_array().unwrap().len(), 2);
+}
+
+#[test]
+fn retries_questions_order_and_independent_broadcast_receipts() {
+    let (base, _) = setup("retry");
+    let args = ["msg", "send", "--run", "r1", "--to", "all", "--question", "--id", "retry1", "question?"];
+    assert!(o(&base, &args, &[]).status.success());
+    assert!(o(&base, &args, &[]).status.success());
+    assert!(!o(&base, &["msg", "send", "--run", "r1", "--id", "retry1", "different"], &[]).status.success());
+    let read = o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]);
+    let text = String::from_utf8_lossy(&read.stdout);
+    assert_eq!(text.lines().count(), 2);
+    assert!(text.contains("question"));
+    assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "--id", "next", "next"], &[]).status.success());
+    assert!(!o(&base, &["msg", "ack", "--run", "r1", "--as", "a", "--id", "k4-lead-next"], &[]).status.success());
+    assert!(o(&base, &["msg", "unknown", "--run", "r1", "--as", "a", "--id", "k4-lead-retry1"], &[]).status.success());
+    assert!(o(&base, &["msg", "ack", "--run", "r1", "--as", "a", "--id", "k4-lead-retry1"], &[]).status.success());
+    assert!(o(&base, &["msg", "ack", "--run", "r1", "--as", "a", "--id", "k4-lead-retry1"], &[]).status.success());
+    assert!(o(&base, &["msg", "ack", "--run", "r1", "--as", "a", "--id", "k4-lead-next"], &[]).status.success());
+    assert!(String::from_utf8_lossy(&o(&base, &["msg", "read", "--run", "r1", "--as", "b"], &[]).stdout).contains("question"));
+    assert!(!o(&base, &["msg", "cancel", "--run", "r1", "--id", "k4-lead-retry1"], &[]).status.success());
+}
+
+#[test]
+fn answers_reference_only_a_question_addressed_to_the_sender_and_retries_are_idempotent() {
+    let (base, home) = setup("reply-reference");
+    let question = ["msg", "send", "--run", "r1", "--as", "a", "--to", "lead", "--question", "--id", "q", "which file?"];
+    assert!(o(&base, &question, &[]).status.success());
+    let answer = ["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-q", "--id", "answer", "app.rs"];
+    assert!(o(&base, &answer, &[]).status.success());
+    assert!(o(&base, &answer, &[]).status.success());
+    let forged = ["msg", "send", "--run", "r1", "--as", "b", "--to", "a", "--reply-to", "k1-a-q", "not mine"];
+    assert!(!o(&base, &forged, &[]).status.success());
+    let changed = ["msg", "send", "--run", "r1", "--to", "a", "--id", "answer", "app.rs"];
+    assert!(!o(&base, &changed, &[]).status.success());
+    let wrong_target = ["msg", "send", "--run", "r1", "--to", "b", "--reply-to", "k1-a-q", "wrong person"];
+    assert!(!o(&base, &wrong_target, &[]).status.success());
+    let events = read_events(&home, "r1");
+    assert_eq!(events.len(), 2);
+    assert!(matches!(&events[1], OEvent::Msg { reply_to: Some(id), .. } if id == "k1-a-q"));
+    let read = o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]);
+    assert!(String::from_utf8_lossy(&read.stdout).contains("답변 대상: k1-a-q"));
+}
+
+#[test]
+fn approval_answer_from_stdin_preserves_text_and_refuses_agents() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let (base, home) = setup("approval-stdin");
+    let card = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--approval", "--id", "p", "확인해 주세요"], &card).status.success());
+    let args = ["msg", "answer-approval", "--run", "r1", "--id", "k1-a-p", "-"];
+    assert_eq!(o(&base, &args, &[("O_AGENT_ROLE", "lead")]).status.code(), Some(1));
+    let answer = "--조건\n검사 후 진행하세요";
+    let send = |id: &str| {
+        let mut child = Command::new(env!("CARGO_BIN_EXE_o"))
+            .args(["msg", "answer-approval", "--run", "r1", "--id", id, "-"])
+            .env("LOCALAPPDATA", &base).env("O_RUN_ID", "").env("O_CARD_ID", "").env("O_AGENT_ROLE", "")
+            .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
+        child.stdin.take().unwrap().write_all(answer.as_bytes()).unwrap();
+        child.wait_with_output().unwrap()
+    };
+    let first = send("k1-a-p");
+    assert!(first.status.success(), "{}", String::from_utf8_lossy(&first.stderr));
+    assert!(send("k1-a-p").status.success());
+    assert!(!send("missing").status.success());
+    let events = read_events(&home, "r1");
+    let replies: Vec<_> = events.iter().filter(|event| matches!(event, OEvent::Msg { reply_to: Some(id), .. } if id == "k1-a-p")).collect();
+    assert_eq!(replies.len(), 1);
+    assert!(matches!(replies[0], OEvent::Msg { text, to, .. } if text == answer && to == "a"));
+    let delivered = o(&base, &["msg", "read"], &card);
+    assert!(String::from_utf8_lossy(&delivered.stdout).contains("검사 후 진행하세요"));
+}
+
+#[test]
+fn approval_requests_only_accept_a_persons_direct_answer() {
+    let (base, home) = setup("approval");
+    let card = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--approval", "--id", "p", "승인해 주세요"], &card).status.success());
+    let reply = ["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-p", "--id", "human", "허용합니다"];
+    assert!(!o(&base, &reply, &[("O_AGENT_ROLE", "lead")]).status.success());
+    assert!(o(&base, &reply, &[("O_AGENT_ROLE", "")]).status.success());
+    assert!(read_events(&home, "r1").iter().any(|event| matches!(event, OEvent::Msg { kind: Some(kind), .. } if kind == "approval")));
+    let lead = o(&base, &["msg", "read", "--run", "r1"], &[("O_AGENT_ROLE", "")]);
+    assert!(String::from_utf8_lossy(&lead.stdout).contains("새 메시지가 없습니다"));
+    let answer = o(&base, &["msg", "read"], &card);
+    assert!(String::from_utf8_lossy(&answer.stdout).contains("허용합니다"));
+}
+
+#[test]
+fn a_question_receives_one_complete_answer_even_when_retried_with_a_new_key() {
+    let (base, home) = setup("reply-dedup");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--to", "lead", "--question", "--id", "q", "question?"], &env).status.success());
+    let answer = "가".repeat(1500);
+    let send = |key: &str, text: &str| o(&base, &["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-q", "--id", key, text], &[]);
+    assert!(send("first", &answer).status.success());
+    assert!(send("second", &answer).status.success());
+    assert!(!send("third", "different").status.success());
+    let received = o(&base, &["msg", "wait"], &env);
+    assert!(received.status.success());
+    assert!(String::from_utf8_lossy(&received.stdout).contains(&answer));
+    assert_eq!(read_events(&home, "r1").into_iter().filter(|event| matches!(event, OEvent::Msg { reply_to: Some(id), .. } if id == "k1-a-q")).count(), 1);
+}
+
+#[test]
+fn a_waiting_card_receives_an_answer_without_starting_a_followup_run() {
+    let (base, _) = setup("wait-answer");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    assert!(o(&base, &["msg", "send", "--to", "lead", "--question", "--id", "q", "which file?"], &env).status.success());
+    let mut command = Command::new(env!("CARGO_BIN_EXE_o"));
+    command.args(["msg", "wait"]).env("LOCALAPPDATA", &base).env("O_RUN_ID", "r1").env("O_CARD_ID", "a")
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x08000000);
+    }
+    let child = command.spawn().unwrap();
+    std::thread::sleep(std::time::Duration::from_millis(350));
+    assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "--reply-to", "k1-a-q", "--id", "answer", "app.rs"], &[]).status.success());
+    let received = child.wait_with_output().unwrap();
+    assert!(received.status.success());
+    assert!(String::from_utf8_lossy(&received.stdout).contains("답변 대상: k1-a-q"));
+    let again = o(&base, &["msg", "wait"], &env);
+    assert!(!again.status.success());
+    assert!(String::from_utf8_lossy(&again.stderr).contains("k4-lead-answer"));
+    assert!(o(&base, &["msg", "ack", "--id", "k4-lead-answer"], &env).status.success());
+}
+
+#[test]
+fn wait_keeps_the_first_unconfirmed_message_in_order() {
+    let (base, _) = setup("wait-order");
+    for (key, text) in [("first", "first"), ("second", "second")] {
+        assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "--id", key, text], &[]).status.success());
+    }
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    let first = o(&base, &["msg", "wait"], &env);
+    assert!(String::from_utf8_lossy(&first.stdout).contains("k4-lead-first"));
+    assert!(!o(&base, &["msg", "wait"], &env).status.success());
+    assert!(o(&base, &["msg", "ack", "--id", "k4-lead-first"], &env).status.success());
+    let second = o(&base, &["msg", "wait"], &env);
+    assert!(String::from_utf8_lossy(&second.stdout).contains("k4-lead-second"));
+    assert!(!o(&base, &["msg", "wait", "--all"], &env).status.success());
+}
+
+#[test]
+fn concurrent_claims_return_one_message_and_require_explicit_retry() {
+    let (base, _) = setup("claim");
+    assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "one"], &[]).status.success());
+    let mut children = Vec::new();
+    for _ in 0..8 {
+        children.push(Command::new(env!("CARGO_BIN_EXE_o")).args(["msg", "read", "--run", "r1", "--as", "a"])
+            .env("LOCALAPPDATA", &base).env("O_RUN_ID", "").env("O_CARD_ID", "").stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped()).spawn().unwrap());
+    }
+    let outputs: Vec<_> = children.into_iter().map(|child| child.wait_with_output().unwrap()).collect();
+    assert_eq!(outputs.iter().filter(|out| out.status.success()).count(), 1);
+    assert!(o(&base, &["msg", "retry", "--run", "r1", "--as", "a", "--id", "m0"], &[]).status.success());
+    assert!(o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]).status.success());
+}
+
+#[test]
+fn concurrent_processes_preserve_records_and_same_key_is_idempotent() {
+    let (base, home) = setup("concurrent");
+    let mut children = Vec::new();
+    for i in 0..16 {
+        let key = format!("key{i}");
+        children.push(Command::new(env!("CARGO_BIN_EXE_o")).args(["msg", "send", "--run", "r1", "--id", &key, "hello"])
+            .env("LOCALAPPDATA", &base).env("O_RUN_ID", "").env("O_CARD_ID", "").stdout(std::process::Stdio::null()).spawn().unwrap());
+    }
+    assert!(children.iter_mut().all(|child| child.wait().unwrap().success()));
+    let mut children = Vec::new();
+    for _ in 0..12 {
+        children.push(Command::new(env!("CARGO_BIN_EXE_o")).args(["msg", "send", "--run", "r1", "--id", "same", "same"])
+            .env("LOCALAPPDATA", &base).env("O_RUN_ID", "").env("O_CARD_ID", "").stdout(std::process::Stdio::null()).spawn().unwrap());
+    }
+    assert!(children.iter_mut().all(|child| child.wait().unwrap().success()));
+    assert_eq!(senders(&home).len(), 17);
+    let raw = std::fs::read_to_string(home.join("runs/r1/events.jsonl")).unwrap();
+    assert_eq!(raw.lines().count(), 17);
+    assert!(raw.lines().all(|line| serde_json::from_str::<serde_json::Value>(line).is_ok()));
+}
+
+#[test]
+fn legacy_cursor_and_interrupted_tail_require_repair_before_new_messages() {
+    let (base, home) = setup("legacy");
+    let dir = home.join("runs/r1");
+    let old = "{\"t\":\"msg\",\"at\":\"old\",\"from\":\"lead\",\"to\":\"a\",\"text\":\"old\"}\n";
+    let path = dir.join("events.jsonl");
+    std::fs::write(&path, format!("{old}{{\"t\":\"msg\"")).unwrap();
+    std::fs::write(dir.join("read.a"), "99").unwrap();
+    let refused = o(&base, &["msg", "send", "--run", "r1", "--to", "a", "new"], &[]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("손상"));
+    assert!(!std::fs::read_to_string(&path).unwrap().contains("new"));
+    std::fs::write(&path, old).unwrap();
+    assert!(o(&base, &["msg", "send", "--run", "r1", "--to", "a", "new"], &[]).status.success());
+    let read = o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]);
+    assert!(!read.status.success());
+    assert!(String::from_utf8_lossy(&read.stderr).contains("m0"));
+    let history = o(&base, &["msg", "read", "--run", "r1", "--as", "a", "--all"], &[]);
+    assert!(String::from_utf8_lossy(&history.stdout).contains("old (id: m0, message, unknown)"));
+    assert!(o(&base, &["msg", "ack", "--run", "r1", "--as", "a", "--id", "m0"], &[]).status.success());
+    assert!(String::from_utf8_lossy(&o(&base, &["msg", "read", "--run", "r1", "--as", "a"], &[]).stdout).contains("new"));
+}
+
+#[test]
+fn interrupted_complete_record_is_deduplicated_before_reappend() {
+    let (base, home) = setup("complete-tail");
+    let path = home.join("runs/r1/events.jsonl");
+    std::fs::write(&path, r#"{"t":"msg","at":"old","id":"k4-lead-retry","kind":"message","from":"lead","to":"all","text":"hello"}"#).unwrap();
+    assert!(o(&base, &["msg", "send", "--run", "r1", "--id", "retry", "hello"], &[]).status.success());
+    assert_eq!(std::fs::read_to_string(path).unwrap().lines().count(), 1);
+}
+
+#[test]
+fn lock_child_process() {
+    let Ok(dir) = std::env::var("O_MSG_LOCK_TEST") else { return };
+    let lock = std::fs::OpenOptions::new().create(true).truncate(false).write(true).open(Path::new(&dir).join("events.lock")).unwrap();
+    lock.lock().unwrap();
+    std::fs::write(Path::new(&dir).join("locked"), "yes").unwrap();
+    std::thread::sleep(std::time::Duration::from_secs(30));
+}
+
+#[test]
+fn killed_lock_owner_does_not_block_restart() {
+    let (base, home) = setup("killed");
+    let dir = home.join("runs/r1");
+    let mut child = Command::new(std::env::current_exe().unwrap()).args(["--exact", "lock_child_process"])
+        .env("O_MSG_LOCK_TEST", &dir).stdout(std::process::Stdio::null()).spawn().unwrap();
+    for _ in 0..200 {
+        if dir.join("locked").exists() { break; }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert!(dir.join("locked").exists());
+    child.kill().unwrap();
+    child.wait().unwrap();
+    assert!(o(&base, &["msg", "send", "--run", "r1", "after restart"], &[]).status.success());
 }

@@ -1,4 +1,4 @@
-import { Check, CircleAlert, CircleDashed, Download, ExternalLink, LogIn, RefreshCw } from "lucide-react";
+import { Check, CircleAlert, CircleDashed, Download, ExternalLink, LogIn, RefreshCw, Terminal } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { canLead } from "../../../../src/core/lead.ts";
@@ -6,7 +6,7 @@ import { useAgentCheck } from "../../data/agents.ts";
 import type { ActionResult, AgentId, AgentStatus, Backend } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 
-type Busy = "install" | "login";
+type Busy = "install" | "login" | "terminal";
 
 interface Note {
   ok: boolean;
@@ -38,9 +38,9 @@ export function useAgents(api: Backend, clean: boolean) {
     setNotes((n) => ({ ...n, [id]: undefined }));
     let result: ActionResult;
     try {
-      result = kind === "install" ? await api.install(id) : await api.login(id, clean);
+      result = kind === "install" ? await api.install(id) : kind === "terminal" ? await api.openTerminal() : await api.login(id, clean);
     } catch (e) {
-      result = { ok: false, message: kind === "install" ? "설치를 시작하지 못했습니다." : "로그인 창을 열지 못했습니다.", log: errorText(e) };
+      result = { ok: false, message: kind === "install" ? "설치를 시작하지 못했습니다." : kind === "terminal" ? "터미널을 열지 못했습니다." : "로그인 창을 열지 못했습니다.", log: errorText(e) };
     }
     setBusy((b) => ({ ...b, [id]: undefined }));
     setNotes((n) => ({ ...n, [id]: result }));
@@ -56,6 +56,7 @@ export function useAgents(api: Backend, clean: boolean) {
     recheck,
     install: (id: AgentId) => act(id, "install"),
     login: (id: AgentId) => act(id, "login"),
+    terminal: () => act("agy", "terminal"),
     openExternal: (url: string) => void api.openExternal(url).catch(() => window.open(url, "_blank", "noopener")),
     /** At least one agent can lead (the composer can send). */
     ready: Boolean(agents?.some(usable)),
@@ -65,7 +66,7 @@ export function useAgents(api: Backend, clean: boolean) {
 export type AgentsState = ReturnType<typeof useAgents>;
 
 /** Each CLI with its state and the one next step it needs: install, sign in, or nothing. */
-export function AgentList({ state }: { state: AgentsState }) {
+export function AgentList({ state, showApiKeyWarning = false }: { state: AgentsState; showApiKeyWarning?: boolean }) {
   const { agents, error, checking } = state;
   if (!agents) {
     if (error)
@@ -110,14 +111,14 @@ export function AgentList({ state }: { state: AgentsState }) {
       )}
       <ul className="divide-y rounded-lg border" aria-busy={checking}>
         {agents.map((agent) => (
-          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} />
+          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} showApiKeyWarning={showApiKeyWarning} />
         ))}
       </ul>
     </div>
   );
 }
 
-function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState }) {
+function AgentRow({ agent, busy, note, state, showApiKeyWarning }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState; showApiKeyWarning: boolean }) {
   const connected = agent.installed && !agent.profileUnsupported && agent.loggedIn === true;
   const unknown = agent.installed && !agent.profileUnsupported && agent.loggedIn === null;
   const needsLogin = agent.installed && !agent.profileUnsupported && agent.loggedIn === false;
@@ -126,6 +127,10 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
     ? "설치하는 중입니다. 몇 분 걸릴 수 있습니다."
     : busy === "login"
       ? "로그인 창을 여는 중입니다."
+      : busy === "terminal"
+        ? "터미널을 여는 중입니다."
+      : agent.id === "agy" && agent.installed
+        ? `설치됨${version} · 터미널에서 직접 실행`
       : agent.installed && agent.profileUnsupported
         ? agent.profileUnsupported
       : connected
@@ -154,6 +159,13 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
         공식 설치 페이지
       </button>
     );
+  else if (agent.id === "agy")
+    action = (
+      <button type="button" onClick={() => void state.terminal()} className={BUTTON_SECONDARY}>
+        <Terminal className="size-3.5" aria-hidden="true" />
+        터미널 열기
+      </button>
+    );
   else if (needsLogin || unknown)
     action = (
       <button type="button" onClick={() => void state.login(agent.id)} className={needsLogin ? BUTTON_PRIMARY : BUTTON_SECONDARY}>
@@ -176,8 +188,15 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
         </div>
         {action}
       </div>
+      {showApiKeyWarning && !!agent.apiKeyEnv?.length && (
+        <p role="note" className="mt-2 ml-10 break-words text-xs leading-relaxed text-status-warning-text">
+          인증 환경변수가 설정되어 있습니다: {agent.apiKeyEnv.join(", ")}. {agent.id === "claude" && agent.apiKeyEnv.includes("ANTHROPIC_API_KEY")
+            ? "Claude의 비대화형 실행(-p)에서 키를 사용하면 구독 대신 API로 과금됩니다."
+            : "CLI의 인증 방식과 과금이 달라질 수 있습니다."} 사용 전 인증 설정을 확인해 주세요.
+        </p>
+      )}
       {busy && (
-        <div className="relative mt-3 ml-10 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${agent.name} ${busy === "install" ? "설치" : "로그인"} 진행 중`}>
+        <div className="relative mt-3 ml-10 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${agent.name} ${busy === "install" ? "설치" : busy === "terminal" ? "터미널 열기" : "로그인"} 진행 중`}>
           <span className="progress-flow absolute inset-y-0 w-2/5 rounded-full bg-primary/70" />
         </div>
       )}
@@ -186,7 +205,10 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
           Project O가 직접 설치하지 않습니다. 공식 안내대로 설치한 뒤 다시 확인을 눌러 주세요. 앱은 켜질 때의 PATH만 읽으므로, 방금 설치한 Node.js나 CLI가 그래도 보이지 않으면 앱을 다시 시작해 주세요. <span className="text-foreground/85">{agent.installHint}</span>
         </p>
       )}
-      {!busy && needsLogin && (
+      {!busy && agent.id === "agy" && agent.installed && (
+        <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">터미널에서 작업 폴더로 이동한 뒤 agy를 직접 입력하세요.</p>
+      )}
+      {!busy && agent.id !== "agy" && needsLogin && (
         <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">
           연결을 누르면 공식 로그인용 콘솔 창이나 브라우저가 열립니다. 로그인을 마친 뒤 다시 확인을 눌러 주세요.
         </p>

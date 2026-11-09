@@ -92,7 +92,7 @@ fn tool_activity_reads_as_an_act_the_log_keeps_the_raw_event() {
 #[test]
 fn team_messages_land_on_the_run_and_in_each_partys_log() {
     let start = by_id(FIXTURE).remove(0);
-    let msg = |at: &str, from: &str, to: &str, text: &str| OEvent::Msg { at: at.into(), from: from.into(), to: to.into(), text: text.into() };
+    let msg = |at: &str, from: &str, to: &str, text: &str| OEvent::Msg { at: at.into(), from: from.into(), to: to.into(), text: text.into(), id: None, kind: None, reply_to: None };
     let run = snapshot(&[
         start,
         msg("2026-11-01T10:10:00.000Z", "code", "research", "app.js 끝났어요"),
@@ -107,6 +107,19 @@ fn team_messages_land_on_the_run_and_in_each_partys_log() {
     assert_eq!(log("research"), ["app.js 끝났어요", "모두 마무리해 주세요"]);
     assert_eq!(log("design"), ["모두 마무리해 주세요"]);
     assert_eq!(run.cards[0].label, "코딩");
+}
+
+#[test]
+fn question_metadata_survives_typed_event_and_snapshot() {
+    let mut events = by_id(FIXTURE);
+    events.push(serde_json::from_str(r#"{"t":"msg","at":"now","from":"lead","to":"all","text":"help?","id":"m1","kind":"question"}"#).unwrap());
+    let view = o_core::run::snapshot::snapshot(&events).unwrap();
+    let msg = view.messages.last().unwrap();
+    assert_eq!(msg.id.as_deref(), Some("m1"));
+    assert_eq!(msg.kind.as_deref(), Some("question"));
+    events.push(serde_json::from_str(r#"{"t":"msg","at":"later","from":"code","to":"lead","text":"yes","replyTo":"m1"}"#).unwrap());
+    let view = o_core::run::snapshot::snapshot(&events).unwrap();
+    assert_eq!(view.messages.last().unwrap().reply_to.as_deref(), Some("m1"));
 }
 
 #[test]

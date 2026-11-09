@@ -107,6 +107,9 @@ fn hook_enforces_the_branch_flow() {
     assert!(blocked(&bash("git push --force origin test_2"), &OnBranch("test_2")));
     assert!(blocked(&bash("git push origin test_2"), &OnBranch("younchan")));
     assert!(blocked(&bash("git push origin younchan:test_1"), &OnBranch("younchan")));
+    assert!(blocked(&bash("git push origin main_hotfix"), &OnBranch("younchan")));
+    assert!(blocked(&bash("git push origin HEAD:refs/heads/main_hotfix"), &OnBranch("younchan")));
+    assert!(blocked(&bash("git commit -m wip"), &OnBranch("main_hotfix")));
     assert!(passes(&bash("git push origin younchan"), &OnBranch("younchan")));
     assert!(passes(&bash("git commit -m wip && git push origin younchan-o-cli"), &OnBranch("younchan-o-cli")));
 }
@@ -116,7 +119,7 @@ fn hook_enforces_branch_names() {
     assert!(blocked(&bash("git switch -c feature-x"), &OnBranch("younchan")));
     assert!(blocked(&bash("git checkout -b younchan/x"), &OnBranch("younchan")));
     assert!(blocked(&bash("git switch -c a/x"), &OnBranch("younchan")));
-    assert!(passes(&bash("git switch -c yongwoo-account-vault"), &OnBranch("yongwoo")));
+    assert!(passes(&bash("git switch -c yongwoo-session-resume"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git switch -c younchan"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git branch -d younchan-old"), &OnBranch("younchan")));
 }
@@ -281,15 +284,16 @@ fn only_provider_files_may_introduce_bypass_switches() {
 #[test]
 fn reasons_carry_the_korean_wording() {
     let reasons = review(&bash("git push origin main"), &OnBranch("younchan"));
-    assert_eq!(reasons, vec!["main에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 → test_1 → main)".to_string()]);
+    assert_eq!(reasons, vec!["main에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main, 정식 핫픽스는 main_hotfix → main)".to_string()]);
     let edit = json!({ "tool_name": "Edit", "tool_input": { "file_path": "C:/ws/test_2/a.rs", "new_string": "x" }, "cwd": "C:/ws/younchan" });
     let reasons = review(&edit, &ByFolder);
     assert_eq!(reasons.len(), 1);
-    assert!(reasons[0].starts_with("project_O의 test_1·test_2·main 작업 폴더는 읽기 전용입니다") && reasons[0].ends_with("(C:/ws/test_2/a.rs)"));
+    assert!(reasons[0].starts_with("project_O의 test_1·test_1_hotfix·test_2·main_hotfix·main 작업 폴더는 읽기 전용입니다") && reasons[0].ends_with("(C:/ws/test_2/a.rs)"));
 }
 
-/// A personal checkout whose gh knows PRs 1 (→ test_1), 2 (→ test_2), 3 (→ main),
-/// 4 (→ younchan) and the current branch's PR (→ test_2), signed in as `login`.
+/// A personal checkout whose gh knows PRs 1 (→ main_hotfix), 2 (→ test_2), 3 (→ main),
+/// 4 (→ younchan), 5 (→ test_1_hotfix), 6 (→ test_1), the test_2 branch's PR (→ test_1)
+/// and the current branch's PR (→ test_2), signed in as `login`.
 /// `-R` other than this repo, or an unknown PR, fails the lookup.
 struct Gh {
     login: Option<&'static str>,
@@ -308,10 +312,12 @@ impl GitProbe for Gh {
         }
         let base = match selector {
             None => "test_2",
-            Some("1" | "https://github.com/chan12392/project_O/pull/1" | "test_2") => "test_1",
+            Some("1" | "https://github.com/chan12392/project_O/pull/1" | "younchan-release-fix") => "main_hotfix",
+            Some("6" | "test_2") => "test_1",
             Some("2" | "younchan") => "test_2",
             Some("3" | "test_1") => "main",
             Some("4") => "younchan",
+            Some("5" | "younchan-hotfix") => "test_1_hotfix",
             _ => return None,
         };
         Some(base.to_string())
@@ -340,8 +346,8 @@ fn every_protected_branch_refuses_direct_pushes_and_commits() {
 }
 
 #[test]
-fn only_the_owner_merges_prs_into_test_1_and_main() {
-    for into_protected in ["gh pr merge 1", "gh pr merge 3 --merge", "gh pr merge https://github.com/chan12392/project_O/pull/1", "gh pr merge test_2 --merge"] {
+fn only_the_owner_merges_prs_into_the_hotfix_lanes_and_main() {
+    for into_protected in ["gh pr merge 1", "gh pr merge 3 --merge", "gh pr merge https://github.com/chan12392/project_O/pull/1", "gh pr merge younchan-release-fix --merge", "gh pr merge 5", "gh pr merge younchan-hotfix"] {
         assert!(passes(&bash(into_protected), &OWNER_GH), "{into_protected}");
         let reasons = review(&bash(into_protected), &MEMBER_GH);
         assert_eq!(reasons.len(), 1, "{into_protected}");
@@ -349,9 +355,23 @@ fn only_the_owner_merges_prs_into_test_1_and_main() {
     }
     let reasons = review(&bash("gh pr merge 3"), &MEMBER_GH);
     assert!(reasons[0].starts_with("main에는 대표(chan12392)만 병합할 수 있습니다"), "{}", reasons[0]);
+    let reasons = review(&bash("gh pr merge 1"), &MEMBER_GH);
+    assert!(reasons[0].starts_with("main_hotfix에는 대표(chan12392)만 병합할 수 있습니다"), "{}", reasons[0]);
     // Flags with values before the PR, and -R with the PR's repository.
     assert!(blocked(&bash("gh pr merge --subject \"release 1\" -R chan12392/project_O 1"), &MEMBER_GH));
     assert!(passes(&bash("gh pr merge --subject 'release 1' -R chan12392/project_O 2"), &MEMBER_GH));
+}
+
+/// test_1's GitHub ruleset requires another member's approval (the owner bypasses it),
+/// so the hook lets any signed-in member merge there (ADR-0031).
+#[test]
+fn a_member_merges_into_test_1_after_github_checks_the_approval() {
+    for into_test_1 in ["gh pr merge 6", "gh pr merge test_2 --merge", "gh api -X PUT repos/chan12392/project_O/pulls/6/merge", "gh api repos/chan12392/project_O/merges -f base=test_1 -f head=test_2"] {
+        assert!(passes(&bash(into_test_1), &MEMBER_GH), "{into_test_1}");
+        assert!(passes(&bash(into_test_1), &OWNER_GH), "{into_test_1}");
+    }
+    assert!(blocked(&bash("gh api repos/chan12392/project_O/merges -f base=main_hotfix -f head=younchan"), &MEMBER_GH));
+    assert!(passes(&bash("gh api repos/chan12392/project_O/merges -f base=main_hotfix -f head=younchan"), &OWNER_GH));
 }
 
 #[test]
@@ -367,13 +387,69 @@ fn merge_lookups_that_fail_block() {
     // Unknown PR or another repository: the base cannot be confirmed.
     assert!(blocked(&bash("gh pr merge 99"), &MEMBER_GH));
     assert!(blocked(&bash("gh pr merge -R someone/other 2"), &MEMBER_GH));
-    // Base is test_1 but who is signed in cannot be told.
+    // The owner too: an unconfirmed base is refused before the owner check (#47).
+    for unknown in ["gh pr merge 99", "gh pr merge -R someone/other 2", "gh api -X PUT repos/chan12392/project_O/pulls/99/merge"] {
+        let reasons = review(&bash(unknown), &OWNER_GH);
+        assert!(reasons.len() == 1 && reasons[0].starts_with("병합할 PR의 base 브랜치를 확인하지 못했습니다"), "{unknown} → {reasons:?}");
+    }
+    // Words in a commit message or PR body are not a merge: the owner still passes.
+    for mention in ["git commit -m \"fix: gh pr merge now blocks\"", "gh pr create --body \"run gh pr merge later\"", "echo gh pr merge x"] {
+        assert!(passes(&bash(mention), &OWNER_GH), "{mention}");
+    }
+    assert!(blocked(&bash("git status && gh pr merge 99"), &OWNER_GH));
+    assert!(blocked(&bash("echo ok\ngh pr merge 99"), &OWNER_GH));
+    // A separator inside single quotes starts no command (#56): the owner still passes,
+    // and anyone else still meets the owner check.
+    for mention in ["echo 'Next steps;\ngh pr merge later'", "git commit -m 'docs: steps\n\ngh pr merge 99'", "echo 'a; gh pr merge 99' && echo done"] {
+        assert!(passes(&bash(mention), &OWNER_GH), "{mention:?}");
+        assert!(blocked(&bash(mention), &MEMBER_GH), "{mention:?}");
+    }
+    // Closed quotes, double quotes, escapes, comments and strings handed to a shell still run it.
+    for real in [
+        "echo 'x'; gh pr merge 99",
+        "echo \"steps; $(gh pr merge 99)\"",
+        "echo \"a\n$(true; gh pr merge 99)\"",
+        "echo it\\'s; gh pr merge 99 '",
+        "echo it`'s; gh pr merge 99 '",
+        "# it's\ngh pr merge 99 '",
+        "bash -c 'git fetch; gh pr merge 99'",
+        "pwsh -Command 'git fetch; gh pr merge 99'",
+        "cat <<EOF\nit's\nEOF\ngh pr merge 99 '",
+        "echo $'a\\'b' ; gh pr merge 99 '",
+        "echo 'a\u{2019}; gh pr merge 99 '",
+    ] {
+        assert!(blocked(&bash(real), &OWNER_GH), "{real:?}");
+    }
+    // Confirmed bases keep their rule for the owner.
+    for known in ["gh pr merge 1", "gh pr merge 3", "gh pr merge 5", "gh pr merge 2", "gh pr merge 4"] {
+        assert!(passes(&bash(known), &OWNER_GH), "{known}");
+    }
+    // Base is main_hotfix but who is signed in cannot be told.
     let reasons = review(&bash("gh pr merge 1"), &NO_LOGIN_GH);
-    assert!(reasons.len() == 1 && reasons[0].starts_with("gh 로그인 계정을 확인하지 못해 test_1 병합을 막습니다"), "{reasons:?}");
+    assert!(reasons.len() == 1 && reasons[0].starts_with("gh 로그인 계정을 확인하지 못해 main_hotfix 병합을 막습니다"), "{reasons:?}");
     // A token on the command line is someone the login lookup never saw.
     assert!(blocked(&bash("GH_TOKEN=x gh pr merge 1"), &OWNER_GH));
     // The default probe knows no gh at all: fail closed, even for the owner's own repo.
     assert!(blocked(&bash("gh pr merge 2"), &OnBranch("younchan")));
+}
+
+#[test]
+fn substitutions_cannot_hide_a_merge_behind_literal_quotes() {
+    for command in [
+        "echo \"$(printf \"'\"; gh pr merge 99; true)\"",
+        "echo \"$(printf \"'\"; $(true; gh pr merge 99; true))\"",
+        "echo \"`gh pr merge 99`\"",
+        "echo \"`printf \"'\"; gh pr merge 99; true`\"",
+        "echo 'first; gh pr merge 99'; gh pr merge 99",
+    ] {
+        for probe in [&OWNER_GH, &MEMBER_GH] {
+            let reasons = review(&bash(command), probe);
+            assert!(reasons.iter().any(|reason| reason.starts_with("병합할 PR의 base 브랜치를 확인하지 못했습니다")), "{command:?} → {reasons:?}");
+        }
+    }
+    let literal = "echo 'first; gh pr merge 99'";
+    assert!(passes(&bash(literal), &OWNER_GH));
+    assert!(blocked(&bash(literal), &MEMBER_GH));
 }
 
 #[test]

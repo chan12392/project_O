@@ -1,9 +1,32 @@
 import assert from "node:assert/strict";
 import type { IncomingMessage } from "node:http";
 import { Readable } from "node:stream";
+import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
 import { test } from "node:test";
 
-import { body, failureText, leadStopArgs } from "../app/dev/liveRuns.ts";
+import { body, failureText, leadStopArgs, oBinary } from "../app/dev/liveRuns.ts";
+
+test("the dev server selects the CLI for its Tauri target and profile", () => {
+  const names = ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET", "TAURI_ENV_TARGET_TRIPLE", "TAURI_ENV_DEBUG"] as const;
+  const saved = names.map((name) => process.env[name]);
+  const dir = mkdtempSync(join(tmpdir(), "o-dev-cli-"));
+  try {
+    process.env.CARGO_TARGET_DIR = dir;
+    delete process.env.CARGO_BUILD_TARGET;
+    process.env.TAURI_ENV_TARGET_TRIPLE = "test-target";
+    process.env.TAURI_ENV_DEBUG = "true";
+    const binary = join(dir, "test-target", "debug", `o${process.platform === "win32" ? ".exe" : ""}`);
+    mkdirSync(join(dir, "test-target", "debug"), { recursive: true });
+    writeFileSync(binary, "");
+    assert.equal(oBinary(), binary);
+    process.env.CARGO_TARGET_DIR = relative(join(process.cwd(), "app", "src-tauri"), dir);
+    assert.equal(oBinary(), binary);
+  } finally {
+    names.forEach((name, i) => saved[i] === undefined ? delete process.env[name] : process.env[name] = saved[i]);
+  }
+});
 
 test("a failed `o` says why even when it wrote nothing to stderr", () => {
   // An old `o` without `lead` prints its usage to stdout and exits 1.

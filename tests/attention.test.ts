@@ -94,6 +94,64 @@ test("badges count what waits on a person: not a note to read, not a Claude Code
   assert.deepEqual(recommend([told], after(team.endedAt!, 60_000)).filter((p) => p.kind === "answer").map((p) => p.item?.cardId), ["a"]);
 });
 
+test("explicit message kind takes precedence over punctuation while older messages keep the heuristic", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const told: RunView = { ...team, messages: [
+    { at: at(1000), from: "a", to: "lead", kind: "question", text: "방향을 정해야 합니다" },
+    { at: at(2000), from: "b", to: "lead", kind: "message", text: "질문 예시: 어떻게 할까요?" },
+  ] };
+  const answers = nextUp([told], after(team.endedAt!, 60_000)).todo.filter((i) => i.kind === "answer");
+  assert.deepEqual(answers.map((i) => [i.cardId, isNote(i)]), [["a", false], ["b", true]]);
+});
+
+test("only a reply linked to its question clears it, and the copied command preserves the link", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const asked: RunView = { ...team, messages: [
+    { at: at(1000), id: "q1", kind: "question", from: "a", to: "lead", text: "첫 질문" },
+    { at: at(2000), id: "q2", kind: "question", from: "a", to: "lead", text: "둘째 질문" },
+    { at: at(3000), from: "lead", to: "all", text: "일반 공지" },
+    { at: at(4000), from: "lead", to: "a", replyTo: "q1", text: "첫 답변" },
+  ] };
+  const answers = nextUp([asked], after(team.endedAt!, 60_000)).todo.filter((i) => i.kind === "answer");
+  assert.deepEqual(answers.map((i) => i.questionId), ["q2"]);
+  assert.match(ticketCommand(answers[0])!.text, /--reply-to q2/);
+  assert.equal(ticketCommand({ ...answers[0], questionId: "q;bad" }), undefined);
+});
+
+test("an approval request remains visible until the matching direct reply", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const asked: RunView = { ...team, messages: [
+    { at: at(1000), id: "approval1", kind: "approval", from: "a", to: "lead", text: "계속해도 되나요?" },
+    { at: at(2000), from: "lead", to: "all", text: "일반 공지" },
+  ] };
+  const items = nextUp([asked], after(team.endedAt!, 60_000)).todo.filter((item) => item.kind === "answer");
+  assert.equal(items.length, 1);
+  assert.equal(items[0].questionId, "approval1");
+  assert.match(items[0].detail ?? "", /승인 요청/);
+  assert.equal(needsAction(items[0]), true);
+  const replied: RunView = { ...asked, messages: [...asked.messages, { at: at(3000), from: "lead", to: "a", replyTo: "approval1", text: "확인" }] };
+  assert.equal(nextUp([replied], after(team.endedAt!, 60_000)).todo.filter((item) => item.kind === "answer").length, 0);
+});
+
+test("a question or approval the card cancelled leaves next up, picks and the action count", () => {
+  const team = byId("20261101-145332-q3eg");
+  const at = (ms: number) => after(team.endedAt!, ms).toISOString();
+  const now = after(team.endedAt!, 60_000);
+  for (const kind of ["question", "approval"] as const) {
+    const asked: RunView = { ...team, status: "running", messages: [
+      { at: at(1000), id: "gone", kind, from: "a", to: "lead", text: "취소할 질문인가요?", recipients: { lead: "cancelled" } },
+      { at: at(2000), id: "open", kind, from: "a", to: "lead", text: "남은 질문인가요?", recipients: { lead: "stored" } },
+    ] };
+    const answers = nextUp([asked], now).todo.filter((i) => i.kind === "answer");
+    assert.deepEqual(answers.map((i) => i.questionId), ["open"], kind);
+    assert.equal(answers.filter(needsAction).length, 1, kind);
+    assert.deepEqual(recommend([asked], now).filter((s) => s.kind === "answer").map((s) => s.item?.questionId), ["open"], kind);
+  }
+});
+
 test("fleet stats and activity read the same runs", () => {
   const now = after(byId("20261101-162328-9p0b").endedAt!, 0);
   const stats = fleetStats(runs, now);
