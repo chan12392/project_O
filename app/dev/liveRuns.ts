@@ -542,6 +542,18 @@ export function liveRuns(): Plugin {
           if (value !== "on" && value !== "off") return send(res, 400, JSON.stringify({ error: "하루 사용 예산은 on 또는 off입니다" }));
           return void o(["budget", "--json", "--cached", `--${value}`]).then((out) => send(res, 200, out), error(res));
         }
+        if (req.method === "GET" && path === "/ram") return void o(["ram", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/ram") {
+          // RAM 상한 (ADR-0037): `o ram --on|--off --percent <n>`; `o ram` checks the range again.
+          const args = ["ram", "--json"];
+          const enabled = query.get("enabled");
+          const percent = query.get("percent");
+          if (enabled !== null && enabled !== "on" && enabled !== "off") return send(res, 400, JSON.stringify({ error: "RAM 상한은 on 또는 off입니다" }));
+          if (percent !== null && !/^(5\d|[6-8]\d|9[0-5])$/.test(percent)) return send(res, 400, JSON.stringify({ error: "RAM 상한은 50~95 사이의 정수입니다" }));
+          if (enabled !== null) args.push(`--${enabled}`);
+          if (percent !== null) args.push("--percent", percent);
+          return void o(args).then((out) => send(res, 200, out), error(res));
+        }
           if (req.method === "GET" && path === "/yolo") return void o(["yolo", "--json"]).then((out) => send(res, 200, out), error(res));
           if (req.method === "POST" && path === "/yolo") {
             void (async () => {

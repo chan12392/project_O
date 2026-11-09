@@ -10,6 +10,7 @@ mod resources;
 pub mod index;
 pub mod mode;
 pub mod plan;
+pub mod ram;
 pub mod result;
 pub mod runner;
 pub mod snapshot;

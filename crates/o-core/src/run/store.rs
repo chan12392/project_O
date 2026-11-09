@@ -367,6 +367,11 @@ pub fn reserve_slot(home: &Path, run_id: &str, card: &crate::run::plan::Card, pr
         tx.commit().map_err(sql)?;
         return Ok(Reserved::Busy(format!("{provider} 동시 실행 {max}개가 차서 대기")));
     }
+    // The RAM cap (ADR-0037) holds back cards beyond the first; it is a setting, not a LIMITS cap.
+    if let Some(reason) = super::ram::hold_back(home, held.len()) {
+        tx.commit().map_err(sql)?;
+        return Ok(Reserved::Busy(reason));
+    }
     tx.execute(
         "INSERT INTO slots (run_id, card_id, provider, owner) VALUES (?1, ?2, ?3, ?4)",
         params![run_id, card_id, provider.as_str(), std::process::id()],

@@ -6,6 +6,7 @@ pub mod js;
 #[cfg(any(target_os = "macos", test))]
 mod macos_terminal;
 pub mod launch;
+pub mod memory;
 pub mod mirror;
 pub mod proc;
 pub mod resolve;

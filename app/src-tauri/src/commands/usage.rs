@@ -86,6 +86,24 @@ pub async fn budget_set_enabled(enabled: bool) -> Result<String, String> {
     blocking(move || set_budget_enabled(&store::default_home(), enabled)).await?
 }
 
+/// Settings → 에이전트 → RAM 상한 (`o ram --json`, ADR-0037).
+#[tauri::command]
+pub async fn ram_get() -> Result<Value, String> {
+    blocking(|| json!(o_core::run::ram::report(&store::default_home()))).await
+}
+
+/// Settings → 에이전트 → RAM 상한 켜기·끄기와 비율 (`o ram --on|--off --percent <n>`).
+#[tauri::command]
+pub async fn ram_set(enabled: Option<bool>, percent: Option<Value>) -> Result<Value, String> {
+    blocking(move || {
+        let home = store::default_home();
+        if let Some(percent) = percent { o_core::run::ram::write_percent(&home, &percent)?; }
+        if let Some(enabled) = enabled { o_core::run::ram::write_enabled(&home, enabled)?; }
+        Ok(json!(o_core::run::ram::report(&home)))
+    })
+    .await?
+}
+
 #[tauri::command]
 pub async fn yolo_get() -> Result<Value, String> {
     blocking(|| json!(o_core::run::yolo::report(&store::default_home()))).await

@@ -22,6 +22,7 @@ mod lead;
 mod mirror;
 mod msg;
 mod projects;
+mod ram;
 mod review;
 mod resources;
 mod runs;
@@ -59,6 +60,7 @@ pub const COMMANDS: &[Command] = &[
     tokens::TOKENS,
     usage::USAGE,
     budget::BUDGET,
+    ram::RAM,
     yolo::YOLO,
     runs::RUNS,
     sessions::SESSIONS,

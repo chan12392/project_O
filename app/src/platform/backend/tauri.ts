@@ -52,6 +52,8 @@ export function tauriBackend(invoke: Invoke): Backend {
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
     setBudgetEnabled: async (enabled) => JSON.parse((await invoke("budget_set_enabled", { enabled })) as string) as BudgetReport,
+    ram: () => invoke("ram_get") as ReturnType<Backend["ram"]>,
+    setRam: (change) => invoke("ram_set", { enabled: null, percent: null, ...change }) as ReturnType<Backend["setRam"]>,
     yolo: () => invoke("yolo_get") as ReturnType<Backend["yolo"]>,
     setYolo: (change) => invoke("yolo_set", { enabled: null, maxCards: null, perHour: null, dedupeMinutes: null, ...change }) as ReturnType<Backend["setYolo"]>,
     tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,

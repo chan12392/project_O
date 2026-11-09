@@ -57,6 +57,13 @@ export const devBackend: Backend = {
   budget: () => fetch("/api/budget").then((r) => json<BudgetReport>(r)),
   setBudgetPercent: (percent) => fetch(`/api/budget/percent?value=${percent}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
   setBudgetEnabled: (enabled) => fetch(`/api/budget/enabled?value=${enabled ? "on" : "off"}`, { method: "POST" }).then((r) => json<BudgetReport>(r)),
+  ram: () => fetch("/api/ram").then((r) => json<Awaited<ReturnType<Backend["ram"]>>>(r)),
+  setRam: (change) => {
+    const query = new URLSearchParams();
+    if (change.enabled !== undefined) query.set("enabled", change.enabled ? "on" : "off");
+    if (change.percent !== undefined) query.set("percent", String(change.percent));
+    return fetch(`/api/ram?${query}`, { method: "POST" }).then((r) => json<Awaited<ReturnType<Backend["setRam"]>>>(r));
+  },
   yolo: () => fetch("/api/yolo").then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   setYolo: (change) => fetch("/api/yolo", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),

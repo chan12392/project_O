@@ -217,6 +217,10 @@ export interface Backend {
   setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
   /** Turns the daily budget on or off (`o budget --on|--off`) and returns the new report. */
   setBudgetEnabled(enabled: boolean): Promise<BudgetReport>;
+  /** The RAM cap on card starts (`o ram --json`, ADR-0037). */
+  ram(): Promise<RamReport>;
+  /** Saves the RAM cap's switch and/or percent (50–95) and returns the new report. */
+  setRam(change: RamChange): Promise<RamReport>;
   yolo(): Promise<YoloReport>;
   setYolo(change: YoloChange): Promise<YoloReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
@@ -299,6 +303,14 @@ export interface ScheduleRequest {
   autoDispatch: boolean;
 }
 export type ScheduleJob = ScheduleRequest & { id: string; enabled: boolean; last?: { at: string; ok: boolean; error?: string } };
+
+export interface RamReport {
+  enabled: boolean;
+  percent: number;
+  /** This machine's used memory now; null where O cannot read it (the cap then does nothing). */
+  used: number | null;
+}
+export type RamChange = { enabled?: boolean; percent?: number };
 
 export interface YoloReport {
   enabled: boolean;

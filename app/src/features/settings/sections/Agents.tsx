@@ -2,7 +2,7 @@ import { Bot, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { updateSettings, useSettings } from "../../../data/settings.ts";
-import { BUDGET_PERCENTS, type AgentCatalogEntry, type Backend, type BudgetPercent, type BudgetReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
+import { BUDGET_PERCENTS, type AgentCatalogEntry, type Backend, type BudgetPercent, type BudgetReport, type RamChange, type RamReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SubHeading, Switch } from "../../../ui/controls.tsx";
 import { AgentList, useAgents } from "../AgentSetup.tsx";
 import { Path, Rows, Section, type SettingsSectionDef } from "../Section.tsx";
@@ -46,6 +46,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           control={null}
         />
         <BudgetRows api={api} />
+        <RamRows api={api} />
         <YoloRows api={api} />
       </Rows>
       <div>
@@ -107,6 +108,44 @@ function AgentCatalog({ api }: { api: Backend }) {
       {entry.installUrl && <button type="button" className={BUTTON_SECONDARY} onClick={() => void api.openExternal(entry.installUrl!)}>공식 설치 안내</button>}
     </li>)}</ul>}
   </div>;
+}
+
+const RAM_PERCENTS = [50, 60, 70, 80, 90] as const;
+
+/**
+ * RAM 상한 (ADR-0037): kept in O's settings.json like the budget, because the runner reads it
+ * when a card is about to start. A saved percent outside the buttons (`o ram --percent 75`) shows unselected.
+ */
+function RamRows({ api }: { api: Backend }) {
+  const [report, setReport] = useState<RamReport>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void api.ram().then(setReport, (e) => setError(`지금 값을 읽지 못했습니다: ${String(e)}`)); }, [api]);
+  const save = async (change: RamChange) => {
+    setBusy(true);
+    try { setReport(await api.setRam(change)); setError(""); }
+    catch (e) { setError(`저장하지 못했습니다: ${String(e)}`); }
+    finally { setBusy(false); }
+  };
+  const used = report?.used == null ? "이 PC에서는 사용률을 읽지 못해 상한이 적용되지 않습니다." : `지금 사용률 ${report.used}%.`;
+  return <>
+    <SettingsRow id="ram-label" label="RAM 상한" description={<>
+      {report?.enabled === false
+        ? "꺼져 있습니다. 메모리 사용률과 관계없이 동시 실행 상한까지 작업카드를 시작합니다."
+        : `메모리 사용률이 ${report?.percent ?? 70}% 이상이면 새 작업카드를 시작하지 않고 차례를 기다리게 합니다. 실행 중인 카드가 하나도 없으면 시작하고, 이미 실행 중인 카드는 끝내지 않습니다.`}{" "}
+      {report && used}
+      {error && <span role="alert" className="block text-destructive">{error}</span>}
+    </>} control={<Switch checked={report?.enabled ?? true} disabled={!report || busy} labelledBy="ram-label" onChange={(enabled) => void save({ enabled })} />} />
+    <SettingsRow label="RAM 상한 비율" description="작업카드를 더 시작하지 않는 메모리 사용률입니다." control={
+      <Segmented
+        label="RAM 상한 비율"
+        value={String(report?.percent ?? "")}
+        disabled={report?.enabled === false}
+        onChange={!report || busy || !report.enabled ? undefined : (value) => void save({ percent: Number(value) })}
+        options={RAM_PERCENTS.map((p) => ({ value: String(p), label: `${p}%` }))}
+      />
+    } />
+  </>;
 }
 
 function YoloRows({ api }: { api: Backend }) {
