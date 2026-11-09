@@ -54,13 +54,13 @@
 - 저장소는 GitHub Pro이고 규칙 집합(ruleset)이 보호 브랜치 5개에 모두 걸려 있다(ADR-0031 개정 1). 대표(저장소 관리자)는 모두 우회할 수 있다.
   - 5개 공통: PR로만 바뀌고(merge commit만), CI `policy`·`check`가 통과해야 병합되며, 강제 push·삭제를 막는다.
   - `test_1`: 작성자가 아닌 사람 1명의 승인이 있어야 병합된다.
-  - `test_1_hotfix`·`main_hotfix`: 업데이트 제한으로 대표만 병합할 수 있다. 팀원은 PR만 연다.
+  - `test_1_hotfix`·`main_hotfix`·`main`: 업데이트 제한으로 대표만 병합할 수 있다. 팀원은 PR만 연다.
 - 팀원이 아닌 사람은 쓰기 권한이 없어 포크에서 PR만 열 수 있고, 그 PR은 `branch-flow.yml`이 실패시킨다(CONTRIBUTING.md).
-- `main`의 규칙 집합은 누가 병합하는지까지는 막지 않는다. 그래서 아래 지점에서도 막거나 알린다. 검사가 빨간색이면 병합하지 않는다.
+- 아래 지점에서도 막거나 알린다. 검사가 빨간색이면 병합하지 않는다.
   - 에이전트 훅(`o hook`): 보호 브랜치 커밋·push, 대표가 아닌 `gh` 로그인으로 `test_1_hotfix`·`main_hotfix`·`main`에 병합(`gh pr merge`, `gh api` 병합 호출)을 막는다. `test_1` 병합은 GitHub가 승인을 확인하므로 막지 않는다. PR의 base나 로그인 계정을 확인하지 못하면 막는다(base를 모르면 대표도 막는다).
   - git 훅(`o scan`): 보호 브랜치 커밋, 보호 브랜치로의 push를 막는다.
   - CI: `branch-flow.yml`은 흐름에 맞지 않는 PR을 실패시키고, `merge-guard.yml`은 대표가 아닌 사람이 `test_1_hotfix`·`main_hotfix`·`main`에 병합·push하면 실패로 알린다(사후 경보 — 이미 병합된 것을 막지는 못한다. 대표가 되돌린다).
-  - `test_1_hotfix`·`main_hotfix`는 GitHub가 웹 화면 병합까지 막는다. `main`의 웹 화면 병합 버튼은 기술적으로 막지 않았다. 규칙으로 지킨다.
+  - 웹 화면의 병합 버튼도 `test_1_hotfix`·`main_hotfix`·`main`에서는 GitHub 규칙 집합이 대표 외에는 막는다.
 
 ## 작업 폴더 (Orca 프로젝트 `project_O`)
 
