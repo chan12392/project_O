@@ -34,7 +34,7 @@
 | `run/` | `plan` `events` `runner` `store` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기, 상태 폴더, SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
 | `policy.rs` | | 계획·팀 메시지 허용 여부와 `LIMITS`. 공용 경계라 맨 위에 둔다 |
 | `providers/` | `mod.rs` `claude.rs` `codex.rs` `codex_app_server.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필, 사용량 조회. YOLO가 아닌 Codex 총괄은 `codex app-server`(읽기 전용 샌드박스, 승인 `on-request`를 사람에게, 훅 끔, ADR-0023 개정, app-server가 없는 CLI는 읽기 전용 `codex exec`), 카드와 YOLO 총괄은 `codex exec` |
-| `agents/` | `mod.rs` `clean.rs` | 앱이 보여 주는 CLI 설치·로그인 상태와 공식 설치·로그인, 깨끗한 테스트 프로필(환경변수 허용 목록·오염 검사) |
+| `agents/` | `mod.rs` `clean.rs` `billing.rs` | 앱이 보여 주는 CLI 설치·로그인 상태와 공식 설치·로그인, 깨끗한 테스트 프로필(환경변수 허용 목록·오염 검사), API 과금 모드(`billing::check` — 러너·총괄·Deep의 실행 직전 검사, ADR-0035 개정 1) |
 | `usage/` | `mod.rs` `probe.rs` `budget.rs` | 구독 창 형식, `usage.json` 조회·저장, 하루 사용 예산(ADR-0004) |
 | `context/` | `mod.rs` `tokens.rs` | 세션 공유 컨텍스트 검색·주입과 토큰 보고(ADR-0005) |
 | `lead/` | `mod.rs` `tabs.rs` `prompt.rs` `files.rs` `approvals.rs` `steps.rs` `overall.rs` `recovery.rs` `log_page.rs` | 총괄 탭(`tabs`, ADR-0034): `leads/open.json`에 프로젝트별 최대 4개 열린 대화와 writer 하나, `current.json`에 선택한 탭, `leads/<id>/events.jsonl`에 대화 기록. writer 외의 탭은 읽기 전용이며 서로 다른 탭은 동시에 답할 수 있다. 전체 총괄(`overall`, ADR-0032)은 프로젝트 루트의 읽기 전용 탭들로, 열린 대화 수·현재 탭 현황을 요약하고 `o-forward` 전달 시작 시 정한 열린 목적지를 유지한다. 전체 총괄의 `o-forward`는 제안(`lead.forward-plan`)으로 저장되어 사람의 `o lead forward`(`send_on`)로만 넘어가며, 넘긴 요청의 계획은 전체 총괄이 `o-review`로 검토해 승인하면 바로 실행하고 보완이면 최대 2번 다시 넘긴다(ADR-0036). 총괄 한 턴·세션 재개, `o-plan` 정책 검사·한 번만 실행, 첨부(O 상태 폴더 밖), 일반 모드 건별 승인(`approvals`, ADR-0008 개정 3)과 진행 단계(`steps`). 카드 질문은 실행기와 `recovery`가 분배한 열린 대화로 보내고, `log_page`는 열린 대화가 분배한 완료 실행의 원본 로그를 검증해 읽는다 |
@@ -48,7 +48,7 @@
 
 ### `crates/o-cli/src`
 
-`main.rs`는 `commands::find`로 명령을 찾아 실행할 뿐이다. `commands/mod.rs`의 `COMMANDS` 표가 이름·도움말 줄·처리 함수를 가지며 `o help`는 이 표의 순서대로 만들어진다. 명령 파일: `dispatch`(check·dispatch·내부 `_run`), `status`, `events`, `stop`, `msg`, `lead`(send·show·new·attach·dispatch·decide·stop·models, 내부 `_lead-approve`), `review`(내부 `_review` 포함), `context`, `tokens`, `usage`, `budget`, `runs`, `sessions`, `projects`(list·add·remove·new·root·check), `guard`(hook·scan), `mirror`, `agents`, `about`.
+`main.rs`는 `commands::find`로 명령을 찾아 실행할 뿐이다. `commands/mod.rs`의 `COMMANDS` 표가 이름·도움말 줄·처리 함수를 가지며 `o help`는 이 표의 순서대로 만들어진다. 명령 파일: `dispatch`(check·dispatch·내부 `_run`), `status`, `events`, `stop`, `msg`, `lead`(send·show·new·attach·dispatch·decide·stop·models, 내부 `_lead-approve`), `review`(내부 `_review` 포함), `context`, `tokens`, `usage`, `budget`, `ram`, `billing`, `runs`, `sessions`, `projects`(list·add·remove·new·root·check), `guard`(hook·scan), `mirror`, `agents`, `about`.
 
 ### `app/src-tauri/src`
 

@@ -221,6 +221,10 @@ export interface Backend {
   ram(): Promise<RamReport>;
   /** Saves the RAM cap's switch and/or percent (50–95) and returns the new report. */
   setRam(change: RamChange): Promise<RamReport>;
+  /** Whether a CLI auth variable only warns or keeps cards, leads and reviews from starting (`o billing --json`, ADR-0035 개정 1). */
+  billing(): Promise<BillingReport>;
+  /** Saves the API billing mode (`o billing --warn|--subscription`) and returns the new report. */
+  setBilling(mode: BillingMode): Promise<BillingReport>;
   yolo(): Promise<YoloReport>;
   setYolo(change: YoloChange): Promise<YoloReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
@@ -311,6 +315,12 @@ export interface RamReport {
   used: number | null;
 }
 export type RamChange = { enabled?: boolean; percent?: number };
+
+/** `warn` passes CLI auth variables and only warns; `subscription` refuses to start while one is set (ADR-0035 개정 1). */
+export type BillingMode = "warn" | "subscription";
+export interface BillingReport {
+  mode: BillingMode;
+}
 
 export interface YoloReport {
   enabled: boolean;

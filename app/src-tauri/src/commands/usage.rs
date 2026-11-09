@@ -104,6 +104,23 @@ pub async fn ram_set(enabled: Option<bool>, percent: Option<Value>) -> Result<Va
     .await?
 }
 
+/// Settings → 에이전트 → API 과금 (`o billing --json`, ADR-0035 개정 1).
+#[tauri::command]
+pub async fn billing_get() -> Result<Value, String> {
+    blocking(|| json!(o_core::agents::billing::report(&store::default_home()))).await
+}
+
+/// Settings → 에이전트 → API 과금 경고만·구독만 (`o billing --warn|--subscription`).
+#[tauri::command]
+pub async fn billing_set(mode: String) -> Result<Value, String> {
+    blocking(move || {
+        let home = store::default_home();
+        o_core::agents::billing::write_mode(&home, &mode)?;
+        Ok(json!(o_core::agents::billing::report(&home)))
+    })
+    .await?
+}
+
 #[tauri::command]
 pub async fn yolo_get() -> Result<Value, String> {
     blocking(|| json!(o_core::run::yolo::report(&store::default_home()))).await

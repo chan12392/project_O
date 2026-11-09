@@ -1026,6 +1026,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         }
         command.envs(&spec.env);
         command.env("O_AGENT_ROLE", "lead");
+        crate::agents::billing::check(home, req.provider, &command).map_err(io::Error::other)?;
         Ok(command)
     });
     // A stop that came while the turn set up (attachments, budget, the command) ends it here,

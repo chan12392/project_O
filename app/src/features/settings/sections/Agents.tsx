@@ -2,7 +2,7 @@ import { Bot, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { updateSettings, useSettings } from "../../../data/settings.ts";
-import { BUDGET_PERCENTS, type AgentCatalogEntry, type Backend, type BudgetPercent, type BudgetReport, type RamChange, type RamReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
+import { BUDGET_PERCENTS, type AgentCatalogEntry, type Backend, type BudgetPercent, type BillingMode, type BillingReport, type BudgetReport, type RamChange, type RamReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SubHeading, Switch } from "../../../ui/controls.tsx";
 import { AgentList, useAgents } from "../AgentSetup.tsx";
 import { Path, Rows, Section, type SettingsSectionDef } from "../Section.tsx";
@@ -17,6 +17,7 @@ export const AGENTS_SECTION = {
 function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agentsHome?: string; onOnboarding: () => void }) {
   const settings = useSettings();
   const agents = useAgents(api, settings.clean);
+  const billing = useBilling(api);
   return (
     <Section title="에이전트" description="작업카드를 맡을 공식 CLI의 설치·연결 상태와 실행 프로필입니다.">
       <Rows>
@@ -47,6 +48,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
         />
         <BudgetRows api={api} />
         <RamRows api={api} />
+        <BillingRow billing={billing} />
         <YoloRows api={api} />
       </Rows>
       <div>
@@ -63,7 +65,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           </div>
         </div>
         <div className="mt-3">
-          <AgentList state={agents} showApiKeyWarning />
+          <AgentList state={agents} showApiKeyWarning billingMode={billing.report?.mode} />
         </div>
       </div>
       <AgentCatalog api={api} />
@@ -146,6 +148,41 @@ function RamRows({ api }: { api: Backend }) {
       />
     } />
   </>;
+}
+
+/**
+ * API 과금 (ADR-0035 개정 1): kept in O's settings.json, because the runner, the lead and reviews
+ * read it before they start a CLI. Held here so the agent list's API-key warning follows the mode.
+ */
+function useBilling(api: Backend) {
+  const [report, setReport] = useState<BillingReport>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void api.billing().then(setReport, (e) => setError(`지금 값을 읽지 못했습니다: ${String(e)}`)); }, [api]);
+  const save = async (mode: BillingMode) => {
+    setBusy(true);
+    try { setReport(await api.setBilling(mode)); setError(""); }
+    catch (e) { setError(`저장하지 못했습니다: ${String(e)}`); }
+    finally { setBusy(false); }
+  };
+  return { report, error, busy, save };
+}
+
+function BillingRow({ billing: { report, error, busy, save } }: { billing: ReturnType<typeof useBilling> }) {
+  return <SettingsRow label="API 과금" description={<>
+    {report?.mode === "subscription"
+      ? "구독만: 그 CLI가 쓰는 API 키 환경변수가 있으면 작업카드·총괄·검토를 시작하지 않고 변수 이름을 알려 줍니다."
+      : "경고만: API 키 환경변수가 있어도 그대로 전달하고 경고만 표시합니다. 구독 대신 API 요금이 나갈 수 있습니다."}{" "}
+    O는 변수를 지우거나 값을 읽지 않습니다.
+    {error && <span role="alert" className="block text-destructive">{error}</span>}
+  </>} control={
+    <Segmented
+      label="API 과금"
+      value={report?.mode ?? ""}
+      onChange={!report || busy ? undefined : (mode) => { if (mode !== report.mode) void save(mode as BillingMode); }}
+      options={[{ value: "warn", label: "경고만" }, { value: "subscription", label: "구독만" }]}
+    />
+  } />;
 }
 
 function YoloRows({ api }: { api: Backend }) {

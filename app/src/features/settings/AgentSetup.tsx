@@ -3,7 +3,7 @@ import { useEffect, useState } from "react";
 
 import { canLead } from "../../../../src/core/lead.ts";
 import { useAgentCheck } from "../../data/agents.ts";
-import type { ActionResult, AgentId, AgentStatus, Backend } from "../../platform/backend/index.ts";
+import type { ActionResult, AgentId, AgentStatus, Backend, BillingMode } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 
 type Busy = "install" | "login" | "terminal";
@@ -66,7 +66,8 @@ export function useAgents(api: Backend, clean: boolean) {
 export type AgentsState = ReturnType<typeof useAgents>;
 
 /** Each CLI with its state and the one next step it needs: install, sign in, or nothing. */
-export function AgentList({ state, showApiKeyWarning = false }: { state: AgentsState; showApiKeyWarning?: boolean }) {
+/** `billingMode` is the saved API billing mode (ADR-0035 개정 1); under `subscription` the warning says the CLI's work will not start. */
+export function AgentList({ state, showApiKeyWarning = false, billingMode }: { state: AgentsState; showApiKeyWarning?: boolean; billingMode?: BillingMode }) {
   const { agents, error, checking } = state;
   if (!agents) {
     if (error)
@@ -111,14 +112,14 @@ export function AgentList({ state, showApiKeyWarning = false }: { state: AgentsS
       )}
       <ul className="divide-y rounded-lg border" aria-busy={checking}>
         {agents.map((agent) => (
-          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} showApiKeyWarning={showApiKeyWarning} />
+          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} showApiKeyWarning={showApiKeyWarning} billingMode={billingMode} />
         ))}
       </ul>
     </div>
   );
 }
 
-function AgentRow({ agent, busy, note, state, showApiKeyWarning }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState; showApiKeyWarning: boolean }) {
+function AgentRow({ agent, busy, note, state, showApiKeyWarning, billingMode }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState; showApiKeyWarning: boolean; billingMode?: BillingMode }) {
   const connected = agent.installed && !agent.profileUnsupported && agent.loggedIn === true;
   const unknown = agent.installed && !agent.profileUnsupported && agent.loggedIn === null;
   const needsLogin = agent.installed && !agent.profileUnsupported && agent.loggedIn === false;
@@ -192,7 +193,9 @@ function AgentRow({ agent, busy, note, state, showApiKeyWarning }: { agent: Agen
         <p role="note" className="mt-2 ml-10 break-words text-xs leading-relaxed text-status-warning-text">
           인증 환경변수가 설정되어 있습니다: {agent.apiKeyEnv.join(", ")}. {agent.id === "claude" && agent.apiKeyEnv.includes("ANTHROPIC_API_KEY")
             ? "Claude의 비대화형 실행(-p)에서 키를 사용하면 구독 대신 API로 과금됩니다."
-            : "CLI의 인증 방식과 과금이 달라질 수 있습니다."} 사용 전 인증 설정을 확인해 주세요.
+            : "CLI의 인증 방식과 과금이 달라질 수 있습니다."} {billingMode === "subscription"
+            ? "구독만 모드라 이 변수가 있는 동안 이 CLI의 작업은 시작하지 않습니다."
+            : "사용 전 인증 설정을 확인해 주세요."}
         </p>
       )}
       {busy && (

@@ -9,6 +9,7 @@ use o_core::run::store::is_run_id;
 
 mod about;
 mod agents;
+mod billing;
 mod budget;
 mod context;
 mod dispatch;
@@ -61,6 +62,7 @@ pub const COMMANDS: &[Command] = &[
     usage::USAGE,
     budget::BUDGET,
     ram::RAM,
+    billing::BILLING,
     yolo::YOLO,
     runs::RUNS,
     sessions::SESSIONS,

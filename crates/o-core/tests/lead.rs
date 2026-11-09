@@ -77,7 +77,7 @@ Usage: codex [OPTIONS] [PROMPT]
     // Normal-mode turns find `o` beside the running program for their approvals; whether a
     // built `o` happens to sit beside this test binary differs by OS, so name one for every test.
     lead::approvals::set_program(Some(std::env::current_exe().unwrap()));
-    let tests: [(&str, fn()); 39] = [
+    let tests: [(&str, fn()); 40] = [
         ("follow-ups only target cards dispatched by this thread", followup_routing),
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
         ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
@@ -89,6 +89,7 @@ Usage: codex [OPTIONS] [PROMPT]
         ("opening another tab preserves the live tab's automatic dispatch", autorun_new_thread_cancels),
         ("an automatic dispatch never starts a plan a newer request replaced", autorun_newer_request_wins),
         ("lead child receives its agent marker", lead_child_marker),
+        ("the subscription billing mode refuses a lead turn whose CLI would get an API key", lead_subscription_mode),
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -725,6 +726,28 @@ fn lead_child_marker() {
     let (spawner, _) = fake(claude_answer("session", "{agent-role}"));
     let events = lead::send(&home, &request(&project, "확인"), spawner.as_ref()).unwrap();
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "lead")));
+}
+
+/// ADR-0035 개정 1: a lead turn in 구독만 with an authentication variable on its launch does not
+/// start and says which by name; in 경고만 it answers. The variable is a placeholder on the launch only.
+fn lead_subscription_mode() {
+    use o_core::agents::billing;
+    let (home, project) = setup("lead-billing");
+    let (inner, seen) = fake(claude_answer("session", "답"));
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        let mut command = inner(spec, cwd)?;
+        command.env("ANTHROPIC_AUTH_TOKEN", "placeholder-not-a-key");
+        Ok(command)
+    });
+    billing::write_mode(&home, "subscription").unwrap();
+    let events = lead::send(&home, &request(&project, "확인"), spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("구독만") && text.contains("ANTHROPIC_AUTH_TOKEN"))), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Reply { .. })));
+    assert!(!serde_json::to_string(&events).unwrap().contains("placeholder-not-a-key"));
+    billing::write_mode(&home, "warn").unwrap();
+    let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "답")), "{events:?}");
+    assert!(!seen.lock().unwrap().is_empty());
 }
 
 fn live_tool_progress() {

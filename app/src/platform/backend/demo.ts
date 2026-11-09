@@ -1,4 +1,4 @@
-import type { AgentId, Backend, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, RamReport, TokenCounts, TokenGroup } from "./types.ts";
+import type { AgentId, Backend, BillingReport, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, RamReport, TokenCounts, TokenGroup } from "./types.ts";
 import { LEAD_TAB_MAX, type LeadShow, type LeadTab } from "../../../../src/core/lead.ts";
 import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS } from "../updates.ts";
@@ -44,6 +44,7 @@ function demoBudget(percent: number, enabled: boolean): BudgetReport {
 let demoPercent = 13;
 let demoEnabled = true;
 const demoRam: RamReport = { enabled: true, percent: 70, used: 58 };
+const demoBilling: BillingReport = { mode: "warn" };
 
 export const LEAD_REFUSED = "미리보기에서는 총괄에 보내지 않습니다";
 
@@ -299,6 +300,8 @@ export const demoBackend: Backend = {
   setBudgetEnabled: async (enabled) => demoBudget(demoPercent, (demoEnabled = enabled)),
   ram: async () => ({ ...demoRam }),
   setRam: async (change) => ({ ...Object.assign(demoRam, change) }),
+  billing: async () => ({ ...demoBilling }),
+  setBilling: async (mode) => ({ ...Object.assign(demoBilling, { mode }) }),
   yolo: async () => ({ enabled: false, budgetEnabled: true, autoRun: { maxCards: 3, perHour: 2, dedupeMinutes: 30 } }),
   setYolo: async () => { throw new Error("미리보기에서는 YOLO 설정을 바꾸지 않습니다"); },
   tokens: async () => ({

@@ -554,6 +554,13 @@ export function liveRuns(): Plugin {
           if (percent !== null) args.push("--percent", percent);
           return void o(args).then((out) => send(res, 200, out), error(res));
         }
+        if (req.method === "GET" && path === "/billing") return void o(["billing", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/billing") {
+          // API 과금 (ADR-0035 개정 1): `o billing --warn|--subscription`.
+          const mode = query.get("mode");
+          if (mode !== "warn" && mode !== "subscription") return send(res, 400, JSON.stringify({ error: "API 과금 설정은 warn 또는 subscription입니다" }));
+          return void o(["billing", "--json", `--${mode}`]).then((out) => send(res, 200, out), error(res));
+        }
           if (req.method === "GET" && path === "/yolo") return void o(["yolo", "--json"]).then((out) => send(res, 200, out), error(res));
           if (req.method === "POST" && path === "/yolo") {
             void (async () => {

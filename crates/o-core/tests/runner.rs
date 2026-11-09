@@ -56,7 +56,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 35] = [
+    let tests: [(&str, fn()); 36] = [
         ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
@@ -91,6 +91,7 @@ fn main() {
         ("a clean run starts its cards with only the clean environment", clean_run),
         ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
         ("a card's CLI inherits API key variables", api_keys_inherited),
+        ("the subscription billing mode refuses a card whose CLI would get an API key", subscription_mode_refuses_api_keys),
         ("an OpenCode card without YOLO does not start under OpenCode project config", opencode_project_config_refused),
     ];
     let mut failed = 0;
@@ -1179,6 +1180,38 @@ fn api_keys_inherited() {
     let opencode = env_of("opencode");
     assert!(has(&opencode, "ANTHROPIC_API_KEY") && has(&opencode, "O_CUSTOM_PROVIDER_API_KEY"));
     assert_eq!(claude.get("O_CARD_ID").map(String::as_str), Some("a"));
+}
+
+/// ADR-0035 개정 1: in 구독만 a card whose launch environment holds an authentication variable its
+/// CLI uses never starts and says which by name; in 경고만 (the default) the same card runs. The
+/// fake key is set on the launch only, never in this process, and is a placeholder.
+fn subscription_mode_refuses_api_keys() {
+    use o_core::agents::billing;
+    const VALUE: &str = "placeholder-not-a-key";
+    let with_key = |remove: bool| -> Arc<Spawner> {
+        Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+            let mut command = quiet()(spec, cwd)?;
+            if remove { command.env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN"); } else { command.env("ANTHROPIC_API_KEY", VALUE); }
+            Ok(command)
+        })
+    };
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    billing::write_mode(&home, "subscription").unwrap();
+    create_run(&home, "bill-sub", &p).unwrap();
+    assert_eq!(run_plan(&home, "bill-sub", &p, None, with_key(false)).unwrap(), CardStatus::Failed);
+    let events = read_events(&home, "bill-sub");
+    let reason = events.iter().find_map(|e| match e { OEvent::CardEnd { result: Some(text), .. } => Some(text.clone()), _ => None }).unwrap();
+    assert!(reason.contains("구독만") && reason.contains("ANTHROPIC_API_KEY") && reason.contains("o billing --warn"), "{reason}");
+    assert!(!serde_json::to_string(&events).unwrap().contains(VALUE));
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+
+    create_run(&home, "bill-sub-clear", &p).unwrap();
+    assert_eq!(run_plan(&home, "bill-sub-clear", &p, None, with_key(true)).unwrap(), CardStatus::Done);
+
+    billing::write_mode(&home, "warn").unwrap();
+    create_run(&home, "bill-warn", &p).unwrap();
+    assert_eq!(run_plan(&home, "bill-warn", &p, None, with_key(false)).unwrap(), CardStatus::Done);
 }
 
 use std::sync::Mutex;

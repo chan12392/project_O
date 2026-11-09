@@ -644,6 +644,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
             command.env_clear().envs(env);
         }
         command.envs(&spec.env);
+        crate::agents::billing::check(home, card.provider, &command).map_err(io::Error::other)?;
         #[cfg(windows)]
         {
             let native = command.native(std::env::vars_os())?;

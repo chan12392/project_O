@@ -64,6 +64,8 @@ export const devBackend: Backend = {
     if (change.percent !== undefined) query.set("percent", String(change.percent));
     return fetch(`/api/ram?${query}`, { method: "POST" }).then((r) => json<Awaited<ReturnType<Backend["setRam"]>>>(r));
   },
+  billing: () => fetch("/api/billing").then((r) => json<Awaited<ReturnType<Backend["billing"]>>>(r)),
+  setBilling: (mode) => fetch(`/api/billing?${new URLSearchParams({ mode })}`, { method: "POST" }).then((r) => json<Awaited<ReturnType<Backend["setBilling"]>>>(r)),
   yolo: () => fetch("/api/yolo").then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   setYolo: (change) => fetch("/api/yolo", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),
