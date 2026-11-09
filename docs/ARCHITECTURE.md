@@ -31,13 +31,13 @@
 
 | 모듈 | 파일 | 하는 일 |
 |---|---|---|
-| `run/` | `plan` `events` `runner` `store` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기, 상태 폴더, SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
+| `run/` | `plan` `events` `runner` (`runner/card`, 실행기 테스트) `store` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기와 카드 실행·자원 예약, 상태 폴더, SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
 | `policy.rs` | | 계획·팀 메시지 허용 여부와 `LIMITS`. 공용 경계라 맨 위에 둔다 |
 | `providers/` | `mod.rs` `claude.rs` `codex.rs` `codex_app_server.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필, 사용량 조회. YOLO가 아닌 Codex 총괄은 `codex app-server`(읽기 전용 샌드박스, 승인 `on-request`를 사람에게, 훅 끔, ADR-0023 개정, app-server가 없는 CLI는 읽기 전용 `codex exec`), 카드와 YOLO 총괄은 `codex exec` |
 | `agents/` | `mod.rs` `clean.rs` | 앱이 보여 주는 CLI 설치·로그인 상태와 공식 설치·로그인, 깨끗한 테스트 프로필(환경변수 허용 목록·오염 검사) |
 | `usage/` | `mod.rs` `probe.rs` `budget.rs` | 구독 창 형식, `usage.json` 조회·저장, 하루 사용 예산(ADR-0004) |
 | `context/` | `mod.rs` `tokens.rs` | 세션 공유 컨텍스트 검색·주입과 토큰 보고(ADR-0005) |
-| `lead/` | `mod.rs` `tabs.rs` `prompt.rs` `files.rs` `approvals.rs` `steps.rs` `overall.rs` `recovery.rs` `log_page.rs` | 총괄 탭(`tabs`, ADR-0034): `leads/open.json`에 프로젝트별 최대 4개 열린 대화와 writer 하나, `current.json`에 선택한 탭, `leads/<id>/events.jsonl`에 대화 기록. writer 외의 탭은 읽기 전용이며 서로 다른 탭은 동시에 답할 수 있다. 전체 총괄(`overall`, ADR-0032)은 프로젝트 루트의 읽기 전용 탭들로, 열린 대화 수·현재 탭 현황을 요약하고 `o-forward` 전달 시작 시 정한 열린 목적지를 유지한다. 전체 총괄의 `o-forward`는 제안(`lead.forward-plan`)으로 저장되어 사람의 `o lead forward`(`send_on`)로만 넘어가며, 넘긴 요청의 계획은 전체 총괄이 `o-review`로 검토해 승인하면 바로 실행하고 보완이면 최대 2번 다시 넘긴다(ADR-0036). 총괄 한 턴·세션 재개, `o-plan` 정책 검사·한 번만 실행, 첨부(O 상태 폴더 밖), 일반 모드 건별 승인(`approvals`, ADR-0008 개정 3)과 진행 단계(`steps`). 카드 질문은 실행기와 `recovery`가 분배한 열린 대화로 보내고, `log_page`는 열린 대화가 분배한 완료 실행의 원본 로그를 검증해 읽는다 |
+| `lead/` | `mod.rs` `event.rs` `turn.rs` `answer.rs` `worker_reply.rs` `dispatch.rs` `view.rs` `tabs.rs` `prompt.rs` `files.rs` `approvals.rs` `steps.rs` `overall.rs` `recovery.rs` `log_page.rs` | 총괄 탭(`tabs`, ADR-0034): `leads/open.json`에 프로젝트별 최대 4개 열린 대화와 writer 하나, `current.json`에 선택한 탭, `leads/<id>/events.jsonl`에 대화 기록. writer 외의 탭은 읽기 전용이며 서로 다른 탭은 동시에 답할 수 있다. 전체 총괄(`overall`, ADR-0032)은 프로젝트 루트의 읽기 전용 탭들로, 열린 대화 수·현재 탭 현황을 요약하고 `o-forward` 전달 시작 시 정한 열린 목적지를 유지한다. 전체 총괄의 `o-forward`는 제안(`lead.forward-plan`)으로 저장되어 사람의 `o lead forward`(`send_on`)로만 넘어가며, 넘긴 요청의 계획은 전체 총괄이 `o-review`로 검토해 승인하면 바로 실행하고 보완이면 최대 2번 다시 넘긴다(ADR-0036). 총괄 한 턴·세션 재개, `o-plan` 정책 검사·한 번만 실행, 첨부(O 상태 폴더 밖), 일반 모드 건별 승인(`approvals`, ADR-0008 개정 3)과 진행 단계(`steps`). 카드 질문은 실행기와 `recovery`가 분배한 열린 대화로 보내고, `log_page`는 열린 대화가 분배한 완료 실행의 원본 로그를 검증해 읽는다 |
 | `graph/` | `wiring` `query` `view` `grafly` `git` `deep` `settings` | Graph 탭(ADR-0033): grafly 인덱스(`.grafly/.graph/wiring.json`)를 읽어 호출 관계·변경 영향·파일 API·개요를 LLM 없이 계산, 3D 화면용 그래프와 빛나는 경로(`git status` + 영향 범위), `grafly build/check/ask` 호출, 사람이 고른 CLI·모델로 영역 이름·요약을 한 번에 만드는 Deep, 설정(`graph/settings.json`) |
 | `review.rs` | | `o review`: PR을 gh로 읽어 검토 카드 하나로 실행(ADR-0006) |
 | `sessions.rs` | | 이 PC의 Claude Code 세션을 실행처럼 읽기(읽기 전용) |
