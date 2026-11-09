@@ -1,14 +1,14 @@
 //! Static policy scan, run by git hooks and CI.
 //!
 //!   --all       every tracked file (CI)
-//!   --staged    staged content, and no commits on test/main (pre-commit)
-//!   --pre-push  refuses pushes that target test/main (pre-push; refs on stdin)
+//!   --staged    staged content, and no commits on a protected branch (pre-commit)
+//!   --pre-push  refuses pushes that target a protected branch (pre-push; refs on stdin)
 
 use std::io::{self, Read};
 use std::process::Stdio;
 
 use crate::hook::git_command;
-use crate::rules::{code_rules, find_hits, is_allowed_path, READ_ONLY_BRANCHES};
+use crate::rules::{find_hits, is_allowed_path, rules_for_paths, READ_ONLY_BRANCHES};
 
 /// Runs git and returns its stdout. stderr goes to ours; output size is unbounded.
 /// Paths are not quoted, so non-ASCII file names are scanned rather than missed.
@@ -53,7 +53,7 @@ fn scan_files(files: &[String], read: impl Fn(&str) -> io::Result<Vec<u8>>) -> i
             continue; // binary
         }
         let text = String::from_utf8_lossy(&bytes);
-        for hit in find_hits(&text, code_rules()) {
+        for hit in find_hits(&text, rules_for_paths(std::slice::from_ref(file))) {
             problems.push(format!("{file}:{} [{}] {}", hit.line, hit.rule, hit.reason));
         }
     }
@@ -69,7 +69,7 @@ fn fail(title: &str, lines: &[String]) -> i32 {
     1
 }
 
-/// The pre-push lines (`<local ref> <local sha> <remote ref> <remote sha>`) whose remote ref is test or main.
+/// The pre-push lines (`<local ref> <local sha> <remote ref> <remote sha>`) whose remote ref is a protected branch (READ_ONLY_BRANCHES).
 pub fn blocked_refs(stdin: &str) -> Vec<String> {
     let protected_refs: Vec<String> = READ_ONLY_BRANCHES.iter().map(|b| format!("refs/heads/{b}")).collect();
     lines(stdin)
@@ -84,7 +84,7 @@ fn run(mode: &str) -> io::Result<i32> {
         io::stdin().read_to_string(&mut stdin)?;
         let blocked = blocked_refs(&stdin);
         if !blocked.is_empty() {
-            return Ok(fail("test·main에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
+            return Ok(fail("보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main)에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
         }
         return Ok(0);
     }
@@ -92,7 +92,7 @@ fn run(mode: &str) -> io::Result<i32> {
         let branch = git(&["branch", "--show-current"])?.trim().to_string();
         if READ_ONLY_BRANCHES.contains(&branch.as_str()) {
             return Ok(fail(
-                &format!("{branch} 브랜치에서는 커밋할 수 없습니다. 자기 개인 브랜치나 <개인 브랜치>-<주제> 브랜치에서 작업하고 PR로 올리세요"),
+                &format!("보호 브랜치 {branch}에서는 커밋할 수 없습니다. 자기 개인 브랜치나 <개인 브랜치>-<주제> 브랜치에서 작업하고 PR로 올리세요"),
                 &[],
             ));
         }
@@ -132,17 +132,19 @@ mod tests {
     const ZERO: &str = "0000000000000000000000000000000000000000";
 
     #[test]
-    fn pushes_to_test_or_main_are_blocked() {
+    fn pushes_to_protected_branches_are_blocked() {
         let main = format!("refs/heads/younchan abc refs/heads/main {ZERO}");
-        let test = format!("refs/heads/younchan abc refs/heads/test {ZERO}\r");
+        let test_1 = format!("refs/heads/test_2 abc refs/heads/test_1 {ZERO}");
+        let test_2 = format!("refs/heads/younchan abc refs/heads/test_2 {ZERO}\r");
+        let main_hotfix = format!("refs/heads/younchan-fix abc refs/heads/main_hotfix {ZERO}");
         let own = format!("refs/heads/younchan abc refs/heads/younchan {ZERO}");
-        let input = format!("{own}\n{main}\n\n{test}\n");
-        assert_eq!(blocked_refs(&input), vec![main, test]);
+        let input = format!("{own}\n{main}\n\n{test_1}\n{test_2}\n{main_hotfix}\n");
+        assert_eq!(blocked_refs(&input), vec![main, test_1, test_2, main_hotfix]);
     }
 
     #[test]
     fn personal_and_lookalike_refs_pass() {
-        let input = "refs/heads/x a refs/heads/main-old b\nrefs/heads/x a refs/heads/younchan-test b\nrefs/tags/v1 a refs/tags/main b\n";
+        let input = "refs/heads/x a refs/heads/main-old b\nrefs/heads/x a refs/heads/younchan-test b\nrefs/heads/x a refs/heads/test b\nrefs/heads/x a refs/heads/test_10 b\nrefs/tags/v1 a refs/tags/test_1 b\n";
         assert!(blocked_refs(input).is_empty());
         assert!(blocked_refs("").is_empty());
     }
@@ -163,5 +165,23 @@ mod tests {
 
         let denied = scan_files(&files[3..], |_| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
         assert!(denied.is_err());
+    }
+
+    /// ADR-0014: the provider files and their test may spell the bypass switches; nothing else
+    /// may, and the provider files still may not touch credentials.
+    #[test]
+    fn provider_files_may_spell_bypass_switches_and_nothing_else() {
+        const BYPASS: &str = concat!("--dangerously-", "skip-permissions");
+        const TOKEN: &str = concat!("CLAUDE_CODE_", "OAUTH_TOKEN");
+        let files: Vec<String> =
+            ["crates/o-core/src/providers/claude.rs", "crates/o-core/tests/providers.rs", "AGENTS.md", "crates/o-core/src/lead/mod.rs", "app/src/x.ts", "crates/o-core/src/providers/sub/x.rs"]
+                .map(String::from)
+                .to_vec();
+        let problems = scan_files(&files, |_| Ok(format!("args.push(\"{BYPASS}\");\n").into_bytes())).unwrap();
+        let flagged: Vec<&str> = problems.iter().map(|p| p.split(':').next().unwrap()).collect();
+        assert_eq!(flagged, ["AGENTS.md", "crates/o-core/src/lead/mod.rs", "app/src/x.ts", "crates/o-core/src/providers/sub/x.rs"]);
+        let credential = scan_files(&files[..1], |_| Ok(format!("env::var(\"{TOKEN}\")\n").into_bytes())).unwrap();
+        assert_eq!(credential.len(), 1);
+        assert!(credential[0].contains("[claude-oauth-token]"), "{}", credential[0]);
     }
 }

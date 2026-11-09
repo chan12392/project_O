@@ -550,3 +550,32 @@
 .agent-working-spinner {
   animation: agent-spinner-rotate 86400s steps(1036800, end) infinite;
 }
+
+/* A lead tab's "작업 중" ring (ADR-0034): the green dot stays; the ring breathes out of it. */
+@keyframes lead-dot-pulse {
+  from {
+    transform: scale(1);
+    opacity: 0.75;
+  }
+  to {
+    transform: scale(2.4);
+    opacity: 0;
+  }
+}
+.lead-dot-ring {
+  position: absolute;
+  inset: 0;
+  border: 1.5px solid var(--agent-working);
+  border-radius: 9999px;
+  animation: lead-dot-pulse 1.4s ease-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) .lead-dot-ring {
+    animation: none;
+    opacity: 0;
+  }
+}
+:root[data-motion="reduce"] .lead-dot-ring {
+  animation: none;
+  opacity: 0;
+}

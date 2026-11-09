@@ -1,5 +1,7 @@
 @import "tailwindcss";
 @import "./orca-theme.css";
+@import "./chat-markdown.css";
+@import "./graph.css";
 
 /* Orca's chrome: Geist first; Korean falls through to Pretendard. */
 :root {
@@ -12,10 +14,29 @@
   *::after {
     @apply border-border outline-ring/50;
   }
+  /*
+   * The app fills the window exactly and only its inner panels scroll; the page never does.
+   * An absolute element inside a panel (an sr-only caption or label) whose containing block
+   * is outside that panel is not clipped by the panel, so it used to stretch the document
+   * and let the whole shell scroll away (plan-card captions, 2026-11). #root becomes the
+   * containing block and clips them without being scrollable itself (clip, not hidden).
+   */
   html,
-  body,
-  #root {
+  body {
     height: 100%;
+    overflow: hidden;
+  }
+  #root {
+    position: relative;
+    height: 100%;
+    overflow: clip;
+  }
+  /* Settings → 모양 → 글자 크기 (settings.ts sets the scale); rem-based sizes and spacing follow. */
+  html {
+    font-size: calc(100% * var(--app-font-scale, 1));
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--ring) 35%, transparent);
   }
   body {
     @apply bg-background text-foreground;
@@ -42,11 +63,18 @@
   animation-iteration-count: infinite;
 }
 @keyframes sprite-frames { from { background-position-x: 0%; } to { background-position-x: 133.3333%; } }
-@media (prefers-reduced-motion: reduce) {
-  .sprite-sheet { animation: none; }
-}
 
-/* Indeterminate progress (beakho-design lucian-083) and a loading shimmer (lucian-079). */
+/*
+ * Reduced motion: Settings → 모양 sets data-motion on <html> (settings.ts).
+ * "reduce" always holds the effects below, "full" keeps them even when the system asks
+ * for less, "system" follows prefers-reduced-motion.
+ */
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) .sprite-sheet { animation: none; }
+}
+:root[data-motion="reduce"] .sprite-sheet { animation: none; }
+
+/* Indeterminate progress and a loading shimmer. */
 @keyframes progress-flow { from { left: -40%; } to { left: 100%; } }
 .progress-flow { animation: progress-flow 1.2s ease-in-out infinite; }
 @keyframes shimmer { to { background-position: -200% 0; } }
@@ -58,14 +86,17 @@
 @keyframes bloom { from { opacity: 0; transform: scale(0.98) translateY(6px); } to { opacity: 1; transform: none; } }
 .bloom { animation: bloom 0.42s cubic-bezier(0.2, 0.9, 0.3, 1.2); }
 @media (prefers-reduced-motion: reduce) {
-  .progress-flow { animation: none; left: 0; width: 100%; opacity: 0.6; }
-  .shimmer, .bloom { animation: none; }
+  :root:not([data-motion="full"]) .progress-flow { animation: none; left: 0; width: 100%; opacity: 0.6; }
+  :root:not([data-motion="full"]) :is(.shimmer, .bloom, .animate-spin) { animation: none; }
 }
+:root[data-motion="reduce"] .progress-flow { animation: none; left: 0; width: 100%; opacity: 0.6; }
+:root[data-motion="reduce"] :is(.shimmer, .bloom, .animate-spin) { animation: none; }
 
 /* Office people glide between spots; the sheet frames do the walking. */
 @media (prefers-reduced-motion: reduce) {
-  .person { transition: none !important; }
+  :root:not([data-motion="full"]) .person { transition: none !important; }
 }
+:root[data-motion="reduce"] .person { transition: none !important; }
 
 /*
  * Thermal-paper tickets for the work tab's dashboard and next up, after the
@@ -122,3 +153,18 @@
   scrollbar-width: thin;
   scrollbar-color: color-mix(in srgb, var(--foreground) 18%, transparent) transparent;
 }
+/* The header's tab strip scrolls, but a bar in 36px of chrome reads as noise. */
+.scrollbar-none {
+  scrollbar-width: none;
+}
+.scrollbar-none::-webkit-scrollbar {
+  display: none;
+}
+.design-rewrite { animation: design-rewrite 400ms ease-out; }
+@keyframes design-rewrite { from { clip-path: inset(0 100% 0 0); } to { clip-path: inset(0); } }
+.design-removed { animation: design-removed 1.8s ease-in forwards; }
+@keyframes design-removed { 0%, 45% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) {
+  :root:not([data-motion="full"]) :is(.design-rewrite, .design-removed) { animation: none; }
+}
+:root[data-motion="reduce"] :is(.design-rewrite, .design-removed) { animation: none; }

@@ -10,11 +10,12 @@ use std::sync::LazyLock;
 use chrono::{DateTime, Utc};
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::js::{js_len, parse_time};
-use crate::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
+use crate::sys::js::{js_len, parse_time};
+use crate::run::mode::Profile;
+use crate::run::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
 
 pub struct Limits {
     pub max_cards_per_plan: usize,
@@ -32,6 +33,10 @@ impl Limits {
             ProviderId::Claude => 3,
             ProviderId::Codex => 3,
             ProviderId::Agy => 2,
+            // ADR-0015: no usage probe or daily budget, so no more than Antigravity.
+            ProviderId::OpenCode => 2,
+            // A new CLI whose steps O sees only after the card ends (ADR-0016).
+            ProviderId::Devin => 2,
         }
     }
 }
@@ -45,17 +50,26 @@ pub const LIMITS: Limits = Limits {
     default_cooldown_ms: 60 * 60 * 1000,
 };
 
-const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+/// The effort ladder, lowest first (the daily budget lowers along it, see `budget`).
+pub const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
+pub const AGY_UNAVAILABLE: &str = "Antigravity는 제3자 앱을 통한 사용에 관한 Google 정책 때문에 Project O에서 실행할 수 없습니다. Claude 또는 Codex를 선택하세요";
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
+/// Team-channel names a card must not take: its messages would read as the lead's or as a broadcast.
+const RESERVED_CARD_IDS: [&str; 2] = ["lead", "all"];
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+/// Whether a model id has the shape a card's `model` field takes (the lead's `--model` uses it too).
+pub fn is_model_id(model: &str) -> bool {
+    MODEL.is_match(model)
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Violation {
     pub rule: String,
     pub message: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub card_id: Option<String>,
 }
 
@@ -66,13 +80,18 @@ pub struct PolicyContext {
     pub started_today: usize,
     /// Provider → ISO time until which it may not be used.
     pub cooldowns: HashMap<ProviderId, String>,
+    /// Provider → why it spent today's usage budget (ADR-0004, see `budget`).
+    pub over_budget: HashMap<ProviderId, String>,
     pub project_exists: Box<dyn Fn(&str) -> bool>,
-    /// Whether the folder is a project_O test/main mirror checkout.
+    /// Whether the folder is a project_O protected-branch (test_1/test_1_hotfix/test_2/main_hotfix/main) mirror checkout.
     pub is_mirror: Box<dyn Fn(&str) -> bool>,
     /// O's state folder: a project may neither be inside it nor contain it.
     pub o_home: String,
     /// The user's home: a project may be inside it, never be it or above it.
     pub user_home: String,
+    /// The folder a path names on disk (links, junctions and short names
+    /// resolved), or the path itself when it cannot be resolved.
+    pub resolve: Box<dyn Fn(&str) -> String>,
 }
 
 pub struct Checked {
@@ -80,11 +99,42 @@ pub struct Checked {
     pub violations: Vec<Violation>,
 }
 
-/// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any case).
+/// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any
+/// case) after `.` and `..` are resolved, so `C:/Users/me/x/..` is `C:/Users/me`.
 fn within(path: &str, dir: &str) -> bool {
-    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_lowercase();
-    let (p, d) = (norm(path), norm(dir));
+    let (p, d) = (lexical(path), lexical(dir));
     p == d || p.starts_with(&format!("{d}/"))
+}
+
+/// A path with every slash as `/`, in lower case, with `.` and `..` resolved by
+/// text alone: no disk access, and `..` never climbs above the drive or the root.
+fn lexical(path: &str) -> String {
+    let lowered = path.replace('\\', "/").to_lowercase();
+    let mut parts: Vec<&str> = Vec::new();
+    for (i, part) in lowered.split('/').enumerate() {
+        match part {
+            "" if i > 0 => {}
+            "." => {}
+            ".." => {
+                // The first part is the root: "" for "/…" or a drive such as "c:".
+                if parts.len() > 1 || parts.first().is_some_and(|p| !p.is_empty() && !p.ends_with(':')) {
+                    parts.pop();
+                }
+            }
+            other => parts.push(other),
+        }
+    }
+    parts.join("/")
+}
+
+/// A card may write inside its project: O's own state and the home folder (CLI
+/// settings) must stay out of reach, however either path is spelled.
+fn reaches_protected(project: &str, ctx: &PolicyContext) -> bool {
+    let o_homes = [ctx.o_home.clone(), (ctx.resolve)(&ctx.o_home)];
+    let user_homes = [ctx.user_home.clone(), (ctx.resolve)(&ctx.user_home)];
+    [project.to_string(), (ctx.resolve)(project)]
+        .iter()
+        .any(|p| o_homes.iter().any(|h| within(p, h) || within(h, p)) || user_homes.iter().any(|u| within(u, p)))
 }
 
 fn is_absolute(path: &str) -> bool {
@@ -116,27 +166,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
         found.add("plan-shape", "title이 필요합니다", None);
     }
     let project = object.get("project").and_then(Value::as_str);
-    match project {
-        Some(project) if is_absolute(project) => {
-            if !(ctx.project_exists)(project) {
-                found.add("plan-shape", format!("project 폴더가 없습니다: {project}"), None);
-            } else if (ctx.is_mirror)(project) {
-                found.add(
-                    "read-only-project",
-                    format!("{project}는 project_O의 test·main 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
-                    None,
-                );
-            } else if within(project, &ctx.o_home) || within(&ctx.o_home, project) || within(&ctx.user_home, project) {
-                // A card may write inside its project: O's own state and the home folder (CLI settings) must stay out of reach.
-                found.add(
-                    "protected-project",
-                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
-                    None,
-                );
-            }
-        }
-        _ => found.add("plan-shape", "project는 절대 경로여야 합니다", None),
-    }
+    found.0.extend(check_project(project, ctx));
     let cards = match object.get("cards").and_then(Value::as_array) {
         Some(cards) if !cards.is_empty() => cards,
         _ => {
@@ -160,6 +190,28 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     }
 
     for card in &valid {
+        let mut seen = HashSet::new();
+        for dependency in &card.depends_on {
+            if dependency == &card.id || !ids.contains(dependency) || !seen.insert(dependency) {
+                found.add("plan-dependency", format!("{}의 선행 작업이 올바르지 않습니다: {dependency}", card.id), Some(&card.id));
+            }
+        }
+    }
+    let mut resolved = HashSet::new();
+    loop {
+        let before = resolved.len();
+        for card in &valid {
+            if card.depends_on.iter().all(|id| resolved.contains(id)) {
+                resolved.insert(card.id.clone());
+            }
+        }
+        if before == resolved.len() { break; }
+    }
+    if resolved.len() != valid.len() {
+        found.add("plan-dependency", "선행 작업을 해결할 수 없습니다. 순환이나 없는 작업을 확인하세요", None);
+    }
+
+    for card in &valid {
         if let Some(until) = ctx.cooldowns.get(&card.provider) {
             if parse_time(until).is_some_and(|t| t > ctx.now) {
                 found.add(
@@ -171,6 +223,9 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
                     Some(&card.id),
                 );
             }
+        }
+        if let Some(reason) = ctx.over_budget.get(&card.provider) {
+            found.add("daily-budget", reason.clone(), Some(&card.id));
         }
     }
 
@@ -205,6 +260,69 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     Checked { plan: Some(plan), violations: Vec::new() }
 }
 
+/// `check_plan` for a run on `profile` (ADR-0013): a card whose CLI cannot run on the
+/// project_O profile (`Provider::profile_unsupported`, Devin) is refused while it is on —
+/// never quietly run with the person's own setup instead.
+pub fn check_plan_for(input: &Value, ctx: &PolicyContext, profile: Profile) -> Checked {
+    let mut checked = check_plan(input, ctx);
+    let cards = input.get("cards").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
+    for card in cards {
+        if card.get("provider").and_then(Value::as_str) == Some("agy") {
+            checked.plan = None;
+            checked.violations.push(Violation { rule: "provider-terms".into(), message: AGY_UNAVAILABLE.into(), card_id: card.get("id").and_then(Value::as_str).map(str::to_string) });
+        }
+    }
+    let named = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?)));
+    let refused = profile_violations(named, profile);
+    if !refused.is_empty() {
+        checked.plan = None;
+        checked.violations.extend(refused);
+    }
+    checked
+}
+
+/// The cards (id, provider) `profile` cannot run, each with its CLI's reason (rule `profile-unsupported`).
+pub fn profile_violations<'a>(cards: impl IntoIterator<Item = (&'a str, ProviderId)>, profile: Profile) -> Vec<Violation> {
+    if !profile.is_clean() {
+        return Vec::new();
+    }
+    let mut found = Found::default();
+    for (id, provider) in cards {
+        if let Some(why) = crate::providers::get(provider).profile_unsupported() {
+            found.add("profile-unsupported", why, Some(id));
+        }
+    }
+    found.0
+}
+
+/// Whether a folder may be a project: absolute, existing, not a protected mirror, and
+/// neither inside nor around O's state folder or the home folder. A plan's check and the
+/// lead chat (which reads the project) both use it.
+pub fn check_project(project: Option<&str>, ctx: &PolicyContext) -> Vec<Violation> {
+    let mut found = Found::default();
+    match project {
+        Some(project) if is_absolute(project) => {
+            if !(ctx.project_exists)(project) {
+                found.add("plan-shape", format!("project 폴더가 없습니다: {project}"), None);
+            } else if (ctx.is_mirror)(project) {
+                found.add(
+                    "read-only-project",
+                    format!("{project}는 project_O의 보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
+                    None,
+                );
+            } else if reaches_protected(project, ctx) {
+                found.add(
+                    "protected-project",
+                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
+                    None,
+                );
+            }
+        }
+        _ => found.add("plan-shape", "project는 절대 경로여야 합니다", None),
+    }
+    found.0
+}
+
 fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
     let Some(raw) = raw.as_object() else {
         found.add("plan-shape", "카드는 JSON 객체여야 합니다", None);
@@ -224,6 +342,8 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
     }
     if !CARD_ID.is_match(&id) {
         fail(found, "plan-shape".into(), "카드 id는 영문 소문자·숫자·하이픈 32자 이내입니다".into());
+    } else if RESERVED_CARD_IDS.contains(&id.as_str()) {
+        fail(found, "plan-shape".into(), format!("카드 id {id}는 팀 대화의 총괄(lead)·전체 방송(all)용으로 예약돼 있어 쓸 수 없습니다"));
     }
     let provider = raw.get("provider").and_then(Value::as_str).and_then(ProviderId::parse);
     if provider.is_none() {
@@ -254,6 +374,26 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
             fail(found, "plan-shape".into(), format!("effort는 {} 중 하나입니다", EFFORTS.join(", ")));
         }
     }
+    if let Some(dependencies) = raw.get("depends_on") {
+        if dependencies.as_array().is_none_or(|items| items.iter().any(|id| id.as_str().is_none_or(|s| !CARD_ID.is_match(s)))) {
+            fail(found, "plan-dependency".into(), "depends_on은 선행 작업 id의 배열이어야 합니다".into());
+        }
+    }
+    let resources = match raw.get("resources") {
+        None => Vec::new(),
+        Some(value) => match serde_json::from_value::<Vec<crate::run::plan::Resource>>(value.clone()) {
+            Ok(items) if items.len() <= 64 && items.iter().all(|r| {
+                if r.key.trim().is_empty() || r.key.len() > 1024 || r.key.chars().any(char::is_control) { return false; }
+                if r.kind != crate::run::plan::ResourceKind::ProjectPath { return true; }
+                let key = r.key.replace('\\', "/");
+                std::path::Path::new(&key).components().all(|c| matches!(c, std::path::Component::Normal(_) | std::path::Component::CurDir))
+            }) => items,
+            _ => {
+                fail(found, "plan-resource".into(), "resources는 유효한 kind·key·mode 객체의 배열이어야 합니다".into());
+                Vec::new()
+            }
+        },
+    };
     if let Some(task) = task {
         for hit in find_hits(task, code_rules()) {
             fail(found, format!("task-{}", hit.rule), hit.reason.to_string());
@@ -270,6 +410,8 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
         task: task?.to_string(),
         model: text("model"),
         effort: text("effort"),
+        depends_on: raw.get("depends_on").and_then(Value::as_array).map(|ids| ids.iter().filter_map(Value::as_str).map(str::to_string).collect()).unwrap_or_default(),
+        resources,
     })
 }
 

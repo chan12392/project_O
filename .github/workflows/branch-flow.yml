@@ -1,8 +1,7 @@
 name: branch-flow
 
-# Read-only token: this job only reads the PR's branch names.
-permissions:
-  contents: read
+# The event contains everything this job needs.
+permissions: {}
 
 on:
   pull_request:
@@ -16,23 +15,45 @@ jobs:
         env:
           HEAD: ${{ github.head_ref }}
           BASE: ${{ github.base_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
           # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
-          PERSONAL: "younchan yongwoo"
+          PERSONAL: "younchan yongwoo eunmi"
         run: |
+          # 개인·작업 브랜치 ──PR──▶ test_2 ──PR──▶ test_1 ──PR──▶ main
+          # 핫픽스: 개인·작업 브랜치 ──PR──▶ test_1_hotfix ──PR──▶ test_1 (ADR-0021)
+          # 핫픽스(정식): 개인·작업 브랜치 ──PR──▶ main_hotfix ──PR──▶ main (ADR-0031)
           fail() { echo "::error::$1 (head=$HEAD, base=$BASE). AGENTS.md의 병합 흐름을 확인하세요."; exit 1; }
+          [ "$HEAD_REPOSITORY" = "$BASE_REPOSITORY" ] || fail "포크 PR은 허용하지 않습니다. 외부 기여는 팀원을 통해 제출해 주세요"
           is_personal() { for p in $PERSONAL; do [ "$1" = "$p" ] && return 0; done; return 1; }
+          # A personal branch or <personal>-<topic> (no "/").
+          is_member_branch() {
+            case "$1" in */*) return 1 ;; esac
+            for p in $PERSONAL; do
+              case "$1" in "$p" | "$p"-?*) return 0 ;; esac
+            done
+            return 1
+          }
           if [ "$BASE" = "main" ]; then
-            [ "$HEAD" = "test" ] || fail "main에는 test만 병합할 수 있습니다"
-          elif [ "$BASE" = "test" ]; then
-            is_personal "$HEAD" || fail "test에는 개인 브랜치($PERSONAL)만 병합할 수 있습니다"
+            [ "$HEAD" = "test_1" ] || [ "$HEAD" = "main_hotfix" ] || fail "main에는 test_1이나 main_hotfix만 병합할 수 있습니다"
+          elif [ "$BASE" = "main_hotfix" ]; then
+            # main → main_hotfix는 핫픽스 차선을 main에 맞추는 동기화
+            [ "$HEAD" = "main" ] || is_member_branch "$HEAD" || fail "main_hotfix에는 개인 브랜치($PERSONAL)나 <개인>-<주제> 브랜치, main 동기화만 병합할 수 있습니다"
+          elif [ "$BASE" = "test_1" ]; then
+            [ "$HEAD" = "test_2" ] || [ "$HEAD" = "test_1_hotfix" ] || fail "test_1에는 test_2나 test_1_hotfix만 병합할 수 있습니다"
+          elif [ "$BASE" = "test_1_hotfix" ]; then
+            # test_1 → test_1_hotfix는 핫픽스 차선을 test_1에 맞추는 동기화
+            [ "$HEAD" = "test_1" ] || is_member_branch "$HEAD" || fail "test_1_hotfix에는 개인 브랜치($PERSONAL)나 <개인>-<주제> 브랜치, test_1 동기화만 병합할 수 있습니다"
+          elif [ "$BASE" = "test_2" ]; then
+            is_member_branch "$HEAD" || fail "test_2에는 개인 브랜치($PERSONAL)나 <개인>-<주제> 브랜치만 병합할 수 있습니다"
           elif is_personal "$BASE"; then
             case "$HEAD" in
-              main) ;;  # main 동기화
+              main | test_1) ;;  # 동기화
               */*) fail "작업 브랜치 이름에는 /를 쓰지 않습니다" ;;
-              "$BASE"-*) ;;
-              *) fail "$BASE에는 $BASE-<주제> 브랜치만 병합할 수 있습니다" ;;
+              "$BASE"-?*) ;;
+              *) fail "$BASE에는 $BASE-<주제> 브랜치나 main·test_1 동기화만 병합할 수 있습니다" ;;
             esac
           else
-            fail "PR 대상은 main, test, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
+            fail "PR 대상은 main, main_hotfix, test_1, test_1_hotfix, test_2, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
           fi
           echo "ok: $HEAD -> $BASE"

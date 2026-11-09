@@ -1,7 +1,7 @@
 {
   "name": "project-o",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.3.0",
   "type": "module",
   "engines": {
     "node": ">=22.18"
@@ -9,6 +9,7 @@
   "scripts": {
     "test": "node --test \"tests/*.test.ts\"",
     "check": "tsc --noEmit",
+    "check:licenses": "node scripts/check-licenses.mjs",
     "guard": "o scan --all",
     "prepare": "git config core.hooksPath .githooks"
   },

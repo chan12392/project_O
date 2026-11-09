@@ -1,0 +1,66 @@
+name: release
+
+# Windows installer for every push to test_1 (and on demand from test_1): built with
+# scripts/build-installer.ps1, published as a GitHub pre-release and a workflow artifact.
+# The app's updater offers these releases, so a manual run from any other ref publishes nothing.
+on:
+  push:
+    branches: [test_1]
+  workflow_dispatch:
+
+# Two pushes in a row build one after the other instead of racing for the same release.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  installer:
+    if: github.ref == 'refs/heads/test_1'
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: 설치 파일 빌드
+        id: build
+        shell: pwsh
+        run: |
+          $env:PROJECT_O_BUILD_SHA = '${{ github.sha }}'
+          $env:PROJECT_O_BUILD_TIME = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+          ./scripts/build-installer.ps1
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }
+          $setup = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+          "setup=$($setup.FullName)" >> $env:GITHUB_OUTPUT
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: project_O-setup
+          path: ${{ steps.build.outputs.setup }}
+          if-no-files-found: error
+      - name: 프리릴리스 게시
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SETUP: ${{ steps.build.outputs.setup }}
+          SHA: ${{ github.sha }}
+          REF: ${{ github.ref_name }}
+        run: |
+          $tag = "test_1-{0}-{1}" -f (Get-Date).ToUniversalTime().ToString('yyyyMMdd'), $env:SHA.Substring(0, 7)
+          gh release view $tag 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            # Re-run on the same commit and day: replace the installer on the existing release.
+            gh release upload $tag $env:SETUP --clobber
+          } else {
+            gh release create $tag $env:SETUP --prerelease --target $env:SHA --title $tag --notes "Windows 설치 파일 ($env:REF @ $env:SHA). 서명되지 않은 테스트 빌드입니다. 설치 안내: docs/INSTALL.md"
+          }
+          if ($LASTEXITCODE) { exit $LASTEXITCODE }

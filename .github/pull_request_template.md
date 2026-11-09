@@ -4,13 +4,11 @@
 
 ## 체크
 
-- [ ] 흐름에 맞는 PR이다 (`<개인>-<주제>` → `younchan`·`yongwoo` → `test` → `main`)
+- [ ] 흐름에 맞는 PR이다 (`<개인>-<주제>`·`younchan`·`yongwoo` → `test_2` → `test_1` → `main`)
 - [ ] 공용 경계(스택·공용 모델·프로바이더 연결·라우팅 단위·최상위 화면)를 바꿨다면 ADR을 추가했다
 - [ ] 인증 정보·토큰·실제 계정 정보를 커밋하지 않았다
 
-<!-- test → main PR일 때만 채운다. 작성자는 체크로, 상대는 GitHub Approve로 승인한다. -->
-### test → main 승인
+<!-- test_2 → test_1, test_1 → main PR일 때만 채운다. test_1은 다른 팀원 1명이 승인한 뒤 누구나(대표는 바로), main은 대표(A)만 병합한다. -->
+### test_2 → test_1 · test_1 → main
 
-- [ ] A 승인
-- [ ] B 승인
-- [ ] test에서 함께 확인한 내용:
+- [ ] test_2에서 함께 확인한 내용:

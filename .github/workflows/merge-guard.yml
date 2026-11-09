@@ -1,0 +1,36 @@
+name: merge-guard
+
+# Only the owner (member A) merges into test_1_hotfix, main_hotfix and main; test_2 is
+# free for everyone, and test_1 takes a member's merge once another member approved (ADR-0031).
+#
+# The repository is on GitHub Pro with rulesets on main (PR, the policy and check CI,
+# no force push or delete) and test_1 (one approving review from someone other than
+# the author; the owner, as admin, may bypass). GitHub itself enforces test_1's
+# approval, so this job no longer watches test_1. No ruleset limits who merges into
+# the owner-only branches, so this job is their after-the-fact alarm: a merge or push
+# by anyone else turns red and names the actor, so the owner can see it and revert.
+# The agent hook (`o hook`) and the git hooks (`o scan`) stop it beforehand on members' PCs.
+
+# The event contains everything this job needs.
+permissions: {}
+
+on:
+  push:
+    branches: [test_1_hotfix, main_hotfix, main]
+
+jobs:
+  owner-only:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 병합한 사람 확인
+        env:
+          ACTOR: ${{ github.actor }}
+          BRANCH: ${{ github.ref_name }}
+          # Keep in sync with OWNER in crates/o-guard/src/rules.rs.
+          OWNER: chan12392
+        run: |
+          if [ "$ACTOR" != "$OWNER" ]; then
+            echo "::error::$BRANCH에 $ACTOR가 병합·push했습니다. $BRANCH 병합은 대표($OWNER)만 합니다. 대표에게 알리고 되돌리세요."
+            exit 1
+          fi
+          echo "ok: $ACTOR -> $BRANCH"

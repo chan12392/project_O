@@ -1,0 +1,112 @@
+import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
+
+/** Raised when the desktop app did not open a link; `shell/LinkNotice.tsx` shows it (also raised by app/src-tauri/src/commands/window.rs). */
+export const LINK_BLOCKED = "project-o:link-blocked";
+
+/** The reason a link stayed closed, in the words the shell's new-window handler uses. */
+export function linkRefusal(error: unknown): string {
+  const text = error instanceof Error ? error.message : String(error);
+  return text.includes("https") ? "보안을 위해 https 주소만 브라우저로 엽니다. 이 링크는 열지 않았습니다." : `링크를 열지 못했습니다: ${text}`;
+}
+
+/** project_O.exe: the shell's Tauri commands (app/src-tauri/src/commands), JSON text parsed here. */
+export function tauriBackend(invoke: Invoke): Backend {
+  return {
+    kind: "tauri",
+    resources: () => invoke("resource_leases") as ReturnType<Backend["resources"]>,
+    recoverResource: (id) => invoke("resource_recover", { id }) as Promise<void>,
+    followup: (run, card, text) => invoke("run_followup", { run, card, text }) as Promise<{ runId: string }>,
+    changes: (run, card) => invoke("run_changes", { run, card }) as ReturnType<Backend["changes"]>,
+    reply: (run, card, text, messageId) => invoke("run_reply", { run, card, text, messageId: messageId ?? null }) as Promise<void>,
+    attention: () => invoke("attention") as Promise<void>,
+    imageRead: (project, path, run, card) => invoke("image_read", { project, path, run: run ?? null, card: card ?? null }) as ReturnType<Backend["imageRead"]>,
+    imageOpen: (project, path, folder, run, card) => invoke("image_open", { project, path, folder, run: run ?? null, card: card ?? null }) as Promise<void>,
+    schedules: () => invoke("schedule_list") as ReturnType<Backend["schedules"]>,
+    scheduleCreate: (request) => invoke("schedule_create", { request }) as ReturnType<Backend["scheduleCreate"]>,
+    scheduleDelete: (id) => invoke("schedule_delete", { id }) as Promise<void>,
+    scheduleSetEnabled: (id, enabled) => invoke("schedule_set_enabled", { id, enabled }) as ReturnType<Backend["scheduleSetEnabled"]>,
+    agents: (clean) => invoke("agents_status", { clean }) as Promise<AgentStatus[]>,
+  agentsCatalog: (refresh = false) => invoke("agents_catalog", { refresh }) as ReturnType<Backend["agentsCatalog"]>,
+    install: (id) => invoke("agent_install", { id }) as Promise<ActionResult>,
+    login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
+    openTerminal: () => invoke("agent_terminal") as Promise<ActionResult>,
+    // A refused link (http, or the browser failed) says why on screen even where the caller stays quiet.
+    openExternal: (url) =>
+      (invoke("open_external", { url }) as Promise<void>).catch((error: unknown) => {
+        window.dispatchEvent(new CustomEvent(LINK_BLOCKED, { detail: { url, message: linkRefusal(error) } }));
+        throw error;
+      }),
+    about: () => invoke("about") as Promise<About>,
+    checkUpdate: () => invoke("update_check") as Promise<UpdateCheck>,
+    pendingUpdate: () => invoke("update_pending") as Promise<UpdateRelease | null>,
+    installUpdate: (tag) => invoke("update_install", { tag }) as Promise<void>,
+    cancelUpdate: () => invoke("update_cancel") as Promise<void>,
+    updateStatus: () => invoke("update_status") as Promise<UpdateStatus>,
+    review: (project, pr, clean) => invoke("review", { project, pr, clean }) as Promise<ReviewStarted>,
+    issuesSearch: (repo, query) => invoke("issues_search", { repo, query }) as ReturnType<Backend["issuesSearch"]>,
+    issuesList: (repo) => invoke("issues_list", { repo }) as ReturnType<Backend["issuesList"]>,
+    issuesRecord: (finding) => invoke("issues_record", { finding }) as ReturnType<Backend["issuesRecord"]>,
+    issuesClassify: (id, classification, issue) => invoke("issues_classify", { id, classification, issue }) as ReturnType<Backend["issuesClassify"]>,
+  issuesResolve: (id, resolution) => invoke("issues_resolve", { id, resolution }) as ReturnType<Backend["issuesResolve"]>,
+    budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
+    setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
+    setBudgetEnabled: async (enabled) => JSON.parse((await invoke("budget_set_enabled", { enabled })) as string) as BudgetReport,
+    yolo: () => invoke("yolo_get") as ReturnType<Backend["yolo"]>,
+    setYolo: (change) => invoke("yolo_set", { enabled: null, maxCards: null, perHour: null, dedupeMinutes: null, ...change }) as ReturnType<Backend["setYolo"]>,
+    tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
+    leadShow: (project, thread) => invoke("lead_show", { project: project ?? null, thread: thread ?? null }) as Promise<LeadShow>,
+    leadNote: (threadId, change) => invoke("lead_note", { threadId, change }) as Promise<void>,
+    leadNew: (project) => invoke("lead_new", { project }) as Promise<{ threadId: string }>,
+    leadClose: (threadId) => invoke("lead_close", { threadId }) as Promise<void>,
+    leadWriter: (threadId) => invoke("lead_writer", { threadId }) as Promise<void>,
+    // The bytes go as the raw body; the project, name and thread ride percent-encoded in headers.
+    leadAttach: async (project, file, thread) =>
+      invoke("lead_attach", new Uint8Array(await file.arrayBuffer()), {
+        headers: { "x-project": encodeURIComponent(project), "x-name": encodeURIComponent(file.name), ...(thread ? { "x-thread": encodeURIComponent(thread) } : {}) },
+      }) as Promise<LeadAttachment>,
+    leadSend: (r) =>
+      invoke("lead_send", {
+        project: r.project,
+        thread: r.thread ?? null,
+        provider: r.provider,
+        model: r.model ?? null,
+        effort: r.effort ?? null,
+        text: r.text,
+        attachments: r.attachments,
+        clean: r.clean,
+      }) as Promise<{
+        threadId: string | null;
+        events: LeadEvent[];
+      }>,
+    leadDispatch: (planId, clean) => invoke("lead_dispatch", { planId, clean }) as Promise<LeadDispatched>,
+    leadDecide: (id, allow) => invoke("lead_decide", { id, allow }) as Promise<{ id: string; decision: "allow" | "deny" }>,
+    leadStop: (project, thread) => invoke("lead_stop", { project: project ?? null, thread: thread ?? null }) as Promise<{ stopped: boolean }>,
+  leadWake: (runId) => invoke("lead_wake", { runId }) as Promise<{ processed: boolean }>,
+  leadRetry: (runId, messageId) => invoke("lead_retry", { runId, messageId }) as Promise<{ state: "queued" | "acknowledged" }>,
+  leadAnswerApproval: (runId, messageId, text) => invoke("lead_answer_approval", { runId, messageId, text }) as Promise<{ id: string }>,
+    leadStopAll: (project) => invoke("lead_stop_all", { project }) as Promise<{ stopped: number }>,
+    leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
+    graphView: (project) => invoke("graph_view", { project: project ?? null }) as Promise<GraphView>,
+    graphOverallPart: (project) => invoke("graph_overall_part", { project }) as Promise<GraphView>,
+    graphBuild: (project) => invoke("graph_build", { project }) as Promise<{ ok: boolean; output: string }>,
+    graphDeep: async (project, provider, model) =>
+      invoke("graph_deep", {
+        project,
+        provider: provider ?? null,
+        model: model ?? null,
+        // Read lazily: data/settings.ts touches window at import, and tests load this module under Node.
+        clean: (await import("../../data/settings.ts")).settingsNow().clean,
+      }) as Promise<GraphDeepResult>,
+    graphSettings: (change) => invoke("graph_settings", { change: change ?? null }) as Promise<GraphSettings>,
+    projects: () => invoke("projects_list") as Promise<ProjectList>,
+    projectOpen: (path) => invoke("project_open", { path }) as Promise<void>,
+    projectsAdd: (path) => invoke("projects_add", { path }) as Promise<ProjectList>,
+    projectsRemove: (path) => invoke("projects_remove", { path }) as Promise<ProjectList>,
+    projectsNew: (name) => invoke("projects_new", { name }) as Promise<ProjectList & { created: string }>,
+    projectsRoot: ({ path, reset, create }) => invoke("projects_root", { path: path ?? null, reset: Boolean(reset), create: Boolean(create) }) as Promise<ProjectList>,
+    projectsCheck: (paths) => invoke("projects_check", { paths }) as Promise<ProjectCheck[]>,
+    // The native picker opens from Rust; the screen gets the chosen path or null.
+    pickFolder: () => invoke("pick_folder") as Promise<string | null>,
+  };
+}

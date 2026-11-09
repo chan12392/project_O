@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { timeScale } from "../app/src/timeScale.ts";
+import { timeScale } from "../app/src/lib/timeScale.ts";
 
 const MIN = 60_000;
 const close = (a: number, b: number) => assert.ok(Math.abs(a - b) < 1e-9, `${a} ≈ ${b}`);

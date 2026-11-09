@@ -1,10 +1,10 @@
 [workspace]
 resolver = "2"
-members = ["crates/o-guard", "crates/o-core", "crates/o-cli"]
+members = ["crates/o-guard", "crates/o-core", "crates/o-cli", "app/src-tauri"]
 
 [workspace.package]
 edition = "2021"
-version = "0.2.0"
+version = "0.3.0"
 publish = false
 
 [workspace.dependencies]
@@ -14,6 +14,14 @@ regex = "1"
 rusqlite = { version = "0.41", features = ["bundled"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# Tests, clippy and the scan build with this profile (not --release): line numbers for panics,
+# no full debug info for the dependencies, so links stay short.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.dev.package."*"]
+debug = false
 
 [profile.release]
 # The hook runs on every agent tool call: start fast, stay small.

@@ -82,6 +82,6 @@ fn processes_reading_at_once_ingest_every_line_once() {
         let counts: Vec<usize> = value["runs"].as_array().unwrap().iter().map(|r| r["events"].as_array().unwrap().len()).collect();
         assert_eq!(counts, [51, 301]);
     }
-    let rows: i64 = o_core::index::open(&home).unwrap().query_row("SELECT count(*) FROM events", [], |r| r.get(0)).unwrap();
+    let rows: i64 = o_core::run::index::open(&home).unwrap().query_row("SELECT count(*) FROM events", [], |r| r.get(0)).unwrap();
     assert_eq!(rows, 352);
 }

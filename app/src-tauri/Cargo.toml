@@ -1,0 +1,34 @@
+[package]
+name = "project-o"
+description = "project_O desktop app: the React screens on top of o-core, as one project_O.exe."
+edition.workspace = true
+# The desktop app (and its installer) is versioned on its own; the crates follow the workspace.
+version = "0.3.0"
+publish.workspace = true
+default-run = "project-o"
+
+[[bin]]
+name = "project-o"
+path = "src/main.rs"
+
+[[bin]]
+name = "o-uninstall-data"
+path = "src/uninstall.rs"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+o-core = { path = "../../crates/o-core" }
+tauri = { version = "2", features = ["tray-icon"] }
+# Card-finished notifications (Settings → 알림): the page's `Notification` becomes a Windows toast.
+tauri-plugin-notification = "=2.8.0"
+# The native folder picker for 프로젝트 추가 (ADR-0009), pinned exactly.
+tauri-plugin-dialog = "=2.8.4"
+tauri-plugin-single-instance = "2"
+serde.workspace = true
+serde_json = { workspace = true, features = ["preserve_order"] }
+chrono.workspace = true
+regex.workspace = true
+# Checks the downloaded installer against the SHA-256 GitHub reports for the release asset.
+sha2 = "0.10"

@@ -1,4 +1,4 @@
-import type { CardStatus, OEvent } from "./events.ts";
+import type { CardStatus, OEvent, Violation } from "./events.ts";
 import { cardLabel, type ProviderId } from "./plan.ts";
 
 /**
@@ -9,7 +9,8 @@ export type CardState = "waiting" | "queued" | "running" | CardStatus;
 
 export interface CardLogEntry {
   at: string;
-  kind: "queued" | "tool" | "message" | "limit" | "end" | "team";
+  /** "budget": the runner lowered the card's effort for the daily usage budget. */
+  kind: "queued" | "tool" | "message" | "input" | "limit" | "end" | "team" | "budget" | "guides";
   text: string;
   /** For tool entries: the act in words and the raw detail the CLI reported. */
   tool?: { word: string; detail: string };
@@ -19,6 +20,10 @@ export interface CardLogEntry {
 
 interface TeamMessage {
   at: string;
+  id?: string;
+  kind?: "message" | "question" | "approval";
+  replyTo?: string;
+  recipients?: Record<string, "stored" | "delivered" | "unknown" | "acknowledged" | "cancelled">;
   from: string;
   to: string;
   text: string;
@@ -64,11 +69,57 @@ export interface RunView {
   startedAt: string;
   endedAt?: string;
   status: "running" | "done" | "failed" | "stopped";
+  followup?: { sourceRunId: string; cardId: string };
   cards: CardView[];
   /** The run's team channel, in order. */
   messages: TeamMessage[];
   /** Latest report per provider and window. */
   quotas: Quota[];
+  /** Why the runner refused to start the run (`run.blocked`); absent when it did not. */
+  blocked?: Violation[];
+}
+
+/** What a run that failed before its cards says when the runner left no reason (as crates/o-core/src/run/snapshot.rs). */
+export const BLOCKED_UNKNOWN = "카드를 만들기 전에 실행기가 멈췄습니다. 실행 폴더의 runner.err.log를 확인하세요";
+
+/**
+ * A run that ended failed before any card was made (refused by the runner's last check, or its
+ * runner failed): no card shows it, so screens count and show it as a run of its own.
+ */
+export function failedBeforeCards(run: Pick<RunView, "status" | "cards">): boolean {
+  return run.status === "failed" && run.cards.length === 0;
+}
+
+/** Why it never started, one line: the policy's reasons, or where to look when there are none. */
+export function blockedReason(run: Pick<RunView, "blocked">): string {
+  return run.blocked?.length ? run.blocked.map((v) => v.message).join(" / ") : BLOCKED_UNKNOWN;
+}
+
+export interface FoldedRun {
+  /** What the view was folded from: a run with the same key folds to the same view. */
+  key: string;
+  view: RunView;
+}
+
+/**
+ * Each answer's runs folded, in the answer's order (runs without a start left out). A run whose
+ * events are the same as last time keeps its view object, so a quiet poll re-renders nothing.
+ * The key is the events' content, not their count: a long Claude Code session keeps only its
+ * newest lines, so a later answer can carry as many events with newer content.
+ */
+export function foldRuns(runs: readonly { runId: string; events: OEvent[] }[], known: ReadonlyMap<string, FoldedRun>): Map<string, FoldedRun> {
+  const next = new Map<string, FoldedRun>();
+  for (const r of runs) {
+    const key = JSON.stringify(r.events);
+    const hit = known.get(r.runId);
+    if (hit && hit.key === key) {
+      next.set(r.runId, hit);
+      continue;
+    }
+    const view = snapshot(r.events);
+    if (view) next.set(r.runId, { key, view });
+  }
+  return next;
 }
 
 export function snapshot(events: OEvent[]): RunView | undefined {
@@ -77,7 +128,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
   for (const e of events) {
     if (e.t === "run.start") {
       run = { runId: e.runId, title: e.title, project: e.project, startedAt: e.at, status: "running", cards: [], messages: [], quotas: [] };
+      byId.clear();
       for (const c of e.cards) {
+        // A repeated card id is one card: the first keeps it (as run/snapshot.rs does).
+        if (byId.has(c.id)) continue;
         // Runs recorded before labels existed carry only a role.
         const card: CardView = { ...c, label: c.label ?? cardLabel(c), state: "waiting", activity: "", log: [], usage: { input: 0, cached: 0, output: 0 } };
         byId.set(c.id, card);
@@ -87,9 +141,12 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (!run) continue;
     if (e.t === "msg") {
-      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text });
+      run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text, ...(e.id ? { id: e.id } : {}), ...(e.kind ? { kind: e.kind } : {}), ...(e.replyTo ? { replyTo: e.replyTo } : {}) });
+      // An external session's "lead to all" lines are its main thread talking, not words sent to
+      // each subagent: they stay in the team chat instead of repeating in every card's transcript.
+      const monologue = run.runId.startsWith("session-") && e.from === "lead" && e.to === "all";
       for (const card of run.cards) {
-        if (card.id === e.from || card.id === e.to || (e.to === "all" && card.id !== e.from)) {
+        if (card.id === e.from || card.id === e.to || (e.to === "all" && card.id !== e.from && !monologue)) {
           card.log.push({ at: e.at, kind: "team", text: e.text, team: { from: e.from, to: e.to } });
         }
       }
@@ -100,10 +157,26 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       run.endedAt = e.at;
       continue;
     }
+    if (e.t === "run.followup") {
+      run.followup = { sourceRunId: e.sourceRunId, cardId: e.cardId };
+      continue;
+    }
     if (e.t === "quota") {
       run.quotas = [...run.quotas.filter((q) => q.provider !== e.provider || q.window !== e.window), { provider: e.provider, window: e.window, used: e.used, resetsAt: e.resetsAt, at: e.at }];
       continue;
     }
+    if (e.t === "run.blocked") {
+      run.blocked = e.violations;
+      continue;
+    }
+    if (e.t === "msg.state") {
+      const message = run.messages.find((m) => m.id === e.id);
+      if (message) message.recipients = { ...message.recipients, [e.recipient]: e.state };
+      continue;
+    }
+    if (e.t === "review.posted") continue;
+    if (e.t === "run.context") continue;
+    if (e.t === "run.mode") continue;
     const card = byId.get(e.cardId);
     if (!card) continue;
     switch (e.t) {
@@ -124,9 +197,20 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.activity = firstLine(e.text);
         card.log.push({ at: e.at, kind: "message", text: e.text });
         break;
+      case "card.input":
+        card.log.push({ at: e.at, kind: "input", text: e.text });
+        break;
       case "card.limit":
         card.activity = `사용량 한도: ${e.until}까지 차단`;
         card.log.push({ at: e.at, kind: "limit", text: card.activity });
+        break;
+      case "card.budget":
+        card.activity = budgetText(e.effortFrom, e.effortTo, e.spent, e.allowance);
+        card.effort = e.effortTo;
+        card.log.push({ at: e.at, kind: "budget", text: card.activity });
+        break;
+      case "card.guides":
+        card.log.push({ at: e.at, kind: "guides", text: guidesText(e.skills, e.harness) });
         break;
       case "card.usage":
         card.usage = { input: card.usage.input + e.input, cached: card.usage.cached + e.cached, output: card.usage.output + e.output };
@@ -141,6 +225,17 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
   }
   return run;
+}
+
+/** "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budget_text` in crates/o-core/src/run/snapshot.rs. */
+/** "넣은 지침: 하네스 game · 스킬 ui, test", as `guides_text` in crates/o-core/src/run/snapshot.rs. */
+export function guidesText(skills: string[], harness: string[]): string {
+  const parts = ([["하네스", harness], ["스킬", skills]] as const).filter(([, names]) => names.length > 0).map(([word, names]) => `${word} ${names.join(", ")}`);
+  return `넣은 지침: ${parts.join(" · ")}`;
+}
+
+export function budgetText(from: string | undefined, to: string, spent: number, allowance: number): string {
+  return `사용 예산: effort ${from ?? "기본"} → ${to} (오늘 ${spent}/${allowance}%p)`;
 }
 
 /** Tool names as each CLI reports them, grouped into what a person would call the act. */
