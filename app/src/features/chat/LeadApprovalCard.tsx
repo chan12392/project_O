@@ -26,6 +26,24 @@ function Detail({ text, label }: { text: string; label: string }) {
 }
 
 /**
+ * Tells the person when a new approval request comes in and the window is not in front (the same
+ * notice setting as questions), once per request. Mounted with the main window, not the card:
+ * the card is not on screen while an agent pane covers the lead chat (issue #79).
+ */
+export function useApprovalAlert(lead: LeadState, api: Backend) {
+  const approvals = lead.thread?.busy && lead.thread.busy !== "unknown" ? lead.thread.approvals : undefined;
+  const view = approvalView(approvals, Date.now());
+  const told = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!view || told.current === view.id) return;
+    told.current = view.id;
+    const notice = approvalNotice(view);
+    void alertPerson(api, notice.title, notice.body);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view?.id]);
+}
+
+/**
  * The action a normal-mode lead waits on (ADR-0008 개정 3), right above the composer: what it
  * asks in full, how long it waits, and 거부 (focused first) or 허용. There is no "always allow":
  * each action is its own decision, and only these buttons decide, never text in the chat.
@@ -43,14 +61,6 @@ export function LeadApprovalCard({ lead, api }: { lead: LeadState; api: Backend 
     const timer = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(timer);
   }, [id]);
-  // A request that just came in tells the person when the window is not in front (the same notice setting as questions).
-  const told = useRef<string | undefined>(undefined);
-  useEffect(() => {
-    if (!view || told.current === view.id) return;
-    told.current = view.id;
-    const notice = approvalNotice(view);
-    void alertPerson(api, notice.title, notice.body);
-  }, [view?.id]);
   // A new request takes the focus on 거부, the safe answer: Enter or Space refuses it.
   useEffect(() => {
     if (!id) return;

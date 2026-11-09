@@ -4,129 +4,128 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>project_O 아키텍처</title>
-<!-- Source of 10-architecture.png; regenerate by screenshotting this page at 1600 x 1000. -->
+<!-- Source of 10-architecture.png; regenerate by screenshotting this page at 1600 x 846 (headless Edge: --window-size=1600,846 --screenshot). -->
 <style>
   :root {
-    --bg: #111214; --panel: #1a1b1e; --line: #2c2e33; --text: #ececec; --dim: #a1a1aa; --faint: #71717a;
-    --claude: #f59e6b; --codex: #60a5fa; --agy: #34d399; --lead: #d4d4d8; --warn: #fbbf24; --red: #f87171;
+    --bg: #111214; --panel: #1a1b1e; --card: #202226; --line: #2c2e33; --text: #ececec; --dim: #a1a1aa; --faint: #71717a;
+    --claude: #f59e6b; --codex: #60a5fa; --devin: #a78bfa; --opencode: #94a3b8; --held: #52525b; --warn: #fbbf24; --ok: #34d399;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font-family: "Pretendard Variable", Pretendard, "Malgun Gothic", system-ui, sans-serif; word-break: keep-all; }
-  .page { width: 1600px; height: 1000px; padding: 44px 56px; display: flex; flex-direction: column; gap: 26px; }
+  .page { width: 1600px; padding: 44px 56px 44px; display: flex; flex-direction: column; gap: 24px; }
   header h1 { margin: 0; font-size: 30px; letter-spacing: -0.02em; }
-  header p { margin: 6px 0 0; color: var(--dim); font-size: 16px; }
-  .flow { display: grid; grid-template-columns: 1fr 34px 1.15fr 34px 1.35fr 34px 1.2fr 34px 1.45fr; align-items: stretch; flex: 1; }
-  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 16px; display: flex; flex-direction: column; gap: 10px; }
-  .box h2 { margin: 0; font-size: 18px; }
-  .box .tag { font-size: 12px; color: var(--faint); letter-spacing: 0.06em; }
-  .box p, .box li { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.55; }
-  .box ul { margin: 0; padding-left: 18px; display: grid; gap: 4px; }
-  code { font-family: "Geist Mono", Consolas, monospace; font-size: 12.5px; color: var(--text); background: #26282d; padding: 1px 5px; border-radius: 4px; }
-  .arrow { display: grid; place-items: center; color: var(--faint); font-size: 24px; }
-  .cli { border-left: 3px solid; border-radius: 8px; background: #202226; padding: 9px 11px; }
-  .cli b { display: block; font-size: 14.5px; }
-  .cli span { font-size: 12.5px; color: var(--dim); }
-  .claude { border-color: var(--claude); } .codex { border-color: var(--codex); } .agy { border-color: var(--agy); }
-  .view { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-  .view div { background: #202226; border-radius: 8px; padding: 9px 10px; font-size: 13px; color: var(--dim); }
-  .view b { display: block; color: var(--text); font-size: 14px; }
-  .bands { display: grid; grid-template-columns: 1.55fr 1fr; gap: 20px; }
-  .band { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 16px 18px; }
-  .band h3 { margin: 0 0 10px; font-size: 15px; }
+  header p { margin: 8px 0 0; color: var(--dim); font-size: 16px; }
+  .flow { display: grid; grid-template-columns: 1fr 30px 1.25fr 30px 1.2fr 30px 1.15fr 30px 1.35fr; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .tag { font-size: 12px; color: var(--faint); letter-spacing: 0.06em; }
+  h2 { margin: -4px 0 0; font-size: 19px; }
+  .box p { margin: 0; color: var(--dim); font-size: 14px; line-height: 1.6; }
+  .items { display: grid; gap: 8px; }
+  .item { background: var(--card); border-radius: 9px; padding: 10px 12px; font-size: 13px; color: var(--dim); line-height: 1.5; }
+  .item b { display: block; color: var(--text); font-size: 14px; margin-bottom: 2px; }
+  code { font-family: "Geist Mono", Consolas, monospace; font-size: 12.5px; color: var(--text); background: #2a2c31; padding: 1px 5px; border-radius: 4px; }
+  .arrow { display: grid; place-items: center; color: var(--faint); font-size: 22px; }
+  .cli { border-left: 3px solid; }
+  .claude { border-color: var(--claude); } .codex { border-color: var(--codex); } .devin { border-color: var(--devin); } .opencode { border-color: var(--opencode); }
+  .held { border-color: var(--held); opacity: 0.6; }
+  .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .foot { margin-top: auto; font-size: 12.5px; color: var(--faint); line-height: 1.5; }
+  .bands { display: grid; grid-template-columns: 1.7fr 1fr; gap: 20px; }
+  .band { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px 20px; }
+  .band h3 { margin: 0 0 12px; font-size: 15px; }
   .guards { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; }
-  .guards div { background: #202226; border-radius: 8px; padding: 9px 10px; font-size: 12.5px; color: var(--dim); line-height: 1.5; }
-  .guards b { display: block; color: var(--warn); font-size: 13.5px; margin-bottom: 2px; }
-  .branches { display: flex; align-items: center; gap: 10px; font-size: 14px; color: var(--dim); flex-wrap: wrap; }
-  .pill { background: #202226; border: 1px solid var(--line); border-radius: 999px; padding: 4px 11px; color: var(--text); font-size: 13.5px; }
-  .pill.ro { border-color: var(--warn); }
-  .note { font-size: 12.5px; color: var(--faint); margin-top: 8px; }
+  .guards .item b { color: var(--warn); font-size: 13.5px; }
+  .local .item b { color: var(--ok); font-size: 13.5px; }
 </style>
 </head>
 <body>
 <div class="page">
   <header>
     <h1>project_O 아키텍처</h1>
-    <p>총괄 에이전트가 일을 작업카드로 나누고, O CLI가 공식 에이전트 CLI들에 병렬로 맡기고, 앱은 그 기록만 읽어 채팅·사무실·대시보드로 보여 준다.</p>
+    <p>총괄 에이전트가 요청을 작업카드로 나누고, O가 정책을 확인한 뒤 공식 에이전트 CLI에 병렬로 맡긴다. 앱은 그 실행 기록을 읽어 보여 준다. 모두 이 PC 안에서 돈다.</p>
   </header>
 
   <div class="flow">
     <section class="box">
       <span class="tag">사람</span>
-      <h2>대표님</h2>
-      <p>프로젝트 총괄에게 무엇을 할지만 자연어로 요청한다.</p>
-      <ul>
-        <li>"todo 앱에 다크 모드 넣어줘"</li>
-        <li>어느 에이전트·모델로 할지는 총괄이 정한다</li>
-        <li>직접 지정하면 그대로 따른다</li>
-      </ul>
+      <h2>사용자</h2>
+      <p>프로젝트 총괄에게 무엇을 할지 자연어로 요청한다.</p>
+      <div class="items">
+        <div class="item"><b>요청</b>"todo 앱에 다크 모드 넣어줘"</div>
+        <div class="item"><b>승인</b>총괄의 파일 수정·명령과 계획 실행은 사람이 누른다</div>
+        <div class="item"><b>지정</b>에이전트·모델을 직접 고르면 그대로 따른다</div>
+      </div>
     </section>
     <div class="arrow">→</div>
     <section class="box">
-      <span class="tag">프로젝트마다 하나</span>
-      <h2>총괄 (Claude Code + O 스킬)</h2>
-      <p>요청을 서로 겹치지 않는 작업카드로 나눠 계획(JSON)을 만든다.</p>
-      <ul>
-        <li>카드마다 에이전트·모델·노력 수준을 일에 맞게 고른다 (한도는 <code>o usage</code>로 확인)</li>
-        <li>유휴 시 쉬고, 부르면 최근 세션을 불러온다</li>
-        <li>팀 대화로 카드에 답한다: <code>o msg send</code></li>
-        <li>끝나면 카드별 결과를 정리해 보고</li>
-      </ul>
+      <span class="tag">프로젝트마다 탭 최대 4개</span>
+      <h2>총괄 (Claude Code · Codex)</h2>
+      <p>요청을 서로 겹치지 않는 작업카드로 나눠 계획을 만든다.</p>
+      <div class="items">
+        <div class="item"><b>계획</b>카드마다 에이전트·모델·노력 수준을 고른다</div>
+        <div class="item"><b>탭</b>직접 수정하는 탭은 하나, 나머지는 설계 전용</div>
+        <div class="item"><b>대화</b>카드 질문에 답하고 결과를 모아 보고한다</div>
+        <div class="item"><b>전체 총괄</b>여러 프로젝트를 읽기 전용으로 살핀다</div>
+      </div>
     </section>
     <div class="arrow">→</div>
     <section class="box">
       <span class="tag">중간 라우팅</span>
       <h2>O CLI</h2>
-      <ul>
-        <li><code>o dispatch</code> 정책 검사 후 백그라운드 병렬 실행</li>
-        <li>정책: 카드 8장·동시 6개·프로바이더별 상한·하루 60건, 한도 걸린 서비스 재사용 차단, 실행 파일·인자·계정 지정 금지</li>
-        <li><code>o msg</code> 카드 사이 팀 대화 (정책 검사)</li>
-        <li><code>o usage</code> 구독 한도를 각 CLI에 물어 저장</li>
-        <li><code>o status</code> · <code>o events</code> · <code>o stop</code></li>
-      </ul>
+      <p>계획을 정책으로 두 번 확인하고 카드마다 격리된 작업 폴더에서 실행한다.</p>
+      <div class="items">
+        <div class="item"><b>분배</b><code>o dispatch</code> · 공용 자원 예약 · 후속 지시</div>
+        <div class="item"><b>상한</b>계획당 카드 8장 · 동시 6개 · 하루 60장 · 하루 사용 예산</div>
+        <div class="item"><b>팀 대화</b><code>o msg</code> · <code>o context</code></div>
+        <div class="item"><b>관측</b><code>o usage</code> · <code>o status</code> · <code>o stop</code></div>
+      </div>
     </section>
     <div class="arrow">→</div>
     <section class="box">
       <span class="tag">공식 CLI만 사용</span>
       <h2>에이전트</h2>
-      <div class="cli claude"><b>Claude Code</b><span><code>claude -p</code> stream-json</span></div>
-      <div class="cli codex"><b>Codex</b><span><code>codex exec --json</code></span></div>
-      <div class="cli agy"><b>Antigravity</b><span><code>agy -p</code> stream-json</span></div>
-      <p>로그인·토큰은 각 CLI가 관리한다. 우리 코드는 인증 파일을 읽지 않고 프로바이더 서버를 직접 부르지 않는다.</p>
+      <div class="items">
+        <div class="item cli claude"><b>Claude Code</b>총괄 · 카드</div>
+        <div class="item cli codex"><b>Codex</b>총괄 · 카드 (app-server)</div>
+        <div class="item cli devin"><b>Devin</b>카드</div>
+        <div class="item cli opencode"><b>OpenCode</b>카드</div>
+        <div class="item cli held"><b>Antigravity</b>공급자 정책으로 보류</div>
+      </div>
+      <p class="foot">로그인은 각 CLI가 관리한다. O는 인증 파일을 읽지 않고 공급자 서버를 직접 부르지 않는다.</p>
     </section>
     <div class="arrow">→</div>
     <section class="box">
-      <span class="tag">읽기 전용 화면</span>
+      <span class="tag">Tauri 2 데스크톱 앱</span>
       <h2>project_O 앱</h2>
-      <p><code>runs/&lt;runId&gt;/events.jsonl</code>을 <code>snapshot()</code>·<code>nextUp()</code>으로 읽어 그린다.</p>
-      <div class="view">
-        <div><b>총괄 채팅</b>요청·작업 진행 카드</div>
-        <div><b>사무실</b>카드마다 한 사람, 상태대로 움직임</div>
-        <div><b>대시보드</b>기다리는 일·현황·흐름·활동</div>
-        <div><b>다음 할 일</b>할 일 / 멈춘 작업</div>
-        <div><b>보드</b>카드 칸반·PR</div>
-        <div><b>사용량</b>토큰·5시간·주간 한도</div>
+      <p>실행 기록(<code>events.jsonl</code>)을 읽어 그린다. 프로세스는 셸의 정해진 명령으로만 띄운다.</p>
+      <div class="grid2">
+        <div class="item"><b>총괄 채팅</b>탭 · 승인 카드</div>
+        <div class="item"><b>설계</b>계획 · 작업 그래프</div>
+        <div class="item"><b>사무실</b>카드마다 한 사람</div>
+        <div class="item"><b>대시보드</b>기다리는 일 · 흐름</div>
+        <div class="item"><b>그래프</b>코드 지도 (grafly)</div>
+        <div class="item"><b>사용량</b>5시간 · 주간 한도</div>
       </div>
-      <p class="note">Vite + React 19 · Tauri 2 + Rust 셸 예정 (ADR-0001)</p>
+      <p class="foot">Vite + React 19 화면, Rust 셸이 <code>o-core</code>를 직접 쓴다.</p>
     </section>
   </div>
 
   <div class="bands">
     <section class="band">
-      <h3>정책 자동 차단 — 네 겹</h3>
+      <h3>정책 자동 차단</h3>
       <div class="guards">
-        <div><b>에이전트 훅</b>인증 파일·토큰, 서버 직접 호출, 권한 끄는 옵션, main 커밋·push</div>
-        <div><b>git 훅</b>같은 코드 규칙으로 커밋 검사, 보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main) 직접 커밋·push 차단</div>
-        <div><b>CI</b>전체 파일 정책 검사 + 테스트, 브랜치 흐름 검사</div>
-        <div><b>O CLI 정책</b>카드·팀 메시지 검사, 동시·하루 상한, 한도 재사용 차단</div>
+        <div class="item"><b>에이전트 훅</b>인증 파일·토큰 접근, 서버 직접 호출, 권한 끄는 옵션, 보호 브랜치 커밋</div>
+        <div class="item"><b>git 훅</b>같은 규칙으로 커밋 검사, 보호 브랜치 커밋·push 차단</div>
+        <div class="item"><b>CI</b>전체 정책 검사 · 테스트 · 라이선스 고지 · PR 방향</div>
+        <div class="item"><b>O 정책</b>카드·팀 메시지 검사, 동시·하루 상한, 한도 걸린 서비스 재사용 차단</div>
       </div>
     </section>
-    <section class="band">
-      <h3>브랜치 흐름</h3>
-      <div class="branches">
-        <span class="pill">개인·작업 브랜치</span>→
-        <span class="pill ro">test_2 (자유 통합, 읽기 전용 거울)</span>→<span class="pill">test_1</span>→<span class="pill">main</span>
+    <section class="band local">
+      <h3>로컬 전용</h3>
+      <div class="grid2">
+        <div class="item"><b>서버 없음</b>기록은 <code>%LOCALAPPDATA%\project_O</code></div>
+        <div class="item"><b>YOLO는 선택</b>기본은 꺼짐, 켜면 승인 없이 실행</div>
       </div>
-      <p class="note">test_2는 누구나 병합, test_1은 다른 팀원 1명이 승인한 뒤 누구나(대표는 바로) 병합, test_1_hotfix·main_hotfix·main은 대표(A)만 병합한다. 병합은 merge commit만.</p>
     </section>
   </div>
 </div>

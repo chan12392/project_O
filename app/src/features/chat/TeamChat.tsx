@@ -92,7 +92,7 @@ export function TeamChat({ run }: { run: RunView }) {
               </div>
               {(m.kind === "question" || m.kind === "approval" || m.replyTo || m.recipients) && <p className="mt-1 break-all px-1 text-xs text-chat-foreground-faint">
                 {m.kind === "question" && `질문${m.id ? ` (${m.id})` : ""}`}
-                {m.kind === "approval" && `대표님 승인 요청${m.id ? ` (${m.id})` : ""} · ${answered ? "답변 완료" : "직접 확인 필요"}`}
+                {m.kind === "approval" && `사용자 승인 요청${m.id ? ` (${m.id})` : ""} · ${answered ? "답변 완료" : "직접 확인 필요"}`}
                 {m.replyTo && `질문 ${m.replyTo}에 대한 답변`}
                 {(m.kind === "question" || m.kind === "approval" || m.replyTo) && m.recipients && " · "}
                 {m.recipients && Object.entries(m.recipients).map(([recipient, state]) => `${name(recipient)}: ${deliveryWords[state] ?? state}`).join(" · ")}

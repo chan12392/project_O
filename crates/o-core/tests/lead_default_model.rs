@@ -11,19 +11,19 @@ fn official_codex_reuses_default_model_for_card_questions() {
     let home = root.join("state");
     let project = root.join("project");
     fs::create_dir_all(&project).unwrap();
-    fs::create_dir_all(home.join("runs/run-1")).unwrap();
-    fs::write(home.join("runs/run-1/events.jsonl"), "").unwrap();
+    fs::create_dir_all(home.join("runs/20260101-000000-abcd")).unwrap();
+    fs::write(home.join("runs/20260101-000000-abcd/events.jsonl"), "").unwrap();
     let project = project.to_string_lossy().into_owned();
-    fs::write(home.join("runs/run-1/plan.json"), json!({"title":"test","project":project,"cards":[{"id":"a","provider":"codex","task":"test","depends_on":[]}]}).to_string()).unwrap();
+    fs::write(home.join("runs/20260101-000000-abcd/plan.json"), json!({"title":"test","project":project,"cards":[{"id":"a","provider":"codex","task":"test","depends_on":[]}]}).to_string()).unwrap();
     let thread = lead::thread_for(&home, &project, false).unwrap();
     let mut events = fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap();
     writeln!(events, "{}", json!({"t":"lead.user","at":"now","text":"테스트 지시","provider":"codex","effort":"low","profile":"project-o"})).unwrap();
-    writeln!(events, "{}", json!({"t":"lead.dispatch","at":"now","planId":"p1","runId":"run-1","clean":true})).unwrap();
+    writeln!(events, "{}", json!({"t":"lead.dispatch","at":"now","planId":"p1","runId":"20260101-000000-abcd","clean":true})).unwrap();
     drop(events);
-    let card = Speaker { run_id: "run-1".into(), me: "a".into(), cards: vec!["a".into()] };
+    let card = Speaker { run_id: "20260101-000000-abcd".into(), me: "a".into(), cards: vec!["a".into()] };
     for (id, question) in [("first", "검증용 식별자는 DEFAULT-4392 입니다. 식별자가 무엇인가요?"), ("second", "이전 질문에서 알려준 검증용 식별자는 무엇인가요?")] {
         team::send_tracked(&home, &card, "lead", question, true, Some(id)).ok().unwrap();
-        assert!(lead::wake_card(&home, &project, "run-1", &card.cards, &official_command).unwrap());
+        assert!(lead::wake_card(&home, &project, "20260101-000000-abcd", &card.cards, &official_command).unwrap());
     }
     let events = lead::read_thread(&home, &thread);
     let sessions: Vec<_> = events.iter().filter_map(|event| match event { LeadEvent::WorkerSession { session_id, model, .. } if model.is_none() => Some(session_id), _ => None }).collect();

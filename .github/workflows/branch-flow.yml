@@ -1,8 +1,7 @@
 name: branch-flow
 
-# Read-only token: this job only reads the PR's branch names.
-permissions:
-  contents: read
+# The event contains everything this job needs.
+permissions: {}
 
 on:
   pull_request:
@@ -16,6 +15,8 @@ jobs:
         env:
           HEAD: ${{ github.head_ref }}
           BASE: ${{ github.base_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
           # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
           PERSONAL: "younchan yongwoo eunmi"
         run: |
@@ -23,6 +24,7 @@ jobs:
           # 핫픽스: 개인·작업 브랜치 ──PR──▶ test_1_hotfix ──PR──▶ test_1 (ADR-0021)
           # 핫픽스(정식): 개인·작업 브랜치 ──PR──▶ main_hotfix ──PR──▶ main (ADR-0031)
           fail() { echo "::error::$1 (head=$HEAD, base=$BASE). AGENTS.md의 병합 흐름을 확인하세요."; exit 1; }
+          [ "$HEAD_REPOSITORY" = "$BASE_REPOSITORY" ] || fail "포크 PR은 허용하지 않습니다. 외부 기여는 팀원을 통해 제출해 주세요"
           is_personal() { for p in $PERSONAL; do [ "$1" = "$p" ] && return 0; done; return 1; }
           # A personal branch or <personal>-<topic> (no "/").
           is_member_branch() {

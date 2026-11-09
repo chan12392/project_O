@@ -4,7 +4,8 @@
 //! CLI (`claude`, `codex`, `agy`, `opencode`, `devin`); [`get`] is the registry. Only these files know
 //! provider flags.
 //!
-//! Every launch keeps the CLI's own sign-in: no token is injected. With YOLO off
+//! Own-profile launches inherit the user's environment; clean profiles use their isolated environment.
+//! No token is injected. With YOLO off
 //! (the default) it keeps the CLI's permission checks too and no flag that disables
 //! approvals is added. The one opening is narrow: each CLI may run `o msg`, the run's
 //! team channel, and the read-only `o context` search (ADR-0005; Antigravity only gets
@@ -25,7 +26,6 @@ pub mod devin;
 mod stream;
 
 use std::collections::BTreeMap;
-use std::ffi::OsString;
 use std::io;
 use std::path::Path;
 use std::process::Command;
@@ -50,11 +50,6 @@ pub trait Provider: Sync {
     /// without a prompt, and the model and effort flags. Never a flag that turns
     /// approvals off.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec;
-    /// API key variables the CLI prefers over its own sign-in when it runs headless.
-    /// Left on the PC (an old key in a shell profile or `.env`), they would quietly
-    /// bill the API instead of the subscription the card is meant to use, so a
-    /// card's launch takes them out (`LaunchSpec::env_remove`).
-    fn api_key_vars(&self) -> &'static [&'static str];
     /// A line for the card prompt on which shell commands the CLI may run headless.
     fn tool_note(&self) -> Option<String>;
     /// How a card of this CLI sends and reads team messages.
@@ -196,34 +191,6 @@ pub struct LaunchSpec {
     pub stdin: Option<String>,
     /// Run and card ids for `o msg`; never credentials.
     pub env: BTreeMap<String, String>,
-    /// Inherited variables taken out before launch (see `Provider::api_key_vars`).
-    pub env_remove: Vec<String>,
-}
-
-/// Names to take out of the inherited environment: the listed ones, plus any
-/// inherited spelling of them in another case (Windows reads names without case).
-pub fn names_to_remove(remove: &[String], inherited: impl IntoIterator<Item = OsString>) -> Vec<OsString> {
-    let mut names: Vec<OsString> = remove.iter().map(OsString::from).collect();
-    for key in inherited {
-        let listed = key.to_str().is_some_and(|k| remove.iter().any(|r| r.eq_ignore_ascii_case(k)));
-        if listed && !names.contains(&key) {
-            names.push(key);
-        }
-    }
-    names
-}
-
-/// Takes `names` (in any inherited spelling) out of what `command` inherits.
-pub fn remove_inherited(command: &mut Command, names: &[String]) {
-    for name in names_to_remove(names, std::env::vars_os().map(|(k, _)| k)) {
-        command.env_remove(name);
-    }
-}
-
-/// Takes the provider's API key variables out of a command that runs its CLI
-/// with the person's own environment, so it sees the sign-in a card would.
-pub fn without_api_keys(command: &mut Command, provider: ProviderId) {
-    remove_inherited(command, &strings(get(provider).api_key_vars()));
 }
 
 /// One lead chat turn as a provider launches it.
@@ -276,12 +243,11 @@ pub fn lead_models(id: ProviderId) -> Result<Vec<ModelChoice>, String> {
 }
 
 /// Runs one of the CLI's own read-only listing commands (no model turn): argv only, no shell,
-/// no window, its API key variables taken out. Returns stdout.
-fn list_command(bin: &str, args: &[&str], provider: ProviderId, env: &[(&str, &str)]) -> Result<String, String> {
+/// no window. Returns stdout.
+fn list_command(bin: &str, args: &[&str], env: &[(&str, &str)]) -> Result<String, String> {
     let cli = sys::resolve::resolve_cli(bin).ok_or_else(|| format!("{bin} CLI를 찾지 못했습니다"))?;
     let mut command = Command::new(&cli.command);
     command.args(&cli.prefix).args(args).envs(env.iter().copied());
-    without_api_keys(&mut command, provider);
     let (status, out, err) = sys::proc::capture(&mut command, std::time::Duration::from_secs(30)).map_err(|e| format!("{bin} {}: {e}", args.join(" ")))?;
     if !status.success() {
         let why = err.lines().map(str::trim).rfind(|l| !l.is_empty()).unwrap_or("시간 초과 또는 실패").to_string();

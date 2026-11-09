@@ -10,18 +10,21 @@
     "sidecar": "node ../scripts/prepare-sidecar.mjs",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
+    "preview:app": "tauri dev --config src-tauri/tauri.preview.conf.json",
     "check": "tsc --noEmit",
     "tauri": "tauri"
   },
   "dependencies": {
     "@fontsource-variable/geist": "^5.3.0",
+    "3d-force-graph": "1.80.2",
     "lucide-react": "^1.66.0",
     "pretendard": "^1.3.9",
     "react": "^19.3.1",
     "react-dom": "^19.3.1",
     "react-markdown": "10.1.0",
     "remark-breaks": "4.0.0",
-    "remark-gfm": "4.0.1"
+    "remark-gfm": "4.0.1",
+    "three": "0.187.0"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.3.3",

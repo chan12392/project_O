@@ -119,7 +119,7 @@ fn hook_enforces_branch_names() {
     assert!(blocked(&bash("git switch -c feature-x"), &OnBranch("younchan")));
     assert!(blocked(&bash("git checkout -b younchan/x"), &OnBranch("younchan")));
     assert!(blocked(&bash("git switch -c a/x"), &OnBranch("younchan")));
-    assert!(passes(&bash("git switch -c yongwoo-account-vault"), &OnBranch("yongwoo")));
+    assert!(passes(&bash("git switch -c yongwoo-session-resume"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git switch -c younchan"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git branch -d younchan-old"), &OnBranch("younchan")));
 }
@@ -431,6 +431,25 @@ fn merge_lookups_that_fail_block() {
     assert!(blocked(&bash("GH_TOKEN=x gh pr merge 1"), &OWNER_GH));
     // The default probe knows no gh at all: fail closed, even for the owner's own repo.
     assert!(blocked(&bash("gh pr merge 2"), &OnBranch("younchan")));
+}
+
+#[test]
+fn substitutions_cannot_hide_a_merge_behind_literal_quotes() {
+    for command in [
+        "echo \"$(printf \"'\"; gh pr merge 99; true)\"",
+        "echo \"$(printf \"'\"; $(true; gh pr merge 99; true))\"",
+        "echo \"`gh pr merge 99`\"",
+        "echo \"`printf \"'\"; gh pr merge 99; true`\"",
+        "echo 'first; gh pr merge 99'; gh pr merge 99",
+    ] {
+        for probe in [&OWNER_GH, &MEMBER_GH] {
+            let reasons = review(&bash(command), probe);
+            assert!(reasons.iter().any(|reason| reason.starts_with("병합할 PR의 base 브랜치를 확인하지 못했습니다")), "{command:?} → {reasons:?}");
+        }
+    }
+    let literal = "echo 'first; gh pr merge 99'";
+    assert!(passes(&bash(literal), &OWNER_GH));
+    assert!(blocked(&bash(literal), &MEMBER_GH));
 }
 
 #[test]

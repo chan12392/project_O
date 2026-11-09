@@ -134,6 +134,7 @@ const ATTACH_LIMIT = 10 * 1024 * 1024;
 /** Lead ids, efforts and plan ids as `o lead` takes them; it checks every one again. */
 const LEAD_PROVIDER = /^(claude|codex|agy)$/;
 const LEAD_EFFORT = /^(minimal|low|medium|high|xhigh|max)$/;
+const THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
 /** A waiting approval's id (`<threadId>-a<n>`, crates/o-core/src/lead/approvals.rs); `o lead decide` checks it again. */
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
@@ -186,7 +187,12 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method === "GET" && path === "/lead/show") {
-    run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : [])]));
+    const thread = query.get("thread");
+    if ((query.has("project") && !projectOk) || (thread !== null && !THREAD_ID.test(thread))) {
+      fail(400, "프로젝트 폴더 또는 대화 id가 올바르지 않습니다");
+      return true;
+    }
+    run(o(["lead", "show", "--json", ...(projectOk ? ["--project", project] : []), ...(thread === null ? [] : ["--thread", thread])]));
     return true;
   }
   if (req.method === "GET" && path === "/lead/models") {
@@ -199,6 +205,12 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
+  if (path === "/lead/close" || path === "/lead/writer") {
+    const thread = query.get("thread") ?? "";
+    if (!THREAD_ID.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
+    run(o(["lead", path === "/lead/close" ? "close" : "writer", thread]));
+    return true;
+  }
   if (path === "/lead/wake") {
     const runId = query.get("run") ?? "";
     if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(runId)) { fail(400, "실행 ID가 올바르지 않습니다"); return true; }
@@ -259,12 +271,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (path === "/lead/stop") {
-    const args = leadStopArgs(project);
+    const thread = query.get("thread");
+    if (thread !== null && !THREAD_ID.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
+    const args = thread !== null && !query.has("project") ? ["lead", "stop"] : leadStopArgs(project);
     if (!args) {
       fail(400, "중지할 총괄의 프로젝트 폴더가 필요합니다");
       return true;
     }
-    run(o(args));
+    run(o([...args, ...(thread === null ? [] : ["--thread", thread])]));
     return true;
   }
   if (path === "/lead/stop-all") {
@@ -296,6 +310,8 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     return true;
   }
   if (path === "/lead/attach") {
+    const thread = query.get("thread");
+    if (thread !== null && !THREAD_ID.test(thread)) { fail(400, "대화 id 형식이 아닙니다"); return true; }
     const name = query.get("name") ?? "";
     if (!name) {
     fail(400, "파일 이름이 필요합니다");
@@ -303,14 +319,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
     try {
       const bytes = await body(req, ATTACH_LIMIT);
-      run(oWithInput(["lead", "attach", "--project", project, "--name", name, "-"], bytes, 60_000));
+      run(oWithInput(["lead", "attach", "--project", project, ...(thread === null ? [] : ["--thread", thread]), "--name", name, "-"], bytes, 60_000));
     } catch (e) {
       fail(413, (e as Error).message);
     }
     return true;
   }
   if (path === "/lead/send") {
-    let input: { provider?: unknown; model?: unknown; effort?: unknown; text?: unknown; attachments?: unknown; clean?: unknown };
+    let input: { thread?: unknown; provider?: unknown; model?: unknown; effort?: unknown; text?: unknown; attachments?: unknown; clean?: unknown };
     try {
       input = JSON.parse((await body(req, 256 * 1024)).toString("utf8"));
     } catch {
@@ -318,6 +334,14 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     fail(400, "요청 본문이 JSON이 아닙니다");
     return true;
   }
+    }
+    if (!input || typeof input !== "object" || Array.isArray(input)) {
+      fail(400, "요청 본문이 객체가 아닙니다");
+      return true;
+    }
+    if (input.thread !== undefined && (typeof input.thread !== "string" || !THREAD_ID.test(input.thread))) {
+      fail(400, "대화 id 형식이 아닙니다");
+      return true;
     }
     const provider = typeof input.provider === "string" && LEAD_PROVIDER.test(input.provider) ? input.provider : "";
     const effort = typeof input.effort === "string" && LEAD_EFFORT.test(input.effort) ? ["--effort", input.effort] : [];
@@ -332,9 +356,70 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
       return true;
     }
     const model = typeof input.model === "string" && input.model ? ["--model", input.model] : [];
-    const args = ["lead", "send", "--manual-dispatch", "--project", project, "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
+    const args = ["lead", "send", "--manual-dispatch", "--project", project, ...(typeof input.thread === "string" ? ["--thread", input.thread] : []), "--provider", provider, ...model, ...effort, ...files.flatMap((f) => ["--attach", f])];
     run(oWithInput([...args, "--profile", input.clean === true ? "project-o" : "own", "-"], Buffer.from(input.text, "utf8"), LEAD_TIMEOUT_MS));
     return true;
+  }
+  return false;
+}
+
+const GRAPH_PROVIDER = /^(claude|codex)$/;
+const GRAPH_TIMEOUT_MS = 11 * 60_000;
+/** The Graph settings `o graph settings` takes, as flags (ADR-0033); anything else is refused. */
+const GRAPH_SWITCHES = { effects: "--effects", particles: "--particles", warnDeep: "--warn-deep" } as const;
+const GRAPH_VALUES = { deepProvider: "--deep-provider", codexModel: "--codex-model", claudeModel: "--claude-model", maxNodes: "--max-nodes", depth: "--depth", colorBy: "--color-by" } as const;
+/** An empty model is the CLI's own default; `o graph settings` takes it as the word `default`. */
+const GRAPH_EMPTY_MODEL = new Set(["codexModel", "claudeModel"]);
+
+/** The Graph tab's twins of the Tauri graph_* commands (app/src-tauri/src/commands/graph.rs, ADR-0033). */
+async function graph(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
+  const fail = (status: number, message: string) => {
+    send(res, status, JSON.stringify({ error: message }));
+    return true;
+  };
+  const run = (args: string[], timeout?: number) => {
+    void o(["graph", ...args, "--json"], timeout).then((out) => send(res, 200, out), (e: Error & { code?: number }) => fail(e.code === 2 ? 409 : 500, e.message));
+    return true;
+  };
+  const project = query.get("project") ?? "";
+  if (project && !(ABSOLUTE.test(project) && existsSync(project))) return fail(400, "프로젝트 폴더가 없습니다");
+  if (req.method === "GET" && path === "/graph/view") return run(["view", ...(project ? ["--project", project] : [])]);
+  if (req.method === "GET" && path === "/graph/part") return project ? run(["part", "--project", project]) : fail(400, "프로젝트가 필요합니다");
+  if (req.method === "GET" && path === "/graph/settings") return run(["settings"]);
+  if (req.method !== "POST") return false;
+  let input: Record<string, unknown> = {};
+  if (path === "/graph/deep" || path === "/graph/settings") {
+    try {
+      const parsed: unknown = JSON.parse((await body(req, 4096)).toString("utf8") || "{}");
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return fail(400, "요청 본문이 JSON 객체가 아닙니다");
+      input = parsed as Record<string, unknown>;
+    } catch {
+      return fail(400, "요청 본문이 JSON이 아닙니다");
+    }
+  }
+  if (path === "/graph/build") return project ? run(["build", "--project", project], GRAPH_TIMEOUT_MS) : fail(400, "프로젝트가 필요합니다");
+  if (path === "/graph/deep") {
+    if (!project) return fail(400, "프로젝트가 필요합니다");
+    const args = ["deep", "--project", project, "--profile", input.clean === true ? "project-o" : "own"];
+    if (input.provider != null) {
+      if (typeof input.provider !== "string" || !GRAPH_PROVIDER.test(input.provider)) return fail(400, "Deep 에이전트는 codex 또는 claude입니다");
+      args.push("--provider", input.provider);
+    }
+    if (input.model != null && input.model !== "") {
+      if (typeof input.model !== "string" || !MODEL_ID.test(input.model)) return fail(400, "model 이름 형식이 올바르지 않습니다");
+      args.push("--model", input.model);
+    }
+    return run(args, GRAPH_TIMEOUT_MS);
+  }
+  if (path === "/graph/settings") {
+    const args = ["settings"];
+    for (const [key, value] of Object.entries(input)) {
+      if (GRAPH_EMPTY_MODEL.has(key) && value === "") args.push(GRAPH_VALUES[key as keyof typeof GRAPH_VALUES], "default");
+      else if (key in GRAPH_SWITCHES && typeof value === "boolean") args.push(GRAPH_SWITCHES[key as keyof typeof GRAPH_SWITCHES], value ? "on" : "off");
+      else if (key in GRAPH_VALUES && (typeof value === "string" || Number.isInteger(value)) && /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(String(value))) args.push(GRAPH_VALUES[key as keyof typeof GRAPH_VALUES], String(value));
+      else return fail(400, `설정이 올바르지 않습니다: ${key}`);
+    }
+    return run(args);
   }
   return false;
 }
@@ -513,6 +598,9 @@ export function liveRuns(): Plugin {
         }
         if (path === "/projects" || path?.startsWith("/projects/")) {
           return void projects(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
+        }
+        if (path?.startsWith("/graph/")) {
+          return void graph(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
         if (path?.startsWith("/lead/")) {
           return void lead(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));

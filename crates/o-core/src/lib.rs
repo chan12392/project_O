@@ -18,6 +18,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod agents;
 pub mod context;
+pub mod graph;
 pub mod images;
 pub mod issues;
 pub mod lead;

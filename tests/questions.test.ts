@@ -4,7 +4,7 @@ import { test } from "node:test";
 
 import type { OEvent } from "../src/core/events.ts";
 import { leadItems } from "../src/core/lead.ts";
-import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, isComplete, leadRuns, parseCardQuestion, pendingLeadAsk, toggle } from "../src/core/questions.ts";
+import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, foreignAskProjects, isComplete, leadRuns, ledRuns, parseCardQuestion, pendingLeadAsk, toggle } from "../src/core/questions.ts";
 import { snapshot, type RunView } from "../src/core/snapshot.ts";
 
 const demo = JSON.parse(readFileSync(new URL("../app/src/data/demo-runs.json", import.meta.url), "utf8")) as { runs: { events: OEvent[] }[] };
@@ -121,4 +121,20 @@ test("a --question from a run no lead thread dispatched waits on the person", ()
   assert.equal(cardQuestions([{ ...asked, messages: [...asked.messages, { at: at(3000), from: "lead", to: "a", text: "답: 여기", replyTo: "q2" }] }], leadRuns(thread)).length, 0);
   // The same run dispatched by the thread is the lead's to answer.
   assert.equal(cardQuestions([asked], new Set([asked.runId])).length, 0);
+});
+
+// Issue #75: another project's question belongs to that project's lead, not to the thread on screen.
+test("another project's card question waits on its own lead, and on nothing while that lead is unread", () => {
+  const question = { at: at(1000), id: "q1", kind: "question" as const, from: "a", to: "lead", text: "설정은 어디에 있나요?" };
+  const mine: RunView = { ...live, runId: "mine", project: "C:/p/a", messages: [question] };
+  const theirs: RunView = { ...live, runId: "theirs", project: "C:/p/b", messages: [question] };
+  const loose: RunView = { ...live, runId: "loose", project: "C:/p/b", messages: [question] };
+  // Only the other project with a waiting question is read; the one on screen is not.
+  assert.deepEqual(foreignAskProjects([mine, theirs, loose], "c:/p/a/"), ["C:/p/b"]);
+  // Before B's thread is read, its questions do not pop up.
+  const waiting = ledRuns([mine, theirs, loose], new Set(), new Map([["C:/p/b", "loading"]]));
+  assert.deepEqual(cardQuestions([mine, theirs, loose], waiting).map((a) => a.source.kind === "card" && a.source.runId), ["mine"]);
+  // B's lead dispatched "theirs": it answers that one; "loose" (a CLI dispatch) still asks the person.
+  const known = ledRuns([mine, theirs, loose], new Set(["mine"]), new Map([["c:/p/b", new Set(["theirs"])]]));
+  assert.deepEqual(cardQuestions([mine, theirs, loose], known).map((a) => a.source.kind === "card" && a.source.runId), ["loose"]);
 });

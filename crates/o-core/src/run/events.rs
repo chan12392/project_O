@@ -145,6 +145,10 @@ pub enum OEvent {
         #[serde(serialize_with = "ser_num")]
         allowance: f64,
     },
+    /// The project skills and O harness blocks that went into the card's prompt, by name.
+    /// Written only when there is at least one.
+    #[serde(rename = "card.guides")]
+    CardGuides { at: String, card_id: String, skills: Vec<String>, harness: Vec<String> },
     /// Cards whose prompt got a shared context section (`context`), and its characters in all.
     #[serde(rename = "run.context")]
     RunContext { at: String, run_id: String, cards: usize, chars: usize, card_ids: Vec<String> },
@@ -188,6 +192,7 @@ impl OEvent {
             OEvent::RunEnd { .. } => "run.end",
             OEvent::ReviewPosted { .. } => "review.posted",
             OEvent::CardBudget { .. } => "card.budget",
+            OEvent::CardGuides { .. } => "card.guides",
             OEvent::RunContext { .. } => "run.context",
             OEvent::RunBlocked { .. } => "run.blocked",
             OEvent::RunMode { .. } => "run.mode",

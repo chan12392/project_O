@@ -1,4 +1,4 @@
-//! `o lead`: the lead chat (ADR-0008). A message goes to a read-only lead CLI that
+//! `o lead`: the lead chat (ADR-0008, ADR-0034). A message goes to a lead CLI that
 //! proposes a plan; `o lead dispatch` runs a stored plan once, after the same check as `o dispatch`.
 
 use std::io::Read;
@@ -52,28 +52,36 @@ use super::{fail, print_violations, Command};
 
 pub const LEAD: Command = Command {
     name: "lead",
-    usage: "  o lead send --project <폴더> [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--manual-dispatch] [--profile project-o|own] [--mode yolo|normal] <메시지|->
-                             총괄에게 메시지 (읽기 전용으로 프로젝트를 읽고 계획을 제안), 새 이벤트 JSON 출력
+    usage: "  o lead send --project <폴더>|--overall [--thread T] [--provider claude|codex|agy] [--model M] [--effort E] [--attach <파일>]... [--new] [--manual-dispatch] [--profile project-o|own] [--mode yolo|normal] <메시지|->
+                             총괄에게 메시지, 새 이벤트 JSON 출력
                              --profile project-o(기본)면 총괄도 O의 깨끗한 프로필로, own이면 평소 CLI 설정으로 실행
-                             --mode yolo면 총괄이 파일을 고치고 명령을 실행 (주지 않으면 o yolo 설정, ADR-0014)
+                             --mode yolo면 직접 수정 담당 탭이 파일을 고치고 명령을 실행 (주지 않으면 o yolo 설정, ADR-0014)
   o lead models --provider claude|codex|agy  총괄이 쓸 수 있는 모델 목록 JSON (CLI의 공식 목록·별칭)
-  o lead show [--project <폴더>] [--json]   총괄 대화와 대화가 있는 프로젝트 목록
+  o lead show [--project <폴더>|--overall] [--thread T] [--json]  총괄 대화와 열린 탭·프로젝트 목록
   o lead log-page --project <폴더> <runId> <SHA-256|-> <바이트 위치>  완료된 실행의 원본 로그 읽기(사람 전용)
                              처음은 - 0, 다음에는 응답의 sha256과 nextOffset을 사용
   o lead note <threadId> -                  설계 주석 추가·삭제 (stdin JSON)
-  o lead new --project <폴더>               새 대화 시작
+  o lead new --project <폴더>|--overall     새 대화 시작 (--overall: 전체 총괄, ADR-0032)
+  o lead close <threadId>                  탭 닫기 (대화 기록은 보존, 사람 전용)
+  o lead writer <threadId>                 직접 수정할 총괄 탭 지정 (사람 전용)
   o lead wake <runId>                      대기 중인 카드 메시지를 현재 총괄에 전달
   o lead retry <runId> <messageId>          불명 메시지를 확인 후 복구
-  o lead attach --project <폴더> --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
+  o lead attach --project <폴더> [--thread T] --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
   o lead dispatch <planId> [--profile project-o|own] [--no-context] [--mode yolo|normal]
                              제안된 계획을 정책 검사 후 한 번 실행, runId 출력 (--profile은 o dispatch와 같음)
   o lead decide <승인 id> allow|deny         총괄이 기다리는 작업 하나를 허용하거나 거부 (사람 전용)
-  o lead stop [--project <폴더>]             답하는 중인 총괄 중지
+  o lead stop [--project <폴더>] [--thread T]  답하는 중인 총괄 중지 (탭·프로젝트·전체)
   o lead stop-all --project <폴더>           이 대화의 총괄과 실행을 모두 중지",
     run: lead_main,
 };
 
 fn lead_main(home: &Path, args: &[String]) -> i32 {
+    if matches!(args.first().map(String::as_str), Some("close" | "writer"))
+        && (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()))
+    {
+        eprintln!("에이전트 안에서는 총괄 탭을 닫거나 직접 수정을 맡길 수 없습니다. 사용자가 실행해 주세요.");
+        return 2;
+    }
     let rest = args.get(1..).unwrap_or_default();
     match args.first().map(String::as_str) {
         Some("send") => send(home, rest),
@@ -81,6 +89,8 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("log-page") => log_page(home, rest),
         Some("note") => note(home, rest),
         Some("new") => new(home, rest),
+        Some("close") => close(home, rest),
+        Some("writer") => writer(home, rest),
         Some("wake") => wake(home, rest),
         Some("retry") => retry(home, rest),
         Some("attach") => attach(home, rest),
@@ -150,6 +160,7 @@ fn models(args: &[String]) -> i32 {
 #[derive(Default)]
 struct Args {
     project: Option<String>,
+    thread: Option<String>,
     provider: Option<String>,
     model: Option<String>,
     effort: Option<String>,
@@ -157,6 +168,8 @@ struct Args {
     attach: Vec<PathBuf>,
     fresh: bool,
     manual_dispatch: bool,
+    /// `--overall`: the overall lead (ADR-0032), whose folder is the projects root.
+    overall: bool,
     /// The profile and context choice (`run::mode::take_flags`, ADR-0013).
     mode: RunMode,
     /// `--mode yolo|normal` (ADR-0014); none: the saved switch.
@@ -174,6 +187,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
         let mut value = |flag: &str| items.next().cloned().ok_or_else(|| format!("{flag} 뒤에 값이 필요합니다"));
         match arg.as_str() {
             "--project" => out.project = Some(value("--project")?),
+            "--thread" => out.thread = Some(value("--thread")?),
             "--provider" => out.provider = Some(value("--provider")?),
             "--model" => out.model = Some(value("--model")?),
             "--effort" => out.effort = Some(value("--effort")?),
@@ -181,6 +195,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--attach" => out.attach.push(PathBuf::from(value("--attach")?)),
             "--new" => out.fresh = true,
             "--manual-dispatch" => out.manual_dispatch = true,
+            "--overall" => out.overall = true,
             "--json" => out.json = true,
             other if other.starts_with("--") => return Err(format!("알 수 없는 인자: {other}")),
             other => out.words.push(other.to_string()),
@@ -188,6 +203,40 @@ fn parse(args: &[String]) -> Result<Args, String> {
     }
     Ok(out)
 }
+
+impl Args {
+    /// `--project`, or with `--overall` the projects root (both together are refused).
+    fn project(&self, home: &Path) -> Result<Option<String>, String> {
+        match (self.overall, &self.project) {
+            (true, Some(_)) => Err("--overall과 --project는 함께 쓸 수 없습니다".into()),
+            (true, None) => lead::overall::root(home).map(Some).ok_or_else(|| "프로젝트 루트 폴더가 없어 전체 총괄을 쓸 수 없습니다".into()),
+            (false, project) => Ok(project.clone()),
+        }
+    }
+}
+
+/// `o _lead-forward <threadId> <n>` for a request the overall lead passed on (ADR-0032).
+fn forward_start(thread_id: &str, index: usize) -> std::io::Result<()> {
+    proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_lead-forward", thread_id, &index.to_string()])).map(|_| ())
+}
+
+/// `o _lead-forward <threadId> <n>`: sends the overall thread's n-th request to its project's
+/// lead (`lead::overall::forward`). Started by O after an overall turn, never by an agent.
+pub const FORWARD: Command = Command {
+    name: "_lead-forward",
+    usage: "",
+    run: |home, args| {
+        if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+            return fail("요청 전달은 O만 시작합니다");
+        }
+        let [thread_id, index] = args else { return fail("o _lead-forward <threadId> <번호>") };
+        let Ok(index) = index.parse() else { return fail("번호가 올바르지 않습니다") };
+        match lead::overall::forward(home, thread_id, index, &official_command) {
+            Ok(events) => { println!("{}", json!({ "events": events })); 0 }
+            Err(e) => fail(&e),
+        }
+    },
+};
 
 fn stdin_bytes() -> Result<Vec<u8>, String> {
     let mut buf = Vec::new();
@@ -200,7 +249,12 @@ fn send(home: &Path, args: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
-    let Some(project) = a.project.as_deref() else { return fail("--project <폴더>가 필요합니다") };
+    let project = match a.project(home) {
+        Ok(Some(project)) => project,
+        Ok(None) => return fail("--project <폴더> 또는 --overall이 필요합니다"),
+        Err(e) => return fail(&e),
+    };
+    let project = project.as_str();
     let provider = match a.provider.as_deref().map(|p| ProviderId::parse(p).ok_or(p)) {
         None => ProviderId::Claude,
         Some(Ok(p)) => p,
@@ -215,8 +269,9 @@ fn send(home: &Path, args: &[String]) -> i32 {
         a.words.join(" ")
     };
     let root = a.mode.clean().then(clean::default_root);
-    let req = SendRequest {
+    let mut req = SendRequest {
         project,
+        thread: a.thread.as_deref(),
         provider,
         model: a.model.as_deref(),
         effort: a.effort.as_deref(),
@@ -226,6 +281,13 @@ fn send(home: &Path, args: &[String]) -> i32 {
         clean: root.as_deref(),
         yolo: yolo::resolve(home, a.yolo),
     };
+    if let Err(e) = lead::check_request(home, &req) { return fail(&e); }
+    let thread = match lead::select_thread(home, project, req.thread, req.fresh) {
+        Ok(thread) => thread,
+        Err(e) => return fail(&e),
+    };
+    req.thread = Some(&thread);
+    req.fresh = false;
     let spawner: Arc<Spawner> = Arc::new(official_command);
     let start = |run_id: &str| -> std::io::Result<()> {
         proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
@@ -236,7 +298,7 @@ fn send(home: &Path, args: &[String]) -> i32 {
     let result = if a.manual_dispatch { lead::send_with_followups(home, &req, spawner.as_ref(), &resume) } else { lead::send_with_autorun_and_followups(home, &req, spawner.as_ref(), &start, &resume) };
     match result {
         Ok(events) => {
-            let thread = lead::current_thread(home, project);
+            lead::overall::pass_on(home, &thread, &events, &forward_start);
             // A turn that ended in lead.error is still on record: the events say what happened.
             println!("{}", json!({ "threadId": thread, "events": events }));
             0
@@ -250,7 +312,14 @@ fn show(home: &Path, args: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
-    let view = lead::show(home, a.project.as_deref());
+    let project = match a.project(home) {
+        Ok(project) => project,
+        Err(e) => return fail(&e),
+    };
+    let view = match lead::show(home, project.as_deref(), a.thread.as_deref()) {
+        Ok(view) => view,
+        Err(e) => return fail(&e),
+    };
     if a.json {
         println!("{view}");
         return 0;
@@ -289,12 +358,32 @@ fn new(home: &Path, args: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
-    let Some(project) = a.project.as_deref() else { return fail("--project <폴더>가 필요합니다") };
-    match lead::start(home, project) {
+    let project = match a.project(home) {
+        Ok(Some(project)) => project,
+        Ok(None) => return fail("--project <폴더> 또는 --overall이 필요합니다"),
+        Err(e) => return fail(&e),
+    };
+    match lead::start(home, &project) {
         Ok(thread) => {
             println!("{}", json!({ "threadId": thread, "project": project }));
             0
         }
+        Err(e) => fail(&e),
+    }
+}
+
+fn close(home: &Path, args: &[String]) -> i32 {
+    let [thread] = args else { return fail("o lead close <threadId>") };
+    match lead::close(home, thread) {
+        Ok(()) => { println!("{}", json!({ "threadId": thread })); 0 }
+        Err(e) => fail(&e),
+    }
+}
+
+fn writer(home: &Path, args: &[String]) -> i32 {
+    let [thread] = args else { return fail("o lead writer <threadId>") };
+    match lead::set_writer(home, thread) {
+        Ok(()) => { println!("{}", json!({ "threadId": thread })); 0 }
         Err(e) => fail(&e),
     }
 }
@@ -305,9 +394,9 @@ fn attach(home: &Path, args: &[String]) -> i32 {
         Err(e) => return fail(&e),
     };
     let (Some(project), Some(name), [file]) = (a.project.as_deref(), a.name.as_deref(), a.words.as_slice()) else {
-        return fail("o lead attach --project <폴더> --name <이름> <파일|->");
+        return fail("o lead attach --project <폴더> [--thread T] --name <이름> <파일|->");
     };
-    let thread = match lead::check_folder(home, project).and_then(|()| lead::thread_for(home, project, false).map_err(|e| e.to_string())) {
+    let thread = match lead::check_folder(home, project).and_then(|()| lead::attachment_thread(home, project, a.thread.as_deref())) {
         Ok(thread) => thread,
         Err(e) => return fail(&e),
     };
@@ -374,7 +463,11 @@ fn stop(home: &Path, args: &[String]) -> i32 {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
-    let stopped = lead::stop(home, a.project.as_deref());
+    let project = match a.project(home) { Ok(project) => project, Err(e) => return fail(&e) };
+    let stopped = match lead::stop(home, project.as_deref(), a.thread.as_deref()) {
+        Ok(stopped) => stopped,
+        Err(e) => return fail(&e),
+    };
     println!("{}", json!({ "stopped": stopped }));
     0
 }

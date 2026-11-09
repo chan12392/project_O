@@ -5,6 +5,10 @@
 - 승인: [x] A  [ ] B (사후 확인 필요)
 - 관련: [GOALS.md](../GOALS.md) 목표 6, ADR-0002(카드 권한), ADR-0004(하루 예산), ADR-0007(모듈 구조), [ARCHITECTURE.md](../ARCHITECTURE.md)
 
+## 개정 4 (2026-11-08): 여러 총괄 탭
+
+[ADR-0034](0034-lead-tabs.md)가 아래의 "프로젝트마다 현재 스레드 하나"를 바꾼다. 프로젝트마다 열린 대화는 최대 4개이고, `leads/open.json`은 열린 대화와 직접 수정을 맡는 writer 하나를, `current.json`은 마지막으로 고른 탭을 기록한다. 새 대화는 기존 탭을 유지하며, writer 외의 탭과 전체 총괄은 읽기 전용이다. 한 대화의 턴 잠금은 유지하되 서로 다른 열린 탭은 동시에 답할 수 있다. 대화를 지정한 중지는 그 탭만, 프로젝트 중지는 그 프로젝트의 열린 탭 전부, 전체 중지는 모든 열린 탭을 대상으로 한다. 이전 상태에 열린 목록이 없으면 현재 대화 하나를 사용한다.
+
 ## 배경
 
 앱의 총괄 채팅 입력창은 "보내지 않았습니다"만 표시했다. 계획은 사람이 터미널의 총괄 에이전트(`skills/o`)에게 말하고, 그 에이전트가 `o dispatch`를 부르는 길뿐이었다. 목표 6의 남은 순서 1–3(총괄 세션 설정과 Composer의 실제 전달)을 채우려면 다음을 정해야 했다.
@@ -41,7 +45,7 @@
 | Antigravity | `agy --output-format stream-json --mode plan --sandbox --settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}} [--add-dir 첨부 폴더] [--model] [--effort] -p <프롬프트>` | `--conversation <id>` (스트림 `init`의 `conversation_id`) | 세션 설정의 거부 규칙을 agy 권한 검사가 막는다(파일 쓰기·셸·MCP·URL 동작). plan 모드만으로는 막히지 않는다(개정 1). 한 번만 훅을 끄는 공식 옵션이 없어 프로젝트에 `.agents/hooks.json`이 있으면 총괄을 맡지 않는다(개정 2) |
 
 - 노력 수준은 CLI가 받는 값만: Claude `low·medium·high·xhigh·max`, Codex `minimal·low·medium·high·xhigh`, Antigravity `low·medium·high·xhigh·max`. 모델은 기본이 CLI 설정이고, 사람이 고르면 `--model`(Codex `-m`)로 넘긴다(개정 1).
-- 총괄 CLI는 그 CLI의 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`, `CODEX_API_KEY`)를 대소문자 구분 없이 물려받지 않는다. 남은 키가 구독 대신 API로 과금되는 것을 막는다(B의 카드 수정과 같은 `api_key_vars`·`names_to_remove`).
+- 인증 환경변수 전달과 API 과금 경고는 [ADR-0035](0035-api-key-env-pass-through.md)가 이 규칙을 대체한다.
 
 ### 프롬프트 (`lead::prompt`)
 
@@ -76,7 +80,7 @@
 ### 모델
 
 - `o lead send --model <id>`: 카드 `model`과 같은 형식 규칙(`policy::is_model_id`)으로 검사하고 `lead.user`에 남긴 뒤 `Provider::lead`에 넘긴다. 없으면 CLI 기본 모델이다.
-- 목록은 각 CLI의 공식 출처만 쓴다(`Provider::lead_models`, `o lead models --provider <id>`). 셸 없이, 창 없이, API 키 변수를 뺀 채 실행한다. 형식 규칙에 맞지 않는 id는 버린다.
+- 목록은 각 CLI의 공식 출처만 쓴다(`Provider::lead_models`, `o lead models --provider <id>`). 셸 없이, 창 없이 실행한다. 인증 환경은 ADR-0035를 따른다. 형식 규칙에 맞지 않는 id는 버린다.
 
 | CLI | 출처 |
 |---|---|

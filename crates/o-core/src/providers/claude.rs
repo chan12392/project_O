@@ -108,12 +108,7 @@ impl Provider for Claude {
         args.push(format!("Bash({CONTEXT_COMMAND} *)"));
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
-        LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// `claude -p` always uses these when present (code.claude.com/docs/en/authentication).
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]
+        LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env }
     }
 
     /// Headless runs cannot answer permission prompts, so a denied command ends the turn.
@@ -164,7 +159,7 @@ impl Provider for Claude {
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));
         args.extend(opt("--add-dir", turn.files_dir));
-        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
     }
 
     /// Every tool, no permission prompt (`bypassPermissions`, the same as Claude's
@@ -175,7 +170,7 @@ impl Provider for Claude {
         args.extend(strings(&["--settings", &guard_settings()]));
         args.extend(opt("--model", card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
-        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env })
     }
 
     /// The lead with every tool and no prompts. The project's settings stay unread (as in
@@ -188,7 +183,7 @@ impl Provider for Claude {
         args.extend(opt("--model", turn.model));
         args.extend(opt("--effort", turn.effort));
         args.extend(opt("--add-dir", turn.files_dir));
-        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() })
     }
 
     /// Claude Code has no model list command; `--model` takes these aliases for the latest

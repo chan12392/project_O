@@ -6,7 +6,7 @@ use o_core::lead::{self, LeadEvent, SendRequest};
 use o_core::run::plan::ProviderId;
 
 #[test]
-fn unresolved_turn_blocks_new_thread_only_for_its_project() {
+fn unresolved_turn_blocks_only_its_own_tab_and_writer_transfer() {
     let root = std::env::temp_dir().join(format!("o-lead-unresolved-{}", std::process::id()));
     let home = root.join("home");
     let project = root.join("project").to_string_lossy().into_owned();
@@ -14,13 +14,16 @@ fn unresolved_turn_blocks_new_thread_only_for_its_project() {
     let thread = lead::thread_for(&home, &project, false).unwrap();
     std::fs::write(lead::thread_dir(&home, &thread).join("running.json"),
         r#"{"provider":"claude","owner":1,"token":"test","unresolved":true}"#).unwrap();
-    assert!(lead::thread_for(&home, &project, true).is_err());
+    let next = lead::thread_for(&home, &project, true).unwrap();
+    assert!(lead::is_open(&home, &project, &thread));
+    assert!(lead::close(&home, &thread).is_err());
+    assert!(lead::set_writer(&home, &next).is_err());
     assert!(lead::thread_for(&home, &other, true).is_ok());
-    assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(thread.as_str()));
+    assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(next.as_str()));
 }
 
 #[test]
-fn older_unresolved_thread_blocks_start_in_current_thread() {
+fn older_unresolved_thread_allows_start_in_another_open_tab() {
     let root = std::env::temp_dir().join(format!("o-lead-older-unresolved-{}", std::process::id()));
     let home = root.join("home");
     let project_dir = root.join("project");
@@ -30,14 +33,21 @@ fn older_unresolved_thread_blocks_start_in_current_thread() {
     let current = lead::thread_for(&home, &project, true).unwrap();
     std::fs::write(lead::thread_dir(&home, &old).join("running.json"),
         r#"{"provider":"claude","owner":1,"token":"test","unresolved":true}"#).unwrap();
-    let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
-    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("unresolved turn must block the provider") };
-    assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("확인할 수 없어"));
+    let request = SendRequest { project: &project, thread: Some(&old), provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+    let forbidden = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("unresolved tab must not launch") };
+    assert!(lead::send_within(&home, &request, &forbidden, Duration::from_secs(5)).unwrap_err().contains("확인할 수 없어"));
+    let spawn = |_: &o_core::providers::LaunchSpec, _: &str| {
+        let mut command = support::fake_worker_launch()?;
+        command.args(["--exact", "closed_stdout_fixture", "--nocapture"]).env("O_TEST_CLOSED_STDOUT", "1").env("O_TEST_QUICK_REPLY", "1");
+        Ok(command)
+    };
+    let events = lead::send_within(&home, &SendRequest { thread: Some(&current), ..request }, &spawn, Duration::from_secs(5)).unwrap();
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { .. })));
     assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(current.as_str()));
 }
 
 #[test]
-fn live_turn_blocks_start_in_new_thread_until_released() {
+fn live_turn_blocks_its_tab_but_allows_a_new_tab() {
     let root = std::env::temp_dir().join(format!("o-lead-busy-thread-{}", std::process::id()));
     let home = root.join("home");
     let project_dir = root.join("project");
@@ -47,19 +57,22 @@ fn live_turn_blocks_start_in_new_thread_until_released() {
     let lock = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false)
         .open(lead::thread_dir(&home, &thread).join("turn.lock")).unwrap();
     lock.lock().unwrap();
-    assert!(lead::thread_for(&home, &project, true).is_err());
-    let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+    let next = lead::thread_for(&home, &project, true).unwrap();
+    let request = SendRequest { project: &project, thread: Some(&thread), provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
     let spawn = |_: &o_core::providers::LaunchSpec, _: &str| -> std::io::Result<o_core::sys::launch::Launch> { panic!("live turn must block the provider") };
     assert!(lead::send_within(&home, &request, &spawn, Duration::from_secs(1)).unwrap_err().contains("답하는 중"));
     drop(lock);
-    let next = lead::thread_for(&home, &project, true).unwrap();
-    assert_eq!(lead::current_thread(&home, &project).as_deref(), Some(next.as_str()));
+    assert!(lead::is_open(&home, &project, &next));
 }
 
 #[test]
 #[allow(clippy::zombie_processes)] // The fixture deliberately orphans its pipe-holding child.
 fn closed_stdout_fixture() {
     if std::env::var_os("O_TEST_CLOSED_STDOUT").is_none() { return; }
+    if std::env::var_os("O_TEST_QUICK_REPLY").is_some() {
+        println!("\n{{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}}");
+        return;
+    }
     if std::env::var_os("O_TEST_HOLD_PIPE").is_some() {
         std::thread::sleep(Duration::from_secs(5));
         return;
@@ -105,7 +118,7 @@ fn closed_stdout_turn() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::create_dir_all(&project).unwrap();
     let project = project.to_string_lossy();
-    let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+    let request = SendRequest { project: &project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
     let ready = root.join("ready");
     let descendant_pid = root.join("descendant.pid");
     let mode = std::env::var("O_TEST_MODE").unwrap_or_default();
@@ -123,7 +136,7 @@ fn closed_stdout_turn() {
         let (home, project) = (home.clone(), project.to_string());
         Some(std::thread::spawn(move || {
             while !ready.exists() { std::thread::sleep(Duration::from_millis(20)); }
-            assert!(lead::stop(&home, Some(&project)));
+            assert!(lead::stop(&home, Some(&project), None).unwrap());
         }))
     } else { None };
     let limit = if mode == "stop" { Duration::from_secs(10) } else { Duration::from_millis(800) };
@@ -143,7 +156,7 @@ fn closed_stdout_turn() {
         let pid = std::fs::read_to_string(&descendant_pid).unwrap().parse().unwrap();
         let started = std::fs::read_to_string(descendant_pid.with_extension("started")).unwrap().parse().unwrap();
         assert!(o_core::sys::proc::definitely_exited(pid, started), "orphaned writer survived completion");
-        assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+        assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
     }
     #[cfg(windows)]
     if mode == "descendant" || mode == "both" {

@@ -11,9 +11,8 @@ name: merge-guard
 # by anyone else turns red and names the actor, so the owner can see it and revert.
 # The agent hook (`o hook`) and the git hooks (`o scan`) stop it beforehand on members' PCs.
 
-# Read-only token: this job only reads the event.
-permissions:
-  contents: read
+# The event contains everything this job needs.
+permissions: {}
 
 on:
   push:

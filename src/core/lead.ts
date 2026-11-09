@@ -125,7 +125,60 @@ export type LeadEvent =
 /** What `o lead show --json` prints. `unknown` means a previous turn's exit is unconfirmed. */
 export interface LeadShow {
   thread: { threadId: string; project: string; busy: ProviderId | "starting" | "unknown" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; steps?: LeadStep[]; approvals?: LeadApproval[]; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
-  projects: { project: string; threadId: string }[];
+  /** The project's open conversations, in the order they were opened (ADR-0034); absent in older answers. */
+  threads?: LeadTab[];
+  projects: { project: string; threadId: string; /** How the project's tabs add up (waiting > working > idle); absent in older answers. */ state?: LeadTab["state"] }[];
+}
+
+/** One open lead conversation — a tab on screen (ADR-0034). */
+export interface LeadTab {
+  threadId: string;
+  /** The first request's first line, or "새 총괄" before one. */
+  title: string;
+  /** working: answering or its dispatched runs go; waiting: it needs the person; idle: otherwise. */
+  state: "working" | "waiting" | "idle";
+  /** Who answers on it now; "unknown" when a previous turn's exit is unconfirmed. */
+  busy: ProviderId | "starting" | "unknown" | null;
+  /** The one tab that may edit the project directly; the rest are design-only. */
+  writer: boolean;
+  startedAt: string;
+}
+
+/** A project's open tabs cap (`lead::MAX_OPEN`). */
+export const LEAD_TAB_MAX = 4;
+
+/** What the tab's status dot says: waiting means the person's action is needed (approval, question, unconfirmed exit). */
+export const LEAD_TAB_WORD: Record<LeadTab["state"], string> = { working: "작업 중", waiting: "확인 필요", idle: "대기" };
+
+/**
+ * The tab a `leadShow` answer shows: the picked one while it is still open; the answer's own
+ * thread when it is not (closed or never opened — the backend falls back to the project's
+ * current conversation). An old answer without `threads` has one tab: its thread (ADR-0034).
+ */
+export function leadTabOf(show: LeadShow | undefined, picked: string | undefined): string | undefined {
+  if (!show || (picked !== undefined && show.threads?.some((tab) => tab.threadId === picked))) return picked;
+  return show.thread?.threadId;
+}
+
+/** A tab's title when only the thread is known: its first request's first line, or "새 총괄". */
+export function leadTabTitle(events: readonly LeadEvent[]): string {
+  const first = events.find((e) => e.t === "lead.user" && typeof (e as { text?: unknown }).text === "string") as { text: string } | undefined;
+  const line = first?.text.split("\n", 1)[0].trim() ?? "";
+  return line ? line.slice(0, 24) : "새 총괄";
+}
+
+/** A shown thread's state when the answer names none (`threads` absent): waiting > working > idle. */
+export function threadState(thread: NonNullable<LeadShow["thread"]>): LeadTab["state"] {
+  if (thread.busy === "unknown" || (thread.approvals?.length ?? 0) > 0) return "waiting";
+  return thread.busy ? "working" : "idle";
+}
+
+/** The open tabs an answer draws: `threads`, or the one thread of an older answer (its tab is the writer). */
+export function leadTabsOf(show: LeadShow | undefined): LeadTab[] {
+  if (!show) return [];
+  if (show.threads) return show.threads;
+  const thread = show.thread;
+  return thread ? [{ threadId: thread.threadId, title: leadTabTitle(thread.events), state: threadState(thread), busy: thread.busy, writer: true, startedAt: "" }] : [];
 }
 
 /**
@@ -137,6 +190,8 @@ export interface LeadShow {
  */
 export interface LeadView {
   project?: string;
+  /** The tab the project is asked for; undefined follows the answer's own thread (ADR-0034). */
+  thread?: string;
   show?: LeadShow;
   projects: LeadShow["projects"];
   failed?: string;
@@ -144,17 +199,21 @@ export interface LeadView {
 }
 
 export type LeadViewAction =
-  | { type: "project"; project?: string }
-  | { type: "answer"; project?: string; seq: number; show: LeadShow }
-  | { type: "failed"; project?: string; seq: number; error: string };
+  | { type: "project"; project?: string; thread?: string }
+  | { type: "answer"; project?: string; thread?: string; seq: number; show: LeadShow }
+  | { type: "failed"; project?: string; thread?: string; seq: number; error: string };
 
 export const LEAD_VIEW: LeadView = { projects: [], seq: 0 };
 
 export function leadView(state: LeadView, action: LeadViewAction): LeadView {
   if (action.type === "project") {
-    return action.project === state.project && state.show !== undefined ? state : { ...state, project: action.project, show: undefined, failed: undefined };
+    // Another project or another tab of it: the former answer no longer applies.
+    return action.project === state.project && action.thread === state.thread && state.show !== undefined
+      ? state
+      : { ...state, project: action.project, thread: action.thread, show: undefined, failed: undefined };
   }
-  if (action.project !== state.project || action.seq <= state.seq) return state;
+  // A check answered for a project or tab no longer looked at, or older than one applied, is dropped.
+  if (action.project !== state.project || action.thread !== state.thread || action.seq <= state.seq) return state;
   if (action.type === "failed") return { ...state, seq: action.seq, failed: action.error };
   // The same answer again keeps its objects, so what was drawn from it is not redrawn.
   const same = state.show !== undefined && JSON.stringify(state.show) === JSON.stringify(action.show);
@@ -447,9 +506,10 @@ export type Drafts = Readonly<Record<string, Draft>>;
 
 export const EMPTY_DRAFT: Draft = { text: "", files: [], gen: 0 };
 
-/** A project's draft key: folders compare as O compares them (any slash, no trailing one, any case). */
-export function draftKey(project: string): string {
-  return project.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+/** A draft's key: the folder as O compares it, and the conversation when the project has several (ADR-0034). */
+export function draftKey(project: string, thread?: string): string {
+  const folder = project.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return thread ? `${folder}#${thread}` : folder;
 }
 
 export function draftOf(drafts: Drafts, key: string): Draft {

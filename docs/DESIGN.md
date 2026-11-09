@@ -10,8 +10,8 @@
 
 | | A — 관제탑 | B — 통합 작업대 |
 |---|---|---|
-| 한 줄 | 흩어진 에이전트 세션을 한 화면에서 관측하고, 사람이 개입할 일을 놓치지 않는다 | Claude·Codex 등 여러 구독 계정과 모델을 한 데스크톱 앱에서 쓰고, 역할별로 라우팅한다 |
-| 답하는 질문 | 지금 뭐가 돌고 있나? 누가 나를 기다리나? 어디까지 했고 뭘 하다 말았나? | 이 일은 어느 모델·계정으로 시킬까? 계정을 바꾸지 않고 바로 이어서 쓸 수 있나? |
+| 한 줄 | 흩어진 에이전트 세션을 한 화면에서 관측하고, 사람이 개입할 일을 놓치지 않는다 | Claude·Codex 등 여러 에이전트 CLI와 모델을 본인 로그인으로 한 데스크톱 앱에서 쓰고, 역할별로 라우팅한다 |
+| 답하는 질문 | 지금 뭐가 돌고 있나? 누가 나를 기다리나? 어디까지 했고 뭘 하다 말았나? | 이 일은 어느 에이전트·모델로 시킬까? 하던 작업을 같은 세션으로 이어서 할 수 있나? |
 | 출발점 | 기존 Orchestrator 앱 (Tauri 2 + React + TS + SQLite, Local/Orca 세션 관측, PR 정책) | 터미널이 아닌 데스크톱 형태, 비개발자도 쓰기 쉬운 UX |
 | 주된 동작 | 읽기(관측) + 제한된 쓰기(PR 머지 등) | 쓰기(에이전트 실행·대화) |
 
@@ -22,7 +22,7 @@
 ```
 ┌──────────────── 표면(Surface) ────────────────┐
 │  Workspace (B)            Control (A)          │
-│  대화·실행·계정 선택       Dashboard·Board·PR   │
+│  대화·실행·에이전트 선택   Dashboard·Board·PR   │
 └───────────────┬───────────────────┬───────────┘
                 │                   │
 ┌───────────────▼───────────────────▼───────────┐
@@ -35,11 +35,11 @@
 │ Claude Code    │        │ Local 세션 인덱스  │
 │ Codex          │        │ Orca               │
 │ Gemini ...     │        │ git / GitHub       │
-│ + Account vault│        │                    │
+│ + 프로필 격리  │        │                    │
 └────────────────┘        └────────────────────┘
 ```
 
-- **Providers**: 에이전트를 실행하고 대화를 주고받는 쪽(쓰기). 계정별 설정 폴더를 격리해 여러 구독 계정을 동시에 쓴다.
+- **Providers**: 에이전트를 실행하고 대화를 주고받는 쪽(쓰기). 각 공식 CLI를 사용자 본인의 로그인으로 실행한다. 평소 CLI 설정 대신 따로 둔 project_O 프로필(`%LOCALAPPDATA%/project_O-agents`)로도 실행할 수 있다(ADR-0013). 한 서비스에 여러 계정을 등록해 바꿔 쓰는 기능은 없고, 한도에 걸린 서비스는 다른 계정으로도 다시 쓰지 않는다(정책 `provider-cooldown`).
 - **Sources**: 이미 돌고 있는 세션을 관측하는 쪽(읽기). Orchestrator의 기존 코드가 여기에 해당한다.
 - 앱이 직접 실행한 세션은 Provider가 Session 모델로 기록하므로, Control 화면은 외부 세션과 앱 내부 세션을 같은 방식으로 보여 준다.
 
@@ -58,7 +58,7 @@
 | D1 | 기술 스택 | (a) Orchestrator와 같은 Tauri 2 + React + TS (b) Electron (c) 기타 | (a) — 기존 관측 코드를 옮겨 쓸 수 있고 설치 파일이 가볍다 |
 | D2 | Orchestrator 코드 이관 범위 | (a) `src/core` 순수 로직만 가져오기 (b) 앱 전체를 포크 (c) 새로 작성 | (a) — 화면은 새 정보구조에 맞춰 다시 짠다 |
 | D3 | 에이전트 연결 방식 | TUI 스크래핑 / 터미널 임베드 / 공식 CLI 구조화 출력 / API 키 직접 호출 | 공식 CLI 구조화 출력 — Claude `claude -p --input-format stream-json --output-format stream-json`, Codex `codex app-server`, Gemini `gemini -p --output-format stream-json`. 세부는 PoC로 확인 (§5) |
-| D4 | 여러 계정 격리 방식 | 계정별 설정 폴더 환경변수 / OS 사용자 분리 / 기타 | 설정 폴더 격리 PoC 먼저 |
+| D4 | 프로필 격리 방식 | 설정 폴더 환경변수 / OS 사용자 분리 / 기타 | 설정 폴더 환경변수로 project_O 프로필을 평소 설정과 분리한다(ADR-0013). 여러 계정을 돌려 쓰는 용도가 아니다 |
 | D5 | 라우팅 | 수동 선택 / 역할 프리셋(설계·조사·정리) / 자동 분류 | 총괄이 카드마다 에이전트·모델·노력 수준을 일에 맞게 정한다(자동 분배). 사용자가 특정 에이전트·모델을 말하면 그대로 따른다. 역할(`role`)은 선택 이름표일 뿐 모델을 고르거나 제한하지 않는다(2026-11-02 대표님 결정·정정) |
 | D6 | 첫 화면·최상위 구조 | Workspace 우선 / Control 우선 / 두 모드 전환 | 두 모드 전환, 첫 화면은 합의 |
 | D7 | MVP 범위 | 아래 §6 | 합의 |
@@ -71,8 +71,8 @@
 | 항목 | 확인할 내용 | 담당 | 결과 |
 |---|---|---|---|
 | Claude Code 연결 | 비대화 실행·스트리밍 출력·세션 재개가 앱에서 다루기 충분한가 | | |
-| Codex 연결 | 같은 내용 + 계정 2개를 동시에 쓸 수 있는가 | | |
-| 계정 격리 | 계정별 설정 폴더로 로그인 상태가 섞이지 않는가 | | |
+| Codex 연결 | 같은 내용 | | |
+| 프로필 격리 | project_O 프로필과 평소 설정의 로그인·훅·스킬이 섞이지 않는가 | | `o agents doctor`로 확인 |
 | 승인 처리 | 파일 수정·명령 실행 승인을 채팅 화면 버튼으로 받을 수 있는가 (Claude 권한 프롬프트 도구, Codex app-server 승인 요청, Gemini 헤드리스 승인 모드) | | |
 | 세션 재개·중단 | 앱을 껐다 켜도 같은 대화를 이어 가고, 실행 중 작업을 멈출 수 있는가 | | |
 | 라우팅 토큰 비용 | 작업 단위 전환 시 지침 재주입 토큰이 얼마인가 | | |
@@ -80,15 +80,15 @@
 
 ## 6. MVP 후보
 
-1. 계정 등록: Claude 1개, Codex 2개를 앱에 등록(각 CLI 로그인 이용).
-2. Workspace: 프로젝트 폴더를 고르고, 역할 프리셋으로 모델·계정을 골라 세션을 시작·대화한다.
+1. 로그인 확인: 각 CLI의 공식 로그인 상태를 앱에서 본다(로그인은 각 CLI의 공식 명령).
+2. Workspace: 프로젝트 폴더를 고르고, 역할 프리셋으로 에이전트·모델을 골라 세션을 시작·대화한다.
 3. Control: 앱에서 시작한 세션과 외부 세션(Local/Orca)이 한 Board에 보이고, 나를 기다리는 세션이 맨 위에 온다.
 
 ## 7. 영역 분담 (초안)
 
 | 영역 | 주 담당 | 비고 |
 |---|---|---|
-| Providers · Account vault · Router · Workspace 화면 | B | |
+| Providers · 프로필 격리 · Router · Workspace 화면 | B | |
 | Sources · Policy · Control 화면 | A | Orchestrator 코드 이관 |
 | Core Session 모델 · Store · 앱 셸 | 공동 | 변경 시 ADR 기록 |
 
@@ -101,8 +101,10 @@
 | Codex | 유료·원격 호스팅 앱에서 구독 사용 (별도 신청 필요) | 로컬 `codex app-server` (공식 클라이언트 프로토콜) |
 
 - 구독 한도는 일반적인 개인 사용을 전제로 한다. 계정을 돌려 가며 한도를 피하는 용도로 쓰지 않는다.
-- 카드 CLI를 띄울 때 API 키 환경변수(Claude `ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`, Codex `CODEX_API_KEY`)는 물려주지 않는다. 헤드리스 실행에서는 이 변수가 각 CLI의 로그인보다 먼저 쓰여서, PC에 남은 키가 있으면 구독 대신 API로 과금된다([Claude Code 인증 우선순위](https://code.claude.com/docs/en/authentication), Codex `codex-rs/login/src/auth/manager.rs`). 구현: 각 `crates/o-core/src/providers/<cli>.rs`의 `Provider::api_key_vars`, 실행기 `run/runner.rs`가 `LaunchSpec::env_remove`로 뺀다. 카드 밖에서 평소 환경으로 CLI를 부르는 로그인 상태 확인(`agents`)과 Codex 사용량 조회도 같은 변수를 빼서 카드가 쓸 로그인을 본다(`providers::without_api_keys`). 깨끗한 프로필은 환경변수 허용 목록이라 원래 들어가지 않는다.
-- 총괄 에이전트가 작업을 나눠 다른 CLI에 넘기는 것은 허용 범위다. 각 단계가 공식 CLI 자신의 로그인으로 실행되기 때문이다. 단, 사람이 보지 않는 대량·상시 자동 실행은 하지 않는다 — 실행 동시성과 하루 작업 수에 상한을 둔다. Anthropic 소비자 약관은 API 키나 명시 허용 외의 자동화 접근을 금지하며, `claude -p`는 공식 도움말이 허용한 경로다.
+- [ADR-0035](decisions/0035-api-key-env-pass-through.md)는 총괄·카드와 CLI 상태·사용량·모델 조회에서 인증 환경을 전달하도록 결정했다. 깨끗한 프로필은 기존 허용 목록에 해당 CLI의 인증 변수만 더한다. API 키 환경변수가 있으면 CLI 설정과 인증 우선순위에 따라 구독 대신 API 요금이 발생할 수 있으므로 값 없이 변수 이름의 존재만 경고한다.
+- 총괄 에이전트가 작업을 나눠 다른 CLI에 넘기는 것은 허용 범위로 본다. 각 단계가 공식 CLI 자신의 로그인으로 실행되기 때문이다. 대량·상시 자동 실행은 하지 않는다 — 실행 동시성과 하루 작업 수에 상한을 둔다(`LIMITS`: 동시 6개, 하루 카드 60장). Anthropic 소비자 약관은 API 키나 명시 허용 외의 자동화 접근을 금지하며, `claude -p`는 공식 도움말이 허용한 경로다.
+- 사람이 보지 않는 실행은 사용자가 직접 만든 예약에만 있다(ADR-0019, Windows만). 예약을 만들지 않으면 아무것도 저절로 돌지 않는다. 예약은 Windows 작업 스케줄러가 로그인된 동안 앱이 꺼져 있어도 `o schedule run <ID>`로 실행한다. 이때 총괄은 Claude·Codex만 쓰고 읽기 전용으로 돈다(승인할 사람이 없음). YOLO로는 실행하지 않고 Antigravity는 쓰지 않는다. "자동 분배"를 켠 예약(앱 기본값)은 저장한 예약을 분배 승인으로 보고, 총괄이 만든 계획을 카드 정책과 자동 실행 한도(하루 사용 예산이 켜져 있을 때만, 한 번에 카드 3장·한 시간 2회·같은 계획 30분 안 반복 금지가 기본, 같은 대화의 실행이 진행 중이면 보류)를 통과할 때만 일반 권한 카드로 분배한다. 총괄이 사람에게 질문을 남기면 분배하지 않는다. "설계까지만"을 고르면 계획만 남긴다. 구현: `crates/o-core/src/schedule.rs`, `crates/o-cli/src/commands/schedule.rs`, `lead::send_with_scheduled_autorun`, `run/yolo.rs`의 `check_auto_run`.
+- 예약 실행이 위 소비자 약관의 자동화 접근 조항에 맞는지는 배포 전 재확인 항목이다.
 - 총괄의 계획은 사람이 "실행"을 눌러야 분배된다. 예외로 총괄의 후속 지시는 현재 설계 대화에서 이미 승인·분배한 작업을 이어갈 때만 다시 누르지 않고 접수된다. 분배 전이거나 "새 설계"로 대화가 바뀌면 보내지 않으며, 새 작업은 새 설계의 계획 승인이 필요하다(ADR-0022).
 - 출처: [Claude Code 법률·준수](https://code.claude.com/docs/en/legal-and-compliance), [Claude 플랜으로 Agent SDK 사용](https://support.claude.com/en/articles/15036540), [Gemini CLI FAQ](https://geminicli.com/docs/resources/faq/), [Gemini CLI 헤드리스](https://www.geminicli.com/docs/cli/headless), [OpenAI 토큰 공유](https://developers.openai.com/siwc/token-sharing-open-source)
 - 자동 차단 구현: `crates/o-guard`(에이전트 훅·git 훅·CI), `crates/o-core/src/policy.rs`(O CLI). 목록은 AGENTS.md "프로바이더 정책 자동 차단".

@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS, type About, type UpdateCheck } from "../updates.ts";
 
 async function json<T>(res: Response): Promise<T> {
@@ -60,11 +60,14 @@ export const devBackend: Backend = {
   yolo: () => fetch("/api/yolo").then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   setYolo: (change) => fetch("/api/yolo", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),
-  leadShow: (project) => fetch(`/api/lead/show${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<LeadShow>(r)),
+  leadShow: (project, thread) =>
+    fetch(`/api/lead/show${project || thread ? `?${new URLSearchParams({ ...(project ? { project } : {}), ...(thread ? { thread } : {}) })}` : ""}`).then((r) => json<LeadShow>(r)),
   leadNote: (threadId, change) => fetch(`/api/lead/note?${new URLSearchParams({ thread: threadId })}`, { method: "POST", body: JSON.stringify(change) }).then((r) => json<unknown>(r)).then(() => {}),
   leadNew: (project) => fetch(`/api/lead/new?${new URLSearchParams({ project })}`, { method: "POST" }).then((r) => json<{ threadId: string }>(r)),
-  leadAttach: (project, file) =>
-    fetch(`/api/lead/attach?${new URLSearchParams({ project, name: file.name })}`, { method: "POST", body: file }).then((r) => json<LeadAttachment>(r)),
+  leadClose: (threadId) => fetch(`/api/lead/close?${new URLSearchParams({ thread: threadId })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
+  leadWriter: (threadId) => fetch(`/api/lead/writer?${new URLSearchParams({ thread: threadId })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
+  leadAttach: (project, file, thread) =>
+    fetch(`/api/lead/attach?${new URLSearchParams({ project, name: file.name, ...(thread ? { thread } : {}) })}`, { method: "POST", body: file }).then((r) => json<LeadAttachment>(r)),
   leadSend: (request) =>
     fetch(`/api/lead/send?${new URLSearchParams({ project: request.project })}`, { method: "POST", body: JSON.stringify(request) }).then((r) =>
       json<{ threadId: string | null; events: LeadEvent[] }>(r),
@@ -72,12 +75,29 @@ export const devBackend: Backend = {
   leadDispatch: (planId, clean) =>
     fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
   leadDecide: (id, allow) => fetch(`/api/lead/decide?${new URLSearchParams({ id, decision: allow ? "allow" : "deny" })}`, { method: "POST" }).then((r) => json<{ id: string; decision: "allow" | "deny" }>(r)),
-  leadStop: (project) => fetch(`/api/lead/stop${project ? `?project=${encodeURIComponent(project)}` : ""}`, { method: "POST" }).then((r) => json<{ stopped: boolean }>(r)),
+  leadStop: (project, thread) =>
+    fetch(`/api/lead/stop${project || thread ? `?${new URLSearchParams({ ...(project ? { project } : {}), ...(thread ? { thread } : {}) })}` : ""}`, { method: "POST" }).then((r) =>
+      json<{ stopped: boolean }>(r),
+    ),
   leadStopAll: (project) => fetch(`/api/lead/stop-all?project=${encodeURIComponent(project)}`, { method: "POST" }).then((r) => json<{ stopped: number }>(r)),
   leadWake: (runId) => fetch(`/api/lead/wake?run=${encodeURIComponent(runId)}`, { method: "POST" }).then((r) => json<{ processed: boolean }>(r)),
   leadRetry: (runId, messageId) => fetch(`/api/lead/retry?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST" }).then((r) => json<{ state: "queued" | "acknowledged" }>(r)),
   leadAnswerApproval: (runId, messageId, text) => fetch(`/api/lead/answer-approval?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST", body: text }).then((r) => json<{ id: string }>(r)),
   leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
+  graphView: (project) => fetch(`/api/graph/view${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<GraphView>(r)),
+  graphOverallPart: (project) => fetch(`/api/graph/part?project=${encodeURIComponent(project)}`).then((r) => json<GraphView>(r)),
+  graphBuild: (project) => fetch(`/api/graph/build?${new URLSearchParams({ project })}`, { method: "POST" }).then((r) => json<{ ok: boolean; output: string }>(r)),
+  graphDeep: async (project, provider, model) =>
+    fetch(`/api/graph/deep?${new URLSearchParams({ project })}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      // Read lazily: data/settings.ts touches window at import, and tests load this module under Node.
+      body: JSON.stringify({ provider: provider ?? null, model: model ?? null, clean: (await import("../../data/settings.ts")).settingsNow().clean }),
+    }).then((r) => json<GraphDeepResult>(r)),
+  graphSettings: (change) =>
+    change === undefined
+      ? fetch("/api/graph/settings").then((r) => json<GraphSettings>(r))
+      : fetch("/api/graph/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<GraphSettings>(r)),
   projects: () => fetch("/api/projects").then((r) => json<ProjectList>(r)),
   projectOpen: (path) => fetch(`/api/projects/open?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   projectsAdd: (path) => fetch(`/api/projects/add?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),

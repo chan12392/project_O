@@ -105,17 +105,11 @@ fn card_args(card: &Card, team: &TeamChannel, prompt: String, mode: &str) -> Vec
 
 impl Provider for Devin {
     fn launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
-        LaunchSpec { bin: "devin".into(), args: card_args(card, team, prompt, CARD_MODE), stdin: None, env, env_remove: strings(self.api_key_vars()) }
+        LaunchSpec { bin: "devin".into(), args: card_args(card, team, prompt, CARD_MODE), stdin: None, env }
     }
 
     fn yolo_launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
-        Some(LaunchSpec { bin: "devin".into(), args: card_args(card, team, prompt, YOLO_MODE), stdin: None, env, env_remove: strings(self.api_key_vars()) })
-    }
-
-    /// The key `devin acp` reads (docs.devin.ai); whether `-p` prefers it over the sign-in
-    /// is not documented, so a card never inherits it.
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &["WINDSURF_API_KEY"]
+        Some(LaunchSpec { bin: "devin".into(), args: card_args(card, team, prompt, YOLO_MODE), stdin: None, env })
     }
 
     fn tool_note(&self) -> Option<String> {

@@ -148,7 +148,7 @@ pub const CATALOG: &[Entry] = &[
         install_url: Some("https://opencode.ai/v2/docs/"),
         plan: Plan::Planned(1),
         profile: Profile::Relocatable("USERPROFILE·HOME 이동 (설정·데이터·상태·캐시 폴더가 모두 따라감), XDG_CONFIG_HOME"),
-        note: "OpenCode에 설정한 제공자(OpenCode Console/Go, OpenRouter, 본인 API 키)로만 씁니다. Claude 구독 로그인은 약관상 연결하면 안 되고, O는 Claude 인증 정보를 넘기지 않습니다. 사용량 조회가 없어 하루 예산이 적용되지 않습니다.",
+        note: "OpenCode에 설정한 제공자(OpenCode Console/Go, OpenRouter, 본인 API 키)로만 씁니다. Claude 구독 로그인은 약관상 연결하면 안 됩니다. API 인증 환경변수는 전달됩니다. 사용량 조회가 없어 하루 예산이 적용되지 않습니다.",
     },
     Entry {
         id: "devin",

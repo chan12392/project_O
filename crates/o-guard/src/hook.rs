@@ -41,7 +41,7 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
-static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
 static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
@@ -283,7 +283,7 @@ fn is_free_base(base: &str) -> bool {
 /// Each `gh pr merge` (`true`) or `gh api` (`false`) call with its arguments: the text from the call
 /// to the first `;`, `&`, `|` or line break (LF, CR) outside quotes. Calls are found anywhere, so a
 /// line break or quoting cannot hide one; one inside an `echo` only costs a lookup. The third value
-/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, `$(` or a line break before it)
+/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, a backtick or a line break before it)
 /// and is not literal text inside single quotes (#56).
 fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
     GH_MERGE_CALL
@@ -292,7 +292,7 @@ fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
             let whole = c.get(0).unwrap();
             let rest = &command[whole.end()..];
             let before = command[..whole.start()].trim_end_matches([' ', '\t']);
-            let starts_command = (before.is_empty() || before.ends_with([';', '&', '|', '(', '\n', '\r']))
+            let starts_command = (before.is_empty() || before.ends_with([';', '&', '|', '(', '`', '\n', '\r']))
                 && !in_literal_quote(command, whole.start());
             (c.get(1).is_some(), &rest[..unquoted_end(rest)], starts_command)
         })
@@ -302,11 +302,11 @@ fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
 /// Whether `at` lies inside single quotes, where bash and PowerShell run nothing. Read with both
 /// escape characters (bash `\`, PowerShell `` ` ``) and true only when both readings agree. Double
 /// quotes do not count (`$(…)` runs inside them), nor does text handed to a program that runs a string.
-/// Quoting this reading cannot follow (`$'…'`, here-documents, comments, PowerShell's curly quotes)
+/// Quoting this reading cannot follow (command substitutions, `$'…'`, here-documents, comments, curly quotes)
 /// counts as not literal, so the call keeps its full check.
 fn in_literal_quote(command: &str, at: usize) -> bool {
     const CURLY_QUOTES: [char; 7] = ['\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}'];
-    if STRING_RUNNER.is_match(command) || command.contains("$'") || command.contains("<<") || command.contains(CURLY_QUOTES) {
+    if STRING_RUNNER.is_match(command) || command.contains("$(") || command.contains('`') || command.contains("$'") || command.contains("<<") || command.contains(CURLY_QUOTES) {
         return false;
     }
     ['\\', '`'].into_iter().all(|escape| {
@@ -780,6 +780,7 @@ mod tests {
         assert!(AGENT_DISPATCH.is_match("o lead stop"));
         assert!(AGENT_DISPATCH.is_match("o lead stop-all"));
         assert!(!AGENT_DISPATCH.is_match("o lead status"));
+        assert!(AGENT_DISPATCH.is_match("o _lead-forward 20261107-x 0"));
     }
 
     #[test]

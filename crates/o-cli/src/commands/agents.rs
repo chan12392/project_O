@@ -180,6 +180,10 @@ fn doctor(root: &Path, as_json: bool) -> i32 {
         for p in &profiles {
             let state = if p.issues.is_empty() { "깨끗함" } else { "문제 있음" };
             println!("{:<6} {state:<6} {}  {}", p.provider.as_str(), p.login.detail, p.home);
+            if !p.api_key_env.is_empty() {
+                let consequence = if p.provider == ProviderId::Claude && p.api_key_env.contains(&"ANTHROPIC_API_KEY") { "헤드리스 실행에서 키를 사용하면 구독 대신 API로 과금됩니다" } else { "인증 방식과 과금이 달라질 수 있습니다" };
+                println!("         - 환경변수 {}: {consequence}.", p.api_key_env.join(", "));
+            }
             for issue in &p.issues {
                 println!("         - {issue}");
             }

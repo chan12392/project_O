@@ -45,6 +45,8 @@ export type OEvent =
    * usage budget (ADR-0004). `spent` and `allowance` are percent points of the weekly window.
    */
   | { t: "card.budget"; at: string; cardId: string; provider: ProviderId; effortFrom?: string; effortTo: string; spent: number; allowance: number }
+  /** The project skills and O harness blocks that went into the card's prompt, by name. */
+  | { t: "card.guides"; at: string; cardId: string; skills: string[]; harness: string[] }
   /** Cards whose prompt got a shared context section (ADR-0005), and its characters in all. */
   | { t: "run.context"; at: string; runId: string; cards: number; chars: number; cardIds: string[] }
   /**

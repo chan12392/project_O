@@ -635,6 +635,15 @@ pub fn mark_runner(home: &Path, run_id: &str) -> io::Result<()> {
 /// How long a dispatched run may take to start its runner before it no longer counts as going.
 const RUNNER_START_GRACE: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Cheap display precheck: a dead runner needs no scan of its historical event log.
+pub(crate) fn runner_may_be_live(home: &Path, run_id: &str) -> bool {
+    let dir = run_dir(home, run_id);
+    match fs::read_to_string(dir.join("runner.json")).ok().and_then(|t| serde_json::from_str::<RunnerMark>(&t).ok()) {
+        Some(mark) => proc::is_alive(mark.pid) && (mark.started.is_none() || proc::started_at(mark.pid) == mark.started),
+        None => fs::metadata(dir.join("plan.json")).and_then(|m| m.modified()).is_ok_and(|at| at.elapsed().is_ok_and(|age| age < RUNNER_START_GRACE)),
+    }
+}
+
 /// Whether a run is still going: no `run.end` yet, and its runner alive (the same pid and start
 /// time), or not written yet within a short while of the dispatch.
 pub fn run_is_live(home: &Path, run_id: &str) -> bool {

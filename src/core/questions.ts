@@ -9,6 +9,7 @@ import type { AskQuestion, LeadItem } from "./lead.ts";
 import type { ProviderId } from "./plan.ts";
 import type { RunView } from "./snapshot.ts";
 import { cancelledForLead, isSessionRun } from "./attention.ts";
+import { sameFolder } from "./projects.ts";
 
 export interface Choice {
   label: string;
@@ -71,6 +72,35 @@ export function parseCardQuestion(text: string): Question {
   const labels = match ? [...new Set(match[1].split("|").map((s) => s.trim()).filter(Boolean))].slice(0, 6) : [];
   const question = (match ? text.trim().slice(0, match.index) : text).trim();
   return { question: question || text.trim(), options: labels.length >= 2 ? labels.map((label) => ({ label })) : [], multi: false };
+}
+
+/**
+ * Other projects whose own lead may own a waiting card question (issue #75): running O runs
+ * outside `current` with a `--question` to the lead. Their leads' threads decide, not the one
+ * on screen; each project once, in the order the runs list them.
+ */
+export function foreignAskProjects(runs: readonly RunView[], current: string | undefined): string[] {
+  const projects: string[] = [];
+  for (const run of runs) {
+    if (isSessionRun(run) || run.status !== "running" || (current && sameFolder(run.project, current))) continue;
+    if (!run.messages.some((m) => m.to === "lead" && m.kind === "question")) continue;
+    if (!projects.some((p) => sameFolder(p, run.project))) projects.push(run.project);
+  }
+  return projects;
+}
+
+/**
+ * The runs whose questions the person must not be asked now: those each project's own lead
+ * thread handles (`owned`, by project), and those of a project whose thread is not read yet,
+ * so a question never pops up and then vanishes once its lead is known.
+ */
+export function ledRuns(runs: readonly RunView[], current: ReadonlySet<string>, owned: ReadonlyMap<string, ReadonlySet<string> | "loading">): Set<string> {
+  const led = new Set(current);
+  for (const run of runs) {
+    const entry = [...owned].find(([project]) => sameFolder(project, run.project))?.[1];
+    if (entry === "loading" || entry?.has(run.runId)) led.add(run.runId);
+  }
+  return led;
 }
 
 /** Runs the lead's current thread dispatched or continued: their cards' questions wake it (`wake_card`). */

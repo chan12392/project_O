@@ -56,7 +56,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 34] = [
+    let tests: [(&str, fn()); 35] = [
+        ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
         ("unsafe workspace handoffs never start the dependent", unsafe_handoffs),
@@ -89,7 +90,7 @@ fn main() {
         ("a card waits in the queue while its provider is full, then runs", queue_then_run),
         ("a clean run starts its cards with only the clean environment", clean_run),
         ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
-        ("a card's CLI never inherits the API key variables it prefers over its sign-in", api_keys_dropped),
+        ("a card's CLI inherits API key variables", api_keys_inherited),
         ("an OpenCode card without YOLO does not start under OpenCode project config", opencode_project_config_refused),
     ];
     let mut failed = 0;
@@ -872,6 +873,25 @@ fn stop_request() {
     assert_eq!(ends_of(&home, "r4"), BTreeMap::from([("a".into(), CardStatus::Stopped)]));
 }
 
+fn guides_recorded() {
+    let home = temp_home();
+    let blocks = home.join("harness");
+    std::fs::create_dir_all(&blocks).unwrap();
+    std::fs::write(blocks.join("check.md"), "검사를 돌린다").unwrap();
+    std::fs::write(blocks.join("index.json"), r#"[{"name":"check","path":"check.md","triggers":["test"]}]"#).unwrap();
+    let p = plan(vec![card("a", ProviderId::Codex, "run the test"), card("b", ProviderId::Codex, "write docs")]);
+    create_run(&home, "guides", &p).unwrap();
+    run_plan(&home, "guides", &p, None, quiet()).unwrap();
+    let guides: Vec<(String, Vec<String>, Vec<String>)> = read_events(&home, "guides").into_iter().filter_map(|e| match e {
+        OEvent::CardGuides { card_id, skills, harness, .. } => Some((card_id, skills, harness)),
+        _ => None,
+    }).collect();
+    assert_eq!(guides, [("a".to_string(), vec![], vec!["check".to_string()])]);
+    let view = o_core::run::snapshot::snapshot(&read_events(&home, "guides")).unwrap();
+    let a = view.cards.iter().find(|c| c.id == "a").unwrap();
+    assert!(a.log.iter().any(|l| l.kind == o_core::run::snapshot::LogKind::Guides && l.text == "넣은 지침: 하네스 check"));
+}
+
 fn queue_then_run() {
     let home = temp_home();
     // Live markers from another run fill agy's slots (this test process stands in as their pid).
@@ -1129,14 +1149,14 @@ fn a_link_swapped_after_the_check_is_refused() {
     assert!(read_events(&home, "rx-isolated").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("정책 검사 뒤"))));
 }
 
-/// A key left in the person's environment must not reach the card's CLI, in any case spelling.
-fn api_keys_dropped() {
+/// API credentials in the person's environment reach each card's CLI.
+fn api_keys_inherited() {
     let home = temp_home();
-    let vars = [("ANTHROPIC_API_KEY", "placeholder"), ("anthropic_auth_token", "placeholder"), ("CODEX_API_KEY", "placeholder"), ("ANTHROPIC_API_KEY_HELPER", "kept")];
+    let vars = [("ANTHROPIC_API_KEY", "placeholder"), ("anthropic_auth_token", "placeholder"), ("CODEX_API_KEY", "placeholder"), ("ANTHROPIC_API_KEY_HELPER", "kept"), ("O_CUSTOM_PROVIDER_API_KEY", "placeholder")];
     for (name, value) in vars {
         std::env::set_var(name, value);
     }
-    let p = plan(vec![card("a", ProviderId::Claude, "x"), card("b", ProviderId::Codex, "y")]);
+    let p = plan(vec![card("a", ProviderId::Claude, "x"), card("b", ProviderId::Codex, "y"), card("c", ProviderId::OpenCode, "z")]);
     create_run(&home, "r9", &p).unwrap();
     let dumps = home.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
@@ -1153,9 +1173,11 @@ fn api_keys_dropped() {
     let env_of = |bin: &str| -> BTreeMap<String, String> { serde_json::from_str(&std::fs::read_to_string(home.join(format!("{bin}.json"))).unwrap()).unwrap() };
     let has = |env: &BTreeMap<String, String>, name: &str| env.keys().any(|k| k.eq_ignore_ascii_case(name));
     let (claude, codex) = (env_of("claude"), env_of("codex"));
-    assert!(!has(&claude, "ANTHROPIC_API_KEY") && !has(&claude, "ANTHROPIC_AUTH_TOKEN"));
+    assert!(has(&claude, "ANTHROPIC_API_KEY") && has(&claude, "ANTHROPIC_AUTH_TOKEN"));
     assert!(has(&claude, "ANTHROPIC_API_KEY_HELPER") && has(&claude, "CODEX_API_KEY") && has(&claude, "PATH"));
-    assert!(!has(&codex, "CODEX_API_KEY") && has(&codex, "ANTHROPIC_API_KEY"));
+    assert!(has(&codex, "CODEX_API_KEY") && has(&codex, "ANTHROPIC_API_KEY"));
+    let opencode = env_of("opencode");
+    assert!(has(&opencode, "ANTHROPIC_API_KEY") && has(&opencode, "O_CUSTOM_PROVIDER_API_KEY"));
     assert_eq!(claude.get("O_CARD_ID").map(String::as_str), Some("a"));
 }
 

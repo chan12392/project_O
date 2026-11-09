@@ -41,7 +41,7 @@ fn unavailable_result_emits_warning_without_failing_the_reply() {
         command.args(["--exact", "fake_stream_cli", "--nocapture"]).env("O_TEST_STREAM_PLAIN", "1");
         Ok(command)
     };
-    let request = SendRequest { project, provider: ProviderId::Claude, model: None, effort: None, text: "결과 확인", attach: &[], fresh: false, clean: None, yolo: false };
+    let request = SendRequest { project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "결과 확인", attach: &[], fresh: false, clean: None, yolo: false };
     let events = lead::send(&home, &request, &spawner).unwrap();
     assert!(events.iter().any(|event| matches!(event, LeadEvent::Warning { .. })));
     assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text == "확인 불가")));
@@ -71,7 +71,7 @@ fn lead_can_read_the_end_of_a_long_result_on_repeated_turns() {
         command.args(["--exact", "fake_stream_cli", "--nocapture"]).env("O_TEST_STREAM_INDEX", index);
         Ok(command)
     };
-    let request = SendRequest { project, provider: ProviderId::Claude, model: None, effort: None, text: "결과 확인", attach: &[], fresh: false, clean: None, yolo: false };
+    let request = SendRequest { project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "결과 확인", attach: &[], fresh: false, clean: None, yolo: false };
     for _ in 0..2 {
         let events = lead::send(&home, &request, &spawner).unwrap();
         assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text == "읽었습니다")));
@@ -97,7 +97,7 @@ fn official_codex_reads_the_last_part_of_a_result() {
     append_event(&home, "run", &OEvent::RunEnd { at: "now".into(), run_id: "run".into(), status: CardStatus::Done }).unwrap();
     writeln!(fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap(), "{}", json!({"t":"lead.dispatch","at":"now","planId":"p","runId":"run","clean":false})).unwrap();
     let root = clean::default_root();
-    let request = SendRequest { project, provider: ProviderId::Codex, model: None, effort: Some("low"), text: "run의 card 결과 원문을 끝까지 확인하고 마지막 줄의 RESULT-로 시작하는 식별자만 답하세요. 모르면 모른다고 답하세요.", attach: &[], fresh: false, clean: Some(&root), yolo: false };
+    let request = SendRequest { project, thread: None, provider: ProviderId::Codex, model: None, effort: Some("low"), text: "run의 card 결과 원문을 끝까지 확인하고 마지막 줄의 RESULT-로 시작하는 식별자만 답하세요. 모르면 모른다고 답하세요.", attach: &[], fresh: false, clean: Some(&root), yolo: false };
     let events = lead::send(&home, &request, &official_command).unwrap();
     let answer = events.iter().find_map(|event| match event { LeadEvent::Reply { text, .. } => Some(text.as_str()), _ => None });
     assert!(answer.is_some_and(|text| text.contains(&marker)), "실제 응답이 결과 끝을 확인하지 못했습니다: {events:?}");
@@ -127,7 +127,7 @@ fn official_codex_finds_a_result_omitted_from_the_summary() {
         writeln!(history, "{}", json!({"t":"lead.dispatch","at":"now","planId":format!("p-{n}"),"runId":run,"clean":false})).unwrap();
     }
     let root = clean::default_root();
-    let request = SendRequest { project, provider: ProviderId::Codex, model: None, effort: Some("low"), text: "이 대화에서 가장 오래된 실행의 카드 결과 원문을 색인에서 찾아 끝까지 확인한 뒤, 마지막 줄의 OLDEST-로 시작하는 식별자만 답하세요. 모르면 모른다고 답하세요.", attach: &[], fresh: false, clean: Some(&root), yolo: false };
+    let request = SendRequest { project, thread: None, provider: ProviderId::Codex, model: None, effort: Some("low"), text: "이 대화에서 가장 오래된 실행의 카드 결과 원문을 색인에서 찾아 끝까지 확인한 뒤, 마지막 줄의 OLDEST-로 시작하는 식별자만 답하세요. 모르면 모른다고 답하세요.", attach: &[], fresh: false, clean: Some(&root), yolo: false };
     let events = lead::send(&home, &request, &official_command).unwrap();
     let answer = events.iter().find_map(|event| match event { LeadEvent::Reply { text, .. } => Some(text.as_str()), _ => None });
     assert!(answer.is_some_and(|text| text.contains(&marker)), "색인에서 이전 결과를 찾지 못했습니다: {events:?}");
@@ -183,7 +183,7 @@ fn main() {
         command.env("TEST_LOG", &child_log);
         Ok(command)
     };
-    let request = SendRequest { project: project.to_str().unwrap(), provider: ProviderId::Codex, model: None, effort: None, text: "결과 확인", attach: &[], fresh: false, clean: None, yolo: false };
+    let request = SendRequest { project: project.to_str().unwrap(), thread: None, provider: ProviderId::Codex, model: None, effort: None, text: "결과 확인", attach: &[], fresh: false, clean: None, yolo: false };
     let first = lead::send(&home, &request, &spawner).unwrap();
     assert!(first.iter().any(|event| matches!(event, LeadEvent::Session { session_id, result_tools: Some(true), .. } if session_id == "new")));
     assert!(first.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text.contains("최근 일부만 전달"))));

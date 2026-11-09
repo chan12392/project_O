@@ -1,8 +1,8 @@
 import { Check, MessageCircleQuestion } from "lucide-react";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 
-import { isLeadProvider, type LeadItem } from "../../../../src/core/lead.ts";
-import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, isComplete, leadRuns, pendingLeadAsk, toggle, type Answer, type PendingAsk } from "../../../../src/core/questions.ts";
+import { isLeadProvider, leadItems, type LeadItem } from "../../../../src/core/lead.ts";
+import { EMPTY_ANSWER, answerText, askNotice, cardQuestions, foreignAskProjects, isComplete, leadRuns, ledRuns, pendingLeadAsk, toggle, type Answer, type PendingAsk } from "../../../../src/core/questions.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { settingsNow, useSettings } from "../../data/settings.ts";
@@ -38,6 +38,40 @@ function lastChoice(items: readonly LeadItem[]) {
   return user?.kind === "user" ? user : undefined;
 }
 
+const OTHER_LEADS_MS = 5_000;
+
+/**
+ * The runs each other project's own lead thread dispatched (issue #75): read for the projects
+ * `foreignAskProjects` names, again every few seconds while any is listed. A project not read
+ * yet is "loading", so its questions wait instead of flashing up for the person.
+ */
+function useOtherLeads(api: Backend, projects: readonly string[]): ReadonlyMap<string, ReadonlySet<string> | "loading"> {
+  const key = projects.join("\n");
+  const [owned, setOwned] = useState<ReadonlyMap<string, ReadonlySet<string> | "loading">>(new Map());
+  useEffect(() => {
+    const list = key ? key.split("\n") : [];
+    setOwned((now) => new Map(list.map((p) => [p, now.get(p) ?? "loading"])));
+    if (list.length === 0) return;
+    let live = true;
+    const read = () => {
+      for (const project of list) {
+        api.leadShow(project).then(
+          (show) => live && setOwned((now) => new Map(now).set(project, leadRuns(leadItems(show.thread?.events ?? [])))),
+          // A thread that cannot be read leaves its questions to the person, as before this check.
+          () => live && setOwned((now) => new Map(now).set(project, new Set())),
+        );
+      }
+    };
+    read();
+    const timer = window.setInterval(read, OTHER_LEADS_MS);
+    return () => {
+      live = false;
+      window.clearInterval(timer);
+    };
+  }, [api, key]);
+  return owned;
+}
+
 /**
  * Questions waiting on the person, from the project's lead and from any running card that asked
  * the lead, one at a time in a dialog. The lead's answer waits for the picks: they go as the
@@ -47,7 +81,8 @@ function lastChoice(items: readonly LeadItem[]) {
 export function QuestionDialog({ api, lead, runs, live }: { api: Backend; lead: LeadState; runs: readonly RunView[]; live: boolean }) {
   const { clean } = useSettings();
   const leadAsk = live ? pendingLeadAsk(lead.items) : undefined;
-  const led = useMemo(() => leadRuns(lead.items), [lead.items]);
+  const owned = useOtherLeads(api, live ? foreignAskProjects(runs, lead.thread?.project) : []);
+  const led = useMemo(() => ledRuns(runs, leadRuns(lead.items), owned), [runs, lead.items, owned]);
   const cards = useMemo(() => (live ? cardQuestions(runs, led) : []), [runs, live, led]);
   const asks = useMemo(() => [...(leadAsk ? [leadAsk] : []), ...cards], [leadAsk?.key, cards]);
   const [later, setLater] = useState<ReadonlySet<string>>(new Set());

@@ -23,26 +23,25 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The PR merge commit and its two parents (base, head).
+          persist-credentials: false
           fetch-depth: 2
       - name: 이미 검사한 내용인지 확인
         id: same
-        # Release PRs (test_2/test_1_hotfix → test_1, test_1/main_hotfix → main) usually carry exactly the head's
-        # tree, which its own PRs already tested. Anything the base adds on top runs the full check.
-        # This assumes the head was merged after its checks passed (the owner never merges red checks).
-        if: github.event_name == 'pull_request' && contains(fromJSON('["test_2", "test_1_hotfix", "test_1", "main_hotfix"]'), github.head_ref)
+        # Only trusted team branches may reuse their head's prior checks.
+        if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository && contains(fromJSON('["test_2", "test_1_hotfix", "test_1", "main_hotfix"]'), github.head_ref)
         run: |
           if git diff --quiet HEAD^2 HEAD; then
             echo "skip=true" >> "$GITHUB_OUTPUT"
             echo "::notice::병합 결과가 ${GITHUB_HEAD_REF}와 같아 이미 검사한 내용입니다. 무거운 검사를 건너뜁니다."
           fi
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         if: steps.same.outputs.skip != 'true'
         with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         if: steps.same.outputs.skip != 'true'
       - name: 프로바이더 정책 검사 (o scan)
         if: steps.same.outputs.skip != 'true'
@@ -54,8 +53,7 @@ jobs:
           # Every failing test binary is reported, not only the first.
           cargo test --workspace --exclude project-o --no-fail-fast
           cargo clippy --workspace --all-targets --exclude project-o -- -D warnings
-      - uses: actions/setup-node@v4
-        if: steps.same.outputs.skip != 'true'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: 화면 로직 테스트·타입 검사
@@ -66,3 +64,5 @@ jobs:
           npm test
           npm run check
           npx tsc --noEmit -p app
+      - name: 라이선스 검사
+        run: npm run check:licenses

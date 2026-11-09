@@ -53,6 +53,29 @@ fn missing_clis_show_the_official_installers() {
 }
 
 #[test]
+fn status_and_doctor_report_auth_names_without_values() {
+    const MARKER: &str = "O_TEST_AUTH_ENV_CHILD";
+    if std::env::var_os(MARKER).is_some() {
+        let root = empty_path().join("profiles");
+        let status = json!(o_core::agents::status_of(&root, ProviderId::Claude, true));
+        let doctor = json!(o_core::agents::clean::doctor(&root));
+        assert!(status["apiKeyEnv"].as_array().unwrap().contains(&json!("ANTHROPIC_API_KEY")));
+        assert!(doctor[0]["apiKeyEnv"].as_array().unwrap().contains(&json!("ANTHROPIC_API_KEY")));
+        assert!(!status.to_string().contains("test-only-secret"));
+        assert!(!doctor.to_string().contains("test-only-secret"));
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", "status_and_doctor_report_auth_names_without_values"]).env(MARKER, "1").env("ANTHROPIC_API_KEY", "test-only-secret");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x08000000);
+    }
+    assert!(child.status().unwrap().success());
+}
+
+#[test]
 fn install_without_npm_points_to_the_official_page() {
     empty_path();
     for provider in ProviderId::ALL {

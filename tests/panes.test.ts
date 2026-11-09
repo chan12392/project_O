@@ -55,3 +55,17 @@ test("an unsent follow-up stays with its card while another tab or fewer panes h
   assert.deepEqual(composers.b, EMPTY_COMPOSER);
   assert.deepEqual(composers.a, { draft: "A에게 보낼 지시", sending: false });
 });
+
+test("composer drafts survive card ids that collide with Object.prototype (#76)", () => {
+  let composers = withComposer({}, "constructor", { draft: "x" });
+  assert.ok(Object.hasOwn(composers, "constructor"));
+  assert.equal(composers["constructor"].draft, "x");
+  // Other prototype-named ids start from an empty composer, not a prototype member.
+  for (const id of ["__proto__", "toString"]) {
+    composers = withComposer(composers, id, { draft: id });
+    assert.equal(composers[id].draft, id);
+  }
+  assert.deepEqual(withComposer({}, "toString", {}), { toString: EMPTY_COMPOSER });
+  assert.equal(composers["toString"].draft, "toString");
+  assert.equal(composers["constructor"].draft, "x");
+});
