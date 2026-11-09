@@ -153,9 +153,19 @@ fn a_new_profile_holds_only_the_claude_settings() {
     for name in ["AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"] {
         assert!(excludes.contains(&format!("{base}/{name}").as_str()), "{name}: {excludes:?}");
     }
-    for provider in ProviderId::ALL {
+    for provider in ProviderId::ALL.into_iter().filter(|p| !(cfg!(windows) && *p == ProviderId::Codex)) {
         assert_eq!(inspect(&root, provider), Vec::<String>::new(), "{provider}");
     }
+    // A new Codex profile has no Windows sandbox selection, so its cards could not write.
+    let codex = inspect(&root, ProviderId::Codex);
+    assert_eq!(codex.len(), usize::from(cfg!(windows)), "{codex:?}");
+    let config = profile_home(&root, ProviderId::Codex).join(".codex").join("config.toml");
+    for setting in ["[windows]\r\nsandbox = \"unelevated\"\r\n", "model = \"m\"\n[windows]\n# kept\nsandbox = \"elevated\"\n", "windows.sandbox = \"unelevated\"\n"] {
+        write(&config, setting);
+        assert_eq!(inspect(&root, ProviderId::Codex), Vec::<String>::new(), "{setting:?}");
+    }
+    write(&config, "[windows]\n[other]\nsandbox = \"x\"\n");
+    assert_eq!(inspect(&root, ProviderId::Codex).len(), usize::from(cfg!(windows)));
 }
 
 #[test]
@@ -174,7 +184,7 @@ fn doctor_flags_planted_hooks_skills_and_mcp_servers() {
 
     let codex_home = profile_home(&root, ProviderId::Codex);
     let codex = codex_home.join(".codex");
-    write(&codex.join("config.toml"), "model = \"m\"\n[mcp_servers.m]\ncommand = \"m\"\n");
+    write(&codex.join("config.toml"), "model = \"m\"\n[windows]\nsandbox = \"unelevated\"\n[mcp_servers.m]\ncommand = \"m\"\n");
     write(&codex.join("hooks.json"), "{}");
     write(&codex.join("skills").join(".system").join("a").join("SKILL.md"), "a");
     write(&codex.join("skills").join("mine").join("SKILL.md"), "b");

@@ -150,6 +150,8 @@ impl Provider for Codex {
         let dir = home.join(".codex");
         let config = fs::read_to_string(dir.join("config.toml")).unwrap_or_default();
         flag(HOOK_OR_MCP.is_match(&config), "config.toml에 hooks 또는 mcp_servers가 있음".into());
+        // Without a Windows sandbox selection, `-s workspace-write` cannot write (run 20261109-150039-4hg4).
+        flag(cfg!(windows) && !WINDOWS_SANDBOX.is_match(&config), "config.toml에 Windows 샌드박스 설정([windows] sandbox)이 없어 카드가 파일을 고치지 못함 — o agents shell codex로 Codex를 열어 샌드박스를 설정하세요".into());
         for name in ["hooks.json", "AGENTS.md", "AGENTS.override.md"] {
             flag(dir.join(name).exists(), format!("{}가 있음", dir.join(name).to_string_lossy()));
         }
@@ -244,6 +246,8 @@ pub fn supports_app_server(mut command: Command) -> bool {
 }
 
 static HOOK_OR_MCP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*(?:\[\[?\s*)?(?:mcp_servers|hooks)\b").unwrap());
+/// `sandbox = …` inside `[windows]`, or the dotted `windows.sandbox = …`.
+static WINDOWS_SANDBOX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*windows\.sandbox\s*=|^\s*\[windows\]\s*\n(?:[^\[\n]*\n)*?\s*sandbox\s*=").unwrap());
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 

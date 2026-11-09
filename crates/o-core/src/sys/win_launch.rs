@@ -296,8 +296,9 @@ impl Launch {
         let mut entries = Vec::with_capacity(self.environment.len());
         for (name, value) in &self.environment {
             let key = wide(name)?;
-            let drive = key.len() == 3 && key[0] == b'=' as u16 && ((b'A' as u16..=b'Z' as u16).contains(&key[1]) || (b'a' as u16..=b'z' as u16).contains(&key[1])) && key[2] == b':' as u16;
-            if key.is_empty() || (!drive && key.contains(&(b'=' as u16))) || key.len() > i32::MAX as usize {
+            // Windows ends a name at the first `=` after its first character, so cmd's hidden
+            // variables (`=C:`, `=ExitCode`, `=::`) are valid names and inherited as they are.
+            if key.is_empty() || key == [b'=' as u16] || key[1..].contains(&(b'=' as u16)) || key.len() > i32::MAX as usize {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid environment name"));
             }
             entries.push((key, wide(value)?));
