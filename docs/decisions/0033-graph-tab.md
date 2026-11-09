@@ -8,7 +8,7 @@
 ## 배경
 
 - 대표 요청: 왼쪽 위에 Graph 카테고리를 두고, 전체 프로젝트 그래프에서 프로젝트별 그래프로 뻗어 가는 3D 그래프를 본다. 작업 중인 곳과 그 연결 경로가 빛나고, 효과는 켜고 끌 수 있다.
-- [grafly](https://github.com/chan12392/grafly)(MIT, 대표 저장소)는 코드를 파싱해 `.grafly/.graph/wiring.json`(노드·간선)을 만들고, LLM 없이 호출 관계(`callers`), 변경 영향(`blast`), 파일 API(`skeleton`), 저장소 개요(`map`)를 답한다. `--deep`의 개념 요약·영역 이름 짓기만 LLM을 쓴다.
+- grafly(별도 도구, 저장소는 아직 공개되지 않았다)는 코드를 파싱해 `.grafly/.graph/wiring.json`(노드·간선)을 만들고, LLM 없이 호출 관계(`callers`), 변경 영향(`blast`), 파일 API(`skeleton`), 저장소 개요(`map`)를 답한다. `--deep`의 개념 요약·영역 이름 짓기만 LLM을 쓴다.
 - grafly의 에이전트 Deep(`deepidx`)은 로그인된 Claude·Codex CLI를 쓰지만 모델이 코드에 고정돼 있다(Claude `haiku`, Codex `luna` 계열). 대표는 기본 모델을 Codex `gpt-6.1-terra`, Claude `sonnet`(Sonnet 5.5)으로 두고 바꿀 수 있기를 원한다.
 
 ## 결정
@@ -24,7 +24,7 @@
 | 3D 화면용 그래프, 빛나는 노드·경로 | O(`git status` + 영향 범위 계산) | 없음 |
 | 영역 이름 짓기, 개념 요약 (Deep) | O가 사람이 고른 공식 CLI·모델을 읽기 전용·도구 없이 한 번 호출 | **사용** (사용자 구독 차감) |
 
-grafly가 설치되지 않았거나 인덱스가 없으면 화면은 그 사실과 "인덱스 만들기"를 보여 준다. O는 grafly를 내려받거나 설치하지 않는다.
+grafly가 설치되지 않았거나 인덱스가 없으면 화면은 그 사실과 "인덱스 만들기"를 보여 준다. O는 grafly를 내려받거나 설치하지 않는다. Graph 탭을 쓰려면 grafly를 따로 설치해 PATH에 둬야 한다. grafly가 없으면 화면은 "grafly가 설치되어 있지 않습니다"를 보여 주고, 다른 기능은 그대로 쓸 수 있다.
 
 ### CLI (`o graph`)
 

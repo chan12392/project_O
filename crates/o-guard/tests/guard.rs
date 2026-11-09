@@ -119,7 +119,7 @@ fn hook_enforces_branch_names() {
     assert!(blocked(&bash("git switch -c feature-x"), &OnBranch("younchan")));
     assert!(blocked(&bash("git checkout -b younchan/x"), &OnBranch("younchan")));
     assert!(blocked(&bash("git switch -c a/x"), &OnBranch("younchan")));
-    assert!(passes(&bash("git switch -c yongwoo-account-vault"), &OnBranch("yongwoo")));
+    assert!(passes(&bash("git switch -c yongwoo-session-resume"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git switch -c younchan"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git branch -d younchan-old"), &OnBranch("younchan")));
 }

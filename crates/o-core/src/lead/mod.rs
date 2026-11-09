@@ -687,7 +687,7 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
         team::transition(home, &speaker, &message.id, "acknowledged").map_err(|e| e.to_string())?;
         return Ok(true);
     }
-    if message.kind == "approval" { return Err("승인 요청은 대표님의 답변을 기다립니다".into()); }
+    if message.kind == "approval" { return Err("승인 요청은 사용자의 답변을 기다립니다".into()); }
     if message.state != "stored" { return Err("카드 메시지의 기존 전달 상태를 확인하세요".into()); }
     let Some(thread_id) = run_thread(home, project, run_id) else { return Ok(false) };
     let events = read_complete_thread(home, &thread_id)?;

@@ -283,7 +283,7 @@ fn ineligible_and_answered_messages_skip_history_and_current_lock() {
         let recipient = Speaker { run_id: card.run_id.clone(), me: "lead".into(), cards: card.cards.clone() };
         if state != "stored" { team::transition(&home, &recipient, &id, state).unwrap(); }
         if answered {
-            team::send_reply(&home, &recipient, "a", "대표님 답변", false, None, Some(&id)).ok().unwrap();
+            team::send_reply(&home, &recipient, "a", "사용자 답변", false, None, Some(&id)).ok().unwrap();
             lead::close(&home, &thread).unwrap();
         }
         fs::remove_file(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap();
@@ -388,14 +388,14 @@ fn restarted_monitor_delivers_only_stored_messages_and_respects_stop() {
 #[test]
 fn explicit_approval_request_does_not_wake_the_lead() {
     let (home, project, card) = fixture();
-    let id = team::send_approval(&home, &card, "대표님 승인이 필요합니다", Some("approval")).ok().unwrap();
+    let id = team::send_approval(&home, &card, "사용자 승인이 필요합니다", Some("approval")).ok().unwrap();
     let spawner: Arc<Spawner> = Arc::new(|_, _| panic!("승인 요청에서 총괄을 실행하면 안 됩니다"));
     assert!(lead::wake_card(&home, &project, "20260101-000000-abcd", &card.cards, spawner.as_ref()).unwrap_err().contains("승인 요청"));
     let recipient = Speaker { run_id: "20260101-000000-abcd".into(), me: "lead".into(), cards: card.cards.clone() };
     let messages = team::read(&home, &recipient, false).unwrap();
     assert_eq!((&messages[0].id, messages[0].state.as_str()), (&id, "stored"));
     team::claim(&home, &recipient).unwrap().unwrap();
-    team::send_reply(&home, &recipient, "a", "대표님 확인", false, Some("manual"), Some(&id)).ok().unwrap();
+    team::send_reply(&home, &recipient, "a", "사용자 확인", false, Some("manual"), Some(&id)).ok().unwrap();
     assert!(lead::wake_card(&home, &project, "20260101-000000-abcd", &card.cards, spawner.as_ref()).unwrap());
     assert!(team::read(&home, &recipient, false).unwrap().is_empty());
     cleanup(&home);

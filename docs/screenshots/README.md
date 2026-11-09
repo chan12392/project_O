@@ -1,6 +1,6 @@
 # 화면 캡처 (2026-11-02)
 
-브라우저 미리보기(`npm run dev`, `?source=demo`)에서 이 PC의 실제 O 실행 기록을 경로만 바꿔 재생한 화면이다. 1600×1000.
+브라우저 미리보기(`npm run dev`, `?source=demo`)에서 이 PC의 실제 O 실행 기록을 경로만 바꿔 재생한 화면이다. 1600×1000. 모두 Antigravity 실행 보류([ADR-0020](../decisions/0020-antigravity-policy.md)) 전 화면이다. 일부 화면에 Antigravity 카드 실행이 보인다.
 
 | 파일 | 장면 |
 |---|---|

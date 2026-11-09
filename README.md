@@ -1,12 +1,40 @@
 # project_O
 
-여러 AI 코딩 에이전트와 구독 계정을 한 데스크톱 앱에서 실행하고(작업대), 돌고 있는 세션을 한 화면에서 관측하는(관제탑) 개인용 로컬 앱. 비유하면 Orca의 채팅 UI 버전.
+Claude Code·Codex 같은 AI 코딩 에이전트의 공식 CLI를 사용자 본인의 로그인으로 한 데스크톱 앱에서 실행하고(작업대), 돌고 있는 세션을 한 화면에서 관측하는(관제탑) 개인용 로컬 앱. 비유하면 Orca의 채팅 UI 버전.
+
+**English summary.** project_O is a personal, local-only desktop app and CLI (`o`) for Windows. It runs official coding-agent CLIs such as Claude Code and Codex under your own logins, lets a lead agent split a request into work cards, runs the cards in parallel within fixed policy limits, and shows every session in one window. It has no server, never reads or stores login tokens, and does not pool or rotate accounts. Documentation is in Korean.
+
+> Anthropic·OpenAI·Google·Cognition 등과 제휴하지 않은 개인 프로젝트이며, Claude·Codex·Gemini·Antigravity·Devin 등 제품명은 각 회사의 상표다.
 
 > 상태: O CLI(작업카드 분배)·정책 자동 차단은 Rust(`o.exe`)로 동작. 화면은 Orca 디자인 시스템을 따른 React 앱으로, 개발 서버나 데스크톱 앱(`project_O.exe`, Tauri 2 셸)에서 이 PC의 실제 실행 기록을 보여 준다([ADR-0001](docs/decisions/0001-stack-tauri-rust-core.md)).
 
 ![작업 환경](docs/screenshots/01-overview.png)
 
-화면 캡처와 아키텍처 그림은 [docs/screenshots/](docs/screenshots/README.md).
+*Antigravity 실행 보류([ADR-0020](docs/decisions/0020-antigravity-policy.md)) 전 화면.* 화면 캡처와 아키텍처 그림은 [docs/screenshots/](docs/screenshots/README.md).
+
+## 쓰기 전에
+
+- **본인 구독, 공식 CLI**: O는 각 공급자의 공식 CLI(`claude`, `codex` 등)를 사용자가 직접 로그인한 상태로 실행한다. 구독과 로그인은 사용자 본인의 것이고, 각 공급자의 이용 약관·사용 정책을 지킬 책임도 사용자에게 있다. O는 로그인 파일·토큰을 읽거나 복사하지 않고 공급자 서버를 직접 부르지 않는다. 한 서비스에 여러 계정을 등록해 바꿔 쓰는 기능은 없고, 한도에 걸린 서비스는 다른 계정으로도 다시 쓰지 않도록 막는다. Antigravity는 공급자 정책에 따라 실행하지 않는다([ADR-0020](docs/decisions/0020-antigravity-policy.md)).
+- **YOLO 모드**: 기본은 꺼져 있다. 켜면 총괄과 카드에 각 CLI의 권한 확인을 끄는 공식 옵션을 넘겨, 에이전트가 승인 없이 파일을 고치고 명령을 실행한다([ADR-0014](docs/decisions/0014-yolo-mode.md)). 믿을 수 있는 프로젝트에서만 켠다.
+- **예약 실행**: 사용자가 만든 예약만 Windows 작업 스케줄러로 앱이 꺼져 있어도 돈다. 총괄은 읽기 전용, 카드는 일반 권한이며 하루 사용 예산과 자동 실행 한도를 통과해야 분배된다([ADR-0019](docs/decisions/0019-navigation-images-schedules.md)).
+- **지원 OS**: Windows x64. macOS(Apple Silicon)는 소스에서 직접 빌드하는 실험 단계다. 실기 검증은 한 대의 Mac에서 Codex로만 했고 배포 파일은 없다([ADR-0030](docs/decisions/0030-macos-owned-worker-observation.md), [실기 기록](docs/macos-verification-2026-11-05.md)). 예약 실행은 Windows에서만 된다. Linux 앱은 지원하지 않는다.
+
+## 설치
+
+[Releases](https://github.com/chan12392/project_O/releases)에서 `project_O_<버전>_x64-setup.exe`를 받는다. `test_1-<날짜>-<커밋>` 태그는 `test_1` 브랜치에서 자동으로 만든 프리릴리스(시험판)다. 설치 파일은 코드 서명을 하지 않았으므로 처음 실행할 때 SmartScreen이 "알 수 없는 게시자"를 띄운다. 에이전트 CLI(Claude Code, Codex)는 따로 설치하고 각 CLI의 공식 명령으로 로그인한다(앱의 첫 실행 안내가 돕는다). 설치 폴더·제거·업데이트 알림은 [docs/INSTALL.md](docs/INSTALL.md).
+
+## 보안 모델 (요약)
+
+- **O 가드**: 에이전트 훅(`o hook`, Claude Code·Codex 프로젝트 훅), git 훅(`o scan`), CI가 같은 규칙으로 인증 파일·토큰 접근, 공급자 서버 직접 호출, 권한 확인을 끄는 옵션, 보호 브랜치 커밋·push를 막는다. 규칙 원문은 `crates/o-guard/src/rules.rs`.
+- **정책 상한**: `o dispatch`와 앱은 카드로 실행 파일·인자·환경변수·계정을 지정하지 못하게 하고, 동시 실행 6개·하루 카드 60장·한도 쿨다운·하루 사용 예산을 넘는 계획을 분배하지 않는다(`crates/o-core/src/policy.rs`). 상한을 설정이나 환경변수로 올리는 길은 없다.
+- **사람의 승인**: 기본 모드에서 총괄은 읽기·검색만 바로 하고, 파일 수정·명령 실행·웹 요청은 사람이 앱에서 하나씩 허용해야 한다. 총괄의 계획도 사람이 "실행"을 눌러야 분배된다(예외: 예약, 이미 승인한 작업의 후속 지시 — [ADR-0022](docs/decisions/0022-agent-session-continuations.md)).
+- **막지 못하는 것**: O는 보안 샌드박스가 아니다. 같은 Windows 사용자 권한으로 도는 프로그램이 O의 표식을 지우거나 별도 프로세스를 띄워 우회하는 것은 막을 수 없다. YOLO에서 O 가드 훅은 Claude에만 주입되고, Codex에는 같은 훅 적용이 확인되지 않았다. 각 CLI 자체의 샌드박스·권한 설정을 함께 쓴다.
+
+자세한 표는 [AGENTS.md](AGENTS.md) "프로바이더 정책 자동 차단".
+
+## 기여
+
+외부 기여 방법, 개발 환경, 검사 명령은 [CONTRIBUTING.md](CONTRIBUTING.md). 팀의 브랜치·병합 규칙은 [AGENTS.md](AGENTS.md).
 
 ## 구성
 
@@ -19,7 +47,8 @@
 | `app/src-tauri` | 데스크톱 셸 (Tauri 2, 크레이트 `project-o` → `project_O.exe`). `o-core`를 직접 쓴다 |
 | `skills/o/` | 총괄 에이전트가 쓰는 O 스킬 |
 
-- 작업 규칙·브랜치 흐름·정책 차단: [AGENTS.md](AGENTS.md)
+- 팀 작업 규칙·브랜치 흐름·정책 차단(팀원과 에이전트용): [AGENTS.md](AGENTS.md)
+- 기여 방법: [CONTRIBUTING.md](CONTRIBUTING.md)
 - 모듈 구조·데이터 흐름·새 기능 추가 체크리스트: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
 - 설계 초안: [docs/DESIGN.md](docs/DESIGN.md)
 - 제품 목표와 현재 상태: [docs/GOALS.md](docs/GOALS.md)
