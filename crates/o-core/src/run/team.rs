@@ -161,7 +161,7 @@ fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, k
                 return Err(io::Error::other("이미 답한 질문입니다. 기존 답변을 확인해 주세요"));
             }
         }
-        let mut event = json!({"t":"msg", "at":now_iso(), "id":id, "kind":kind, "from":speaker.me, "to":to, "text":text});
+        let mut event = json!({"t":"msg", "at":now_iso(), "from":speaker.me, "to":to, "text":text, "id":id, "kind":kind});
         if let Some(question_id) = reply_to { event["replyTo"] = json!(question_id); }
         append_value(file, &event)?;
         Ok(id)
