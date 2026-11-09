@@ -21,6 +21,7 @@ pub const AGENTS: Command = Command {
   o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
   o agents install <claude|codex|agy|opencode|devin> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
   o agents open-login <claude|codex|agy|opencode|devin> [--clean] [--json]   새 콘솔 창에서 공식 로그인
+  o agents open-setup <codex> [--json]   새 콘솔 창에서 깨끗한 CLI를 열어 한 번 필요한 설정(Codex 샌드박스)을 마침
   o agents terminal [--json]   독립 터미널 열기
   o agents list [--all] [--json]   다른 에이전트 CLI 목록과 이 PC 감지(--version만 실행). --all 없이는 연결된 것만
   o agents models <opencode> [--json]   그 CLI의 모델 목록 (작업카드 model 값)",
@@ -49,7 +50,7 @@ fn run(args: &[String]) -> i32 {
         Some((verb, rest)) => (verb.as_str(), rest),
         None => ("", &[][..]),
     };
-    if matches!(verb, "status" | "install" | "open-login" | "login" | "shell") {
+    if matches!(verb, "status" | "install" | "open-login" | "open-setup" | "login" | "shell") {
         o_core::sys::resolve::ensure_paths();
     }
     match verb {
@@ -89,6 +90,7 @@ fn run(args: &[String]) -> i32 {
                 for a in &list {
                     let state = match (a.installed, a.logged_in) {
                         (true, _) if a.profile_unsupported.is_some() => format!("프로필 미지원 — {}", a.profile_unsupported.as_deref().unwrap_or_default()),
+                        (true, Some(true)) if a.profile_not_ready.is_some() => format!("로그인됨 · {}", a.profile_not_ready.as_deref().unwrap_or_default()),
                         (false, _) => format!("설치 안 됨 — {}", a.install_hint),
                         (true, Some(true)) => "로그인됨".into(),
                         (true, Some(false)) => "로그인 안 됨".into(),
@@ -106,6 +108,10 @@ fn run(args: &[String]) -> i32 {
         "open-login" => {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
             action(agents::open_login(&root, provider, rest.iter().any(|a| a == "--clean")), rest)
+        }
+        "open-setup" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            action(agents::open_setup(&root, provider), rest)
         }
         "terminal" => action(agents::open_terminal(), rest),
         "list" => {

@@ -46,6 +46,10 @@ pub struct AgentStatus {
     /// is then read from the person's own setup, and its cards are refused while the profile is on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_unsupported: Option<String>,
+    /// With the project_O profile on: why this CLI's profile cannot do a card's work until the
+    /// person finishes a one-time setup in the CLI (`clean::profile_not_ready`, ADR-0040).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_not_ready: Option<String>,
 }
 
 /// Authentication environment names understood by each CLI; values stay with the CLI.
@@ -166,6 +170,7 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
         install_url: o.url.into(),
         profile: (clean && cli.is_some()).then(|| clean::ProfileState::of(provider, logged_in)),
         profile_unsupported: unsupported.map(str::to_string),
+        profile_not_ready: if clean && cli.is_some() { clean::profile_not_ready(root, provider) } else { None },
     }
 }
 
@@ -225,15 +230,7 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
     };
     let mut argv = cli.prefix.clone();
     argv.extend(args.iter().map(|a| a.to_string()));
-    let started = if clean {
-        #[cfg(target_os = "macos")]
-        let root = std::path::absolute(root);
-        #[cfg(not(target_os = "macos"))]
-        let root: std::io::Result<_> = Ok(root.to_path_buf());
-        root.and_then(|root| clean::environment(&root, provider).and_then(|env| proc::spawn_console(&cli.command, &argv, Some(&env), Some(&clean::profile_home(&root, provider)))))
-    } else {
-        proc::spawn_console(&cli.command, &argv, None, None)
-    };
+    let started = if clean { clean_console(root, provider, &cli, &argv) } else { proc::spawn_console(&cli.command, &argv, None, None) };
     let shown = format!("{} {}", provider.as_str(), args.join(" "));
     match started {
         Ok(()) => {
@@ -241,6 +238,34 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
             ActionResult::new(true, format!("새 창에서 {} 공식 로그인({shown})을 진행하세요{profile}. 끝나면 상태를 다시 확인합니다.", o.name))
         }
         Err(error) => ActionResult::new(false, format!("{shown} 창을 열지 못했습니다: {error}")),
+    }
+}
+
+/// The CLI in a console window of its own with the project_O profile's environment, started in
+/// that profile's home (as `o agents shell` runs it, but not attached to this process).
+fn clean_console(root: &Path, provider: ProviderId, cli: &CliCommand, argv: &[String]) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let root = std::path::absolute(root)?;
+    #[cfg(not(target_os = "macos"))]
+    let root = root.to_path_buf();
+    let env = clean::environment(&root, provider)?;
+    proc::spawn_console(&cli.command, argv, Some(&env), Some(&clean::profile_home(&root, provider)))
+}
+
+/// Opens the CLI itself, interactive, in a console window with the project_O profile, so the
+/// person can finish the one-time setup its cards need there (`Provider::profile_not_ready`:
+/// Codex's Windows sandbox, ADR-0040). O writes none of that setting itself.
+pub fn open_setup(root: &Path, provider: ProviderId) -> ActionResult {
+    let o = providers::get(provider).official();
+    if clean::profile_not_ready(root, provider).is_none() {
+        return ActionResult::new(true, format!("{}의 project_O 프로필은 따로 설정할 것이 없습니다.", o.name));
+    }
+    let Some(cli) = resolve_cli(provider.as_str()) else {
+        return ActionResult::new(false, format!("{}가 설치되어 있지 않습니다.", o.name));
+    };
+    match clean_console(root, provider, &cli, &cli.prefix) {
+        Ok(()) => ActionResult::new(true, format!("새 창에서 {}가 project_O 프로필로 열렸습니다. 첫 화면의 안내대로 설정(Windows 샌드박스)을 마치고 창을 닫은 뒤 다시 확인을 누르세요.", o.name)),
+        Err(error) => ActionResult::new(false, format!("{} 창을 열지 못했습니다: {error}", provider.as_str())),
     }
 }
 

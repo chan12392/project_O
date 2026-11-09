@@ -147,6 +147,13 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
             return Ok(CardStatus::Failed);
         }
     }
+    // ADR-0040: a sandboxed card whose project_O profile still needs its one-time setup (Codex's
+    // Windows sandbox) would end "done" having changed nothing, so it ends failed with the reason.
+    if let Some(why) = clean.filter(|_| !yolo).and_then(|root| clean::profile_not_ready(root, card.provider)) {
+        drop(slot);
+        emit(end(CardStatus::Failed, Some(why), None))?;
+        return Ok(CardStatus::Failed);
+    }
     let checked_plan = Plan { project: cwd.to_string(), ..plan.clone() };
     let mut spec = launch_spec_for(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context, yolo);
     if let Some(target) = &followup {

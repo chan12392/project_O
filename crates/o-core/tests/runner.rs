@@ -56,7 +56,8 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 37] = [
+    let tests: [(&str, fn()); 38] = [
+        ("a clean Codex card without the profile's sandbox setup ends failed, unstarted", codex_sandbox_not_set_refused),
         ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
@@ -845,6 +846,43 @@ fn parallel_and_limit() {
 
 /// #37: OpenCode loads `opencode.json(c)` and `.opencode/` (plugins too) from the folder up to the
 /// root, so a card without YOLO is refused when the project or a parent has one.
+/// ADR-0040: checked again right before the start, so a run checked earlier (or a follow-up)
+/// never starts a Codex card that would end "done" having changed nothing.
+fn codex_sandbox_not_set_refused() {
+    if !cfg!(windows) {
+        return;
+    }
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let root = fixture.join("agents");
+    let p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, _: &str| {
+        seen.store(true, Ordering::SeqCst);
+        Err(std::io::Error::other("fake start"))
+    });
+    create_run(&home, "cx-unset", &p).unwrap();
+    assert_eq!(run_plan(&home, "cx-unset", &p, Some(&root), Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert!(read_events(&home, "cx-unset").iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Failed, result: Some(reason), .. } if reason == o_core::providers::codex::SANDBOX_NOT_SET)));
+    let view = o_core::run::snapshot::snapshot(&read_events(&home, "cx-unset")).unwrap();
+    assert_eq!(view.cards[0].state, o_core::run::snapshot::CardState::Failed);
+
+    // The person's own setup is not refused.
+    create_run(&home, "cx-own", &p).unwrap();
+    run_plan(&home, "cx-own", &p, None, Arc::clone(&spawner)).unwrap();
+    assert!(launched.swap(false, Ordering::SeqCst));
+
+    // Once Codex's own setup wrote the selection, the card starts.
+    let codex = o_core::agents::clean::profile_home(&root, ProviderId::Codex).join(".codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    std::fs::write(codex.join("config.toml"), "[windows]\nsandbox = \"unelevated\"\n").unwrap();
+    create_run(&home, "cx-set", &p).unwrap();
+    run_plan(&home, "cx-set", &p, Some(&root), spawner).unwrap();
+    assert!(launched.load(Ordering::SeqCst));
+}
+
 fn opencode_project_config_refused() {
     let fixture = temp_home();
     let home = fixture.join("state");

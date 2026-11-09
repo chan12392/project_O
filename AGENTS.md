@@ -94,6 +94,7 @@
 - 프로필: `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy|opencode>/home` (`o agents path`). O 상태 폴더(`%LOCALAPPDATA%/project_O`, 보호 대상) 밖에 둔다. 로그인은 CLI마다 한 번 `o agents login <claude|codex|opencode>` (agy는 시스템 로그인을 그대로 씀). OpenCode는 카드만 지원하고 Claude 구독 로그인을 사용하지 않는다(ADR-0015). YOLO가 아닌 OpenCode 카드는 작업 폴더나 그 상위에 `opencode.json(c)`·`.opencode/`가 있으면 시작하지 않는다(프로젝트 플러그인을 끌 공식 옵션이 없음). O는 Codex 프로필에 프로젝트 신뢰를 기록하지 않는다(신뢰 전에는 프로젝트 `.codex/` 설정·MCP·훅을 싣지 않음, ADR-0017).
 - Devin은 설정 폴더를 옮길 수 없어 project_O 프로필을 켠 계획에서 거부한다. 평소 프로필에서 카드만 지원하며 총괄은 아직 지원하지 않는다(ADR-0016).
 - 확인: `o agents doctor` — 로그인 상태와 프로필 오염 검사. 수동 테스트: `o agents shell <cli>`. 카드 실행: `o dispatch plan.json`(기본 `--profile project-o`, `--clean`과 같음). 평소 CLI 설정으로는 `--profile own`. 앱의 "project_O 프로필 사용"이 같은 선택이다(ADR-0013).
+- Windows에서 project_O 프로필의 Codex는 샌드박스 설정(`config.toml`의 `[windows] sandbox`)을 한 번 마쳐야 카드가 파일을 고치고 명령을 실행한다. 그 전에는 YOLO가 아닌 Codex 카드를 `profile-not-ready`로 거부하고(계획 검사·카드 시작 직전), 총괄에게 매 턴 알려 다른 에이전트로 계획하게 한다. 설정은 설정 → 에이전트의 "Codex 샌드박스 설정"이나 `o agents open-setup codex`(또는 `o agents shell codex`)로 Codex를 열어 사람이 마친다. O는 그 설정을 쓰거나 `-c`로 넘기지 않는다(ADR-0040).
 - 테스트 프로젝트는 홈 폴더 밖에 둔다(Claude는 시작 폴더 위의 지시 파일을 읽는다. 홈 폴더의 것만 프로필이 뺀다).
 - Orca 터미널은 자체 훅을 더하므로 `o agents shell`이나 일반 터미널에서 쓴다.
 - O 코드는 로그인 파일을 만들거나 읽지 않는다. 로그인 상태는 각 CLI의 상태 명령으로만 본다.

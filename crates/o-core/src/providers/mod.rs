@@ -130,6 +130,13 @@ pub trait Provider: Sync {
     fn profile_unsupported(&self) -> Option<&'static str> {
         None
     }
+    /// Why this CLI's project_O profile at `home` cannot do a card's work yet (a one-time setup
+    /// the person must finish in the CLI itself), when it cannot: its sandboxed cards are then
+    /// refused (policy rule `profile-not-ready`, ADR-0040) and the lead is told. `None` (the
+    /// default): ready.
+    fn profile_not_ready(&self, _home: &Path) -> Option<String> {
+        None
+    }
     /// The one variable a clean launch adds: the CLI's config folder inside the
     /// profile home, or a switch when the CLI keeps its own folder there.
     fn clean_env(&self, home: &Path) -> (&'static str, String);

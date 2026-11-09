@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::sys::js::{js_len, parse_time};
-use crate::run::mode::Profile;
+use crate::run::mode::{Profile, RunMode};
 use crate::run::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
 
 pub struct Limits {
@@ -92,6 +92,9 @@ pub struct PolicyContext {
     /// The folder a path names on disk (links, junctions and short names
     /// resolved), or the path itself when it cannot be resolved.
     pub resolve: Box<dyn Fn(&str) -> String>,
+    /// Why a provider's project_O profile cannot do a sandboxed card's work yet
+    /// (`agents::clean::profile_not_ready`, ADR-0040); `None` when it can.
+    pub profile_not_ready: Box<dyn Fn(ProviderId) -> Option<String>>,
 }
 
 pub struct Checked {
@@ -262,8 +265,18 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
 
 /// `check_plan` for a run on `profile` (ADR-0013): a card whose CLI cannot run on the
 /// project_O profile (`Provider::profile_unsupported`, Devin) is refused while it is on —
-/// never quietly run with the person's own setup instead.
+/// never quietly run with the person's own setup instead. Cards are taken to run sandboxed
+/// (YOLO off); a caller that knows the run's mode uses [`check_plan_in`].
 pub fn check_plan_for(input: &Value, ctx: &PolicyContext, profile: Profile) -> Checked {
+    check_plan_in(input, ctx, RunMode::of(profile))
+}
+
+/// `check_plan_for` in the run's mode: on the project_O profile with YOLO off, a card whose
+/// CLI's profile still needs its one-time setup (`ctx.profile_not_ready`, Codex's Windows
+/// sandbox) is refused too (rule `profile-not-ready`, ADR-0040): it would end "done" having
+/// changed nothing. YOLO cards run without the CLI's sandbox and are not refused for it.
+pub fn check_plan_in(input: &Value, ctx: &PolicyContext, mode: RunMode) -> Checked {
+    let profile = mode.profile;
     let mut checked = check_plan(input, ctx);
     let cards = input.get("cards").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     for card in cards {
@@ -272,8 +285,16 @@ pub fn check_plan_for(input: &Value, ctx: &PolicyContext, profile: Profile) -> C
             checked.violations.push(Violation { rule: "provider-terms".into(), message: AGY_UNAVAILABLE.into(), card_id: card.get("id").and_then(Value::as_str).map(str::to_string) });
         }
     }
-    let named = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?)));
-    let refused = profile_violations(named, profile);
+    let named: Vec<_> = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?))).collect();
+    let mut refused = profile_violations(named.iter().copied(), profile);
+    if profile.is_clean() && !mode.yolo {
+        let mut asked: HashMap<ProviderId, Option<String>> = HashMap::new();
+        for (id, provider) in named {
+            if let Some(why) = asked.entry(provider).or_insert_with(|| (ctx.profile_not_ready)(provider)) {
+                refused.push(Violation { rule: "profile-not-ready".into(), message: why.clone(), card_id: Some(id.to_string()) });
+            }
+        }
+    }
     if !refused.is_empty() {
         checked.plan = None;
         checked.violations.extend(refused);

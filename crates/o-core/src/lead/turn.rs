@@ -163,13 +163,19 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     }
     let status_path = status_file.as_ref().map(|f| f.path.to_string_lossy().into_owned());
     let budget = budget_lines(home);
-    let design = before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
+    // ADR-0040: on the project_O profile with YOLO off, the lead plans around a CLI whose
+    // profile still needs its one-time setup (O would refuse its cards).
+    let unready: Vec<String> = req.clean.filter(|_| !req.yolo).map(|root| {
+        ProviderId::ALL.into_iter().filter(|p| *p != ProviderId::Agy).filter_map(|p| clean::profile_not_ready(root, p)).collect()
+    }).unwrap_or_default();
+    let design =before.iter().rev().find_map(|event| match event { LeadEvent::Design { design, .. } => serde_json::to_string(design).ok(), _ => None });
     let overview = overall.then(|| overall::overview(home));
     let input = prompt::PromptInput {
         project: req.project,
         text: &user_text,
         attachments: &attachments,
         budget: &budget,
+        unready: &unready,
         runs: &runs,
         runs_file: status_path.as_deref(),
         runs_error: status_error.as_deref(),

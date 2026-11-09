@@ -129,7 +129,7 @@ pub(super) fn process_answer(home: &Path, req: &SendRequest, thread_id: &str, an
         Ok(None) => {}
         Ok(Some(plan)) => {
             let plans = before.iter().filter(|e| matches!(e, LeadEvent::Plan { .. })).count();
-            let (plan, violations) = check_lead_plan(home, req.project, plan, Profile::of_clean(req.clean.is_some()));
+            let (plan, violations) = check_lead_plan(home, req.project, plan, RunMode { profile: Profile::of_clean(req.clean.is_some()), context: true, yolo: req.yolo });
             emit(LeadEvent::Plan { at: now_iso(), plan_id: format!("{thread_id}-p{}", plans + 1), plan, ok: violations.is_empty(), violations })?;
         }
         Err(message) => emit(LeadEvent::Error { at: now_iso(), text: message })?,

@@ -1134,13 +1134,20 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
     let first = build(&input);
     for part in ["[O 총괄]", "프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");
     }
     let next = build(&PromptInput { resumed: true, budget: &[], ..input });
     assert!(!next.contains("```o-plan") && next.ends_with("사용자:\n할 일"));
+    assert!(!first.contains(o_core::lead::prompt::UNREADY_NOTE) && !next.contains(o_core::lead::prompt::UNREADY_NOTE));
+    // A provider whose project_O profile is not ready is named on every turn, fresh or resumed (ADR-0040).
+    let unready = [o_core::providers::codex::SANDBOX_NOT_SET.to_string()];
+    for turn in [build(&PromptInput { unready: &unready, ..input }), build(&PromptInput { resumed: true, unready: &unready, ..input })] {
+        assert!(turn.contains(&format!("{}\n- {}", o_core::lead::prompt::UNREADY_NOTE, unready[0])), "{turn}");
+        assert!(turn.ends_with("사용자:\n할 일"));
+    }
 }
 
 fn send_records_a_plan() {

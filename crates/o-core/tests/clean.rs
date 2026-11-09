@@ -159,10 +159,18 @@ fn a_new_profile_holds_only_the_claude_settings() {
     // A new Codex profile has no Windows sandbox selection, so its cards could not write.
     let codex = inspect(&root, ProviderId::Codex);
     assert_eq!(codex.len(), usize::from(cfg!(windows)), "{codex:?}");
+    // The doctor's flag and the readiness the policy and the lead use are the same text (ADR-0040).
+    let not_ready = o_core::agents::clean::profile_not_ready(&root, ProviderId::Codex);
+    assert_eq!(not_ready.is_some(), cfg!(windows));
+    assert_eq!(codex, not_ready.into_iter().collect::<Vec<_>>());
+    for provider in [ProviderId::Claude, ProviderId::OpenCode, ProviderId::Devin, ProviderId::Agy] {
+        assert_eq!(o_core::agents::clean::profile_not_ready(&root, provider), None, "{provider}");
+    }
     let config = profile_home(&root, ProviderId::Codex).join(".codex").join("config.toml");
     for setting in ["[windows]\r\nsandbox = \"unelevated\"\r\n", "model = \"m\"\n[windows]\n# kept\nsandbox = \"elevated\"\n", "windows.sandbox = \"unelevated\"\n"] {
         write(&config, setting);
         assert_eq!(inspect(&root, ProviderId::Codex), Vec::<String>::new(), "{setting:?}");
+        assert_eq!(o_core::agents::clean::profile_not_ready(&root, ProviderId::Codex), None, "{setting:?}");
     }
     write(&config, "[windows]\n[other]\nsandbox = \"x\"\n");
     assert_eq!(inspect(&root, ProviderId::Codex).len(), usize::from(cfg!(windows)));

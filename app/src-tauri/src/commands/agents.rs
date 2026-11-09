@@ -31,6 +31,14 @@ pub async fn agent_login(id: String, clean: bool) -> Result<ActionResult, String
     blocking(move || { o_core::sys::resolve::ensure_paths(); agents::open_login(&clean::default_root(), provider, clean) }).await
 }
 
+/// Opens the CLI itself in the project_O profile so the person finishes its one-time setup
+/// (Codex's Windows sandbox, ADR-0040); `o agents open-setup`.
+#[tauri::command]
+pub async fn agent_setup(id: String) -> Result<ActionResult, String> {
+    let provider = provider(&id)?;
+    blocking(move || { o_core::sys::resolve::ensure_paths(); agents::open_setup(&clean::default_root(), provider) }).await
+}
+
 #[tauri::command]
 pub async fn agent_terminal() -> Result<ActionResult, String> {
     blocking(agents::open_terminal).await
