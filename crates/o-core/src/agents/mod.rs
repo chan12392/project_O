@@ -252,20 +252,37 @@ fn clean_console(root: &Path, provider: ProviderId, cli: &CliCommand, argv: &[St
     proc::spawn_console(&cli.command, argv, Some(&env), Some(&clean::profile_home(&root, provider)))
 }
 
-/// Opens the CLI itself, interactive, in a console window with the project_O profile, so the
-/// person can finish the one-time setup its cards need there (`Provider::profile_not_ready`:
-/// Codex's Windows sandbox, ADR-0040). O writes none of that setting itself.
-pub fn open_setup(root: &Path, provider: ProviderId) -> ActionResult {
+/// Sets up and checks what the project_O profile needs before its cards can work, with no window
+/// (Codex's Windows sandbox, ADR-0040 개정 1): Codex's own setup through `codex app-server`, then
+/// one card-like `codex exec` that must run a real command (one small model call). The outcome is
+/// recorded beside the profile, and readiness (`clean::profile_not_ready`) follows that record.
+/// Run only when a person asks: Settings → 에이전트 or `o agents setup codex`.
+pub fn check_setup(home: &Path, root: &Path, provider: ProviderId) -> ActionResult {
     let o = providers::get(provider).official();
-    if clean::profile_not_ready(root, provider).is_none() {
-        return ActionResult::new(true, format!("{}의 project_O 프로필은 따로 설정할 것이 없습니다.", o.name));
+    if provider != ProviderId::Codex || !cfg!(windows) {
+        return ActionResult::new(true, format!("{}의 project_O 프로필은 따로 설정하거나 점검할 것이 없습니다.", o.name));
     }
-    let Some(cli) = resolve_cli(provider.as_str()) else {
+    if resolve_cli(provider.as_str()).is_none() {
         return ActionResult::new(false, format!("{}가 설치되어 있지 않습니다.", o.name));
-    };
-    match clean_console(root, provider, &cli, &cli.prefix) {
-        Ok(()) => ActionResult::new(true, format!("새 창에서 {}가 project_O 프로필로 열렸습니다. 첫 화면의 안내대로 설정(Windows 샌드박스)을 마치고 창을 닫은 뒤 다시 확인을 누르세요.", o.name)),
-        Err(error) => ActionResult::new(false, format!("{} 창을 열지 못했습니다: {error}", provider.as_str())),
+    }
+    let make = |args: &[&str]| clean::command(root, provider, args);
+    // The probe is agent work: the subscription billing mode refuses it as it would a card.
+    if let Err(why) = make(&[]).map_err(|e| e.to_string()).and_then(|c| billing::check_command(home, provider, &c, true)) {
+        return ActionResult::new(false, why);
+    }
+    let profile = clean::profile_home(root, provider);
+    match providers::codex_sandbox::check(&profile, &make, &providers::codex_sandbox::DEADLINES) {
+        Ok(record) => {
+            if !record.version.is_empty() {
+                providers::codex_sandbox::remember_version(&record.version);
+            }
+            if record.ok {
+                ActionResult::new(true, format!("Codex 샌드박스 점검을 통과했습니다({}). 이제 project_O 프로필의 Codex 카드를 쓸 수 있습니다.", record.version))
+            } else {
+                ActionResult::new(false, format!("Codex 샌드박스 점검에 실패해 그동안 Codex 카드는 다른 에이전트에 맡깁니다. {}", record.detail))
+            }
+        }
+        Err(error) => ActionResult::new(false, format!("Codex 샌드박스 점검 결과를 저장하지 못했습니다: {error}")),
     }
 }
 

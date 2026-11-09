@@ -338,10 +338,44 @@ fn codex_cards_wait_for_the_profiles_sandbox_setup() {
         assert!(check_plan_in(&cards(), &in_root(), yolo).plan.is_some());
         assert!(check_plan_for(&plan(vec![claude.clone()]), &in_root(), Profile::ProjectO).plan.is_some());
     }
+    // ADR-0040 개정 1: the selection alone is not enough; a passing check for this Codex version
+    // and this config is. The version is injected here: the test never asks a real Codex.
+    use o_core::providers::codex_sandbox::{self, Record, CHANGED, NOT_CHECKED};
+    let home = profile_home(&root, ProviderId::Codex);
+    let with_version = |version: &'static str| {
+        let mut ctx = ctx();
+        let home = home.clone();
+        ctx.profile_not_ready = Box::new(move |provider| (provider == ProviderId::Codex).then(|| codex_sandbox::not_ready(&home, || Some(version.into()))).flatten());
+        ctx
+    };
+    let refused = |ctx: &o_core::policy::PolicyContext| -> Option<String> {
+        let checked = check_plan_for(&cards(), ctx, Profile::ProjectO);
+        checked.violations.iter().find(|v| v.rule == "profile-not-ready").map(|v| v.message.clone())
+    };
     for config in ["[windows]\nsandbox = \"unelevated\"\n", "windows.sandbox = \"elevated\"\n"] {
         std::fs::write(codex.join("config.toml"), config).unwrap();
-        assert!(check_plan_for(&cards(), &in_root(), Profile::ProjectO).plan.is_some(), "{config:?}");
+        if cfg!(windows) {
+            assert_eq!(refused(&in_root()).as_deref(), Some(NOT_CHECKED), "{config:?}");
+        }
+        assert_eq!(refused(&with_version("codex-cli 1.0.0")).as_deref(), Some(NOT_CHECKED), "{config:?}");
+        let mut record = Record { ok: true, version: "codex-cli 1.0.0".into(), config_hash: codex_sandbox::config_hash(&home), checked_at: "2026-11-10T00:00:00.000Z".into(), detail: "통과".into() };
+        codex_sandbox::write_record(&home, &record).unwrap();
+        assert_eq!(refused(&with_version("codex-cli 1.0.0")), None, "{config:?}");
+        assert!(check_plan_for(&cards(), &with_version("codex-cli 1.0.0"), Profile::ProjectO).plan.is_some());
+        assert_eq!(refused(&with_version("codex-cli 1.0.1")).as_deref(), Some(CHANGED));
+        record.ok = false;
+        record.detail = "Codex가 멈췄습니다".into();
+        codex_sandbox::write_record(&home, &record).unwrap();
+        assert!(refused(&with_version("codex-cli 1.0.0")).is_some_and(|why| why.contains("Codex가 멈췄습니다")));
+        // The record stays beside the profile home, never inside Codex's own folder.
+        assert_eq!(codex_sandbox::record_path(&home), root.join("codex").join(codex_sandbox::RECORD));
+        std::fs::remove_file(codex_sandbox::record_path(&home)).unwrap();
     }
+    std::fs::write(codex.join("config.toml"), "[windows]\nsandbox = \"unelevated\"\n").unwrap();
+    let record = Record { ok: true, version: "codex-cli 1.0.0".into(), config_hash: codex_sandbox::config_hash(&home), checked_at: "2026-11-10T00:00:00.000Z".into(), detail: "통과".into() };
+    codex_sandbox::write_record(&home, &record).unwrap();
+    std::fs::write(codex.join("config.toml"), "[windows]\nsandbox = \"unelevated\"\nmodel = \"m\"\n").unwrap();
+    assert_eq!(refused(&with_version("codex-cli 1.0.0")).as_deref(), Some(CHANGED));
     std::fs::remove_dir_all(&root).ok();
 }
 

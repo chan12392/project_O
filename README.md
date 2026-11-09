@@ -92,8 +92,8 @@ Windows 설치 파일(NSIS, `o.exe` 포함): [docs/INSTALL.md](docs/INSTALL.md) 
 
 - 설치는 공식 npm 패키지(`npm install -g @anthropic-ai/claude-code`, `npm install -g @openai/codex`)가 있고 npm이 PATH에 있을 때만 앱에서 실행한다. npm이 없으면 각 회사의 공식 설치 안내를 보여 준다.
 - 로그인은 새 콘솔 창에서 공식 명령(`claude auth login`, `codex login`)을 띄운다. Antigravity는 공급자 정책에 따라 Project O에서 실행하지 않는다.
-- project_O 프로필의 Codex는 Windows 샌드박스 설정을 한 번 마쳐야 카드가 파일을 고치고 명령을 실행한다. 그 전에는 Codex 카드를 시작하지 않고, 화면의 "Codex 샌드박스 설정"(`o agents open-setup codex`)이 새 콘솔 창에서 Codex를 연다(ADR-0040).
-- 같은 동작을 CLI로: `o agents status [--clean] --json`, `o agents install <id>`, `o agents open-login <id> [--clean]`, `o agents open-setup codex`, `o about --json`.
+- project_O 프로필의 Codex는 Windows 샌드박스 점검을 통과해야 카드를 맡는다. 그 전에는 Codex 카드를 시작하지 않고, 화면의 "Codex 샌드박스 점검"(`o agents setup codex`)이 창 없이 Codex의 공식 샌드박스 설정을 마친 뒤 카드처럼 명령 하나를 실제로 실행해 본다(모델 호출 1번). 통과 기록은 Codex 버전이나 프로필 설정이 바뀌면 다시 점검해야 한다(ADR-0040 개정 1).
+- 같은 동작을 CLI로: `o agents status [--clean] --json`, `o agents install <id>`, `o agents open-login <id> [--clean]`, `o agents setup codex`, `o about --json`.
 
 `?source=demo`로 기록 재생, `?source=live`로 실시간을 고른다. 개발 서버의 `/api`는 `o runs --json`·`o usage`를 불러 쓰며 이 PC 주소·같은 출처 요청만 받는다.
 
@@ -131,7 +131,7 @@ Orca(MIT)의 디자인 시스템을 따른다: 토큰은 `app/src/styles/orca-th
 | `o hook` / `o scan --all\|--staged\|--pre-push` | 에이전트 훅 / 정책 검사 |
 | `o sync-mirror <폴더>` | 거울(팀은 `test_2`, 다른 보호 브랜치도 가능) fast-forward (예약 작업용) |
 | `o agents path\|login\|shell\|doctor` | 깨끗한 에이전트 프로필 (아래) |
-| `o agents status\|install\|open-login\|open-setup` / `o about` | 에이전트 CLI 설치·로그인 상태, 공식 설치·로그인 창, 프로필 설정 창 / 버전과 폴더 위치 (데스크톱 앱과 같은 동작) |
+| `o agents status\|install\|open-login\|setup` / `o about` | 에이전트 CLI 설치·로그인 상태, 공식 설치·로그인 창, 프로필 설정·점검(Codex 샌드박스) / 버전과 폴더 위치 (데스크톱 앱과 같은 동작) |
 
 ### 하루 사용 예산 ([ADR-0004](docs/decisions/0004-daily-usage-budget.md), [ADR-0013](docs/decisions/0013-profile-and-budget-switches.md))
 

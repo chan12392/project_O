@@ -13,7 +13,7 @@ const START_FAILED: Record<Busy, string> = {
   install: "설치를 시작하지 못했습니다.",
   login: "로그인 창을 열지 못했습니다.",
   terminal: "터미널을 열지 못했습니다.",
-  setup: "설정 창을 열지 못했습니다.",
+  setup: "점검을 시작하지 못했습니다.",
 };
 
 interface Note {
@@ -64,7 +64,7 @@ export function useAgents(api: Backend, clean: boolean) {
     recheck,
     install: (id: AgentId) => act(id, "install"),
     login: (id: AgentId) => act(id, "login"),
-    /** Opens the CLI in the project_O profile for its one-time setup (Codex's Windows sandbox, ADR-0040). */
+    /** Sets up the project_O profile and checks it with one real command, no window (Codex's Windows sandbox, ADR-0040 개정 1). */
     setup: (id: AgentId) => act(id, "setup"),
     terminal: () => act("agy", "terminal"),
     openExternal: (url: string) => void api.openExternal(url).catch(() => window.open(url, "_blank", "noopener")),
@@ -133,7 +133,7 @@ function AgentRow({ agent, busy, note, state, showApiKeyWarning, billingMode }: 
   const connected = agent.installed && !agent.profileUnsupported && agent.loggedIn === true;
   const unknown = agent.installed && !agent.profileUnsupported && agent.loggedIn === null;
   const needsLogin = agent.installed && !agent.profileUnsupported && agent.loggedIn === false;
-  // Signed in (or cannot tell) but the project_O profile still needs its one-time setup: its cards are refused until then.
+  // Signed in (or cannot tell) but the project_O profile has no passing setup check: its cards are refused until then.
   const needsSetup = agent.installed && !agent.profileUnsupported && !needsLogin && Boolean(agent.profileNotReady);
   const version = agent.version ? ` · ${agent.version}` : "";
   const status = busy === "install"
@@ -143,13 +143,13 @@ function AgentRow({ agent, busy, note, state, showApiKeyWarning, billingMode }: 
       : busy === "terminal"
         ? "터미널을 여는 중입니다."
       : busy === "setup"
-        ? "설정 창을 여는 중입니다."
+        ? "샌드박스를 설정하고 실제 명령으로 점검하는 중입니다. 몇 분 걸릴 수 있습니다."
       : agent.id === "agy" && agent.installed
         ? `설치됨${version} · 터미널에서 직접 실행`
       : agent.installed && agent.profileUnsupported
         ? agent.profileUnsupported
       : needsSetup
-        ? `${connected ? "연결됨" : "설치됨"}${version} · 샌드박스 설정이 필요합니다`
+        ? `${connected ? "연결됨" : "설치됨"}${version} · 샌드박스 점검이 필요합니다`
       : connected
         ? `연결됨${version}`
         : unknown
@@ -188,7 +188,7 @@ function AgentRow({ agent, busy, note, state, showApiKeyWarning, billingMode }: 
     action = (
       <button type="button" onClick={() => void state.setup(agent.id)} className={BUTTON_PRIMARY}>
         <Wrench className="size-3.5" aria-hidden="true" />
-        {agent.id === "codex" ? "Codex 샌드박스 설정" : `${agent.name} 설정`}
+        {agent.id === "codex" ? "Codex 샌드박스 점검" : `${agent.name} 점검`}
       </button>
     );
   else if (needsLogin || unknown)
@@ -223,7 +223,7 @@ function AgentRow({ agent, busy, note, state, showApiKeyWarning, billingMode }: 
         </p>
       )}
       {busy && (
-        <div className="relative mt-3 ml-10 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${agent.name} ${busy === "install" ? "설치" : busy === "terminal" ? "터미널 열기" : busy === "setup" ? "설정" : "로그인"} 진행 중`}>
+        <div className="relative mt-3 ml-10 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${agent.name} ${busy === "install" ? "설치" : busy === "terminal" ? "터미널 열기" : busy === "setup" ? "샌드박스 점검" : "로그인"} 진행 중`}>
           <span className="progress-flow absolute inset-y-0 w-2/5 rounded-full bg-primary/70" />
         </div>
       )}
@@ -237,7 +237,7 @@ function AgentRow({ agent, busy, note, state, showApiKeyWarning, billingMode }: 
       )}
       {!busy && needsSetup && (
         <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">
-          {agent.profileNotReady} 버튼을 누르면 새 콘솔 창에서 {agent.name}가 project_O 프로필로 열립니다. 설정을 마치고 창을 닫은 뒤 다시 확인을 눌러 주세요.
+          {agent.profileNotReady} 점검을 누르면 창 없이 {agent.name}의 공식 샌드박스 설정을 마치고, 카드처럼 명령 하나를 실제로 실행해 봅니다(모델 호출 1번, 몇 분 걸릴 수 있음).
         </p>
       )}
       {!busy && agent.id !== "agy" && needsLogin && (

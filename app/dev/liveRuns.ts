@@ -638,8 +638,9 @@ export function liveRuns(): Plugin {
         const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
         if (action) {
           const [, id, verb] = action;
-          const args = verb === "install" ? ["agents", "install", id, "--json"] : verb === "setup" ? ["agents", "open-setup", id, "--json"] : ["agents", "open-login", id, "--json", ...clean];
-          return void o(args, verb === "install" ? INSTALL_TIMEOUT_MS : 60_000).then((out) => send(res, 200, out), error(res));
+          const args = verb === "install" ? ["agents", "install", id, "--json"] : verb === "setup" ? ["agents", "setup", id, "--json"] : ["agents", "open-login", id, "--json", ...clean];
+          // The sandbox check (setup up to 5 minutes, then a probe card up to 2) needs as long as an install.
+          return void o(args, verb === "login" ? 60_000 : INSTALL_TIMEOUT_MS).then((out) => send(res, 200, out), error(res));
         }
         next();
       });

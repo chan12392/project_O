@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 use regex::Regex;
 use serde_json::{json, Map, Value};
 
+use super::codex_sandbox;
 use super::stream::{limit_from_text, num, short, short_value};
 use super::{list_command, opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel};
 use crate::agents::clean::LoginState;
@@ -148,15 +149,15 @@ impl Provider for Codex {
 
     /// Without a Windows sandbox selection in the profile's config.toml, `-s workspace-write`
     /// rejects every command and edit, and the card ends "done" having changed nothing (runs
-    /// 20261109-150039-4hg4, 20261109-123716-tent). O neither writes the selection nor passes
-    /// it with `-c`: Codex's own sandbox setup must run once first, or the first sandboxed
-    /// command stalls (690c346, ADR-0040). YOLO cards run without the sandbox and are not refused.
+    /// 20261109-150039-4hg4, 20261109-123716-tent). With one, the first sandboxed command can
+    /// still hang (openai/codex#50725), so only a recorded check that ran a real command, for
+    /// this Codex version and this config, makes the profile ready (`codex_sandbox`, ADR-0040
+    /// 개정 1). YOLO cards run without the sandbox and are not refused.
     fn profile_not_ready(&self, home: &Path) -> Option<String> {
         if !cfg!(windows) {
             return None;
         }
-        let config = fs::read_to_string(home.join(".codex").join("config.toml")).unwrap_or_default();
-        (!WINDOWS_SANDBOX.is_match(&config)).then(|| SANDBOX_NOT_SET.to_string())
+        codex_sandbox::not_ready(home, codex_sandbox::installed_version)
     }
 
     fn inspect_profile(&self, home: &Path, flag: &mut dyn FnMut(bool, String)) {
@@ -260,12 +261,9 @@ pub fn supports_app_server(mut command: Command) -> bool {
 }
 
 static HOOK_OR_MCP: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*(?:\[\[?\s*)?(?:mcp_servers|hooks)\b").unwrap());
-/// `sandbox = …` inside `[windows]`, or the dotted `windows.sandbox = …`.
-static WINDOWS_SANDBOX: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\s*windows\.sandbox\s*=|^\s*\[windows\]\s*\n(?:[^\[\n]*\n)*?\s*sandbox\s*=").unwrap());
 
-/// Why a Codex card cannot work on the project_O profile yet (`profile_not_ready`): shown by the
-/// policy refusal, the lead's prompt, `o agents doctor` and Settings → 에이전트.
-pub const SANDBOX_NOT_SET: &str = "샌드박스 설정 필요(codex): project_O 프로필의 Codex에 Windows 샌드박스 설정([windows] sandbox)이 없어 Codex 카드가 파일을 고치거나 명령을 실행하지 못합니다. 설정 → 에이전트에서 'Codex 샌드박스 설정'을 누르거나 o agents shell codex로 Codex를 한 번 열어 안내대로 샌드박스 설정을 마친 뒤 다시 실행하세요. 그때까지는 다른 에이전트(예: claude)에 맡기세요.";
+/// Why a Codex card cannot work on the project_O profile yet when config.toml names no sandbox.
+pub use super::codex_sandbox::SANDBOX_NOT_SET;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 

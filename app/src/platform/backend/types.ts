@@ -45,7 +45,7 @@ export interface AgentStatus {
   canInstall: boolean;
   installUrl: string;
   profileUnsupported?: string;
-  /** With the project_O profile: why its cards cannot work until a one-time setup in the CLI (Codex's Windows sandbox, ADR-0040). */
+  /** With the project_O profile: why its cards cannot work until a setup and a passing check (Codex's Windows sandbox, ADR-0040 개정 1). */
   profileNotReady?: string;
   /** Names of present API authentication environment variables, never their values. */
   apiKeyEnv?: string[];
@@ -187,7 +187,7 @@ export interface Backend {
   install(id: AgentId): Promise<ActionResult>;
   /** Opens the official sign-in for one CLI (a console window and/or the browser). */
   login(id: AgentId, clean: boolean): Promise<ActionResult>;
-  /** Opens the CLI itself in a console window with the project_O profile, for its one-time setup (`o agents open-setup`, ADR-0040). */
+  /** Sets up the project_O profile with no window and checks it with one real card-like command (Codex's Windows sandbox; one small model call; `o agents setup`, ADR-0040 개정 1). Takes minutes at most. */
   setup(id: AgentId): Promise<ActionResult>;
   openTerminal(): Promise<ActionResult>;
   /** Opens a web page in the person's browser. */

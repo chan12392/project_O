@@ -50,5 +50,10 @@ name = "windows_native_launch"
 harness = false
 
 [[test]]
+name = "codex_sandbox"
+# Its own main: the test binary doubles as the fake Codex (see tests/codex_sandbox.rs).
+harness = false
+
+[[test]]
 name = "macos_resource_probe"
 path = "../../scripts/macos-resource-probe.rs"

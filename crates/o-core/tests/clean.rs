@@ -166,14 +166,17 @@ fn a_new_profile_holds_only_the_claude_settings() {
     for provider in [ProviderId::Claude, ProviderId::OpenCode, ProviderId::Devin, ProviderId::Agy] {
         assert_eq!(o_core::agents::clean::profile_not_ready(&root, provider), None, "{provider}");
     }
+    // With a sandbox selection the reason moves on to the missing check (ADR-0040 개정 1): the line
+    // alone never makes the profile ready, and the doctor still shows the same reason.
     let config = profile_home(&root, ProviderId::Codex).join(".codex").join("config.toml");
+    let not_checked: Vec<String> = if cfg!(windows) { vec![o_core::providers::codex_sandbox::NOT_CHECKED.into()] } else { vec![] };
     for setting in ["[windows]\r\nsandbox = \"unelevated\"\r\n", "model = \"m\"\n[windows]\n# kept\nsandbox = \"elevated\"\n", "windows.sandbox = \"unelevated\"\n"] {
         write(&config, setting);
-        assert_eq!(inspect(&root, ProviderId::Codex), Vec::<String>::new(), "{setting:?}");
-        assert_eq!(o_core::agents::clean::profile_not_ready(&root, ProviderId::Codex), None, "{setting:?}");
+        assert_eq!(inspect(&root, ProviderId::Codex), not_checked, "{setting:?}");
+        assert_eq!(o_core::agents::clean::profile_not_ready(&root, ProviderId::Codex).into_iter().collect::<Vec<_>>(), not_checked, "{setting:?}");
     }
     write(&config, "[windows]\n[other]\nsandbox = \"x\"\n");
-    assert_eq!(inspect(&root, ProviderId::Codex).len(), usize::from(cfg!(windows)));
+    assert_eq!(inspect(&root, ProviderId::Codex), if cfg!(windows) { vec![o_core::providers::codex::SANDBOX_NOT_SET.to_string()] } else { vec![] });
 }
 
 #[test]
@@ -197,8 +200,9 @@ fn doctor_flags_planted_hooks_skills_and_mcp_servers() {
     write(&codex.join("skills").join(".system").join("a").join("SKILL.md"), "a");
     write(&codex.join("skills").join("mine").join("SKILL.md"), "b");
     write(&codex_home.join(".agents").join("skills").join("c").join("SKILL.md"), "c");
+    // On Windows the profile is also not checked yet (ADR-0040 개정 1).
     let issues = inspect(&root, ProviderId::Codex);
-    assert_eq!(issues.len(), 4, "{issues:?}");
+    assert_eq!(issues.len(), 4 + usize::from(cfg!(windows)), "{issues:?}");
 
     let gemini = profile_home(&root, ProviderId::Agy).join(".gemini");
     write(&gemini.join("config").join("hooks.json"), r#"{ "hooks": {} }"#);

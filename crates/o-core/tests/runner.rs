@@ -57,7 +57,7 @@ fn main() {
         return;
     }
     let tests: [(&str, fn()); 38] = [
-        ("a clean Codex card without the profile's sandbox setup ends failed, unstarted", codex_sandbox_not_set_refused),
+        ("a clean Codex card without a passing sandbox check ends failed, unstarted", codex_sandbox_not_set_refused),
         ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
@@ -874,13 +874,25 @@ fn codex_sandbox_not_set_refused() {
     run_plan(&home, "cx-own", &p, None, Arc::clone(&spawner)).unwrap();
     assert!(launched.swap(false, Ordering::SeqCst));
 
-    // Once Codex's own setup wrote the selection, the card starts.
-    let codex = o_core::agents::clean::profile_home(&root, ProviderId::Codex).join(".codex");
-    std::fs::create_dir_all(&codex).unwrap();
-    std::fs::write(codex.join("config.toml"), "[windows]\nsandbox = \"unelevated\"\n").unwrap();
-    create_run(&home, "cx-set", &p).unwrap();
-    run_plan(&home, "cx-set", &p, Some(&root), spawner).unwrap();
-    assert!(launched.load(Ordering::SeqCst));
+    // The selection alone does not start it (ADR-0040 개정 1): no check passed yet, or the last one
+    // failed, ends the card with that reason. (A passing record is decided in tests/policy.rs and
+    // the codex_sandbox unit tests, where the Codex version is injected.)
+    use o_core::providers::codex_sandbox::{self, Record, NOT_CHECKED};
+    let profile = o_core::agents::clean::profile_home(&root, ProviderId::Codex);
+    std::fs::create_dir_all(profile.join(".codex")).unwrap();
+    std::fs::write(profile.join(".codex").join("config.toml"), "[windows]\nsandbox = \"unelevated\"\n").unwrap();
+    let failed = Record { ok: false, version: "codex-cli 1.0.0".into(), config_hash: codex_sandbox::config_hash(&profile), checked_at: "2026-11-10T00:00:00.000Z".into(), detail: "Codex가 멈췄습니다".into() };
+    for (run, record) in [("cx-set", None), ("cx-failed", Some(failed))] {
+        if let Some(record) = &record { codex_sandbox::write_record(&profile, record).unwrap(); }
+        create_run(&home, run, &p).unwrap();
+        assert_eq!(run_plan(&home, run, &p, Some(&root), Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+        assert!(!launched.load(Ordering::SeqCst), "{run}");
+        let reason = read_events(&home, run).iter().find_map(|e| match e { OEvent::CardEnd { result: Some(reason), .. } => Some(reason.clone()), _ => None }).unwrap();
+        match &record {
+            None => assert_eq!(reason, NOT_CHECKED),
+            Some(record) => assert_eq!(reason, codex_sandbox::failed_reason(record)),
+        }
+    }
 }
 
 fn opencode_project_config_refused() {

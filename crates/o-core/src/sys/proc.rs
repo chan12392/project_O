@@ -273,8 +273,25 @@ impl Drop for Contained {
 /// returns its exit status, stdout and stderr. A command still running at the
 /// deadline is ended with its tree.
 pub fn capture(command: &mut Command, timeout: Duration) -> Result<(ExitStatus, String, String), String> {
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    capture_input(command, None, timeout)
+}
+
+/// What `capture` and `capture_input` return for a command still running at the deadline.
+pub const TIMED_OUT: &str = "실패 (시간 초과)";
+
+/// `capture` with `input` written to the command's stdin, which is then closed (`None`: no stdin).
+/// At the deadline the command's tree is ended (`kill_tree`, then its job closes).
+pub fn capture_input(command: &mut Command, input: Option<&str>, timeout: Duration) -> Result<(ExitStatus, String, String), String> {
+    command.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut probe = Contained::spawn(command).map_err(|e| format!("실행 실패: {e}"))?;
+    if let (Some(text), Some(mut stdin)) = (input, probe.child.stdin.take()) {
+        let text = text.to_string();
+        // A child that never reads must not hold this thread: the write is its own.
+        thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(text.as_bytes());
+        });
+    }
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         thread::spawn(move || {
             let mut out = Vec::new();
@@ -292,7 +309,10 @@ pub fn capture(command: &mut Command, timeout: Duration) -> Result<(ExitStatus, 
         match probe.child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-            Ok(None) => return Err("실패 (시간 초과)".into()),
+            Ok(None) => {
+                kill_tree(probe.child.id());
+                return Err(TIMED_OUT.into());
+            }
             Err(e) => return Err(format!("실행 실패: {e}")),
         }
     };

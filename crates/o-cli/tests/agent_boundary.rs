@@ -20,6 +20,8 @@ fn marked_agents_cannot_start_work_through_cli() {
             // An agent never approves its own action (ADR-0008 개정 3).
             vec!["lead", "decide", "20261104-000000-abcd-a1", "allow"],
             vec!["schedule", "run", "test"], vec!["image", "read"], vec!["projects", "open", "x"],
+            // The sandbox check makes a model call; only a person starts it (ADR-0040 개정 1).
+            vec!["agents", "setup", "codex"],
             vec!["issues", "record", "finding.json"], vec!["issues", "classify", "1", "external"], vec!["issues", "resolve", "1", "run", "card", "evidence"], vec!["issues", "reopen", "1"],
         ] {
             let (key, value) = if role == "card" { ("O_CARD_ID", "card-1") } else { ("O_AGENT_ROLE", "lead") };

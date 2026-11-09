@@ -21,11 +21,11 @@ pub const AGENTS: Command = Command {
   o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
   o agents install <claude|codex|agy|opencode|devin> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
   o agents open-login <claude|codex|agy|opencode|devin> [--clean] [--json]   새 콘솔 창에서 공식 로그인
-  o agents open-setup <codex> [--json]   새 콘솔 창에서 깨끗한 CLI를 열어 한 번 필요한 설정(Codex 샌드박스)을 마침
+  o agents setup <codex> [--json]   창 없이 Codex의 Windows 샌드박스 설정을 마치고 카드처럼 명령 하나를 실제로 실행해 점검 (모델 호출 1번, 결과는 프로필 옆 sandbox-check.json)
   o agents terminal [--json]   독립 터미널 열기
   o agents list [--all] [--json]   다른 에이전트 CLI 목록과 이 PC 감지(--version만 실행). --all 없이는 연결된 것만
   o agents models <opencode> [--json]   그 CLI의 모델 목록 (작업카드 model 값)",
-    run: |_, args| run(args),
+    run,
 };
 
 fn provider_arg(value: Option<&String>) -> Option<ProviderId> {
@@ -44,13 +44,13 @@ fn attached(command: std::io::Result<Process>) -> i32 {
     }
 }
 
-fn run(args: &[String]) -> i32 {
+fn run(home: &Path, args: &[String]) -> i32 {
     let root = clean::default_root();
     let (verb, rest) = match args.split_first() {
         Some((verb, rest)) => (verb.as_str(), rest),
         None => ("", &[][..]),
     };
-    if matches!(verb, "status" | "install" | "open-login" | "open-setup" | "login" | "shell") {
+    if matches!(verb, "status" | "install" | "open-login" | "setup" | "login" | "shell") {
         o_core::sys::resolve::ensure_paths();
     }
     match verb {
@@ -109,9 +109,12 @@ fn run(args: &[String]) -> i32 {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
             action(agents::open_login(&root, provider, rest.iter().any(|a| a == "--clean")), rest)
         }
-        "open-setup" => {
+        "setup" => {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
-            action(agents::open_setup(&root, provider), rest)
+            if !rest.iter().any(|a| a == "--json") {
+                eprintln!("{} 프로필을 설정하고 실제 명령으로 점검합니다(몇 분 걸릴 수 있고, Codex 모델 호출이 한 번 있습니다)…", provider.as_str());
+            }
+            action(agents::check_setup(home, &root, provider), rest)
         }
         "terminal" => action(agents::open_terminal(), rest),
         "list" => {
