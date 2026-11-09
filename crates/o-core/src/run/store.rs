@@ -342,7 +342,7 @@ pub struct Reservation {
     pub run_id: String,
     pub card_id: String,
     pub provider: ProviderId,
-    slot_row: i64,
+    pub(crate) slot_row: i64,
     start_row: i64,
 }
 
@@ -539,9 +539,7 @@ pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
         let resources = serde_json::from_str(&raw).map_err(io::Error::other)?;
         let evidence = (spawn_intent == Some(false) && worker_pid.is_none() && start_id.is_some()) || (spawn_intent == Some(true) && exit_confirmed == Some(true));
         let owner_gone = owner_scope_matches(owner_scope.as_deref()) && owner_pid.zip(owner_started.and_then(|v| u64::try_from(v).ok())).is_some_and(|(pid, started)| proc::definitely_exited(pid, started));
-        // A runner that died never confirms the exit; the card's job being gone is the evidence then (ADR-0039).
-        let orphaned = || spawn_intent == Some(true) && exit_confirmed != Some(true) && card_tree_gone(worker_pid, worker_started, job_name.as_deref());
-        let state = if owner_gone && (evidence || orphaned()) { "recoverable" } else { "unknown" };
+        let state = if owner_gone && evidence { "recoverable" } else { "unknown" };
         Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent, exit_confirmed, job_name, state })
     }).collect::<io::Result<_>>()?;
     let mut legacy = conn.prepare("SELECT id, run_id, card_id, owner, pid FROM slots WHERE id NOT IN (SELECT slot_id FROM resource_leases) ORDER BY id").map_err(sql)?;
@@ -553,29 +551,19 @@ pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
     Ok(leases)
 }
 
-/// A started card whose runner died: the worker itself exited (same pid and start time), and the
-/// card's named kill-on-close job no longer exists (`proc::job_gone`), so Windows ended every
-/// process in it. A lease without a job name (older leases, other systems) proves nothing.
-fn card_tree_gone(pid: Option<u32>, started: Option<i64>, job_name: Option<&str>) -> bool {
-    let Some((pid, started)) = pid.zip(started.and_then(|v| u64::try_from(v).ok())) else { return false };
-    let Some(job_name) = job_name else { return false };
-    proc::definitely_exited(pid, started) && proc::job_gone(job_name)
-}
-
-/// Recover only with durable evidence of no spawn, a confirmed process-tree exit, or (after a dead
-/// runner) an exited worker whose named job is gone, and a gone owner.
+/// Recover only with durable evidence of no spawn or a confirmed process-tree exit, and a gone
+/// owner. A Windows watcher can confirm the exit after the runner dies (ADR-0039).
 pub fn recover_resource(home: &Path, id: i64) -> io::Result<()> {
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
     let row = tx.query_row(
-        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid, exit_confirmed, owner_scope, worker_started, job_name FROM resource_leases WHERE slot_id = ?1",
-        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<bool>>(7)?, row.get::<_, Option<String>>(8)?, row.get::<_, Option<i64>>(9)?, row.get::<_, Option<String>>(10)?)),
+        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid, exit_confirmed, owner_scope FROM resource_leases WHERE slot_id = ?1",
+        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<bool>>(7)?, row.get::<_, Option<String>>(8)?)),
     ).optional().map_err(sql)?;
-    let (owner, started, phase, start_id, run_id, card_id, worker_pid, exited, owner_scope, worker_started, job_name) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
+    let (owner, started, phase, start_id, run_id, card_id, worker_pid, exited, owner_scope) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
     let unstarted = phase == Some(false) && worker_pid.is_none() && start_id.is_some();
     let finished = phase == Some(true) && exited == Some(true);
-    let orphaned = || phase == Some(true) && exited != Some(true) && card_tree_gone(worker_pid, worker_started, job_name.as_deref());
-    if !unstarted && !finished && !orphaned() { return Err(io::Error::other("프로세스 종료 여부가 불명확해 예약을 복구할 수 없습니다")); }
+    if !unstarted && !finished { return Err(io::Error::other("프로세스 종료 여부가 불명확해 예약을 복구할 수 없습니다")); }
     let (Some(owner), Some(started)) = (owner, started) else {
         return Err(io::Error::other("예약 소유자를 확인할 수 없습니다"));
     };

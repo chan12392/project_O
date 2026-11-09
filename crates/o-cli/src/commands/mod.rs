@@ -19,6 +19,8 @@ mod guard;
 mod graph;
 mod images;
 mod issues;
+#[cfg(windows)]
+mod job_watch;
 mod lead;
 mod mirror;
 mod msg;
@@ -75,6 +77,8 @@ pub const COMMANDS: &[Command] = &[
     agents::AGENTS,
     about::ABOUT,
     dispatch::RUN,
+    #[cfg(windows)]
+    job_watch::WATCH,
     lead::WATCH,
     lead::APPROVE,
     lead::FORWARD,

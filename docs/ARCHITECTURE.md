@@ -50,6 +50,8 @@
 
 `main.rs`는 `commands::find`로 명령을 찾아 실행할 뿐이다. `commands/mod.rs`의 `COMMANDS` 표가 이름·도움말 줄·처리 함수를 가지며 `o help`는 이 표의 순서대로 만들어진다. 명령 파일: `dispatch`(check·dispatch·내부 `_run`), `status`, `events`, `stop`, `msg`, `lead`(send·show·new·attach·dispatch·decide·stop·models, 내부 `_lead-approve`), `review`(내부 `_review` 포함), `context`, `tokens`, `usage`, `budget`, `ram`, `billing`, `runs`, `sessions`, `projects`(list·add·remove·new·root·check), `guard`(hook·scan), `mirror`, `agents`, `about`.
 
+숨김 명령 `o _job-watch`는 Windows 전용 `run::job_watch`를 실행한다. 실행기 종료 뒤 카드 Job을 종료하고 활성 프로세스 수 0과 보유한 프로세스 핸들의 종료 신호를 확인한 다음, 정확히 일치하는 자원 예약에 `exit_confirmed`를 남긴다([ADR-0039](decisions/0039-dead-runner-cleanup.md)).
+
 ### `app/src-tauri/src`
 
 `main.rs`는 `commands::handler()`를 등록하고 `commands::window::open_main`으로 메인 창을 띄운다(`tauri.conf.json`의 `create: false`). `commands/{runs,usage,agents,review,tokens,about,lead,projects,update,window}.rs`가 도메인별 명령과 테스트를 가진다. `projects`의 폴더 선택 창(`pick_folder`)은 `tauri-plugin-dialog`를 Rust에서만 연다(화면 capability 없음). `window`는 데스크톱 전용이다: 새 창을 여는 링크(`target="_blank"`, `window.open`)는 웹뷰 창을 만들지 않고 https만 `open_external`과 같은 경로로 브라우저에서 열며, 나머지는 막고 화면에 `project-o:link-blocked` 이벤트로 이유를 알린다(`shell/LinkNotice.tsx`). 팝아웃은 `popout_open`이 고정된 앱 주소(`index.html?popout=panel&source=live…`)로 Tauri 창을 만든다. 카드 완료 알림은 `tauri-plugin-notification`이 화면의 `Notification`을 Windows 알림으로 바꿔 보낸다. 플러그인 권한은 `capabilities/default.json`의 main 창 알림 3개뿐이다(앱 자체 명령은 권한 파일 없이 모든 창에 열려 있다). 모든 명령은 막히는 일을 별도 스레드에서 하고 셸을 쓰지 않는다. `lead`는 총괄 채팅(ADR-0008)이다. `update`는 데스크톱 전용으로 고정 저장소의 릴리스를 `gh`로 확인하며, 사람의 클릭 후에만 설치기를 연다. `uninstall.rs`는 NSIS가 쓰는 별도 데이터 제거 실행 파일이고 `installer_paths.rs`의 경로 검사를 공유한다.

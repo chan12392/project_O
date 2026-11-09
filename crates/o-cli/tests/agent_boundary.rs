@@ -15,7 +15,7 @@ fn lead_monitor_stops_when_its_parent_closes_stdin() {
 fn marked_agents_cannot_start_work_through_cli() {
     for role in ["lead", "card"] {
         for args in [
-            vec!["dispatch"], vec!["followup", "run", "card"], vec!["_run", "run"], vec!["_lead-watch"], vec!["_followup", "run"], vec!["review", "1"], vec!["_review", "1"],
+            vec!["dispatch"], vec!["followup", "run", "card"], vec!["_run", "run"], vec!["_lead-watch"], vec!["_job-watch"], vec!["_followup", "run"], vec!["review", "1"], vec!["_review", "1"],
             vec!["lead", "send"], vec!["lead", "dispatch", "plan"], vec!["lead", "note", "thread", "-"], vec!["lead", "wake", "run"], vec!["lead", "retry", "run", "message"],
             // An agent never approves its own action (ADR-0008 개정 3).
             vec!["lead", "decide", "20261104-000000-abcd-a1", "allow"],

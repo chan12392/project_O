@@ -1,4 +1,4 @@
-//! Explicit Windows process launch data. This module is not yet wired to the runner.
+//! Explicit Windows process launch data used by the card runner.
 use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -208,7 +208,7 @@ impl Launch {
     }
 
     /// A card's launch: like `spawn`, in a job named after the run and card with a random suffix
-    /// (`card_job_name`), so a reader can later tell the job is gone (`proc::job_gone`, ADR-0039).
+    /// (`card_job_name`), so a detached watcher can open and empty the same job (ADR-0039).
     /// When the name cannot be had the job is unnamed and `KillOnClose::job_name` is `None`.
     pub fn spawn_in_named_job(&self, owner: &impl AsRawHandle, label: &str) -> io::Result<(Child, super::proc::KillOnClose)> {
         self.spawn_in_job(owner, card_job_name(label), || Ok(()), |_| {})
@@ -384,9 +384,12 @@ mod tests {
         let (second, second_name) = kill_on_close_job(Some(name.clone())).unwrap();
         assert_eq!(second_name, None, "an existing name falls back to an unnamed job");
         drop(second);
-        assert!(!super::super::proc::job_gone(&name));
+        let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let opened = unsafe { windows_sys::Win32::System::JobObjects::OpenJobObjectW(0x0004, 0, wide.as_ptr()) };
+        assert!(!opened.is_null(), "the original named job remains open");
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(opened); }
         drop(first);
-        assert!(super::super::proc::job_gone(&name));
+        assert!(unsafe { windows_sys::Win32::System::JobObjects::OpenJobObjectW(0x0004, 0, wide.as_ptr()) }.is_null());
         // Characters a kernel object name cannot carry are left out of the label.
         assert!(card_job_name("a\\b/c d").unwrap().starts_with("Global\\project_O-job-abcd-"));
     }

@@ -56,7 +56,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 37] = [
+    let tests: [(&str, fn()); 38] = [
         ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
@@ -69,6 +69,7 @@ fn main() {
         ("a stop recorded before the follow-up's runner looks still cancels it", followup_cancelled_when_stop_lands_before_runner),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
         ("a card cut off by a dead runner is followed up in a fresh session", followup_after_dead_runner_starts_fresh),
+        ("fresh follow-up locks cannot collide with sessions or other run-card pairs", fresh_followup_locks_do_not_collide),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
         ("a repository with a submodule entry is refused before any worker starts", isolated_worktrees_refuse_submodules),
@@ -268,6 +269,52 @@ fn followup_after_dead_runner_starts_fresh() {
     assert_eq!(sessions, ["s2"]);
     // The next follow-up resumes the new session.
     assert_eq!(o_core::run::followup::target(&home, &id, "a").unwrap().session.as_deref(), Some("s2"));
+}
+
+fn fresh_followup_locks_do_not_collide() {
+    for (outer_run, outer_card, outer_fresh, inner_run, inner_card) in [
+        ("other", "a", false, "cut", "a"),
+        ("cut-a", "b", true, "cut", "a-b"),
+    ] {
+        let fixture = temp_home();
+        let home = fixture.join("state");
+        o_core::run::ram::write_enabled(&home, false).unwrap();
+        let project = fixture.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let seed = |run_id: &str, card_id: &str, fresh: bool| {
+            let mut p = plan(vec![card(card_id, ProviderId::Claude, "first")]);
+            p.project = project.to_string_lossy().into_owned();
+            p.cards[0].resources = vec![o_core::run::plan::Resource { kind: o_core::run::plan::ResourceKind::External, key: format!("lock-test-{run_id}"), mode: o_core::run::plan::ResourceMode::Write }];
+            create_run(&home, run_id, &p).unwrap();
+            let result = if fresh { "실행기가 끝나 이 카드를 마치지 못했습니다(중단됨). 작업 폴더를 확인하고 다시 보내 주세요" } else { "ok" };
+            let status = if fresh { "failed" } else { "done" };
+            let lines = [
+                serde_json::json!({"t":"run.start","at":"2026-11-09T12:37:16.000Z","runId":run_id,"title":"t","project":p.project,"cards":[{"id":card_id,"provider":"claude"}]}),
+                serde_json::json!({"t":"card.session","at":"2026-11-09T12:37:17.000Z","cardId":card_id,"sessionId":"fresh-cut-a"}),
+                serde_json::json!({"t":"card.end","at":"2026-11-09T12:37:18.000Z","cardId":card_id,"status":status,"result":result}),
+                serde_json::json!({"t":"run.end","at":"2026-11-09T12:37:19.000Z","status":status}),
+            ];
+            std::fs::write(o_core::run::store::run_dir(&home, run_id).join("events.jsonl"), lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
+            let id = o_core::run::followup::start(&home, run_id, card_id, "continue", &|_| Ok(())).unwrap();
+            let next: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
+            (id, next)
+        };
+        let (outer_id, outer) = seed(outer_run, outer_card, outer_fresh);
+        let (inner_id, inner) = seed(inner_run, inner_card, true);
+        let nested_home = home.clone();
+        let outer_cli = fake_cli(move |spec| {
+            assert_eq!(spec.args.iter().any(|a| a == "--resume"), !outer_fresh);
+            if !outer_fresh { assert!(spec.args.iter().any(|a| a == "fresh-cut-a")); }
+            // The outer card already holds its lock here; run the other card before releasing it.
+            let fresh_cli = fake_cli(|spec| {
+                assert!(!spec.args.iter().any(|a| a == "--resume"));
+                vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+            });
+            assert_eq!(run_plan(&nested_home, &inner_id, &inner, None, fresh_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&nested_home, &inner_id));
+            vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+        });
+        assert_eq!(run_plan(&home, &outer_id, &outer, None, outer_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &outer_id));
+    }
 }
 
 fn isolated_copies() {

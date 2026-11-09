@@ -116,10 +116,18 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         if plan.cards.len() != 1 || target.card.id != card.id || target.card.provider != card.provider || target.card.model != card.model || target.project != plan.project || target.clean != clean.is_some() || yolo {
             return Err(io::Error::other("이어갈 작업 정보가 바뀌어 시작하지 않았습니다"));
         }
-        let locks = home.join("session-locks");
+        let mut locks = home.join("session-locks");
+        // Separate, fixed-size hashes keep fresh locks distinct and below Windows' filename limit.
+        let key = match &target.session {
+            Some(session) => session.clone(),
+            None => {
+                locks.push("fresh");
+                use sha2::Digest;
+                let hash = |text: &str| format!("{:x}", sha2::Sha256::digest(text));
+                format!("{}.{}", hash(&reference.0), hash(&reference.1))
+            }
+        };
         fs::create_dir_all(&locks)?;
-        // A fresh start (no session to resume, ADR-0039) is held per original card instead.
-        let key = target.session.clone().unwrap_or_else(|| format!("fresh-{}-{}", reference.0, reference.1));
         let lock = OpenOptions::new().create(true).truncate(false).write(true).open(locks.join(format!("{}-{}-{}.lock", card.provider, target.clean, key)))?;
         lock.try_lock().map_err(|_| io::Error::other("이 에이전트의 후속 작업이 이미 실행 중입니다"))?;
         followup_lock = Some(lock);
@@ -182,6 +190,8 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         Some(prompt)
     } else { None };
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
+    #[cfg(windows)]
+    let mut watcher_executable = None;
     let spawned = spawner(&spec, cwd).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
         if let Some(root) = clean {
@@ -194,7 +204,8 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         {
             let native = command.native(std::env::vars_os())?;
             let owner_executable = match command.handle_owner_executable { Some(path) => path, None => std::env::current_exe()? };
-            let owner = crate::sys::win_launch::HandleOwner::start(owner_executable, "--o-handle-owner")?;
+            let owner = crate::sys::win_launch::HandleOwner::start(owner_executable.clone(), "--o-handle-owner")?;
+            watcher_executable = Some(owner_executable);
             if stop_requested(home, run_id) { return Err(io::Error::new(io::ErrorKind::Interrupted, "작업이 중지되었습니다")); }
             crate::run::store::mark_spawning(home, &slot.reservation)?;
             // A panic after the durable spawn marker must keep the reservation unknown.
@@ -296,6 +307,11 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         #[cfg(windows)]
         if slot.exited.load(Ordering::Acquire) { slot.started = false; }
         return Err(error);
+    }
+    #[cfg(windows)]
+    if let Some(executable) = watcher_executable {
+        // Best effort: a watcher that cannot start/open the job leaves no exit evidence.
+        let _ = crate::run::job_watch::spawn(home, slot.reservation.slot_row, &executable);
     }
     #[cfg(windows)]
     if running_child._tree.is_none() { return Err(io::Error::other("프로세스 격리를 확인하지 못해 시작하지 않았습니다")); }

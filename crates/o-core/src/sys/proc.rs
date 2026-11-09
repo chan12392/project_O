@@ -137,6 +137,8 @@ impl Drop for KillOnClose {
     fn drop(&mut self) {
         #[cfg(windows)]
         unsafe {
+            // A dead-runner watcher may hold another handle, so close alone no longer ends the tree.
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1);
             windows_sys::Win32::Foundation::CloseHandle(self.job);
         }
     }
@@ -379,33 +381,6 @@ pub fn definitely_exited(pid: u32, expected: u64) -> bool {
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn definitely_exited(_pid: u32, _expected: u64) -> bool { false }
-
-/// The named job of a card no longer exists (ADR-0039): opening it fails with
-/// `ERROR_FILE_NOT_FOUND`. A job's name goes away when its last handle closes, and a card's job is
-/// kill-on-close, so Windows has then ended every process in it. Any other failure (a name that is
-/// not a job, no access, a bad path) and a successful open both mean "not known to be gone".
-#[cfg(windows)]
-pub fn job_gone(name: &str) -> bool {
-    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND};
-    use windows_sys::Win32::System::JobObjects::OpenJobObjectW;
-    /// `JOB_OBJECT_QUERY` (winnt.h); windows-sys lists it under a feature this crate does not load.
-    const JOB_OBJECT_QUERY: u32 = 0x0004;
-    let mut wide: Vec<u16> = name.encode_utf16().collect();
-    if wide.is_empty() || wide.contains(&0) { return false; }
-    wide.push(0);
-    unsafe {
-        let job = OpenJobObjectW(JOB_OBJECT_QUERY, 0, wide.as_ptr());
-        if !job.is_null() {
-            CloseHandle(job);
-            return false;
-        }
-        GetLastError() == ERROR_FILE_NOT_FOUND
-    }
-}
-
-/// Only Windows cards run in a named kill-on-close job; elsewhere nothing proves a card's tree gone.
-#[cfg(not(windows))]
-pub fn job_gone(_name: &str) -> bool { false }
 
 #[cfg(not(windows))]
 pub fn is_alive(pid: u32) -> bool {
