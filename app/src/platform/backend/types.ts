@@ -158,6 +158,8 @@ export interface ResourceLease {
   workerStarted: string | null;
   spawnIntent: boolean | null;
   exitConfirmed: boolean | null;
+  /** The card's named kill-on-close job (Windows, ADR-0039); absent or null for older leases. */
+  jobName?: string | null;
   state: "recoverable" | "unknown";
 }
 

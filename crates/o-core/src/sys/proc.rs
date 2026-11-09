@@ -121,6 +121,9 @@ pub struct KillOnClose {
     pub(crate) monitor: super::macos_worker::Monitor,
     #[cfg(windows)]
     pub(crate) job: windows_sys::Win32::Foundation::HANDLE,
+    /// The job's name, only when the worker is confirmed in that job (`win_launch::spawn_in_named_job`).
+    #[cfg(windows)]
+    pub(crate) job_name: Option<String>,
     #[cfg(target_os = "linux")]
     pid: u32,
     #[cfg(target_os = "linux")]
@@ -140,6 +143,14 @@ impl Drop for KillOnClose {
 }
 
 impl KillOnClose {
+    /// The name of the card's job, recorded with its resource lease (ADR-0039).
+    pub fn job_name(&self) -> Option<&str> {
+        #[cfg(windows)]
+        { self.job_name.as_deref() }
+        #[cfg(not(windows))]
+        { None }
+    }
+
     /// Stop the job and confirm that no processes remain before reusing resources.
     #[cfg(windows)]
     pub fn stop_and_confirm(&mut self) -> bool {
@@ -198,7 +209,7 @@ pub fn contain(child: &Child) -> Option<KillOnClose> {
             CloseHandle(job);
             return None;
         }
-        Some(KillOnClose { job })
+        Some(KillOnClose { job, job_name: None })
     }
 }
 
@@ -369,59 +380,32 @@ pub fn definitely_exited(pid: u32, expected: u64) -> bool {
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn definitely_exited(_pid: u32, _expected: u64) -> bool { false }
 
-/// Whether a process the given one started, or one of their descendants, still runs (ADR-0039).
-/// Windows keeps an orphan's original parent pid, so the tree is followed through a ToolHelp
-/// snapshot; a child must have started no earlier than its parent, so a reused parent pid never
-/// adopts an older process. `None` when the snapshot fails or a matching child cannot be read.
+/// The named job of a card no longer exists (ADR-0039): opening it fails with
+/// `ERROR_FILE_NOT_FOUND`. A job's name goes away when its last handle closes, and a card's job is
+/// kill-on-close, so Windows has then ended every process in it. Any other failure (a name that is
+/// not a job, no access, a bad path) and a successful open both mean "not known to be gone".
 #[cfg(windows)]
-pub fn descendants_alive(pid: u32, started: u64) -> Option<bool> {
-    let entries = process_parents()?;
-    let mut tree = vec![(pid, started)];
-    let mut seen = std::collections::HashSet::from([pid]);
-    let mut next = 0;
-    while let Some(&(parent, parent_started)) = tree.get(next) {
-        next += 1;
-        let children: Vec<u32> = entries.iter().filter(|(child, ppid)| *ppid == parent && *child != 0 && !seen.contains(child)).map(|(child, _)| *child).collect();
-        for child in children {
-            let Some(child_started) = started_at(child) else {
-                // Gone since the snapshot is fine; one we may not open could be a live descendant.
-                if is_alive(child) { return None; }
-                continue;
-            };
-            if child_started < parent_started { continue; }
-            seen.insert(child);
-            if is_alive(child) { return Some(true); }
-            // An exited child may still be listed; its own children keep its pid as their parent.
-            tree.push((child, child_started));
-        }
-    }
-    Some(false)
-}
-
-/// Linux and macOS re-parent orphans, so a dead worker's descendants cannot be found from its pid.
-#[cfg(not(windows))]
-pub fn descendants_alive(_pid: u32, _started: u64) -> Option<bool> { None }
-
-/// Every listed process as (pid, parent pid).
-#[cfg(windows)]
-fn process_parents() -> Option<Vec<(u32, u32)>> {
-    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
-    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+pub fn job_gone(name: &str) -> bool {
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_FILE_NOT_FOUND};
+    use windows_sys::Win32::System::JobObjects::OpenJobObjectW;
+    /// `JOB_OBJECT_QUERY` (winnt.h); windows-sys lists it under a feature this crate does not load.
+    const JOB_OBJECT_QUERY: u32 = 0x0004;
+    let mut wide: Vec<u16> = name.encode_utf16().collect();
+    if wide.is_empty() || wide.contains(&0) { return false; }
+    wide.push(0);
     unsafe {
-        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-        if snapshot == INVALID_HANDLE_VALUE { return None; }
-        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
-        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
-        let mut entries = Vec::new();
-        let mut ok = Process32FirstW(snapshot, &mut entry);
-        while ok != 0 {
-            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
-            ok = Process32NextW(snapshot, &mut entry);
+        let job = OpenJobObjectW(JOB_OBJECT_QUERY, 0, wide.as_ptr());
+        if !job.is_null() {
+            CloseHandle(job);
+            return false;
         }
-        CloseHandle(snapshot);
-        (!entries.is_empty()).then_some(entries)
+        GetLastError() == ERROR_FILE_NOT_FOUND
     }
 }
+
+/// Only Windows cards run in a named kill-on-close job; elsewhere nothing proves a card's tree gone.
+#[cfg(not(windows))]
+pub fn job_gone(_name: &str) -> bool { false }
 
 #[cfg(not(windows))]
 pub fn is_alive(pid: u32) -> bool {

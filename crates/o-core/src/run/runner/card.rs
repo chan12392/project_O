@@ -118,7 +118,9 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         }
         let locks = home.join("session-locks");
         fs::create_dir_all(&locks)?;
-        let lock = OpenOptions::new().create(true).truncate(false).write(true).open(locks.join(format!("{}-{}-{}.lock", card.provider, target.clean, target.session)))?;
+        // A fresh start (no session to resume, ADR-0039) is held per original card instead.
+        let key = target.session.clone().unwrap_or_else(|| format!("fresh-{}-{}", reference.0, reference.1));
+        let lock = OpenOptions::new().create(true).truncate(false).write(true).open(locks.join(format!("{}-{}-{}.lock", card.provider, target.clean, key)))?;
         lock.try_lock().map_err(|_| io::Error::other("이 에이전트의 후속 작업이 이미 실행 중입니다"))?;
         followup_lock = Some(lock);
         Some(target)
@@ -148,21 +150,28 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
     let checked_plan = Plan { project: cwd.to_string(), ..plan.clone() };
     let mut spec = launch_spec_for(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context, yolo);
     if let Some(target) = &followup {
-        match card.provider {
-            ProviderId::Codex => { spec.args.pop(); spec.args.extend(["resume".into(), target.session.clone(), "-".into()]); }
-            ProviderId::Claude => spec.args.extend(["--resume".into(), target.session.clone()]),
-            ProviderId::OpenCode => {
-                crate::providers::opencode::check_session(clean, Path::new(cwd), &target.session).map_err(io::Error::other)?;
-                spec.args.extend(["--session".into(), target.session.clone()]);
+        if card.provider == ProviderId::Agy { return Err(io::Error::other(crate::policy::AGY_UNAVAILABLE)); }
+        // No session: the card's last session was cut off by a dead runner, so this follow-up
+        // starts a fresh one in the same workspace (ADR-0039) and reports it like any new card.
+        if let Some(session) = &target.session {
+            match card.provider {
+                ProviderId::Codex => { spec.args.pop(); spec.args.extend(["resume".into(), session.clone(), "-".into()]); }
+                ProviderId::Claude => spec.args.extend(["--resume".into(), session.clone()]),
+                ProviderId::OpenCode => {
+                    crate::providers::opencode::check_session(clean, Path::new(cwd), session).map_err(io::Error::other)?;
+                    spec.args.extend(["--session".into(), session.clone()]);
+                }
+                ProviderId::Devin => {
+                    let at = spec.args.iter().position(|arg| arg == "--").ok_or_else(|| io::Error::other("Devin 인자 형식이 올바르지 않습니다"))?;
+                    spec.args.splice(at..at, ["--resume".into(), session.clone()]);
+                }
+                ProviderId::Agy => return Err(io::Error::other(crate::policy::AGY_UNAVAILABLE)),
             }
-            ProviderId::Devin => {
-                let at = spec.args.iter().position(|arg| arg == "--").ok_or_else(|| io::Error::other("Devin 인자 형식이 올바르지 않습니다"))?;
-                spec.args.splice(at..at, ["--resume".into(), target.session.clone()]);
-            }
-            ProviderId::Agy => return Err(io::Error::other(crate::policy::AGY_UNAVAILABLE)),
         }
         emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "O 작업 폴더".into(), summary: cwd.to_string() })?;
-        emit(OEvent::CardSession { at: now_iso(), card_id: card.id.clone(), session_id: target.session.clone() })?;
+        if let Some(session) = &target.session {
+            emit(OEvent::CardSession { at: now_iso(), card_id: card.id.clone(), session_id: session.clone() })?;
+        }
     }
     let _prompt = if card.provider == ProviderId::Devin && spec.args.last().is_some_and(|text| text.len() > 12_000) {
         let text = spec.args.pop().ok_or_else(|| io::Error::other("Devin 프롬프트가 없습니다"))?;
@@ -190,7 +199,8 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
             crate::run::store::mark_spawning(home, &slot.reservation)?;
             // A panic after the durable spawn marker must keep the reservation unknown.
             slot.started = true;
-            match native.spawn(&owner) {
+            // A named job lets a reader prove the card's tree gone after this runner dies (ADR-0039).
+            match native.spawn_in_named_job(&owner, &format!("{run_id}-{}", card.id)) {
                 Ok((child, tree)) => Ok((crate::sys::worker::Child::native(child), Some(Arc::new(Mutex::new(tree))))),
                 Err(error) => { slot.started = false; Err(error) }
             }
@@ -270,12 +280,14 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         (done, watcher)
     });
     let mut running_child = RunningChild { child, _tree: tree, stop_watch, exited: Arc::clone(&slot.exited) };
+    // Set only when the worker is confirmed in that named job (`win_launch::spawn_in_named_job`).
+    let job_name = running_child._tree.as_ref().and_then(|tree| tree.lock().ok().and_then(|tree| tree.job_name().map(str::to_owned)));
     let child = &mut running_child.child;
     let pid = child.id();
 
     // The reservation already counts the card; the slot now lives as long as the CLI, and the
     // marker lets `o stop` find its process.
-    let linked = link_slot(home, &slot.reservation, pid).and_then(|()| {
+    let linked = link_slot(home, &slot.reservation, pid, job_name.as_deref()).and_then(|()| {
         slot.marked = true;
         mark_active(home, &ActiveMarker { run_id: run_id.to_string(), card_id: card.id.clone(), provider: card.provider, pid })
     });

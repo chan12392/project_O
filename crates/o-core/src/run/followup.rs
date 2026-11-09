@@ -15,7 +15,9 @@ pub struct Target {
     pub card: Card,
     pub project: String,
     pub workspace: PathBuf,
-    pub session: String,
+    /// The agent session to resume; `None` starts a fresh one in the same workspace, after a card
+    /// whose runner died closed it mid-session (ADR-0039).
+    pub session: Option<String>,
     pub clean: bool,
 }
 
@@ -36,10 +38,13 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
     let card = plan.cards[index].clone();
     if card.provider == ProviderId::Agy { return Err(crate::policy::AGY_UNAVAILABLE.into()); }
     let events = read_events(home, run);
-    let ended = events.iter().rev().find_map(|event| match event {
-        OEvent::CardEnd { card_id, status, .. } if card_id == &card.id => Some(*status),
+    let last_end = events.iter().rev().find_map(|event| match event {
+        OEvent::CardEnd { card_id, status, result, exit_code, .. } if card_id == &card.id => Some((*status, result.as_deref(), *exit_code)),
         _ => None,
     });
+    let ended = last_end.map(|(status, _, _)| status);
+    // A card the dead-runner close ended (ADR-0039) was cut off mid-session: never resume that session.
+    let interrupted = last_end.is_some_and(|(status, result, exit_code)| store::closed_by_dead_runner(status, result, exit_code));
     let active = store::active_markers(home);
     if store::resource_held(home, run, &card.id).map_err(|e| e.to_string())?
         || active.iter().any(|m| m.run_id == run && m.card_id == card.id)
@@ -49,14 +54,20 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
     let mut session = events.iter().rev().find_map(|event| match event {
         OEvent::CardSession { card_id, session_id, .. } if card_id == &card.id => Some(session_id.clone()),
         _ => None,
-    });
+    }).filter(|_| !interrupted);
+    // A follow-up of a fresh start (an interrupted card up the chain) that reported no session of
+    // its own starts fresh too.
+    let mut fresh = interrupted;
     let workspace = if dir.join("followup.json").exists() {
         let reference: (String, String) = serde_json::from_slice(&fs::read(dir.join("followup.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let previous = target_with_depth(home, &reference.0, &reference.1, depth + 1)?;
         if previous.card.id != card.id || previous.card.provider != card.provider || previous.card.model != card.model || previous.project != plan.project || previous.clean != is_clean(home, run) {
             return Err("기존 후속 작업 정보가 바뀌었습니다".into());
         }
-        if session.is_none() { session = Some(previous.session); }
+        if session.is_none() && !interrupted {
+            fresh = previous.session.is_none();
+            session = previous.session;
+        }
         previous.workspace
     } else if dir.join("isolated-worktrees").exists() {
         let name = home.file_name().ok_or("상태 폴더가 올바르지 않습니다")?.to_string_lossy();
@@ -83,8 +94,9 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
     } else {
         resolved(Path::new(&plan.project), "기존 프로젝트를 찾지 못했습니다")?
     };
-    let session = session.ok_or("이어갈 세션 ID가 없습니다")?;
-    if !is_run_id(&session) { return Err("세션 ID가 올바르지 않습니다".into()); }
+    // A card that never reported a session cannot be continued, unless it is to start fresh.
+    if session.is_none() && !fresh { return Err("이어갈 세션 ID가 없습니다".into()); }
+    if session.as_deref().is_some_and(|session| !is_run_id(session)) { return Err("세션 ID가 올바르지 않습니다".into()); }
     Ok(Target { card, project: plan.project, workspace, session, clean: is_clean(home, run) })
 }
 

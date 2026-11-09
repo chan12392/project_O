@@ -193,26 +193,25 @@ pub fn newest_first(runs: Vec<RunRecord>) -> Vec<RunRecord> {
 }
 
 /// The runs `o runs --json` and the app read, through the index brought up to date first.
-/// A run whose runner died is closed on record first (`close_dead_run`); the appended events
-/// reach the index on its next ingest, so they are added to the returned record here.
+/// A run whose runner died is closed on record first (`close_dead_run`); its record then carries
+/// the run's whole event list as read under the append lock, which the index catches up with on
+/// its next ingest.
 pub fn read_runs(home: &Path, query: &RunQuery) -> io::Result<Vec<RunRecord>> {
     let mut conn = index::open(home)?;
     index::ingest(&mut conn, home)?;
     let mut runs = index::runs(&conn, query)?;
-    let active = active_markers(home);
     for run in &mut runs {
         if run.events.iter().any(|event| event["t"] == "run.end") { continue; }
         // A run that cannot be closed now (a held lock, a read error) is listed as it is.
-        let closed = close_dead_run(home, &run.run_id, &active).unwrap_or_default();
-        if !closed.is_empty() {
-            run.events.extend(closed);
-            continue;
+        if let Ok(Some(current)) = close_dead_run(home, &run.run_id) {
+            run.events = current;
+            if run.events.iter().any(|event| event["t"] == "run.end") { continue; }
         }
         // A follow-up whose runner is gone without strong evidence (no start time on record) is
         // still shown as ended, in memory only, as before ADR-0039.
         let card = run.events.iter().find(|event| event["t"] == "run.followup").and_then(|event| event["cardId"].as_str());
         if let Some(card) = card {
-            if !run_is_live(home, &run.run_id) && !active.iter().any(|marker| marker.run_id == run.run_id) {
+            if !run_is_live(home, &run.run_id) && !active_markers(home).iter().any(|marker| marker.run_id == run.run_id) {
                 let at = crate::sys::js::now_iso();
                 if !run.events.iter().any(|event| event["t"] == "card.end" && event["cardId"] == card) {
                     run.events.push(serde_json::to_value(OEvent::CardEnd { at: at.clone(), card_id: card.into(), status: CardStatus::Failed, result: Some(FOLLOWUP_STOPPED.into()), exit_code: None }).map_err(io::Error::other)?);
@@ -224,8 +223,14 @@ pub fn read_runs(home: &Path, query: &RunQuery) -> io::Result<Vec<RunRecord>> {
     Ok(runs)
 }
 
-const FOLLOWUP_STOPPED: &str = "후속 실행이 중단됐습니다. 다시 보내 주세요";
-const RUNNER_STOPPED: &str = "실행기가 끝나 이 카드를 마치지 못했습니다(중단됨). 작업 폴더를 확인하고 다시 보내 주세요";
+pub(crate) const FOLLOWUP_STOPPED: &str = "후속 실행이 중단됐습니다. 다시 보내 주세요";
+pub(crate) const RUNNER_STOPPED: &str = "실행기가 끝나 이 카드를 마치지 못했습니다(중단됨). 작업 폴더를 확인하고 다시 보내 주세요";
+
+/// A `card.end` that `close_dead_run` wrote for a card its dead runner never finished: failed, no
+/// exit code, and one of its two reasons. Such a card's session was cut off, not ended.
+pub(crate) fn closed_by_dead_runner(status: CardStatus, result: Option<&str>, exit_code: Option<i64>) -> bool {
+    status == CardStatus::Failed && exit_code.is_none() && matches!(result, Some(FOLLOWUP_STOPPED | RUNNER_STOPPED))
+}
 
 /// The runner of this run has certainly exited: `runner.json` names a pid and start time, and that
 /// process is gone or the pid now belongs to another process. A missing mark or unknown start
@@ -236,16 +241,23 @@ fn runner_dead(home: &Path, run_id: &str) -> bool {
 
 /// Closes a run whose runner died without `run.end` (ADR-0039): every plan card without
 /// `card.end` gets a failed one, then the run gets `run.end` failed, appended to events.jsonl
-/// under the append lock so two readers never close it twice. Callers pass only runs they saw
-/// open and the live card markers. Returns the appended events (none when nothing was closed).
-pub fn close_dead_run(home: &Path, run_id: &str, active: &[ActiveMarker]) -> io::Result<Vec<Value>> {
-    if active.iter().any(|marker| marker.run_id == run_id) || !runner_dead(home, run_id) {
-        return Ok(Vec::new());
+/// under the append lock so two readers never close it twice. The live card markers are read
+/// under that lock too, so a card that started after the caller looked keeps its run open.
+///
+/// `None` when it did not look (the runner may be alive, or the plan cannot be read: a run is never
+/// ended without its cards' ends). Otherwise the run's whole event list as read under the lock,
+/// with what this call appended: closed now, closed already by another reader, or kept open by a
+/// live card. Callers show that list instead of what they read before.
+pub fn close_dead_run(home: &Path, run_id: &str) -> io::Result<Option<Vec<Value>>> {
+    if !runner_dead(home, run_id) {
+        return Ok(None);
     }
-    let cards = read_plan(home, run_id).and_then(|plan| plan_card_ids(&plan)).unwrap_or_default();
+    let Ok(cards) = read_plan(home, run_id).and_then(|plan| plan_card_ids(&plan)) else { return Ok(None) };
     with_events(home, run_id, |file| {
-        let events = parse_event_values(&event_text(file)?);
-        if events.iter().any(|event| event["t"] == "run.end") { return Ok(Vec::new()); }
+        let mut events = parse_event_values(&event_text(file)?);
+        if events.iter().any(|event| event["t"] == "run.end") || active_markers(home).iter().any(|marker| marker.run_id == run_id) {
+            return Ok(Some(events));
+        }
         let result = if events.iter().any(|event| event["t"] == "run.followup") { FOLLOWUP_STOPPED } else { RUNNER_STOPPED };
         let at = crate::sys::js::now_iso();
         let mut closed = Vec::new();
@@ -256,15 +268,16 @@ pub fn close_dead_run(home: &Path, run_id: &str, active: &[ActiveMarker]) -> io:
         for event in &closed {
             append_value(file, event)?;
         }
-        Ok(closed)
+        events.extend(closed);
+        Ok(Some(events))
     })
 }
 
-/// `close_dead_run` for a reader that holds only the run's typed events: closes it when it is
-/// still open, and says whether it did (the caller reads the events again).
-pub fn close_if_runner_died(home: &Path, run_id: &str, events: &[OEvent], active: &[ActiveMarker]) -> io::Result<bool> {
-    if events.iter().any(|event| matches!(event, OEvent::RunEnd { .. })) { return Ok(false); }
-    Ok(!close_dead_run(home, run_id, active)?.is_empty())
+/// `close_dead_run` for a reader that holds only the run's typed events: when the run is still
+/// open in them, the run's current events after the attempt (`None`: keep what the caller has).
+pub fn close_if_runner_died(home: &Path, run_id: &str, events: &[OEvent]) -> io::Result<Option<Vec<OEvent>>> {
+    if events.iter().any(|event| matches!(event, OEvent::RunEnd { .. })) { return Ok(None); }
+    Ok(close_dead_run(home, run_id)?.map(|values| values.into_iter().filter_map(|value| serde_json::from_value(value).ok()).collect()))
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -446,12 +459,13 @@ pub fn reserve_slot(home: &Path, run_id: &str, card: &crate::run::plan::Card, pr
     Ok(Reserved::Granted(Reservation { run_id: run_id.to_string(), card_id: card_id.to_string(), provider, slot_row, start_row }))
 }
 
-/// The card's CLI is running: from now on the slot lives as long as that process.
-pub fn link_slot(home: &Path, reservation: &Reservation, pid: u32) -> io::Result<()> {
+/// The card's CLI is running: from now on the slot lives as long as that process. `job_name` is
+/// the named kill-on-close job the worker is confirmed to run in (Windows, ADR-0039), if any.
+pub fn link_slot(home: &Path, reservation: &Reservation, pid: u32, job_name: Option<&str>) -> io::Result<()> {
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
     let started = proc::started_at(pid).and_then(|at| i64::try_from(at).ok());
-    let lease = tx.execute("UPDATE resource_leases SET worker_pid = ?1, worker_started = ?2, spawn_intent = 1 WHERE slot_id = ?3", params![pid, started, reservation.slot_row]).map_err(sql)?;
+    let lease = tx.execute("UPDATE resource_leases SET worker_pid = ?1, worker_started = ?2, spawn_intent = 1, job_name = ?3 WHERE slot_id = ?4", params![pid, started, job_name, reservation.slot_row]).map_err(sql)?;
     let slot = tx.execute("UPDATE slots SET pid = ?1 WHERE rowid = ?2", params![pid, reservation.slot_row]).map_err(sql)?;
     if lease != 1 || slot != 1 { return Err(io::Error::other("자원 예약을 찾지 못해 작업을 시작하지 않았습니다")); }
     tx.commit().map_err(sql)
@@ -502,6 +516,8 @@ pub struct ResourceLease {
     pub worker_started: Option<String>,
     pub spawn_intent: Option<bool>,
     pub exit_confirmed: Option<bool>,
+    /// The card's named kill-on-close job (Windows, ADR-0039); none for older leases.
+    pub job_name: Option<String>,
     pub state: &'static str,
 }
 
@@ -514,49 +530,51 @@ fn owner_scope_matches(scope: Option<&str>) -> bool {
 
 pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
     let conn = index::open(home)?;
-    let mut stmt = conn.prepare("SELECT slot_id, run_id, card_id, resources, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id, owner_scope FROM resource_leases ORDER BY slot_id").map_err(sql)?;
+    let mut stmt = conn.prepare("SELECT slot_id, run_id, card_id, resources, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id, owner_scope, job_name FROM resource_leases ORDER BY slot_id").map_err(sql)?;
     let rows = stmt.query_map([], |row| {
-        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, Option<i64>>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Option<bool>>(8)?, row.get::<_, Option<bool>>(9)?, row.get::<_, Option<i64>>(10)?, row.get::<_, Option<String>>(11)?))
+        Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, String>(3)?, row.get::<_, Option<u32>>(4)?, row.get::<_, Option<i64>>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<i64>>(7)?, row.get::<_, Option<bool>>(8)?, row.get::<_, Option<bool>>(9)?, row.get::<_, Option<i64>>(10)?, row.get::<_, Option<String>>(11)?, row.get::<_, Option<String>>(12)?))
     }).map_err(sql)?;
     let mut leases: Vec<ResourceLease> = rows.map(|row| {
-        let (id, run_id, card_id, raw, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id, owner_scope) = row.map_err(sql)?;
+        let (id, run_id, card_id, raw, owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, start_id, owner_scope, job_name) = row.map_err(sql)?;
         let resources = serde_json::from_str(&raw).map_err(io::Error::other)?;
         let evidence = (spawn_intent == Some(false) && worker_pid.is_none() && start_id.is_some()) || (spawn_intent == Some(true) && exit_confirmed == Some(true));
         let owner_gone = owner_scope_matches(owner_scope.as_deref()) && owner_pid.zip(owner_started.and_then(|v| u64::try_from(v).ok())).is_some_and(|(pid, started)| proc::definitely_exited(pid, started));
-        // A runner that died never confirms the exit; the worker's own tree is the evidence then (ADR-0039).
-        let orphaned = || spawn_intent == Some(true) && exit_confirmed != Some(true) && worker_tree_gone(worker_pid, worker_started);
+        // A runner that died never confirms the exit; the card's job being gone is the evidence then (ADR-0039).
+        let orphaned = || spawn_intent == Some(true) && exit_confirmed != Some(true) && card_tree_gone(worker_pid, worker_started, job_name.as_deref());
         let state = if owner_gone && (evidence || orphaned()) { "recoverable" } else { "unknown" };
-        Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent, exit_confirmed, state })
+        Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent, exit_confirmed, job_name, state })
     }).collect::<io::Result<_>>()?;
     let mut legacy = conn.prepare("SELECT id, run_id, card_id, owner, pid FROM slots WHERE id NOT IN (SELECT slot_id FROM resource_leases) ORDER BY id").map_err(sql)?;
     let rows = legacy.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, u32>(3)?, row.get::<_, u32>(4)?))).map_err(sql)?;
     for row in rows {
         let (id, run_id, card_id, owner, worker) = row.map_err(sql)?;
-        leases.push(ResourceLease { id: format!("legacy:{id}"), run_id, card_id, resources: serde_json::json!([]), owner_pid: (owner != 0).then_some(owner), owner_started: None, worker_pid: (worker != 0).then_some(worker), worker_started: None, spawn_intent: None, exit_confirmed: None, state: "unknown" });
+        leases.push(ResourceLease { id: format!("legacy:{id}"), run_id, card_id, resources: serde_json::json!([]), owner_pid: (owner != 0).then_some(owner), owner_started: None, worker_pid: (worker != 0).then_some(worker), worker_started: None, spawn_intent: None, exit_confirmed: None, job_name: None, state: "unknown" });
     }
     Ok(leases)
 }
 
-/// A started worker whose runner died: the worker itself exited (same pid and start time) and no
-/// process it started still runs. Only Windows can follow an orphaned tree (`descendants_alive`).
-fn worker_tree_gone(pid: Option<u32>, started: Option<i64>) -> bool {
+/// A started card whose runner died: the worker itself exited (same pid and start time), and the
+/// card's named kill-on-close job no longer exists (`proc::job_gone`), so Windows ended every
+/// process in it. A lease without a job name (older leases, other systems) proves nothing.
+fn card_tree_gone(pid: Option<u32>, started: Option<i64>, job_name: Option<&str>) -> bool {
     let Some((pid, started)) = pid.zip(started.and_then(|v| u64::try_from(v).ok())) else { return false };
-    proc::definitely_exited(pid, started) && proc::descendants_alive(pid, started) == Some(false)
+    let Some(job_name) = job_name else { return false };
+    proc::definitely_exited(pid, started) && proc::job_gone(job_name)
 }
 
 /// Recover only with durable evidence of no spawn, a confirmed process-tree exit, or (after a dead
-/// runner) an exited worker with no live descendant, and a gone owner.
+/// runner) an exited worker whose named job is gone, and a gone owner.
 pub fn recover_resource(home: &Path, id: i64) -> io::Result<()> {
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
     let row = tx.query_row(
-        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid, exit_confirmed, owner_scope, worker_started FROM resource_leases WHERE slot_id = ?1",
-        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<bool>>(7)?, row.get::<_, Option<String>>(8)?, row.get::<_, Option<i64>>(9)?)),
+        "SELECT owner_pid, owner_started, spawn_intent, start_id, run_id, card_id, worker_pid, exit_confirmed, owner_scope, worker_started, job_name FROM resource_leases WHERE slot_id = ?1",
+        [id], |row| Ok((row.get::<_, Option<u32>>(0)?, row.get::<_, Option<i64>>(1)?, row.get::<_, Option<bool>>(2)?, row.get::<_, Option<i64>>(3)?, row.get::<_, String>(4)?, row.get::<_, String>(5)?, row.get::<_, Option<u32>>(6)?, row.get::<_, Option<bool>>(7)?, row.get::<_, Option<String>>(8)?, row.get::<_, Option<i64>>(9)?, row.get::<_, Option<String>>(10)?)),
     ).optional().map_err(sql)?;
-    let (owner, started, phase, start_id, run_id, card_id, worker_pid, exited, owner_scope, worker_started) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
+    let (owner, started, phase, start_id, run_id, card_id, worker_pid, exited, owner_scope, worker_started, job_name) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
     let unstarted = phase == Some(false) && worker_pid.is_none() && start_id.is_some();
     let finished = phase == Some(true) && exited == Some(true);
-    let orphaned = || phase == Some(true) && exited != Some(true) && worker_tree_gone(worker_pid, worker_started);
+    let orphaned = || phase == Some(true) && exited != Some(true) && card_tree_gone(worker_pid, worker_started, job_name.as_deref());
     if !unstarted && !finished && !orphaned() { return Err(io::Error::other("프로세스 종료 여부가 불명확해 예약을 복구할 수 없습니다")); }
     let (Some(owner), Some(started)) = (owner, started) else {
         return Err(io::Error::other("예약 소유자를 확인할 수 없습니다"));

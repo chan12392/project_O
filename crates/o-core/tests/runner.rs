@@ -56,7 +56,7 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 36] = [
+    let tests: [(&str, fn()); 37] = [
         ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
@@ -68,6 +68,7 @@ fn main() {
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
         ("a stop recorded before the follow-up's runner looks still cancels it", followup_cancelled_when_stop_lands_before_runner),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
+        ("a card cut off by a dead runner is followed up in a fresh session", followup_after_dead_runner_starts_fresh),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
         ("a repository with a submodule entry is refused before any worker starts", isolated_worktrees_refuse_submodules),
@@ -216,7 +217,7 @@ fn followup_resumes_workspace() {
     assert!(!o_core::run::store::run_is_live(&home, &failed));
     assert!(read_events(&home, &failed).iter().any(|event| matches!(event, OEvent::RunEnd { status: CardStatus::Failed, .. })));
     let retry = o_core::run::followup::target(&home, &failed, "a").unwrap();
-    assert_eq!(retry.session, "s1");
+    assert_eq!(retry.session.as_deref(), Some("s1"));
     #[cfg(windows)]
     assert!(!retry.workspace.to_string_lossy().starts_with(r"\\?\"), "{}", retry.workspace.display());
     assert_eq!(std::fs::read_to_string(retry.workspace.join("file.txt")).unwrap(), "changed");
@@ -227,6 +228,46 @@ fn followup_resumes_workspace() {
     assert!(record.events.iter().any(|event| event["t"] == "card.end" && event["status"] == "failed"));
     assert!(record.events.iter().any(|event| event["t"] == "run.end" && event["status"] == "failed"));
     assert!(o_core::run::followup::target(&home, &interrupted, "a").is_err());
+}
+
+/// ADR-0039: a card whose dead runner's close ended it is followed up in a fresh session, never
+/// resuming the session that was cut off.
+fn followup_after_dead_runner_starts_fresh() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
+    initial.project = project.to_string_lossy().into_owned();
+    create_run(&home, "cut", &initial).unwrap();
+    let dir = o_core::run::store::run_dir(&home, "cut");
+    let lines = [
+        serde_json::json!({"t":"run.start","at":"2026-11-09T12:37:16.000Z","runId":"cut","title":"t","project":initial.project,"cards":[{"id":"a","provider":"claude"}]}),
+        serde_json::json!({"t":"card.start","at":"2026-11-09T12:37:17.000Z","cardId":"a"}),
+        serde_json::json!({"t":"card.session","at":"2026-11-09T12:37:18.000Z","cardId":"a","sessionId":"s1"}),
+    ];
+    std::fs::write(dir.join("events.jsonl"), lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
+    // The runner: a process that has certainly exited.
+    let mut command = if cfg!(windows) { let mut c = Command::new("cmd"); c.args(["/C", "exit 0"]); c } else { let mut c = Command::new("sh"); c.args(["-c", "exit 0"]); c };
+    let mut runner = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
+    let started = o_core::sys::proc::started_at(runner.id()).unwrap();
+    runner.wait().unwrap();
+    std::fs::write(dir.join("runner.json"), serde_json::json!({"pid":runner.id(),"started":started}).to_string()).unwrap();
+    o_core::run::store::read_runs(&home, &o_core::run::index::RunQuery { limit: 50, project: None }).unwrap();
+    assert!(read_events(&home, "cut").iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Failed, .. })));
+
+    let id = o_core::run::followup::start(&home, "cut", "a", "이어서 해 주세요", &|_| Ok(())).unwrap();
+    let follow: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
+    let fresh = fake_cli(|spec| {
+        assert!(!spec.args.iter().any(|arg| arg == "--resume" || arg == "s1"), "{:?}", spec.args);
+        assert!(spec.stdin.as_ref().unwrap().contains("이어서 해 주세요"));
+        vec![r#"{"type":"system","subtype":"init","session_id":"s2"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+    });
+    assert_eq!(run_plan(&home, &id, &follow, None, fresh).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &id));
+    let sessions: Vec<String> = read_events(&home, &id).into_iter().filter_map(|e| match e { OEvent::CardSession { session_id, .. } => Some(session_id), _ => None }).collect();
+    assert_eq!(sessions, ["s2"]);
+    // The next follow-up resumes the new session.
+    assert_eq!(o_core::run::followup::target(&home, &id, "a").unwrap().session.as_deref(), Some("s2"));
 }
 
 fn isolated_copies() {
@@ -724,6 +765,8 @@ fn fake_cli(lines_for: impl Fn(&LaunchSpec) -> Vec<&'static str> + Send + Sync +
 fn temp_home() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("o-test-{}-{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap()));
     std::fs::create_dir_all(&dir).unwrap();
+    // Tests hold several slots at once; the RAM cap (ADR-0037) would make them depend on this PC's memory.
+    o_core::run::ram::write_enabled(&dir, false).unwrap();
     dir
 }
 

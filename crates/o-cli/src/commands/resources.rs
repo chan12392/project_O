@@ -5,7 +5,7 @@ use super::{fail, Command};
 
 pub const RESOURCES: Command = Command {
     name: "resources",
-    usage: "  o resources [--json]       남아 있는 자원 예약과 프로세스 기록 확인\n  o resources recover <id>   시작 전 중단 또는 종료 확인된 예약 복구 (실행기가 죽은 뒤 작업 프로세스와 자손이 모두 끝난 예약 포함, Windows)",
+    usage: "  o resources [--json]       남아 있는 자원 예약과 프로세스 기록 확인\n  o resources recover <id>   시작 전 중단 또는 종료 확인된 예약 복구 (실행기가 죽은 뒤 작업 프로세스가 끝나고 카드의 Job Object가 사라진 예약 포함, Windows)",
     run: list,
 };
 

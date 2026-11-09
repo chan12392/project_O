@@ -41,12 +41,12 @@ fn status(home: &Path, run_id: Option<&str>) -> i32 {
     if ids.is_empty() {
         println!("실행 기록이 없습니다.");
     }
-    let active = store::active_markers(home);
     for id in ids {
         let mut events = store::read_events(home, &id);
-        // A run whose runner died is closed on record, as `o runs` and the app show it (ADR-0039).
-        if store::close_if_runner_died(home, &id, &events, &active).unwrap_or(false) {
-            events = store::read_events(home, &id);
+        // A run whose runner died is closed on record, as `o runs` and the app show it (ADR-0039);
+        // the events read under that close are the current ones, closed by this reader or another.
+        if let Ok(Some(current)) = store::close_if_runner_died(home, &id, &events) {
+            events = current;
         }
         let Some(run) = snapshot(&events) else { continue };
         println!("{id}  {}  [{}]", run.title, run.status.as_str());

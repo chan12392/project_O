@@ -1,17 +1,23 @@
-//! A run whose runner died is closed on record, once, and only on strong evidence; on Windows a
-//! dead worker's orphaned descendants keep its lease from being offered for recovery (ADR-0039).
+//! A run whose runner died is closed on record, once, and only on strong evidence; a card it cut
+//! off is followed up in a fresh session; on Windows a dead runner's lease becomes recoverable only
+//! once the card's named kill-on-close job is gone (ADR-0039).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use o_core::run::events::{CardStatus, OEvent};
 use o_core::run::index::RunQuery;
+use o_core::run::plan::{Card, Plan, ProviderId};
 use o_core::run::store::{self, parse_event_values, read_runs, run_dir};
 use o_core::sys::proc;
 use serde_json::{json, Value};
 
 static NEXT: AtomicUsize = AtomicUsize::new(0);
+
+const RUNNER_STOPPED: &str = "실행기가 끝나 이 카드를 마치지 못했습니다(중단됨). 작업 폴더를 확인하고 다시 보내 주세요";
+const FOLLOWUP_STOPPED: &str = "후속 실행이 중단됐습니다. 다시 보내 주세요";
 
 fn temp_home(tag: &str) -> PathBuf {
     let n = NEXT.fetch_add(1, Ordering::SeqCst);
@@ -32,6 +38,11 @@ fn exited_process() -> (u32, u64) {
     drop(child);
     assert!(proc::definitely_exited(pid, started));
     (pid, started)
+}
+
+fn mark_dead_runner(home: &Path, run_id: &str) {
+    let (pid, started) = exited_process();
+    fs::write(run_dir(home, run_id).join("runner.json"), json!({"pid":pid,"started":started}).to_string()).unwrap();
 }
 
 fn write_run(home: &Path, run_id: &str, followup: bool) {
@@ -57,32 +68,39 @@ fn all(home: &Path) -> Vec<store::RunRecord> {
     read_runs(home, &RunQuery { limit: 50, project: None }).unwrap()
 }
 
+fn has_run_end(events: &[Value]) -> bool {
+    events.iter().any(|e| e["t"] == "run.end")
+}
+
+fn card(id: &str) -> Card {
+    Card { id: id.into(), provider: ProviderId::Claude, role: None, task: "t".into(), model: None, effort: None, depends_on: vec![], resources: vec![] }
+}
+
 #[test]
 fn a_dead_runners_run_is_closed_on_record_once() {
     let home = temp_home("close");
-    let (pid, started) = exited_process();
     write_run(&home, "dead", false);
-    fs::write(run_dir(&home, "dead").join("runner.json"), json!({"pid":pid,"started":started}).to_string()).unwrap();
+    mark_dead_runner(&home, "dead");
     write_run(&home, "dead-followup", true);
-    fs::write(run_dir(&home, "dead-followup").join("runner.json"), json!({"pid":pid,"started":started}).to_string()).unwrap();
+    mark_dead_runner(&home, "dead-followup");
     write_run(&home, "live", false);
     store::mark_runner(&home, "live").unwrap();
     write_run(&home, "unmarked", false);
     write_run(&home, "unknown-start", false);
+    let (pid, _) = exited_process();
     fs::write(run_dir(&home, "unknown-start").join("runner.json"), json!({"pid":pid}).to_string()).unwrap();
 
     let runs = all(&home);
     let events = on_disk(&home, "dead");
     let ends: Vec<&Value> = events.iter().filter(|e| e["t"] == "card.end" && e["status"] == "failed").collect();
     assert_eq!(ends.iter().map(|e| e["cardId"].as_str().unwrap()).collect::<Vec<_>>(), ["b", "c"]);
-    assert!(ends.iter().all(|e| e["result"] == "실행기가 끝나 이 카드를 마치지 못했습니다(중단됨). 작업 폴더를 확인하고 다시 보내 주세요" && e["exitCode"].is_null()));
+    assert!(ends.iter().all(|e| e["result"] == RUNNER_STOPPED && e["exitCode"].is_null()));
     assert_eq!(events.last().unwrap()["t"], "run.end");
     assert_eq!(events.last().unwrap()["status"], "failed");
-    // The returned record already shows the closing events, and the index picks them up next time.
-    let record = runs.iter().find(|r| r.run_id == "dead").unwrap();
-    assert_eq!(record.events.len(), events.len());
+    // The returned record is the whole current event list, the closing events included.
+    assert_eq!(runs.iter().find(|r| r.run_id == "dead").unwrap().events, events);
     let followup = on_disk(&home, "dead-followup");
-    assert!(followup.iter().any(|e| e["t"] == "card.end" && e["cardId"] == "b" && e["result"] == "후속 실행이 중단됐습니다. 다시 보내 주세요"));
+    assert!(followup.iter().any(|e| e["t"] == "card.end" && e["cardId"] == "b" && e["result"] == FOLLOWUP_STOPPED));
     assert_eq!(followup.last().unwrap()["t"], "run.end");
 
     // A second read appends nothing more, and neither does `o status`'s path.
@@ -90,104 +108,258 @@ fn a_dead_runners_run_is_closed_on_record_once() {
     let again = all(&home);
     assert_eq!(on_disk(&home, "dead").len(), count);
     assert_eq!(again.iter().find(|r| r.run_id == "dead").unwrap().events.len(), count);
-    assert!(!store::close_if_runner_died(&home, "dead", &store::read_events(&home, "dead"), &[]).unwrap());
-    assert!(store::close_dead_run(&home, "dead", &[]).unwrap().is_empty());
+    assert!(store::close_if_runner_died(&home, "dead", &store::read_events(&home, "dead")).unwrap().is_none());
+    assert_eq!(store::close_dead_run(&home, "dead").unwrap().unwrap(), events);
     assert_eq!(on_disk(&home, "dead").len(), count);
 
     // A live runner, a run whose runner never wrote its mark, and an unknown start time stay open.
     for run in ["live", "unmarked", "unknown-start"] {
-        assert!(!on_disk(&home, run).iter().any(|e| e["t"] == "run.end"), "{run}");
-        assert!(!again.iter().find(|r| r.run_id == run).unwrap().events.iter().any(|e| e["t"] == "run.end"), "{run}");
+        assert!(!has_run_end(&on_disk(&home, run)), "{run}");
+        assert!(!has_run_end(&again.iter().find(|r| r.run_id == run).unwrap().events), "{run}");
+        assert!(store::close_dead_run(&home, run).unwrap().is_none(), "{run}");
     }
 }
 
 #[test]
 fn a_live_card_marker_keeps_a_dead_runners_run_open() {
     let home = temp_home("marker");
-    let (pid, started) = exited_process();
     write_run(&home, "dead", false);
-    fs::write(run_dir(&home, "dead").join("runner.json"), json!({"pid":pid,"started":started}).to_string()).unwrap();
-    let marker = store::ActiveMarker { run_id: "dead".into(), card_id: "b".into(), provider: o_core::run::plan::ProviderId::Claude, pid: std::process::id() };
+    mark_dead_runner(&home, "dead");
+    let marker = store::ActiveMarker { run_id: "dead".into(), card_id: "b".into(), provider: ProviderId::Claude, pid: std::process::id() };
     store::mark_active(&home, &marker).unwrap();
+    // The marker is read under the append lock: the run's current events come back, still open.
+    let current = store::close_dead_run(&home, "dead").unwrap().expect("looked under the lock");
+    assert!(!has_run_end(&current));
+    assert_eq!(current, on_disk(&home, "dead"));
     all(&home);
-    assert!(!on_disk(&home, "dead").iter().any(|e| e["t"] == "run.end"));
+    assert!(!has_run_end(&on_disk(&home, "dead")));
     store::clear_active(&home, "dead", "b");
     all(&home);
     assert_eq!(on_disk(&home, "dead").last().unwrap()["t"], "run.end");
 }
 
+#[test]
+fn a_run_whose_plan_cannot_be_read_is_left_open() {
+    let home = temp_home("plan");
+    for (run, plan) in [("missing", None), ("broken", Some("{")), ("no-cards", Some(r#"{"title":"t"}"#))] {
+        write_run(&home, run, false);
+        mark_dead_runner(&home, run);
+        let path = run_dir(&home, run).join("plan.json");
+        match plan { None => fs::remove_file(&path).unwrap(), Some(text) => fs::write(&path, text).unwrap() }
+        let before = on_disk(&home, run);
+        // Never a run.end without the cards' ends: nothing is written.
+        assert!(store::close_dead_run(&home, run).unwrap().is_none(), "{run}");
+        assert_eq!(on_disk(&home, run), before, "{run}");
+    }
+    let runs = all(&home);
+    for run in ["missing", "broken", "no-cards"] {
+        assert!(!has_run_end(&on_disk(&home, run)), "{run}");
+        assert!(!has_run_end(&runs.iter().find(|r| r.run_id == run).unwrap().events), "{run}");
+    }
+}
+
+#[test]
+fn a_reader_with_stale_events_reports_the_close_another_reader_made() {
+    let home = temp_home("stale");
+    write_run(&home, "dead", false);
+    mark_dead_runner(&home, "dead");
+    // `o status` read the events, then another reader (the app) closed the run.
+    let stale = store::read_events(&home, "dead");
+    let closed = store::close_dead_run(&home, "dead").unwrap().unwrap();
+    assert!(has_run_end(&closed));
+    let current = store::close_if_runner_died(&home, "dead", &stale).unwrap().expect("the current events");
+    assert!(matches!(current.last(), Some(OEvent::RunEnd { status: CardStatus::Failed, .. })));
+    assert_eq!(current.len(), closed.len());
+    // Events appended after a reader's view (here: a team message) are in what it gets back.
+    store::append_event(&home, "dead", &serde_json::from_value(json!({"t":"card.message","at":"2026-11-09T12:40:00.000Z","cardId":"lead","text":"확인"})).unwrap()).unwrap();
+    assert_eq!(store::close_if_runner_died(&home, "dead", &stale).unwrap().unwrap().len(), closed.len() + 1);
+    // `o runs` agrees with the file.
+    assert_eq!(all(&home).iter().find(|r| r.run_id == "dead").unwrap().events, on_disk(&home, "dead"));
+}
+
+#[test]
+fn a_card_closed_by_a_dead_runner_is_followed_up_in_a_fresh_session() {
+    let fixture = temp_home("followup");
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let plan = Plan { title: "t".into(), project: project.to_string_lossy().into_owned(), cards: vec![card("a")] };
+    let start = |run: &str| vec![
+        json!({"t":"run.start","at":"2026-11-09T12:37:16.000Z","runId":run,"title":"t","project":plan.project,"cards":[{"id":"a","provider":"claude"}]}),
+        json!({"t":"card.start","at":"2026-11-09T12:37:17.000Z","cardId":"a"}),
+        json!({"t":"card.session","at":"2026-11-09T12:37:18.000Z","cardId":"a","sessionId":"s1"}),
+    ];
+    for run in ["cut", "failed"] {
+        store::create_run(&home, run, &plan).unwrap();
+        let mut lines = start(run);
+        if run == "failed" {
+            lines.push(json!({"t":"card.end","at":"2026-11-09T12:38:00.000Z","cardId":"a","status":"failed","result":"오류","exitCode":1}));
+            lines.push(json!({"t":"run.end","at":"2026-11-09T12:38:00.000Z","runId":run,"status":"failed"}));
+        }
+        fs::write(run_dir(&home, run).join("events.jsonl"), lines.iter().map(|l| format!("{l}\n")).collect::<String>()).unwrap();
+    }
+    mark_dead_runner(&home, "cut");
+    all(&home);
+    assert!(on_disk(&home, "cut").iter().any(|e| e["t"] == "card.end" && e["cardId"] == "a" && e["result"] == RUNNER_STOPPED));
+
+    // The cut-off session is not resumed; the follow-up starts fresh in the same project.
+    let fresh = o_core::run::followup::target(&home, "cut", "a").unwrap();
+    assert_eq!(fresh.session, None);
+    assert_eq!(fresh.workspace, PathBuf::from(store::resolved_path(&plan.project)));
+    // A card that ended on its own, even failed, is resumed as before.
+    assert_eq!(o_core::run::followup::target(&home, "failed", "a").unwrap().session.as_deref(), Some("s1"));
+
+    // A follow-up of that fresh start which reported no session of its own starts fresh too.
+    let next = o_core::run::followup::start(&home, "cut", "a", "다시", &|_| Ok(())).unwrap();
+    store::append_event(&home, &next, &OEvent::CardEnd { at: "2026-11-09T12:39:00.000Z".into(), card_id: "a".into(), status: CardStatus::Done, result: Some("ok".into()), exit_code: Some(0) }).unwrap();
+    store::append_event(&home, &next, &OEvent::RunEnd { at: "2026-11-09T12:39:00.000Z".into(), run_id: next.clone(), status: CardStatus::Done }).unwrap();
+    assert_eq!(o_core::run::followup::target(&home, &next, "a").unwrap().session, None);
+
+    // The rules that keep a follow-up off a running card are unchanged.
+    let marker = store::ActiveMarker { run_id: "cut".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() };
+    store::mark_active(&home, &marker).unwrap();
+    assert!(o_core::run::followup::target(&home, "cut", "a").is_err());
+    store::clear_active(&home, "cut", "a");
+}
+
+#[test]
+fn a_dead_runners_lease_without_a_job_name_stays_unknown() {
+    let home = temp_home("legacy");
+    let project = home.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let store::Reserved::Granted(lease) = store::reserve_slot(&home, "run", &card("old"), project.to_str().unwrap(), chrono::Utc::now()).unwrap() else { panic!("not granted") };
+    store::mark_spawning(&home, &lease).unwrap();
+    // Owner and worker both certainly exited, as for a lease made before job names were recorded.
+    let (owner, owner_started) = exited_process();
+    let (worker, worker_started) = exited_process();
+    let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    conn.execute("UPDATE resource_leases SET owner_pid=?1, owner_started=?2, worker_pid=?3, worker_started=?4", rusqlite::params![owner, owner_started as i64, worker, worker_started as i64]).unwrap();
+    drop(conn);
+    let leases = store::resource_leases(&home).unwrap();
+    assert_eq!(leases[0].job_name, None);
+    assert_eq!(leases[0].state, "unknown");
+    assert!(store::recover_resource(&home, leases[0].id.parse().unwrap()).is_err());
+}
+
 #[cfg(windows)]
-mod windows_tree {
+mod windows_job {
     use super::*;
-    use std::time::{Duration, Instant};
+    use std::ffi::OsString;
+    use std::os::windows::io::AsRawHandle;
+    use o_core::sys::win_launch::{Child, HandleOwner, Launch};
+    use windows_sys::Win32::Foundation::{CloseHandle, WAIT_OBJECT_0};
+    use windows_sys::Win32::System::JobObjects::CreateJobObjectW;
+    use windows_sys::Win32::System::Threading::{CreateEventW, WaitForSingleObject};
 
-    const ROLE: &str = "O_TEST_DEAD_RUNNER_ROLE";
-    const PID_FILE: &str = "O_TEST_DEAD_RUNNER_PID_FILE";
-    const NAME: &str = "windows_tree::an_orphaned_descendant_keeps_the_worker_tree_alive";
-
-    fn this_test() -> Command {
-        let mut command = Command::new(std::env::current_exe().unwrap());
-        command.args(["--exact", NAME, "--nocapture", "--test-threads", "1"]);
-        command
+    /// A worker that runs until its input closes or its job ends it.
+    fn reader(cwd: &Path) -> Launch {
+        let root = std::env::var_os("SystemRoot").unwrap();
+        Launch { executable: PathBuf::from(&root).join("System32").join("findstr.exe"), args: vec![OsString::from("x")], cwd: cwd.to_path_buf(), environment: vec![(OsString::from("SystemRoot"), root)] }
     }
 
-    fn wait_until(limit: Duration, mut done: impl FnMut() -> bool) -> bool {
-        let start = Instant::now();
-        while start.elapsed() < limit {
-            if done() { return true; }
-            std::thread::sleep(Duration::from_millis(50));
-        }
-        done()
+    fn owner() -> HandleOwner {
+        HandleOwner::start(env!("CARGO_BIN_EXE_o-handle-owner").into(), "--o-handle-owner").unwrap()
+    }
+
+    /// Waits on the child's handle; the bound only turns a kill that never comes into a failure.
+    fn ends(child: &Child) -> bool {
+        let handle = child.watch_handle().unwrap();
+        unsafe { WaitForSingleObject(handle.as_raw_handle(), 60_000) == WAIT_OBJECT_0 }
+    }
+
+    fn wide(name: &str) -> Vec<u16> {
+        name.encode_utf16().chain([0]).collect()
+    }
+
+    fn nanos() -> u128 {
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
+    }
+
+    fn state(home: &Path) -> &'static str {
+        store::resource_leases(home).unwrap()[0].state
     }
 
     #[test]
-    fn an_orphaned_descendant_keeps_the_worker_tree_alive() {
-        match std::env::var(ROLE).as_deref() {
-            // The card CLI's child: outlives the worker that started it.
-            Ok("sleeper") => std::thread::sleep(Duration::from_secs(5)),
-            // The worker: starts the sleeper, says which pid it got, and exits.
-            Ok("worker") => {
-                // Left running on purpose: the orphan is what the test looks for.
-                #[allow(clippy::zombie_processes)]
-                let child = proc::spawn_detached(this_test().env(ROLE, "sleeper")).unwrap();
-                fs::write(std::env::var(PID_FILE).unwrap(), child.id().to_string()).unwrap();
-            }
-            _ => {
-                let home = temp_home("tree");
-                let pid_file = home.join("sleeper.pid");
-                let mut worker = proc::hide_window(this_test().env(ROLE, "worker").env(PID_FILE, &pid_file).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null())).spawn().unwrap();
-                let worker_pid = worker.id();
-                let worker_started = proc::started_at(worker_pid).unwrap();
-                assert!(worker.wait().unwrap().success());
-                let sleeper: u32 = fs::read_to_string(&pid_file).unwrap().trim().parse().unwrap();
-                assert!(proc::definitely_exited(worker_pid, worker_started));
-                assert!(proc::is_alive(sleeper), "the sleeper should still run");
-                assert_eq!(proc::descendants_alive(worker_pid, worker_started), Some(true));
-                // The sleeper was started after the worker: a later start time on the same pid is not its parent.
-                assert_eq!(proc::descendants_alive(worker_pid, u64::MAX), Some(false));
+    fn a_dead_runners_lease_is_recoverable_once_the_cards_job_is_gone() {
+        let home = temp_home("job");
+        let project = home.join("project");
+        fs::create_dir_all(&project).unwrap();
+        let store::Reserved::Granted(lease) = store::reserve_slot(&home, "run", &card("gui"), project.to_str().unwrap(), chrono::Utc::now()).unwrap() else { panic!("not granted") };
+        store::mark_spawning(&home, &lease).unwrap();
+        // What the card runner does: a named kill-on-close job, its name linked with the worker.
+        let owner = owner();
+        let (mut child, job) = reader(&project).spawn_in_named_job(&owner, "run-gui").unwrap();
+        let name = job.job_name().expect("a named job").to_string();
+        assert!(name.starts_with(r"Global\project_O-job-run-gui-"), "{name}");
+        store::link_slot(&home, &lease, child.id(), Some(&name)).unwrap();
+        child.resume().unwrap();
+        assert!(!proc::job_gone(&name), "the job exists while the runner holds its handle");
 
-                // The lease of a dead runner's card: owner gone, worker gone, no exit confirmation.
-                let (owner, owner_started) = exited_process();
-                let project = home.join("project");
-                fs::create_dir_all(&project).unwrap();
-                let card = o_core::run::plan::Card { id: "gui".into(), provider: o_core::run::plan::ProviderId::Claude, role: None, task: "t".into(), model: None, effort: None, depends_on: vec![], resources: vec![] };
-                let store::Reserved::Granted(_) = store::reserve_slot(&home, "run", &card, project.to_str().unwrap(), chrono::Utc::now()).unwrap() else { panic!("not granted") };
-                let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
-                conn.execute("UPDATE resource_leases SET owner_pid=?1, owner_started=?2, worker_pid=?3, worker_started=?4, spawn_intent=1", rusqlite::params![owner, owner_started as i64, worker_pid, worker_started as i64]).unwrap();
-                drop(conn);
-                let id: i64 = store::resource_leases(&home).unwrap()[0].id.parse().unwrap();
-                assert_eq!(store::resource_leases(&home).unwrap()[0].state, "unknown", "a live descendant keeps the lease");
-                assert!(store::recover_resource(&home, id).is_err());
+        // The runner died: the lease's owner has exited.
+        let (dead, dead_started) = exited_process();
+        let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+        conn.execute("UPDATE resource_leases SET owner_pid=?1, owner_started=?2", rusqlite::params![dead, dead_started as i64]).unwrap();
+        drop(conn);
+        let leases = store::resource_leases(&home).unwrap();
+        let id: i64 = leases[0].id.parse().unwrap();
+        assert_eq!(leases[0].job_name.as_deref(), Some(name.as_str()));
+        assert_eq!(leases[0].state, "unknown", "the worker still runs");
 
-                assert!(wait_until(Duration::from_secs(15), || !proc::is_alive(sleeper)), "the sleeper did not end");
-                assert_eq!(proc::descendants_alive(worker_pid, worker_started), Some(false));
-                assert_eq!(store::resource_leases(&home).unwrap()[0].state, "recoverable");
-                store::recover_resource(&home, id).unwrap();
-                assert!(!store::resource_held(&home, "run", "gui").unwrap());
-                // The card did start: its start still counts against the day.
-                assert_eq!(store::started_on(&home, chrono::Utc::now()).unwrap(), 1);
-                drop(worker);
-            }
-        }
+        // The worker exits while its job still exists (a process left in it would keep it so).
+        drop(child.stdin.take());
+        assert!(ends(&child));
+        child.wait().unwrap();
+        let worker_started: u64 = leases[0].worker_started.as_deref().unwrap().parse().unwrap();
+        assert!(proc::definitely_exited(leases[0].worker_pid.unwrap(), worker_started));
+        assert_eq!(state(&home), "unknown", "an open job keeps the lease");
+        assert!(store::recover_resource(&home, id).is_err());
+
+        // The last handle closes (the runner's death): the job and its name are gone.
+        drop(job);
+        assert!(proc::job_gone(&name));
+        assert_eq!(state(&home), "recoverable");
+        store::recover_resource(&home, id).unwrap();
+        assert!(!store::resource_held(&home, "run", "gui").unwrap());
+        // The card did start: its start still counts against the day.
+        assert_eq!(store::started_on(&home, chrono::Utc::now()).unwrap(), 1);
+        drop(owner);
+    }
+
+    #[test]
+    fn closing_the_last_job_handle_ends_the_card() {
+        let home = temp_home("kill");
+        let owner = owner();
+        let (child, job) = reader(&home).spawn_in_named_job(&owner, "run-kill").unwrap();
+        let name = job.job_name().expect("a named job").to_string();
+        child.resume().unwrap();
+        // Its input stays open: only the job can end it.
+        assert!(child.try_wait().unwrap().is_none());
+        assert!(!proc::job_gone(&name));
+        drop(job);
+        assert!(ends(&child), "kill-on-close ended the worker");
+        assert!(proc::job_gone(&name));
+        drop(child);
+        drop(owner);
+    }
+
+    #[test]
+    fn only_a_missing_job_name_reads_as_gone() {
+        let n = nanos();
+        assert!(proc::job_gone(&format!(r"Global\project_O-job-never-made-{n}")));
+        // An existing job, even one O did not make, is not gone.
+        let unrelated = format!(r"Global\o-test-unrelated-job-{n}");
+        let job = unsafe { CreateJobObjectW(std::ptr::null(), wide(&unrelated).as_ptr()) };
+        assert!(!job.is_null());
+        assert!(!proc::job_gone(&unrelated));
+        unsafe { CloseHandle(job) };
+        assert!(proc::job_gone(&unrelated));
+        // A name held by another kind of object, a missing directory and an empty name prove nothing.
+        let other = format!(r"Global\o-test-event-{n}");
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, wide(&other).as_ptr()) };
+        assert!(!event.is_null());
+        assert!(!proc::job_gone(&other));
+        unsafe { CloseHandle(event) };
+        assert!(!proc::job_gone(&format!(r"Global\o-test-missing-{n}\job")));
+        assert!(!proc::job_gone(""));
     }
 }
