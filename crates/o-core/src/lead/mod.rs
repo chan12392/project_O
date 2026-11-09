@@ -972,8 +972,6 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
             let env = clean::environment(root, req.provider)?;
             command.env_clear().envs(env);
         }
-        // An inherited API key would bill the API instead of the subscription the CLI signed in with.
-        for name in providers::names_to_remove(&spec.env_remove, std::env::vars_os().map(|(key, _)| key)) { command.env_remove(name); }
         command.envs(&spec.env);
         command.env("O_AGENT_ROLE", "lead");
         Ok(command)

@@ -61,7 +61,7 @@ fn actual_cli_runner_uses_its_own_helper_for_fake_provider() {
     std::fs::create_dir_all(&bin).unwrap();
     let source = base.join("fake.rs");
     std::fs::write(&source, r##"fn main() {
-        if std::env::var_os("ANTHROPIC_API_KEY").is_some() { std::process::exit(9); }
+        if std::env::var_os("ANTHROPIC_API_KEY").as_deref() != Some(std::ffi::OsStr::new("fake-only")) { std::process::exit(9); }
         std::fs::write(std::env::var_os("O_FAKE_MARKER").unwrap(), "ok").unwrap();
         println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"ok"}}"#);
     }"##).unwrap();
@@ -81,6 +81,46 @@ fn actual_cli_runner_uses_its_own_helper_for_fake_provider() {
     assert!(marker.exists(), "fake CLI was not started");
     assert!(read_events(&home, "run").iter().any(|event| matches!(event, OEvent::CardEnd { status: CardStatus::Done, .. })));
     assert!(!resource_held(&home, "run", "card").unwrap());
+}
+
+#[cfg(windows)]
+#[test]
+fn opencode_own_profile_passes_environment_through_auth_and_card() {
+    use std::os::windows::process::CommandExt;
+    use std::process::Command;
+    use o_core::run::events::{CardStatus, OEvent};
+    use o_core::run::plan::{Card, Plan, ProviderId};
+    use o_core::run::store::{create_run, read_events};
+    let base = std::env::temp_dir().join(format!("o-opencode-env-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+    let project = base.join("project");
+    let bin = base.join("bin");
+    std::fs::create_dir_all(&project).unwrap();
+    std::fs::create_dir_all(&bin).unwrap();
+    let source = base.join("fake.rs");
+    std::fs::write(&source, r##"fn main() {
+        if std::env::var_os("O_CUSTOM_PROVIDER_API_KEY").as_deref() != Some(std::ffi::OsStr::new("fake-only")) { std::process::exit(9); }
+        if std::env::args().nth(1).as_deref() == Some("auth") {
+            std::fs::write(std::env::var_os("O_FAKE_AUTH_MARKER").unwrap(), "ok").unwrap();
+            println!("[]");
+        } else {
+            std::fs::write(std::env::var_os("O_FAKE_CARD_MARKER").unwrap(), "ok").unwrap();
+            println!(r#"{{"type":"text","part":{{"text":"ok"}}}}"#);
+        }
+    }"##).unwrap();
+    assert!(Command::new("rustc").arg(&source).arg("-o").arg(bin.join("opencode.exe")).creation_flags(0x08000000).status().unwrap().success());
+    let home = base.join("local").join("project_O");
+    let card = Card { id: "card".into(), provider: ProviderId::OpenCode, role: None, task: "test".into(), model: None, effort: None, depends_on: vec![], resources: vec![] };
+    let plan = Plan { title: "test".into(), project: project.to_string_lossy().into_owned(), cards: vec![card] };
+    create_run(&home, "run", &plan).unwrap();
+    let auth_marker = base.join("auth");
+    let card_marker = base.join("card");
+    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let output = Command::new(env!("CARGO_BIN_EXE_o")).args(["_run", "run"])
+        .env("LOCALAPPDATA", base.join("local")).env("PATH", path).env("O_CUSTOM_PROVIDER_API_KEY", "fake-only")
+        .env("O_FAKE_AUTH_MARKER", &auth_marker).env("O_FAKE_CARD_MARKER", &card_marker).creation_flags(0x08000000).output().unwrap();
+    assert!(output.status.success(), "runner failed: {}", String::from_utf8_lossy(&output.stderr));
+    assert!(auth_marker.exists() && card_marker.exists());
+    assert!(read_events(&home, "run").iter().any(|event| matches!(event, OEvent::CardEnd { status: CardStatus::Done, .. })));
 }
 
 #[cfg(windows)]
@@ -194,7 +234,7 @@ fn actual_cli_lead_normal_crash_stop_and_marker_failure() {
     std::fs::create_dir_all(&bin).unwrap();
     let source = base.join("fake.rs");
     std::fs::write(&source, r##"fn main() {
-        if std::env::var_os("ANTHROPIC_API_KEY").is_some() { std::process::exit(9); }
+        if std::env::var_os("ANTHROPIC_API_KEY").as_deref() != Some(std::ffi::OsStr::new("fake-only")) { std::process::exit(9); }
         std::fs::write(std::env::var_os("O_FAKE_MARKER").unwrap(), std::process::id().to_string()).unwrap();
         if std::env::var_os("O_FAKE_BLOCK").is_some() { std::thread::sleep(std::time::Duration::from_secs(30)); }
         println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"fake-lead-ok"}}"#);

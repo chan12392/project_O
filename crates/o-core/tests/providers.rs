@@ -1,6 +1,5 @@
 //! Port of tests/providers.test.ts.
 
-use std::ffi::OsString;
 
 use o_core::run::events::StreamSignal;
 use o_core::sys::js::iso_from_secs;
@@ -9,7 +8,7 @@ use o_core::providers::agy::parse_agy_models;
 use o_core::providers::codex::parse_codex_models;
 use o_core::providers::devin::read_run;
 use o_core::providers::{
-    card_prompt, is_limit_text, launch_spec, launch_spec_for, launch_spec_with, names_to_remove, unwrap_shell, LaunchSpec, LeadTurn, ModelChoice, StreamReader, TeamChannel,
+    card_prompt, is_limit_text, launch_spec, launch_spec_for, launch_spec_with, unwrap_shell, LaunchSpec, LeadTurn, ModelChoice, StreamReader, TeamChannel,
 };
 use o_guard::rules::{code_rules, find_hits};
 use regex::Regex;
@@ -271,14 +270,11 @@ fn card_prompt_keeps_the_common_prefix_ahead_of_task_details() {
     assert_eq!(claude.args, expected_args);
 }
 
-/// A key left on the PC must not move a card from the subscription to the API bill.
+/// Cards inherit API credentials without injecting them into the launch spec.
 #[test]
-fn cards_drop_api_key_variables_so_each_cli_uses_its_own_sign_in() {
+fn cards_inherit_api_key_variables() {
     let p = plan();
     let [codex, claude, agy] = <[LaunchSpec; 3]>::try_from(specs(&p)).unwrap();
-    assert_eq!(claude.env_remove, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
-    assert_eq!(codex.env_remove, ["CODEX_API_KEY"]);
-    assert!(agy.env_remove.is_empty());
     for spec in [&codex, &claude, &agy] {
         assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID"), "{:?}", spec.env);
     }
@@ -386,7 +382,6 @@ fn the_codex_lead_falls_back_to_read_only_exec_without_app_server() {
         ["exec", "-s", "read-only", "-C", "C:/work/demo", "--skip-git-repo-check", "--disable", "hooks", "-i", "C:/o-lead/t1/01-a.png", "--json", "-c", "model_reasoning_effort=high", "-"]
     );
     assert_eq!(first.stdin.as_deref(), Some("계획해 줘"));
-    assert_eq!(first.env_remove, ["CODEX_API_KEY"]);
     let next = lead_spec_on(ProviderId::Codex, Some("th-9"), None, &[], false).unwrap();
     assert_eq!(
         next.args,
@@ -473,14 +468,6 @@ fn lead_model_lists_come_from_each_cli() {
     let ids: Vec<String> = parse_codex_models(&codex.to_string()).into_iter().map(|m| m.id).collect();
     assert_eq!(ids, ["gpt-6.1-sol", "gpt-6-luna"]);
     assert!(parse_codex_models("not json").is_empty());
-}
-
-#[test]
-fn inherited_spellings_in_another_case_are_dropped_too() {
-    let inherited = ["Path", "anthropic_api_key", "ANTHROPIC_API_KEY_HELPER", "Anthropic_Auth_Token"].map(OsString::from);
-    let names = names_to_remove(&["ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into()], inherited);
-    assert_eq!(names, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "anthropic_api_key", "Anthropic_Auth_Token"].map(OsString::from));
-    assert!(names_to_remove(&[], [OsString::from("ANTHROPIC_API_KEY")]).is_empty());
 }
 
 /// A wrong match rests the provider for an hour and fails the cards waiting for it.
@@ -579,7 +566,7 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
         ["--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", "C:/o/runs/r1", "--settings", AGY_DENY, "--model", "gemini-3.8-flash-high", "-p", prompt.as_str()]
     );
     for spec in [&codex, &claude, &agy] {
-        // Same identity for `o msg`, same API keys taken out, the prompt says YOLO and what stays closed.
+        // Same identity for `o msg`; the prompt says YOLO and what stays closed.
         assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID"));
         let text = spec.stdin.clone().unwrap_or_else(|| prompt.clone());
         assert!(text.contains("YOLO 모드") && text.contains("o dispatch"), "{text}");
@@ -587,7 +574,6 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
             assert!(!has(&spec.args, flag), "{flag}");
         }
     }
-    assert_eq!(claude.env_remove, ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
     // The headless-shell warning of YOLO off is not in the YOLO prompt.
     assert!(!claude.stdin.unwrap().contains("셸 명령은 승인할 사람이 없어"));
 }
@@ -651,7 +637,6 @@ fn a_devin_card_prints_headless_with_edits_approved_and_its_transcript_exported(
     assert_eq!(spec.args, expected);
     // No effort flag exists (a Devin model id names its level), and the prompt is an argument.
     assert!(!has(&spec.args, "high") && spec.stdin.is_none());
-    assert_eq!(spec.env_remove, ["WINDSURF_API_KEY"]);
     assert!(find_hits(&spec.args.join(" "), code_rules()).is_empty());
     // Nothing is allowed without a prompt, so the card is told to keep to file tools, never to read the team channel.
     assert!(prompt.contains("셸은 쓰지 말고") && prompt.contains("팀 대화 명령을 실행할 수 없습니다"));
@@ -772,11 +757,8 @@ fn the_opencode_card_runs_standalone_with_json_events_and_its_prompt_on_stdin() 
     // No model, no variant to name: the effort is left to OpenCode's default.
     assert_eq!(opencode_card(None, Some("high")).args, ["run", "--format", "json", "--standalone"]);
     assert_eq!(opencode_card(Some("openrouter/x/y:free"), None).args[4..], ["-m", "openrouter/x/y:free"]);
-    // The default launch keeps approvals and removes the provider API key variables.
+    // The default launch keeps approvals and inherits the provider API key variables.
     assert!(!spec.args.iter().any(|a| a == "--auto" || a.contains("dangerously")));
-    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
-        assert!(spec.env_remove.iter().any(|k| k == key), "{key}");
-    }
     assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID"));
     let p = Plan { cards: vec![card("oc", ProviderId::OpenCode, None, "구현", None, None)], ..plan() };
     assert_eq!(launch_spec_for(&p.cards[0], &p, &TEAM, None, true).args, ["run", "--format", "json", "--standalone", "--auto"]);

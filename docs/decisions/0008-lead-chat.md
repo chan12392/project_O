@@ -45,7 +45,7 @@
 | Antigravity | `agy --output-format stream-json --mode plan --sandbox --settings {"permissions":{"deny":["write_file(*)","command(*)","mcp(*)","read_url(*)","execute_url(*)"]}} [--add-dir 첨부 폴더] [--model] [--effort] -p <프롬프트>` | `--conversation <id>` (스트림 `init`의 `conversation_id`) | 세션 설정의 거부 규칙을 agy 권한 검사가 막는다(파일 쓰기·셸·MCP·URL 동작). plan 모드만으로는 막히지 않는다(개정 1). 한 번만 훅을 끄는 공식 옵션이 없어 프로젝트에 `.agents/hooks.json`이 있으면 총괄을 맡지 않는다(개정 2) |
 
 - 노력 수준은 CLI가 받는 값만: Claude `low·medium·high·xhigh·max`, Codex `minimal·low·medium·high·xhigh`, Antigravity `low·medium·high·xhigh·max`. 모델은 기본이 CLI 설정이고, 사람이 고르면 `--model`(Codex `-m`)로 넘긴다(개정 1).
-- 총괄 CLI는 그 CLI의 API 키 변수(`ANTHROPIC_API_KEY`·`ANTHROPIC_AUTH_TOKEN`, `CODEX_API_KEY`)를 대소문자 구분 없이 물려받지 않는다. 남은 키가 구독 대신 API로 과금되는 것을 막는다(B의 카드 수정과 같은 `api_key_vars`·`names_to_remove`).
+- 인증 환경변수 전달과 API 과금 경고는 [ADR-0035](0035-api-key-env-pass-through.md)가 이 규칙을 대체한다.
 
 ### 프롬프트 (`lead::prompt`)
 
@@ -80,7 +80,7 @@
 ### 모델
 
 - `o lead send --model <id>`: 카드 `model`과 같은 형식 규칙(`policy::is_model_id`)으로 검사하고 `lead.user`에 남긴 뒤 `Provider::lead`에 넘긴다. 없으면 CLI 기본 모델이다.
-- 목록은 각 CLI의 공식 출처만 쓴다(`Provider::lead_models`, `o lead models --provider <id>`). 셸 없이, 창 없이, API 키 변수를 뺀 채 실행한다. 형식 규칙에 맞지 않는 id는 버린다.
+- 목록은 각 CLI의 공식 출처만 쓴다(`Provider::lead_models`, `o lead models --provider <id>`). 셸 없이, 창 없이 실행한다. 인증 환경은 ADR-0035를 따른다. 형식 규칙에 맞지 않는 id는 버린다.
 
 | CLI | 출처 |
 |---|---|

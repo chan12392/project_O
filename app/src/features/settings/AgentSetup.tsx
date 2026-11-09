@@ -66,7 +66,7 @@ export function useAgents(api: Backend, clean: boolean) {
 export type AgentsState = ReturnType<typeof useAgents>;
 
 /** Each CLI with its state and the one next step it needs: install, sign in, or nothing. */
-export function AgentList({ state }: { state: AgentsState }) {
+export function AgentList({ state, showApiKeyWarning = false }: { state: AgentsState; showApiKeyWarning?: boolean }) {
   const { agents, error, checking } = state;
   if (!agents) {
     if (error)
@@ -111,14 +111,14 @@ export function AgentList({ state }: { state: AgentsState }) {
       )}
       <ul className="divide-y rounded-lg border" aria-busy={checking}>
         {agents.map((agent) => (
-          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} />
+          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} showApiKeyWarning={showApiKeyWarning} />
         ))}
       </ul>
     </div>
   );
 }
 
-function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState }) {
+function AgentRow({ agent, busy, note, state, showApiKeyWarning }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState; showApiKeyWarning: boolean }) {
   const connected = agent.installed && !agent.profileUnsupported && agent.loggedIn === true;
   const unknown = agent.installed && !agent.profileUnsupported && agent.loggedIn === null;
   const needsLogin = agent.installed && !agent.profileUnsupported && agent.loggedIn === false;
@@ -188,6 +188,13 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
         </div>
         {action}
       </div>
+      {showApiKeyWarning && !!agent.apiKeyEnv?.length && (
+        <p role="note" className="mt-2 ml-10 break-words text-xs leading-relaxed text-status-warning-text">
+          인증 환경변수가 설정되어 있습니다: {agent.apiKeyEnv.join(", ")}. {agent.id === "claude" && agent.apiKeyEnv.includes("ANTHROPIC_API_KEY")
+            ? "Claude의 비대화형 실행(-p)에서 키를 사용하면 구독 대신 API로 과금됩니다."
+            : "CLI의 인증 방식과 과금이 달라질 수 있습니다."} 사용 전 인증 설정을 확인해 주세요.
+        </p>
+      )}
       {busy && (
         <div className="relative mt-3 ml-10 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${agent.name} ${busy === "install" ? "설치" : busy === "terminal" ? "터미널 열기" : "로그인"} 진행 중`}>
           <span className="progress-flow absolute inset-y-0 w-2/5 rounded-full bg-primary/70" />

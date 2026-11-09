@@ -11,7 +11,7 @@
 //!
 //! OpenCode uses its own configured providers (OpenCode Console/Go, OpenRouter, a person's
 //! own API keys). A Claude subscription must not be connected to it (Anthropic does not
-//! allow Claude.ai sign-in in third-party apps), and O never passes Claude credentials.
+//! allow Claude.ai sign-in in third-party apps).
 //! It has no usage probe, so the daily budget (ADR-0004) does not apply to it.
 
 use std::collections::BTreeMap;
@@ -44,8 +44,6 @@ pub fn check_session(root: Option<&Path>, cwd: &Path, session: &str) -> Result<(
     command.args(cli.prefix).args(["session", "list", "--format", "json", "--max-count", "10000", STANDALONE]).current_dir(cwd);
     if let Some(root) = root {
         command.env_clear().envs(clean::environment(root, ProviderId::OpenCode).map_err(|e| e.to_string())?);
-    } else {
-        command.env_clear().envs(clean::own_profile_environment());
     }
     let (status, output, _) = proc::capture(&mut command, Duration::from_secs(30)).map_err(|_| "OpenCode 세션 목록을 확인하지 못했습니다")?;
     if !status.success() || !session_in_list(&output, cwd, session) { return Err("기존 OpenCode 세션을 확인하지 못해 새 세션을 만들지 않았습니다".into()); }
@@ -69,8 +67,6 @@ pub fn check_auth(root: Option<&Path>) -> Result<(), String> {
     if let Some(root) = root {
         command.env_clear().envs(crate::agents::clean::environment(root, ProviderId::OpenCode).map_err(|e| e.to_string())?);
         command.current_dir(crate::agents::clean::profile_home(root, ProviderId::OpenCode));
-    } else {
-        command.env_clear().envs(crate::agents::clean::own_profile_environment());
     }
     let (status, output, _) = proc::capture(&mut command, Duration::from_secs(30)).map_err(|_| "OpenCode 연결 상태를 확인하지 못했습니다")?;
     if !status.success() { return Err("OpenCode 연결 상태를 확인하지 못했습니다".into()); }
@@ -114,14 +110,7 @@ impl Provider for OpenCode {
             };
             args.extend([spec.model_flag.to_string(), model]);
         }
-        LaunchSpec { bin: "opencode".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// OpenCode reads provider keys from the environment (`{env:…}` in its config). Claude's are
-    /// taken out so no Claude credential ever reaches it (ADR-0015); OpenAI's and OpenRouter's
-    /// so a leftover key does not quietly bill an API.
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"]
+        LaunchSpec { bin: "opencode".into(), args, stdin: Some(prompt), env }
     }
 
     fn tool_note(&self) -> Option<String> {
@@ -152,7 +141,7 @@ impl Provider for OpenCode {
 
     /// `opencode models --standalone`: one `provider/model` per line.
     fn card_models(&self) -> Option<Result<Vec<ModelChoice>, String>> {
-        Some(list_command("opencode", connection("opencode").models, ProviderId::OpenCode, &[]).map(|out| parse_models(&out)))
+        Some(list_command("opencode", connection("opencode").models, &[]).map(|out| parse_models(&out)))
     }
 
     // https://opencode.ai/v2/docs/ (v2 is the npm package @opencode/cli; v1's opencode-ai is another package)

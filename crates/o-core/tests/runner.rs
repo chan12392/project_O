@@ -90,7 +90,7 @@ fn main() {
         ("a card waits in the queue while its provider is full, then runs", queue_then_run),
         ("a clean run starts its cards with only the clean environment", clean_run),
         ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
-        ("a card's CLI never inherits the API key variables it prefers over its sign-in", api_keys_dropped),
+        ("a card's CLI inherits API key variables", api_keys_inherited),
         ("an OpenCode card without YOLO does not start under OpenCode project config", opencode_project_config_refused),
     ];
     let mut failed = 0;
@@ -1149,14 +1149,14 @@ fn a_link_swapped_after_the_check_is_refused() {
     assert!(read_events(&home, "rx-isolated").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(r), .. } if r.contains("정책 검사 뒤"))));
 }
 
-/// A key left in the person's environment must not reach the card's CLI, in any case spelling.
-fn api_keys_dropped() {
+/// API credentials in the person's environment reach each card's CLI.
+fn api_keys_inherited() {
     let home = temp_home();
-    let vars = [("ANTHROPIC_API_KEY", "placeholder"), ("anthropic_auth_token", "placeholder"), ("CODEX_API_KEY", "placeholder"), ("ANTHROPIC_API_KEY_HELPER", "kept")];
+    let vars = [("ANTHROPIC_API_KEY", "placeholder"), ("anthropic_auth_token", "placeholder"), ("CODEX_API_KEY", "placeholder"), ("ANTHROPIC_API_KEY_HELPER", "kept"), ("O_CUSTOM_PROVIDER_API_KEY", "placeholder")];
     for (name, value) in vars {
         std::env::set_var(name, value);
     }
-    let p = plan(vec![card("a", ProviderId::Claude, "x"), card("b", ProviderId::Codex, "y")]);
+    let p = plan(vec![card("a", ProviderId::Claude, "x"), card("b", ProviderId::Codex, "y"), card("c", ProviderId::OpenCode, "z")]);
     create_run(&home, "r9", &p).unwrap();
     let dumps = home.clone();
     let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
@@ -1173,9 +1173,11 @@ fn api_keys_dropped() {
     let env_of = |bin: &str| -> BTreeMap<String, String> { serde_json::from_str(&std::fs::read_to_string(home.join(format!("{bin}.json"))).unwrap()).unwrap() };
     let has = |env: &BTreeMap<String, String>, name: &str| env.keys().any(|k| k.eq_ignore_ascii_case(name));
     let (claude, codex) = (env_of("claude"), env_of("codex"));
-    assert!(!has(&claude, "ANTHROPIC_API_KEY") && !has(&claude, "ANTHROPIC_AUTH_TOKEN"));
+    assert!(has(&claude, "ANTHROPIC_API_KEY") && has(&claude, "ANTHROPIC_AUTH_TOKEN"));
     assert!(has(&claude, "ANTHROPIC_API_KEY_HELPER") && has(&claude, "CODEX_API_KEY") && has(&claude, "PATH"));
-    assert!(!has(&codex, "CODEX_API_KEY") && has(&codex, "ANTHROPIC_API_KEY"));
+    assert!(has(&codex, "CODEX_API_KEY") && has(&codex, "ANTHROPIC_API_KEY"));
+    let opencode = env_of("opencode");
+    assert!(has(&opencode, "ANTHROPIC_API_KEY") && has(&opencode, "O_CUSTOM_PROVIDER_API_KEY"));
     assert_eq!(claude.get("O_CARD_ID").map(String::as_str), Some("a"));
 }
 

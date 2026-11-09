@@ -272,9 +272,9 @@ export const demoBackend: Backend = {
   projectOpen: async () => { throw new Error("미리보기에서는 로컬 폴더를 열 수 없습니다"); },
   agentsCatalog: async () => [],
   agents: async () => [
-    { id: "claude", name: "Claude Code", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "" },
-    { id: "codex", name: "Codex", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "" },
-    { id: "agy", name: "Antigravity", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "" },
+    { id: "claude", name: "Claude Code", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "", apiKeyEnv: [] },
+    { id: "codex", name: "Codex", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "", apiKeyEnv: [] },
+    { id: "agy", name: "Antigravity", installed: true, version: "demo", loggedIn: true, installHint: "", canInstall: false, installUrl: "", apiKeyEnv: [] },
   ],
   install: async () => ({ ok: false, message: "미리보기에서는 설치하지 않습니다" }),
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),

@@ -21,7 +21,6 @@ fn command_for(cli: CliCommand, args: &[&str], project: Option<&str>) -> Command
     command.args(cli.prefix).args(args);
     if let Some(project) = project { command.current_dir(project); }
     command.env("GRAFLY_NO_AUTO_INDEX", "1").env("GRAFLY_NO_AUTO_DEEP", "1");
-    for key in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY"] { command.env_remove(key); }
     command
 }
 
@@ -121,7 +120,7 @@ mod tests {
         let args: Vec<_> = command.get_args().map(|v| v.to_string_lossy().into_owned()).collect();
         assert_eq!(args, ["ask", "--json", "--read-only", "--", "a; b"]);
         assert!(command.get_envs().any(|(k, v)| k == "GRAFLY_NO_AUTO_DEEP" && v.is_some_and(|v| v == "1")));
-        assert!(command.get_envs().any(|(k, v)| k == "OPENAI_API_KEY" && v.is_none()));
+        assert!(!command.get_envs().any(|(k, v)| k == "OPENAI_API_KEY" && v.is_none()));
     }
     #[test]
     fn output_read_is_bounded() {

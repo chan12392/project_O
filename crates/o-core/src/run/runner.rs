@@ -642,10 +642,7 @@ fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -
         if let Some(root) = clean {
             let env = clean::environment(root, card.provider)?;
             command.env_clear().envs(env);
-        } else if card.provider == ProviderId::OpenCode {
-            command.env_clear().envs(clean::own_profile_environment());
         }
-        for name in crate::providers::names_to_remove(&spec.env_remove, std::env::vars_os().map(|(key, _)| key)) { command.env_remove(name); }
         command.envs(&spec.env);
         #[cfg(windows)]
         {

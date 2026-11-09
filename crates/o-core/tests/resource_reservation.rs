@@ -359,7 +359,7 @@ fn independent_cards_run_concurrently_with_separate_outputs() {
 
 #[cfg(windows)]
 #[test]
-fn card_spawner_respects_explicit_environment_and_removes_fake_api_key() {
+fn card_spawner_respects_explicit_environment_and_inherits_fake_api_key() {
     use o_core::run::events::CardStatus;
     use o_core::run::plan::Plan;
     use o_core::run::runner::{run_plan, Spawner};
@@ -380,7 +380,7 @@ fn card_spawner_respects_explicit_environment_and_removes_fake_api_key() {
         });
         assert_eq!(run_plan(&home, "one", &plan, None, spawner).unwrap(), CardStatus::Done);
         let audit: serde_json::Value = serde_json::from_slice(&std::fs::read(report).unwrap()).unwrap();
-        assert_eq!(audit["api_key_present"], false);
+        assert_eq!(audit["api_key_present"], true);
         assert_eq!(audit["custom"], "fixture");
         assert!(!resource_held(&home, "one", "one").unwrap());
     }

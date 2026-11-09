@@ -84,7 +84,7 @@ interface GraphLink {
 
 - 그래프 화면의 "Deep" 버튼. 처음 누를 때 "LLM 사용량이 차감됩니다. 상위 모델일수록 차감량이 늘어납니다"와 "다음부터 안 보기"를 보여 준다(설정 `warnDeep`).
 - 한 번 누르면 공식 CLI를 **한 번** 부른다: 영역 목록(폴더, 파일 수, 대표 파일, 연결 많은 심볼과 grafly 요약)을 주고 `{"areas":[{"id","name","summary"}]}` JSON을 받는다. 영역은 최대 40개, 이름 24자·요약 200자 이내, 목록에 없는 id는 버린다.
-- 실행: Codex `exec --sandbox read-only --skip-git-repo-check --ephemeral`(셸·웹·플러그인 끔), Claude `-p --tools "" --strict-mcp-config` 빈 MCP, 프로젝트 훅 끔. 임시 폴더에서 돌고, 창은 숨기고, 10분 제한. 자식 프로세스는 API 키 변수를 물려받지 않는다(ADR-0008과 같음). `--profile project-o`(기본)면 깨끗한 프로필.
+- 실행: Codex `exec --sandbox read-only --skip-git-repo-check --ephemeral`(셸·웹·플러그인 끔), Claude `-p --tools "" --strict-mcp-config` 빈 MCP, 프로젝트 훅 끔. 임시 폴더에서 돌고, 창은 숨기고, 10분 제한. 자식 프로세스의 인증 환경은 ADR-0035를 따른다. `--profile project-o`(기본)면 깨끗한 프로필.
 - 하루 예산이 켜져 있고 그 서비스를 오늘 다 썼거나, 한도로 쉬는 중이면 거부한다.
 - 결과는 O 상태 폴더 `graph/<프로젝트 키>/deep.json`에 저장하고 `view`가 영역 이름과 요약으로 쓴다. 프로젝트 폴더에는 쓰지 않는다.
 

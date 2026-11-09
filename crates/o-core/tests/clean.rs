@@ -79,6 +79,23 @@ fn clean_env_keeps_system_variables_and_points_home_at_the_profile() {
 }
 
 #[test]
+fn clean_profiles_pass_only_their_provider_auth_environment() {
+    let parent = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "UNRELATED_SECRET"]
+        .map(|name| (name.to_string(), format!("fixture-{name}")));
+    let home = Path::new("profile");
+    for (provider, expected) in [
+        (ProviderId::Claude, &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"][..]),
+        (ProviderId::Codex, &["CODEX_API_KEY", "OPENAI_API_KEY"][..]),
+        (ProviderId::OpenCode, &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"][..]),
+    ] {
+        let env = clean_env_from(parent.clone(), home, provider);
+        for (name, value) in &parent {
+            assert_eq!(env.get(name), expected.contains(&name.as_str()).then_some(value), "{provider:?}: {name}");
+        }
+    }
+}
+
+#[test]
 fn profiles_live_next_to_the_state_folder_not_inside_it() {
     let base = Path::new("C:/Users/me/AppData/Local");
     let root = root_in(base);

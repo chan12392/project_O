@@ -144,7 +144,6 @@ fn command(provider: ProviderId, model: &str, clean_root: Option<&Path>, dir: &P
         cmd.args(cli.prefix);
         cmd
     };
-    crate::providers::remove_inherited(&mut cmd, &["CODEX_API_KEY".into(), "OPENAI_API_KEY".into(), "ANTHROPIC_API_KEY".into(), "ANTHROPIC_AUTH_TOKEN".into()]);
     cmd.current_dir(dir);
     command_args(&mut cmd, provider, model, dir)?;
     Ok(cmd)

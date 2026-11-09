@@ -34,6 +34,7 @@ pub struct AgentStatus {
     pub path: Option<String>,
     /// `None` (null) when the CLI's status check could not tell.
     pub logged_in: Option<bool>,
+    pub api_key_env: Vec<&'static str>,
     pub install_hint: String,
     pub can_install: bool,
     pub install_url: String,
@@ -44,6 +45,24 @@ pub struct AgentStatus {
     /// is then read from the person's own setup, and its cards are refused while the profile is on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_unsupported: Option<String>,
+}
+
+/// Authentication environment names understood by each CLI; values stay with the CLI.
+pub fn auth_env_names(provider: ProviderId) -> &'static [&'static str] {
+    match provider {
+        ProviderId::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+        ProviderId::Codex => &["CODEX_API_KEY", "OPENAI_API_KEY"],
+        ProviderId::OpenCode => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+        ProviderId::Devin => &["WINDSURF_API_KEY"],
+        ProviderId::Agy => &[],
+    }
+}
+
+pub fn present_auth_env(provider: ProviderId) -> Vec<&'static str> {
+    let names: Vec<_> = std::env::vars_os().map(|(name, _)| name).collect();
+    auth_env_names(provider).iter().copied().filter(|expected| names.iter().any(|name| name.to_str().is_some_and(|name| {
+        if cfg!(windows) { name.eq_ignore_ascii_case(expected) } else { name == *expected }
+    }))).collect()
 }
 
 /// What an install or sign-in did (`ActionResult` in app/src/platform/backend/types.ts).
@@ -103,8 +122,6 @@ fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> Lo
     let p = providers::get(provider);
     let mut command = cli_command(cli, p.status_args());
     command.envs(p.check_env().iter().copied());
-    // A leftover API key would read as signed in, though cards never get it.
-    providers::without_api_keys(&mut command, provider);
     let home = user_home();
     if home.is_dir() {
         command.current_dir(home);
@@ -142,6 +159,7 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
         version,
         path: found.filter(|_| cli.is_some()).map(|p| p.to_string_lossy().into_owned()),
         logged_in,
+        api_key_env: present_auth_env(provider),
         install_hint,
         can_install: npm_ready,
         install_url: o.url.into(),

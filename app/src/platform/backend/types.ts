@@ -45,6 +45,8 @@ export interface AgentStatus {
   canInstall: boolean;
   installUrl: string;
   profileUnsupported?: string;
+  /** Names of present API authentication environment variables, never their values. */
+  apiKeyEnv?: string[];
 }
 
 export interface ActionResult {

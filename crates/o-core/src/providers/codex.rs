@@ -39,12 +39,7 @@ impl Provider for Codex {
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// `codex exec` puts this ahead of the saved ChatGPT login (codex-rs/login/src/auth/manager.rs).
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &["CODEX_API_KEY"]
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env }
     }
 
     fn tool_note(&self) -> Option<String> {
@@ -72,7 +67,7 @@ impl Provider for Codex {
         // before a plan is approved.
         if turn.app_server {
             return Some(LaunchSpec { bin: "codex".into(), args: strings(&["app-server", "--disable", "hooks"]),
-                stdin: None, env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) });
+                stdin: None, env: BTreeMap::new() });
         }
         let head = strings(&["exec", "-s", "read-only", "-C", turn.project, "--skip-git-repo-check", "--disable", "hooks"]);
         Some(self.lead_with(head, turn))
@@ -94,12 +89,12 @@ impl Provider for Codex {
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
         args.push("-".into());
-        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "codex".into(), args, stdin: Some(prompt), env })
     }
 
     /// `codex debug models` (in `codex --help`) prints the CLI's model catalog as JSON.
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
-        list_command("codex", connection("codex").models, ProviderId::Codex, &[]).map(|out| parse_codex_models(&out))
+        list_command("codex", connection("codex").models, &[]).map(|out| parse_codex_models(&out))
     }
 
     // https://github.com/openai/codex (npm, Homebrew, Windows installer)
@@ -182,7 +177,7 @@ impl Codex {
             }
         }
         args.push("-".into());
-        LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new(), env_remove: strings(self.api_key_vars()) }
+        LaunchSpec { bin: "codex".into(), args, stdin: Some(turn.prompt.clone()), env: BTreeMap::new() }
     }
 }
 
@@ -191,12 +186,12 @@ pub const APP_SERVER_PROBE: [&str; 2] = ["app-server", "--help"];
 
 /// The probe's launch, built by the lead's spawner like the turn itself.
 pub fn app_server_probe() -> LaunchSpec {
-    LaunchSpec { bin: "codex".into(), args: strings(&APP_SERVER_PROBE), stdin: None, env: BTreeMap::new(), env_remove: strings(Codex.api_key_vars()) }
+    LaunchSpec { bin: "codex".into(), args: strings(&APP_SERVER_PROBE), stdin: None, env: BTreeMap::new() }
 }
 
 /// Versions before 0.166.0 have not been verified for the ephemeral model probe.
 pub fn default_model_probe() -> LaunchSpec {
-    LaunchSpec { bin: "codex".into(), args: strings(&["--version"]), stdin: None, env: BTreeMap::new(), env_remove: strings(Codex.api_key_vars()) }
+    LaunchSpec { bin: "codex".into(), args: strings(&["--version"]), stdin: None, env: BTreeMap::new() }
 }
 
 fn supports_ephemeral_version(version: &str) -> bool {
@@ -211,7 +206,6 @@ pub fn supports_default_model_probe(mut command: Command) -> bool {
     let key = format!("default-model {:?} {:?}", command.get_program(), command.get_args().collect::<Vec<_>>());
     let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(known) = probed.get(&key) { return *known; }
-    super::without_api_keys(&mut command, ProviderId::Codex);
     let supported = matches!(capture(&mut command, PROBE_TIMEOUT), Ok((status, stdout, _)) if status.success() && supports_ephemeral_version(&stdout));
     probed.insert(key, supported);
     supported
@@ -233,7 +227,6 @@ pub fn supports_app_server(mut command: Command) -> bool {
     if let Some(known) = probed.get(&key) {
         return *known;
     }
-    super::without_api_keys(&mut command, ProviderId::Codex);
     let supported = matches!(capture(&mut command, PROBE_TIMEOUT),
         Ok((status, stdout, _)) if status.success() && stdout.lines().any(|line| line.contains("Usage:") && line.contains("app-server")));
     probed.insert(key, supported);
@@ -254,8 +247,6 @@ fn app_server_windows() -> Result<Vec<UsageWindow>, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
-    // The windows of the ChatGPT sign-in cards use, not of a leftover API key.
-    super::without_api_keys(&mut command, ProviderId::Codex);
     let mut probe = Contained::spawn(&mut command).map_err(|e| e.to_string())?;
     let mut stdin = probe.child.stdin.take().ok_or("codex app-server stdin")?;
     let stdout = probe.child.stdout.take().ok_or("codex app-server stdout")?;
