@@ -116,6 +116,11 @@ impl Provider for Claude {
         Some(format!("셸 명령은 승인할 사람이 없어 거부될 수 있습니다({TEAM_COMMAND}·{CONTEXT_COMMAND}만 허용). 파일 읽기·쓰기 도구를 우선 쓰세요."))
     }
 
+    /// The Agent tool asks no permission; its subagents keep the card's permission mode.
+    fn subagent_tool(&self) -> Option<&'static str> {
+        Some("Agent 도구")
+    }
+
     fn searches_context(&self) -> bool {
         true
     }

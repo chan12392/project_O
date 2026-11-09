@@ -1,7 +1,7 @@
 import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, MessageCircleQuestion, OctagonX, Play, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
-import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
+import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, planOrderText, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
 import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -335,6 +335,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
 export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }> }) {
   return (
     <>
+      {plan.cards.length > 1 && <p className="border-b px-4 py-2 text-2xs text-muted-foreground">{planOrderText(plan.cards)}</p>}
       {plan.cards.length > 0 && (
         <div className="relative overflow-x-auto">
           {/* relative: the sr-only caption stays inside the chat instead of stretching the page. */}

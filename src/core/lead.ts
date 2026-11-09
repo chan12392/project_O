@@ -605,3 +605,30 @@ export function leadReadProblem(error: string): string {
 export function taskIsLong(task: string): boolean {
   return task.length > 120 || task.split("\n").length > 3;
 }
+
+/**
+ * How a plan will run, before "실행": its cards in stages by depends_on (a stage starts when the one
+ * before it ends), and the cards that declare no resources and so run alone (ADR-0037). Unknown or
+ * circular dependencies end up in a last stage; the runner fails those cards. Slots are not counted.
+ */
+export function planOrder(cards: readonly Pick<PlanCard, "id" | "depends_on" | "resources">[]): { stages: string[][]; alone: string[] } {
+  const placed = new Set<string>();
+  const stages: string[][] = [];
+  let left = [...cards];
+  while (left.length > 0) {
+    const ready = left.filter((card) => (card.depends_on ?? []).every((id) => placed.has(id)));
+    const stage = ready.length > 0 ? ready : left;
+    stages.push(stage.map((card) => card.id));
+    for (const card of stage) placed.add(card.id);
+    left = left.filter((card) => !placed.has(card.id));
+  }
+  const alone = cards.length > 1 ? cards.filter((card) => !card.resources?.length).map((card) => card.id) : [];
+  return { stages, alone };
+}
+
+/** One line for the plan table: "모두 동시에" or the stages in order, and who runs alone. */
+export function planOrderText(cards: readonly Pick<PlanCard, "id" | "depends_on" | "resources">[]): string {
+  const { stages, alone } = planOrder(cards);
+  const order = stages.length <= 1 ? `${cards.length}개 작업 모두 동시에 시작` : `${stages.length}단계로 차례 실행: ${stages.map((stage) => stage.join(", ")).join(" → ")}`;
+  return alone.length > 0 ? `${order} · 자원 미선언(${alone.join(", ")})은 혼자 실행` : order;
+}

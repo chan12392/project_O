@@ -27,6 +27,10 @@ use crate::usage::UsageWindow;
 
 pub struct Codex;
 
+/// Codex's subagents (`codex features list`: `multi_agent`, stable, off by default). Spawned
+/// agents keep the card's sandbox and approval settings (ADR-0037).
+const SUBAGENTS: [&str; 2] = ["--enable", "multi_agent"];
+
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
     /// O never marks a project trusted (#35): Codex then skips the project's `.codex/` layers
@@ -35,6 +39,7 @@ impl Provider for Codex {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
         args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir, "--skip-git-repo-check"]));
+        args.extend(strings(&SUBAGENTS));
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
@@ -44,6 +49,10 @@ impl Provider for Codex {
 
     fn tool_note(&self) -> Option<String> {
         None
+    }
+
+    fn subagent_tool(&self) -> Option<&'static str> {
+        Some("서브에이전트 도구")
     }
 
     fn searches_context(&self) -> bool {
@@ -85,6 +94,7 @@ impl Provider for Codex {
     fn yolo_launch(&self, card: &Card, plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
         let mut args = strings(&["exec", "--json", "--dangerously-bypass-approvals-and-sandbox", "-C", &plan.project]);
         args.push("--skip-git-repo-check".into());
+        args.extend(strings(&SUBAGENTS));
         args.extend(opt("-m", card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));
         args.extend(opt("-c", effort.as_deref()));
