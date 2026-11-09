@@ -25,6 +25,10 @@ fn events(home: &Path, run_id: &str, follow: bool) -> i32 {
         if !follow || list.iter().any(|e| e.get("t").and_then(Value::as_str) == Some("run.end")) {
             return 0;
         }
+        // A runner that died never writes run.end: close the run on record and print the closing events (ADR-0039).
+        if store::close_dead_run(home, run_id, &store::active_markers(home)).is_ok_and(|closed| !closed.is_empty()) {
+            continue;
+        }
         std::thread::sleep(Duration::from_millis(500));
     }
 }

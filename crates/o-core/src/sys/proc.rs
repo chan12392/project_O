@@ -369,6 +369,60 @@ pub fn definitely_exited(pid: u32, expected: u64) -> bool {
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
 pub fn definitely_exited(_pid: u32, _expected: u64) -> bool { false }
 
+/// Whether a process the given one started, or one of their descendants, still runs (ADR-0039).
+/// Windows keeps an orphan's original parent pid, so the tree is followed through a ToolHelp
+/// snapshot; a child must have started no earlier than its parent, so a reused parent pid never
+/// adopts an older process. `None` when the snapshot fails or a matching child cannot be read.
+#[cfg(windows)]
+pub fn descendants_alive(pid: u32, started: u64) -> Option<bool> {
+    let entries = process_parents()?;
+    let mut tree = vec![(pid, started)];
+    let mut seen = std::collections::HashSet::from([pid]);
+    let mut next = 0;
+    while let Some(&(parent, parent_started)) = tree.get(next) {
+        next += 1;
+        let children: Vec<u32> = entries.iter().filter(|(child, ppid)| *ppid == parent && *child != 0 && !seen.contains(child)).map(|(child, _)| *child).collect();
+        for child in children {
+            let Some(child_started) = started_at(child) else {
+                // Gone since the snapshot is fine; one we may not open could be a live descendant.
+                if is_alive(child) { return None; }
+                continue;
+            };
+            if child_started < parent_started { continue; }
+            seen.insert(child);
+            if is_alive(child) { return Some(true); }
+            // An exited child may still be listed; its own children keep its pid as their parent.
+            tree.push((child, child_started));
+        }
+    }
+    Some(false)
+}
+
+/// Linux and macOS re-parent orphans, so a dead worker's descendants cannot be found from its pid.
+#[cfg(not(windows))]
+pub fn descendants_alive(_pid: u32, _started: u64) -> Option<bool> { None }
+
+/// Every listed process as (pid, parent pid).
+#[cfg(windows)]
+fn process_parents() -> Option<Vec<(u32, u32)>> {
+    use windows_sys::Win32::Foundation::{CloseHandle, INVALID_HANDLE_VALUE};
+    use windows_sys::Win32::System::Diagnostics::ToolHelp::{CreateToolhelp32Snapshot, Process32FirstW, Process32NextW, PROCESSENTRY32W, TH32CS_SNAPPROCESS};
+    unsafe {
+        let snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+        if snapshot == INVALID_HANDLE_VALUE { return None; }
+        let mut entry: PROCESSENTRY32W = std::mem::zeroed();
+        entry.dwSize = std::mem::size_of::<PROCESSENTRY32W>() as u32;
+        let mut entries = Vec::new();
+        let mut ok = Process32FirstW(snapshot, &mut entry);
+        while ok != 0 {
+            entries.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            ok = Process32NextW(snapshot, &mut entry);
+        }
+        CloseHandle(snapshot);
+        (!entries.is_empty()).then_some(entries)
+    }
+}
+
 #[cfg(not(windows))]
 pub fn is_alive(pid: u32) -> bool {
     // `kill` reads a pid above i32::MAX as negative (-1 signals every process), and 0 is our own group.
