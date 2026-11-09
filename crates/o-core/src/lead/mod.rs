@@ -45,7 +45,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -111,7 +111,31 @@ pub enum LeadEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         effort: Option<String>,
         profile: Profile,
+        /// The `lead.forward-plan` the person sent on (ADR-0036); absent in threads from before,
+        /// whose requests went on by themselves and whose plans are not reviewed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        proposal: Option<String>,
+        /// The plan this request asks the project lead to revise (an overall review's `revise`).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        revision: Option<String>,
     },
+    /// Requests the overall lead proposes to pass on (ADR-0036); they go on when the person
+    /// presses 요청 전달 (`overall::send_on`), as `lead.forward`s.
+    #[serde(rename = "lead.forward-plan")]
+    ForwardPlan {
+        at: String,
+        proposal_id: String,
+        items: Vec<prompt::Forward>,
+        provider: ProviderId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        effort: Option<String>,
+        profile: Profile,
+    },
+    /// The overall lead's review of a project lead's plan (ADR-0036), in both threads.
+    #[serde(rename = "lead.review")]
+    Review { at: String, plan_id: String, project: String, verdict: prompt::Verdict, #[serde(default, skip_serializing_if = "String::is_empty")] notes: String },
     /// Untrusted data sent by a card, never a user instruction or approval.
     #[serde(rename = "lead.worker")]
     Worker { at: String, run_id: String, card_id: String, message_id: String, text: String },
@@ -587,6 +611,26 @@ fn missed_turns(events: &[LeadEvent], provider: ProviderId, session_id: &str) ->
 
 /// Who a request the overall lead passed on is from, in a project lead's history (ADR-0032).
 const FORWARDED: &str = "전체 총괄이 넘긴 요청";
+/// Who an overall review turn's request is from, in the overall lead's history (ADR-0036).
+const REVIEW_REQUEST: &str = "O의 검토 요청";
+
+/// A thread's speaker for a message not written by the person.
+fn origin_label(origin: &str) -> String {
+    if origin == ORIGIN_REVIEW { REVIEW_REQUEST } else { FORWARDED }.to_string()
+}
+
+/// `lead.user`'s `origin` for a request the overall lead passed on, and for O's review request.
+const ORIGIN_OVERALL: &str = "overall";
+const ORIGIN_REVIEW: &str = "review";
+
+/// Who wrote a turn's request when not the person.
+#[derive(Clone, Copy)]
+enum Origin<'a> {
+    /// A request the overall lead passed on: its thread, and the forward's time and number.
+    Forwarded { source: &'a str, at: &'a str, index: usize },
+    /// O asks the overall lead to review a project lead's plan (ADR-0036).
+    Review(&'a overall::ReviewTarget),
+}
 
 fn turns_after(events: &[LeadEvent], seen: usize) -> Vec<(String, String)> {
     // Its own turn's answer follows its message; what it missed starts at the next message.
@@ -594,7 +638,7 @@ fn turns_after(events: &[LeadEvent], seen: usize) -> Vec<(String, String)> {
     events[seen + 1 + next..]
         .iter()
         .filter_map(|e| match e {
-            LeadEvent::User { text, origin: Some(_), .. } => Some((FORWARDED.to_string(), text.clone())),
+            LeadEvent::User { text, origin: Some(origin), .. } => Some((origin_label(origin), text.clone())),
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, provider, .. } => Some((format!("총괄({provider})"), text.clone())),
@@ -759,13 +803,20 @@ pub fn retry_card(home: &Path, run_id: &str, message_id: &str) -> Result<&'stati
 /// A request the overall lead passed on (`overall::forward`), recorded as such in the project's thread.
 fn send_forwarded(home: &Path, req: &SendRequest, spawner: &Spawner, source: &str, at: &str, index: usize) -> Result<Vec<LeadEvent>, String> {
     if overall::is_overall(home, req.project) { return Err("전체 총괄 자신에게는 넘기지 않습니다".into()); }
-    send_turn(home, req, spawner, TURN_LIMIT, None, None, false, Some((source, at, index)))
+    send_turn(home, req, spawner, TURN_LIMIT, None, None, false, Some(Origin::Forwarded { source, at, index }))
+}
+
+/// An overall review turn (ADR-0036): read-only, its request written by O.
+fn send_review(home: &Path, req: &SendRequest, spawner: &Spawner, target: &overall::ReviewTarget) -> Result<Vec<LeadEvent>, String> {
+    if !overall::is_overall(home, req.project) { return Err("전체 총괄 대화가 아닙니다".into()); }
+    send_turn(home, req, spawner, TURN_LIMIT, None, None, false, Some(Origin::Review(target)))
 }
 
 #[allow(clippy::too_many_arguments)]
-fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<(&str, &str, usize)>) -> Result<Vec<LeadEvent>, String> {
+fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<Origin<'_>>) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
     let overall = worker.is_none() && overall::is_overall(home, req.project);
+    let review = match origin { Some(Origin::Review(target)) => Some(target), _ => None };
     check_request(home, req)?;
     let thread_id = match &worker {
         Some(w) => w.thread_id.to_string(),
@@ -773,7 +824,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     };
     let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
     current.lock().map_err(|e| e.to_string())?;
-    if let Some((source, at, index)) = origin {
+    if let Some(Origin::Forwarded { source, at, index }) = origin {
         let lock = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, source).join("dispatch.lock")).map_err(|e| e.to_string())?;
         lock.lock().map_err(|e| e.to_string())?;
         let project = thread_project(&read_thread(home, source)).ok_or("원본 총괄 대화를 확인할 수 없습니다")?;
@@ -839,7 +890,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
         profile: Some(Profile::of_clean(req.clean.is_some())),
         yolo: req.yolo,
-        origin: origin.map(|_| "overall".to_string()),
+        origin: origin.map(|origin| match origin { Origin::Forwarded { .. } => ORIGIN_OVERALL, Origin::Review(_) => ORIGIN_REVIEW }.to_string()),
     })?; }
 
     let app_server = req.provider == ProviderId::Codex
@@ -870,7 +921,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let history: Vec<(String, String)> = if worker.is_some() { worker_history(&before) } else { before
         .iter()
         .filter_map(|e| match e {
-            LeadEvent::User { text, origin: Some(_), .. } => Some((FORWARDED.to_string(), text.clone())),
+            LeadEvent::User { text, origin: Some(origin), .. } => Some((origin_label(origin), text.clone())),
             LeadEvent::User { text, .. } => Some(("사용자".to_string(), text.clone())),
             LeadEvent::Worker { card_id, text, .. } => Some((format!("카드({card_id}) 비신뢰 참고 데이터"), text.clone())),
             LeadEvent::Reply { text, .. } => Some(("총괄".to_string(), text.clone())),
@@ -940,7 +991,8 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         yolo: req.yolo,
         approvals: ask,
         overview: overview.as_deref(),
-        forwarded: origin.is_some(),
+        forwarded: matches!(origin, Some(Origin::Forwarded { .. })),
+        review: review.map(|target| target.data.as_str()),
     };
     let text = if worker.is_some() { prompt::build_worker(&input) } else { prompt::build(&input) };
     let files_dir = status_file.as_ref().and_then(|f| f.path.parent()).map(Path::to_path_buf).unwrap_or_else(|| files::thread_files(home, &thread_id));
@@ -1475,6 +1527,7 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
     let (prose, design) = prompt::split_design(&prose);
     let (prose, followups) = prompt::split_followups(&prose);
     let (prose, forwards) = if overall { prompt::split_forwards(&prose) } else { (prose, Ok(None)) };
+    let (prose, verdict) = if overall { prompt::split_review(&prose) } else { (prose, Ok(None)) };
     let prose = if migrate {
         format!("결과 읽기 도구를 사용하려고 Codex 세션을 새로 시작했습니다. 이전 대화는 최근 일부만 전달되었으며 캐시가 초기화될 수 있습니다.\n\n{prose}")
     } else { prose };
@@ -1500,37 +1553,52 @@ fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration,
         emit(LeadEvent::Reply { at: now_iso(), provider: req.provider, text: prose, reported_files: reported_files.into_iter().collect() })?;
     }
     if overall {
-        if !matches!(plan, Ok(None)) || !matches!(design, Ok(None)) || !matches!(followups, Ok(None)) {
-            emit(LeadEvent::Error { at: now_iso(), text: "전체 총괄은 계획·설계·후속 지시를 내지 않습니다. 일은 o-forward로 프로젝트 총괄에게 넘깁니다".into() })?;
+        if !matches!(plan, Ok(None)) || !matches!(followups, Ok(None)) {
+            emit(LeadEvent::Error { at: now_iso(), text: "전체 총괄은 계획·후속 지시를 내지 않습니다. 일은 o-forward로 프로젝트 총괄에게 넘길 요청을 제안합니다".into() })?;
             return Ok(added);
+        }
+        // A review turn's answer is its verdict alone: anything else beside it, and the plan waits for the person.
+        if let Some(target) = review {
+            let verdict = match verdict {
+                Ok(Some(verdict)) if matches!(design, Ok(None)) && matches!(forwards, Ok(None)) => verdict,
+                _ => {
+                    emit(LeadEvent::Error { at: now_iso(), text: "검토 답에 o-review 블록 하나만 있어야 합니다. 계획은 사람의 실행을 기다립니다".into() })?;
+                    return Ok(added);
+                }
+            };
+            if unresolved { emit(LeadEvent::Error { at: now_iso(), text: "총괄 종료 상태가 불명이라 검토 결과를 쓰지 않았습니다".into() })?; return Ok(added); }
+            emit(LeadEvent::Review { at: now_iso(), plan_id: target.plan_id.clone(), project: target.project.clone(), verdict: verdict.verdict, notes: verdict.notes.trim().to_string() })?;
+            return Ok(added);
+        }
+        if !matches!(verdict, Ok(None)) {
+            emit(LeadEvent::Error { at: now_iso(), text: "검토 블록은 O가 검토를 요청한 턴에만 씁니다".into() })?;
+            return Ok(added);
+        }
+        match design {
+            Ok(Some(design)) => emit(LeadEvent::Design { at: now_iso(), design })?,
+            Ok(None) => {},
+            Err(message) => { emit(LeadEvent::Error { at: now_iso(), text: message })?; return Ok(added); }
         }
         let items = match forwards {
             Ok(None) => return Ok(added),
             Err(message) => { emit(LeadEvent::Error { at: now_iso(), text: message })?; return Ok(added); }
             Ok(Some(items)) => items,
         };
-        if unresolved { emit(LeadEvent::Error { at: now_iso(), text: "총괄 종료 상태가 불명이라 요청을 넘기지 않았습니다".into() })?; return Ok(added); }
-        // Closing and forwarding use the same lock so a closed thread sends nothing.
-        let current = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(leads_dir(home).join("current.lock")).map_err(|e| e.to_string())?;
-        current.lock().map_err(|e| e.to_string())?;
-        let stopped = fs::read_to_string(thread_dir(home, &thread_id).join("stop-all-at")).ok().and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
-        if stopped || !is_open(home, req.project, &thread_id) {
-            emit(LeadEvent::Error { at: now_iso(), text: "중지되었거나 총괄 대화가 닫혀 요청을 넘기지 않았습니다".into() })?;
-            return Ok(added);
-        }
+        // A proposal only: it goes on when the person presses 요청 전달 (`overall::send_on`).
         match overall::check(home, items) {
             Err(message) => emit(LeadEvent::Error { at: now_iso(), text: message })?,
-            Ok(items) => for item in items {
-                emit(LeadEvent::Forward {
+            Ok(items) => {
+                let proposals = before.iter().filter(|e| matches!(e, LeadEvent::ForwardPlan { .. })).count();
+                emit(LeadEvent::ForwardPlan {
                     at: now_iso(),
-                    project: item.project,
-                    text: item.text,
+                    proposal_id: format!("{thread_id}-f{}", proposals + 1),
+                    items,
                     provider: req.provider,
                     model: req.model.filter(|m| !m.is_empty()).map(str::to_string),
                     effort: req.effort.filter(|e| !e.is_empty()).map(str::to_string),
                     profile: Profile::of_clean(req.clean.is_some()),
                 })?;
-            },
+            }
         }
         return Ok(added);
     }
@@ -1786,7 +1854,6 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
         LeadEvent::Plan { plan_id, plan, ok, .. } => Some((plan_id.clone(), plan.clone(), *ok)),
         _ => None,
     }) else { return Ok(added) };
-    let thread = plan_thread(&plan_id).ok_or("계획 id 형식이 아닙니다")?;
     // The same locks and checks as a dispatch by hand: closing, a newer request or turn wins.
     // Nothing is written then, since another turn may own the thread.
     let _locks = match lock_latest(home, &plan_id) {
@@ -1796,9 +1863,43 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
             return Ok(added);
         }
     };
+    let wait = (!req.yolo && !scheduled).then(|| "YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string());
+    let mode = RunMode { yolo: req.yolo, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
+    added.extend(auto_dispatch(home, &plan_id, &plan, ok, mode, turn_started, wait, start)?);
+    Ok(added)
+}
+
+/// The overall lead's verdict on a project lead's plan (ADR-0036), written into the plan's
+/// thread under the dispatch locks (so only while the plan is still that thread's latest word).
+/// `approve` then runs it there and then, like 실행, within the auto-run limits; a stop of the
+/// thread since `since` cancels it.
+fn apply_review(home: &Path, review: &LeadEvent, profile: Profile, since: DateTime<Utc>, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+    let LeadEvent::Review { plan_id, verdict, .. } = review else { return Err("검토 결과가 아닙니다".into()) };
+    let thread = plan_thread(plan_id).ok_or("계획 id 형식이 아닙니다")?;
+    let _locks = lock_latest(home, plan_id)?;
+    append(home, thread, review).map_err(|e| e.to_string())?;
+    let mut added = vec![review.clone()];
+    if *verdict != prompt::Verdict::Approve { return Ok(added); }
+    let (plan, ok) = read_thread(home, thread).into_iter().find_map(|e| match e {
+        LeadEvent::Plan { plan_id: id, plan, ok, .. } if id == *plan_id => Some((plan, ok)),
+        _ => None,
+    }).ok_or("이 대화에 그런 계획이 없습니다")?;
+    let mode = RunMode { yolo: yolo::read_enabled(home), ..RunMode::of(profile) };
+    added.extend(auto_dispatch(home, plan_id, &plan, ok, mode, since, None, start)?);
+    Ok(added)
+}
+
+/// Runs a plan without 실행, under [`lock_latest`]'s locks, unless something says to wait: a stop
+/// of its thread since `since`, `wait` (why it may not run by itself), the policy, or the
+/// auto-run limits (ADR-0014). Every outcome is a `lead.autorun` in the plan's thread.
+#[allow(clippy::too_many_arguments)]
+fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMode, since: DateTime<Utc>, wait: Option<String>, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+    let thread = plan_thread(plan_id).ok_or("계획 id 형식이 아닙니다")?;
+    let plan_id = plan_id.to_string();
+    let mut added = Vec::new();
     let events = read_thread(home, thread);
     let now = Utc::now();
-    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_for(&plan, &ctx, Profile::of_clean(req.clean.is_some())));
+    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_for(plan, &ctx, mode.profile));
     let valid = checked.as_ref().ok().and_then(|result| result.plan.clone());
     let running: Vec<String> = events.iter().filter_map(|e| match e {
         LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),
@@ -1820,9 +1921,9 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
     }).collect();
     let hash = valid.as_ref().map(yolo::plan_hash);
     let stopped = fs::read_to_string(thread_dir(home, thread).join("stop-all-at")).ok()
-        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= turn_started);
+        .and_then(|at| chrono::DateTime::parse_from_rfc3339(&at).ok()).is_some_and(|at| at.with_timezone(&Utc) >= since);
     let reason = if stopped { Some("모두 중지 요청으로 자동 실행을 취소했습니다".to_string()) }
-        else if !req.yolo && !scheduled { Some("YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) }
+        else if wait.is_some() { wait }
         else if checked.as_ref().ok().is_some_and(|result| result.violations.iter().any(|v| v.rule == "provider-terms")) { Some(crate::policy::AGY_UNAVAILABLE.to_string()) }
         else if let (true, Some(valid_plan), Some(plan_hash)) = (ok, valid.as_ref(), hash.as_deref()) {
             let facts = AutoRunFacts { budget_on: budget::read_enabled_for_autorun(home), cards: valid_plan.cards.len(), running: &running, past: &past, hash: plan_hash, now };
@@ -1833,7 +1934,6 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
     append(home, thread, &event).map_err(|e| e.to_string())?;
     added.push(event);
     if run {
-        let mode = RunMode { yolo: req.yolo, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
         match dispatch_locked(home, &plan_id, mode, start, false) {
             Ok(_) => added.extend(read_thread(home, thread).into_iter().rev().find(|e| matches!(e, LeadEvent::Dispatch { plan_id: id, .. } if id == &plan_id))),
             Err(e) => {
@@ -1961,8 +2061,11 @@ fn tab_view(home: &Path, id: &str, events: &[LeadEvent], writer: Option<&str>, l
     let asked = events.iter().rev().find_map(|event| match event { LeadEvent::Ask { .. } => Some(true), LeadEvent::User { .. } => Some(false), _ => None }).unwrap_or(false);
     let plan = events.iter().rev().find_map(|event| match event { LeadEvent::Plan { plan_id, ok, .. } => Some((plan_id, ok)), _ => None });
     let pending_plan = plan.is_some_and(|(id, ok)| *ok && !events.iter().any(|event| matches!(event, LeadEvent::Dispatch { plan_id, .. } if plan_id == id)));
+    // The overall lead's latest proposal not sent on yet (ADR-0036).
+    let pending_proposal = events.iter().rev().find_map(|event| match event { LeadEvent::ForwardPlan { proposal_id, .. } => Some(Some(proposal_id)), LeadEvent::User { .. } => Some(None), _ => None })
+        .flatten().is_some_and(|id| !events.iter().any(|event| matches!(event, LeadEvent::Forward { proposal: Some(p), .. } if p == id)));
     // shortcut: display checks eight recent runs; use an active-run index if older live runs must stay visible.
-    let state = if busy.as_deref() == Some("unknown") || asked || pending_plan || pending_approval { "waiting" }
+    let state = if busy.as_deref() == Some("unknown") || asked || pending_plan || pending_proposal || pending_approval { "waiting" }
         else if busy.is_some() || events.iter().rev().filter_map(|event| match event {
             LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } => Some(run_id),
             _ => None,

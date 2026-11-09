@@ -144,6 +144,15 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
     [api, refresh],
   );
 
+  /** Sends the overall lead's proposed requests on to the project leads (ADR-0036). */
+  const forward = useCallback(async (proposalId: string) => {
+    try {
+      await api.leadForward(proposalId);
+    } finally {
+      await refresh();
+    }
+  }, [api, refresh]);
+
   return {
     loaded: show !== undefined,
     failed,
@@ -167,6 +176,7 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
     close,
     makeWriter,
     dispatch,
+    forward,
     changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {
       const write = api.leadNote(threadId, change);
       noteWrite.current = write;

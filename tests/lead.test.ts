@@ -17,6 +17,7 @@ import {
   editDraft,
   effortFor,
   fileSize,
+  latestProposal,
   leadItems,
   leadPlans,
   leadProgressSummary,
@@ -108,6 +109,37 @@ test("a thread folds into messages, replies, plan cards with their run, and erro
   // A plan without a title or cards still draws.
   const bare = leadItems([{ t: "lead.plan", at: "1", planId: "p", plan: {}, ok: false, violations: [{ rule: "plan-shape", message: "x" }] } as LeadEvent]);
   assert.ok(bare[0].kind === "plan" && bare[0].title === "제목 없는 계획" && bare[0].cards.length === 0);
+});
+
+test("the overall lead's proposal waits for 요청 전달, and a review marks the plan it judged (ADR-0036)", () => {
+  const proposed: LeadEvent[] = [
+    { t: "lead.user", at: "1", text: "둘 다 고쳐", provider: "claude" },
+    { t: "lead.forward-plan", at: "2", proposalId: "ov-f1", items: [{ project: "alpha", text: "a" }, { project: "beta", text: "b" }], provider: "claude" },
+  ];
+  const waiting = latestProposal(leadItems(proposed));
+  assert.equal(waiting.proposal?.items.length, 2);
+  assert.equal(waiting.sendable, true);
+  // Something the person wrote after it makes it stale; O refuses it the same way.
+  const later: LeadEvent[] = [...proposed, { t: "lead.user", at: "3", text: "잠깐", provider: "claude" }];
+  assert.equal(latestProposal(leadItems(later)).sendable, false);
+  const forwarded: LeadEvent[] = [...proposed, { t: "lead.forward", at: "3", project: "alpha", text: "a", proposal: "ov-f1" }];
+  const sent = leadItems(forwarded);
+  assert.ok(latestProposal(sent).proposal?.sent);
+  assert.equal(latestProposal(sent).sendable, false);
+  assert.ok(sent.some((item) => item.kind === "forward" && item.project === "alpha"));
+  assert.equal(latestProposal(leadItems([])).proposal, undefined);
+
+  const review: LeadEvent[] = [
+    { t: "lead.user", at: "1", text: "a", provider: "claude", origin: "overall" },
+    { t: "lead.plan", at: "2", planId: "al-p1", plan: { title: "A", cards: [] }, ok: true, violations: [] },
+    { t: "lead.review", at: "3", planId: "al-p1", project: "alpha", verdict: "revise", notes: "테스트를 더하세요" },
+    // A verdict this build does not know is left out.
+    { t: "lead.review", at: "4", planId: "al-p1", project: "alpha", verdict: "maybe" } as unknown as LeadEvent,
+  ];
+  const reviewed = leadItems(review);
+  assert.ok(reviewed[0].kind === "user" && reviewed[0].origin === "overall");
+  assert.ok(reviewed[1].kind === "plan" && reviewed[1].review?.verdict === "revise" && reviewed[1].review.notes === "테스트를 더하세요");
+  assert.deepEqual(reviewed.map((item) => item.kind), ["user", "plan", "review"]);
 });
 
 test("a card message stays distinct from a user instruction", () => {

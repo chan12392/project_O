@@ -102,7 +102,14 @@ export interface AskQuestion {
 
 export type LeadEvent =
   | { t: "lead.start"; at: string; threadId: string; project: string }
-  | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  /** `origin`: absent for the person; "overall" for a request the overall lead passed on, "review" for O's review request (ADR-0032, ADR-0036). */
+  | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string; origin?: string }
+  /** Requests the overall lead proposes; they go on when the person presses 요청 전달 (ADR-0036). */
+  | { t: "lead.forward-plan"; at: string; proposalId: string; items: LeadForwardItem[]; provider: ProviderId; model?: string; effort?: string }
+  /** A request passed on to a project lead; `revision` names the plan an overall review asked to revise. */
+  | { t: "lead.forward"; at: string; project: string; text: string; proposal?: string; revision?: string }
+  /** The overall lead's review of a project lead's plan, in both threads (ADR-0036). */
+  | { t: "lead.review"; at: string; planId: string; project: string; verdict: LeadVerdict; notes?: string }
   | { t: "lead.worker"; at: string; runId: string; cardId: string; messageId: string; text: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
   | { t: "lead.reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
@@ -223,8 +230,20 @@ export function leadView(state: LeadView, action: LeadViewAction): LeadView {
 }
 
 /** One thing the chat draws, in order. */
+/** One request the overall lead proposes for a project lead. */
+export interface LeadForwardItem {
+  project: string;
+  text: string;
+}
+
+export type LeadVerdict = "approve" | "revise";
+
 export type LeadItem =
-  | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string; origin?: string }
+  /** The overall lead's proposed requests; `sent` once the person sent them on. */
+  | { kind: "proposal"; at: string; proposalId: string; items: LeadForwardItem[]; sent: boolean }
+  | { kind: "forward"; at: string; project: string; text: string; revision?: string }
+  | { kind: "review"; at: string; planId: string; project: string; verdict: LeadVerdict; notes: string }
   | { kind: "worker"; at: string; runId: string; cardId: string; text: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { kind: "followup"; at: string; cardId: string; runId: string }
@@ -244,6 +263,8 @@ export type LeadItem =
       problems: string[];
       runId?: string;
       autoRunReason?: string;
+      /** The overall lead's last word on it (ADR-0036). */
+      review?: { verdict: LeadVerdict; notes: string };
     }
   | { kind: "warning" | "error"; at: string; text: string };
 
@@ -276,7 +297,23 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
       case "lead.user":
         work = undefined;
         for (const item of items) if (item.kind === "ask") item.answered = true;
-        items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
+        items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort, ...(typeof e.origin === "string" ? { origin: e.origin } : {}) });
+        break;
+      case "lead.forward-plan": {
+        // Stored data: requests without a project or text are left out.
+        const forwards = (Array.isArray(e.items) ? e.items : []).filter((item): item is LeadForwardItem => isObject(item) && typeof item.project === "string" && typeof item.text === "string");
+        if (typeof e.proposalId === "string" && forwards.length > 0) items.push({ kind: "proposal", at: e.at, proposalId: e.proposalId, items: forwards, sent: false });
+        break;
+      }
+      case "lead.forward":
+        if (typeof e.project !== "string" || typeof e.text !== "string") break;
+        for (const item of items) if (item.kind === "proposal" && item.proposalId === e.proposal) item.sent = true;
+        items.push({ kind: "forward", at: e.at, project: e.project, text: e.text, ...(typeof e.revision === "string" ? { revision: e.revision } : {}) });
+        break;
+      case "lead.review":
+        if (typeof e.planId !== "string" || (e.verdict !== "approve" && e.verdict !== "revise")) break;
+        for (const item of items) if (item.kind === "plan" && item.planId === e.planId) item.review = { verdict: e.verdict, notes: e.notes ?? "" };
+        items.push({ kind: "review", at: e.at, planId: e.planId, project: String(e.project ?? ""), verdict: e.verdict, notes: e.notes ?? "" });
         break;
       case "lead.worker":
         work = undefined;
@@ -328,6 +365,19 @@ type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
 export function leadPlans(items: readonly LeadItem[]): { latest?: LeadPlan; earlier: LeadPlan[] } {
   const plans = items.filter((item): item is LeadPlan => item.kind === "plan");
   return { latest: plans.at(-1), earlier: plans.slice(0, -1).reverse() };
+}
+
+type LeadProposal = Extract<LeadItem, { kind: "proposal" }>;
+
+/**
+ * The overall lead's latest proposal of requests (ADR-0036), and whether it may still be sent on:
+ * not yet sent, and nothing the person wrote since (O refuses a stale one the same way).
+ */
+export function latestProposal(items: readonly LeadItem[]): { proposal?: LeadProposal; sendable: boolean } {
+  const position = items.findLastIndex((item) => item.kind === "proposal");
+  if (position < 0) return { sendable: false };
+  const proposal = items[position] as LeadProposal;
+  return { proposal, sendable: !proposal.sent && !items.slice(position + 1).some((item) => item.kind === "user") };
 }
 
 /** A plan the user wrote after, or the lead proposed another after, is out of date: it is not dispatched. */

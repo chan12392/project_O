@@ -74,6 +74,8 @@ export const devBackend: Backend = {
     ),
   leadDispatch: (planId, clean) =>
     fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
+  leadForward: (proposalId) =>
+    fetch(`/api/lead/forward?${new URLSearchParams({ proposal: proposalId })}`, { method: "POST" }).then((r) => json<{ events: LeadEvent[] }>(r)),
   leadDecide: (id, allow) => fetch(`/api/lead/decide?${new URLSearchParams({ id, decision: allow ? "allow" : "deny" })}`, { method: "POST" }).then((r) => json<{ id: string; decision: "allow" | "deny" }>(r)),
   leadStop: (project, thread) =>
     fetch(`/api/lead/stop${project || thread ? `?${new URLSearchParams({ ...(project ? { project } : {}), ...(thread ? { thread } : {}) })}` : ""}`, { method: "POST" }).then((r) =>

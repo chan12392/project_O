@@ -59,6 +59,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_attach,
         lead::lead_send,
         lead::lead_dispatch,
+        lead::lead_forward,
         lead::lead_stop,
         lead::lead_decide,
         lead::lead_wake,

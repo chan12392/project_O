@@ -136,6 +136,7 @@ const LEAD_PROVIDER = /^(claude|codex|agy)$/;
 const LEAD_EFFORT = /^(minimal|low|medium|high|xhigh|max)$/;
 const THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
+const PROPOSAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-f\d{1,4}$/;
 /** A waiting approval's id (`<threadId>-a<n>`, crates/o-core/src/lead/approvals.rs); `o lead decide` checks it again. */
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
 /** How long a lead model list is reused before the CLI is asked again (the Tauri `lead_models` keeps it as long). */
@@ -298,6 +299,16 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
         throw new Error("O CLI가 작업 그래프와 워크트리 격리를 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하세요");
       }
       return oWithInput(["lead", "dispatch", plan, "--profile", query.get("clean") === "1" ? "project-o" : "own"], Buffer.alloc(0), 60_000);
+    }));
+    return true;
+  }
+  if (path === "/lead/forward") {
+    const proposal = query.get("proposal") ?? "";
+    if (!PROPOSAL_ID.test(proposal)) { fail(400, "요청 제안 id 형식이 아닙니다"); return true; }
+    run(o(["about", "--json"]).then((text) => {
+      const caps: unknown = JSON.parse(text).capabilities;
+      if (!Array.isArray(caps) || !caps.includes("overall-review-v1")) throw new Error("이 O CLI는 전체 총괄의 요청 전달을 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하세요");
+      return o(["lead", "forward", proposal]);
     }));
     return true;
   }

@@ -239,6 +239,8 @@ export interface Backend {
   leadSend(request: LeadSendRequest): Promise<{ threadId: string | null; events: LeadEvent[] }>;
   /** Runs a proposed plan after the policy check; rejects with the policy's reasons when refused. */
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
+  /** The person sends the overall lead's proposed requests on to project leads (`o lead forward`, ADR-0036). */
+  leadForward(proposalId: string): Promise<{ events: LeadEvent[] }>;
   /** The person's 허용/거부 for one action the lead waits on (`o lead decide`); only the person's click, never chat text. */
   leadDecide(id: string, allow: boolean): Promise<{ id: string; decision: "allow" | "deny" }>;
   /** Stops one lead thread while it answers (`thread`), or the project's open threads without one. */
