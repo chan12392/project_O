@@ -90,7 +90,29 @@ pub fn spawn_detached(command: &mut Command) -> std::io::Result<Child> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    command.spawn()
+    without_inherited_stdio(|| command.spawn())
+}
+
+#[cfg(not(windows))]
+fn without_inherited_stdio<T>(spawn: impl FnOnce() -> T) -> T { spawn() }
+
+/// Windows hands every inheritable handle to a new process, so a detached runner would keep this
+/// process's stdout pipe open and a caller reading `o dispatch`'s output would wait until the run
+/// ended. The standard handles stay out of `spawn` and get their flag back afterwards.
+#[cfg(windows)]
+fn without_inherited_stdio<T>(spawn: impl FnOnce() -> T) -> T {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{GetHandleInformation, SetHandleInformation, HANDLE_FLAG_INHERIT};
+    let handles = [std::io::stdin().as_raw_handle(), std::io::stdout().as_raw_handle(), std::io::stderr().as_raw_handle()];
+    let cleared: Vec<_> = handles.into_iter().filter(|handle| !handle.is_null()).filter(|&handle| {
+        let mut flags = 0;
+        unsafe { GetHandleInformation(handle, &mut flags) != 0 && flags & HANDLE_FLAG_INHERIT != 0 && SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) != 0 }
+    }).collect();
+    let result = spawn();
+    for handle in cleared {
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    }
+    result
 }
 
 /// Windows holds a kill-on-close job; Linux only tracks the directly owned child.
