@@ -43,3 +43,17 @@ test("demo API billing mode starts at warn and keeps the saved mode", async () =
   assert.deepEqual(await demoBackend.billing(), { mode: "subscription" });
   await demoBackend.setBilling("warn");
 });
+
+test("the profile setup button posts to /api/agents/<id>/setup and the demo refuses it (ADR-0040)", async () => {
+  const original = globalThis.fetch;
+  const calls: string[] = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push(`${init?.method ?? "GET"} ${String(input)}`);
+    return new Response(JSON.stringify({ ok: true, message: "열림" }));
+  };
+  try {
+    assert.deepEqual(await devBackend.setup("codex"), { ok: true, message: "열림" });
+    assert.deepEqual(calls, ["POST /api/agents/codex/setup"]);
+  } finally { globalThis.fetch = original; }
+  assert.equal((await demoBackend.setup("codex")).ok, false);
+});

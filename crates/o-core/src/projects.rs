@@ -138,6 +138,7 @@ fn refusal(home: &Path, user_home: &Path, path: &str, must_exist: bool) -> Optio
         o_home: home.to_string_lossy().into_owned(),
         user_home: user_home.to_string_lossy().into_owned(),
         resolve: Box::new(resolved_path),
+        profile_not_ready: Box::new(|_| None),
     };
     check_project(Some(path), &ctx).into_iter().next().map(|v| v.message)
 }

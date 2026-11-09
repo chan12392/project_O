@@ -280,6 +280,7 @@ export const demoBackend: Backend = {
   ],
   install: async () => ({ ok: false, message: "미리보기에서는 설치하지 않습니다" }),
   login: async () => ({ ok: false, message: "미리보기에서는 연결하지 않습니다" }),
+  setup: async () => ({ ok: false, message: "미리보기에서는 에이전트를 설정하거나 점검하지 않습니다" }),
   openTerminal: async () => ({ ok: false, message: "미리보기에서는 터미널을 열 수 없습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: async () => ({ version: "preview", home: "", agentsHome: "", commit: "", builtAt: "" }),

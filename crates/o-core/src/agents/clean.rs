@@ -156,6 +156,17 @@ pub fn login_needed(provider: ProviderId) -> String {
     format!("로그인 필요({provider}): {name}의 project_O 프로필에 로그인되어 있지 않습니다. 설정 → 에이전트에서 '연결'을 누르거나 o agents login {provider}로 공식 로그인을 마친 뒤 다시 실행하세요.")
 }
 
+/// Why `provider`'s project_O profile under `root` cannot do a sandboxed card's work yet
+/// (`Provider::profile_not_ready`, ADR-0040): a one-time setup the person finishes in the CLI.
+/// `None` when it can, or when the CLI cannot have a profile at all (`profile_unsupported`).
+pub fn profile_not_ready(root: &Path, provider: ProviderId) -> Option<String> {
+    let p = providers::get(provider);
+    if p.profile_unsupported().is_some() {
+        return None;
+    }
+    p.profile_not_ready(&profile_home(root, provider))
+}
+
 /// Before a card or lead starts with the project_O profile (ADR-0015): each provider's profile
 /// is made if missing, and a provider that cannot have one, or whose CLI says it is signed out
 /// there, maps to the reason it must not start. A CLI that signs in through the system (no

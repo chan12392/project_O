@@ -27,7 +27,7 @@ use crate::run::mode::{Profile, RunMode};
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
 use crate::run::plan::{Card, Plan, ProviderId};
-use crate::policy::{check_plan_for, Violation, LIMITS};
+use crate::policy::{check_plan_in, Violation, LIMITS};
 use crate::agents::clean;
 use crate::sys::proc;
 use crate::providers::{launch_spec_for, LaunchSpec, StreamReader, TeamChannel};
@@ -505,7 +505,8 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
             budget::refresh_if_stale(home, Utc::now());
         }
         let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
-        let checked = check_plan_for(&plan, &ctx, Profile::of_clean(is_clean(home, run_id)));
+        let mode = RunMode { profile: Profile::of_clean(is_clean(home, run_id)), context: true, yolo: is_yolo(home, run_id) };
+        let checked = check_plan_in(&plan, &ctx, mode);
         let Some(plan) = checked.plan else {
             let reasons: Vec<&str> = checked.violations.iter().map(|v| v.message.as_str()).collect();
             let message = format!("정책 위반: {}", reasons.join(" / "));

@@ -35,6 +35,7 @@ export const devBackend: Backend = {
   agentsCatalog: (refresh = false) => fetch(`/api/agents/catalog${refresh ? "?refresh=1" : ""}`).then((r) => json<Awaited<ReturnType<Backend["agentsCatalog"]>>>(r)),
   install: (id) => fetch(`/api/agents/${id}/install`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   login: (id, clean) => fetch(`/api/agents/${id}/login?clean=${clean ? 1 : 0}`, { method: "POST" }).then((r) => json<ActionResult>(r)),
+  setup: (id) => fetch(`/api/agents/${id}/setup`, { method: "POST" }).then((r) => json<ActionResult>(r)),
   openTerminal: () => fetch("/api/agents/terminal", { method: "POST" }).then((r) => json<ActionResult>(r)),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
   about: () => fetch("/api/about").then((r) => json<About>(r)),

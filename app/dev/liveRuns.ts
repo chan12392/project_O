@@ -116,7 +116,7 @@ function sameOrigin(req: IncomingMessage): boolean {
 }
 
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
-const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode|devin)\/(install|login)$/;
+const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode|devin)\/(install|login|setup)$/;
 
 /** A PR number or github.com pull address, as `o review` takes it (platform/backend PR_SELECTOR). */
 const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
@@ -638,8 +638,9 @@ export function liveRuns(): Plugin {
         const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
         if (action) {
           const [, id, verb] = action;
-          const args = verb === "install" ? ["agents", "install", id, "--json"] : ["agents", "open-login", id, "--json", ...clean];
-          return void o(args, verb === "install" ? INSTALL_TIMEOUT_MS : 60_000).then((out) => send(res, 200, out), error(res));
+          const args = verb === "install" ? ["agents", "install", id, "--json"] : verb === "setup" ? ["agents", "setup", id, "--json"] : ["agents", "open-login", id, "--json", ...clean];
+          // The sandbox check (setup up to 5 minutes, then a probe card up to 2) needs as long as an install.
+          return void o(args, verb === "login" ? 60_000 : INSTALL_TIMEOUT_MS).then((out) => send(res, 200, out), error(res));
         }
         next();
       });
