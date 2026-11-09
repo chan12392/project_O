@@ -349,6 +349,10 @@ pub fn definitely_exited(_pid: u32, _expected: u64) -> bool { false }
 
 #[cfg(not(windows))]
 pub fn is_alive(pid: u32) -> bool {
+    // `kill` reads a pid above i32::MAX as negative (-1 signals every process), and 0 is our own group.
+    if pid == 0 || pid > i32::MAX as u32 {
+        return false;
+    }
     Command::new("kill").args(["-0", &pid.to_string()]).stderr(Stdio::null()).status().is_ok_and(|s| s.success())
 }
 
