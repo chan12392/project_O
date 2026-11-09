@@ -160,6 +160,7 @@ export interface ResourceLease {
   workerStarted: string | null;
   spawnIntent: boolean | null;
   exitConfirmed: boolean | null;
+  processesExited: boolean;
   /** The card's named kill-on-close job (Windows, ADR-0039); absent or null for older leases. */
   jobName?: string | null;
   state: "recoverable" | "unknown";
@@ -173,7 +174,7 @@ export type WorkspaceChanges = { workspace: string; note: string; baselineRunId?
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
   resources(): Promise<ResourceLease[]>;
-  recoverResource(id: string): Promise<void>;
+  recoverResource(id: string, confirmExited?: boolean): Promise<void>;
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
   changes(run: string, card: string): Promise<WorkspaceChanges>;
   /** The person's answer to a card's question, sent as the lead on the run's team channel (`o msg send --as lead`). */

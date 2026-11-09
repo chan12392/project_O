@@ -20,7 +20,7 @@ async function json<T>(res: Response): Promise<T> {
 export const devBackend: Backend = {
   kind: "dev",
   resources: () => fetch("/api/resources").then((r) => json<{ leases: Awaited<ReturnType<Backend["resources"]>> }>(r)).then((r) => r.leases),
-  recoverResource: (id) => fetch(`/api/resources/recover?id=${encodeURIComponent(String(id))}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
+  recoverResource: (id, confirmExited = false) => fetch(`/api/resources/recover?id=${encodeURIComponent(String(id))}${confirmExited ? "&confirmExited=1" : ""}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   followup: (run, card, text) => fetch(`/api/lead/followup?${new URLSearchParams({ run, card })}`, { method: "POST", body: text }).then((r) => json<{ runId: string }>(r)),
   changes: (run, card) => fetch(`/api/changes?${new URLSearchParams({ run, card })}`).then((r) => json<Awaited<ReturnType<Backend["changes"]>>>(r)),
   reply: (run, card, text, messageId) => fetch(`/api/lead/reply?${new URLSearchParams({ run, card, ...(messageId ? { message: messageId } : {}) })}`, { method: "POST", body: text }).then((r) => json<unknown>(r)).then(() => {}),

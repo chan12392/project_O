@@ -2202,6 +2202,7 @@ dependencies = [
  "chrono",
  "o-core",
  "o-guard",
+ "rusqlite",
  "serde_json",
  "windows-sys 0.61.2",
 ]

@@ -15,7 +15,7 @@ export function tauriBackend(invoke: Invoke): Backend {
   return {
     kind: "tauri",
     resources: () => invoke("resource_leases") as ReturnType<Backend["resources"]>,
-    recoverResource: (id) => invoke("resource_recover", { id }) as Promise<void>,
+    recoverResource: (id, confirmExited = false) => invoke("resource_recover", { id, confirmExited }) as Promise<void>,
     followup: (run, card, text) => invoke("run_followup", { run, card, text }) as Promise<{ runId: string }>,
     changes: (run, card) => invoke("run_changes", { run, card }) as ReturnType<Backend["changes"]>,
     reply: (run, card, text, messageId) => invoke("run_reply", { run, card, text, messageId: messageId ?? null }) as Promise<void>,

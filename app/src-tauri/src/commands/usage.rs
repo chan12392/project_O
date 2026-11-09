@@ -15,9 +15,15 @@ pub async fn resource_leases() -> Result<Vec<store::ResourceLease>, String> {
 }
 
 #[tauri::command]
-pub async fn resource_recover(id: String) -> Result<(), String> {
+pub async fn resource_recover(id: String, confirm_exited: bool) -> Result<(), String> {
+    if confirm_exited && (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) {
+        return Err("에이전트 안에서는 직접 확인 후 복구할 수 없습니다. 사용자가 실행해 주세요".into());
+    }
     let id = id.parse::<i64>().ok().filter(|id| *id > 0).ok_or("예약 ID가 올바르지 않습니다")?;
-    blocking(move || store::recover_resource(&store::default_home(), id).map_err(|error| error.to_string())).await?
+    blocking(move || {
+        let home = store::default_home();
+        if confirm_exited { store::release_confirmed(&home, id) } else { store::recover_resource(&home, id) }.map_err(|error| error.to_string())
+    }).await?
 }
 
 /// The text `o usage --cached --json` prints: the saved reading, or an empty one.

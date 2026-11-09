@@ -19,6 +19,7 @@ fn marked_agents_cannot_start_work_through_cli() {
             vec!["lead", "send"], vec!["lead", "dispatch", "plan"], vec!["lead", "note", "thread", "-"], vec!["lead", "wake", "run"], vec!["lead", "retry", "run", "message"],
             // An agent never approves its own action (ADR-0008 개정 3).
             vec!["lead", "decide", "20261104-000000-abcd-a1", "allow"],
+            vec!["resources", "recover", "3", "--confirm-exited"],
             vec!["schedule", "run", "test"], vec!["image", "read"], vec!["projects", "open", "x"],
             // The sandbox check makes a model call; only a person starts it (ADR-0040 개정 1).
             vec!["agents", "setup", "codex"],
@@ -42,7 +43,7 @@ fn empty_agent_markers_do_not_hide_normal_argument_errors() {
 fn marked_agent_hook_blocks_dispatch_command() {
     use std::io::Write;
     use std::process::Stdio;
-    for command in ["o dispatch plan.json", "o followup run card", "o _followup run", "o lead decide 20261104-000000-abcd-a1 allow"] {
+    for command in ["o dispatch plan.json", "o followup run card", "o _followup run", "o lead decide 20261104-000000-abcd-a1 allow", "o resources recover 3 --confirm-exited"] {
     let mut child = Command::new(env!("CARGO_BIN_EXE_o"))
         .arg("hook").env("O_AGENT_ROLE", "lead").stdin(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(serde_json::json!({"tool_name":"Bash","tool_input":{"command":command}}).to_string().as_bytes()).unwrap();

@@ -237,5 +237,34 @@ fn a_dead_runners_lease_without_a_job_name_stays_unknown() {
     let leases = store::resource_leases(&home).unwrap();
     assert_eq!(leases[0].job_name, None);
     assert_eq!(leases[0].state, "unknown");
-    assert!(store::recover_resource(&home, leases[0].id.parse().unwrap()).is_err());
+    assert!(leases[0].processes_exited);
+    let id = leases[0].id.parse().unwrap();
+    assert!(store::recover_resource(&home, id).is_err());
+    let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    let live = std::process::id();
+    let live_started = proc::started_at(live).unwrap() as i64;
+    for (owner_pid, owner_time, worker_pid, worker_time, phase, confirmed) in [
+        (live, Some(live_started), worker, Some(worker_started as i64), true, false),
+        (owner, Some(owner_started as i64), live, Some(live_started), true, false),
+        (owner, None, worker, Some(worker_started as i64), true, false),
+        (owner, Some(owner_started as i64), worker, None, true, false),
+        (owner, Some(0), worker, Some(worker_started as i64), true, false),
+        (owner, Some(owner_started as i64), worker, Some(worker_started as i64), false, false),
+        (owner, Some(owner_started as i64), worker, Some(worker_started as i64), true, true),
+    ] {
+        conn.execute("UPDATE resource_leases SET owner_pid=?1, owner_started=?2, worker_pid=?3, worker_started=?4, spawn_intent=?5, exit_confirmed=?6", rusqlite::params![owner_pid, owner_time, worker_pid, worker_time, phase, confirmed]).unwrap();
+        assert!(store::release_confirmed(&home, id).is_err());
+        assert!(store::resource_held(&home, "run", "old").unwrap());
+        if phase && !confirmed { assert!(!store::resource_leases(&home).unwrap()[0].processes_exited); }
+    }
+    conn.execute("UPDATE resource_leases SET worker_pid=NULL, worker_started=NULL, spawn_intent=0, exit_confirmed=0", []).unwrap();
+    assert_eq!(store::resource_leases(&home).unwrap()[0].state, "recoverable");
+    assert!(store::release_confirmed(&home, id).is_err());
+    conn.execute("UPDATE resource_leases SET owner_pid=?1, owner_started=?2, worker_pid=?3, worker_started=?4, spawn_intent=1, exit_confirmed=0", rusqlite::params![owner, owner_started as i64, worker, worker_started as i64]).unwrap();
+    let starts: i64 = conn.query_row("SELECT COUNT(*) FROM starts", [], |r| r.get(0)).unwrap();
+    store::release_confirmed(&home, id).unwrap();
+    assert!(!store::resource_held(&home, "run", "old").unwrap());
+    assert!(store::resource_leases(&home).unwrap().is_empty());
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM slots", [], |r| r.get::<_, i64>(0)).unwrap(), 0);
+    assert_eq!(conn.query_row("SELECT COUNT(*) FROM starts", [], |r| r.get::<_, i64>(0)).unwrap(), starts);
 }

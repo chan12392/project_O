@@ -519,6 +519,7 @@ pub struct ResourceLease {
     /// The card's named kill-on-close job (Windows, ADR-0039); none for older leases.
     pub job_name: Option<String>,
     pub state: &'static str,
+    pub processes_exited: bool,
 }
 
 fn owner_scope_matches(scope: Option<&str>) -> bool {
@@ -526,6 +527,10 @@ fn owner_scope_matches(scope: Option<&str>) -> bool {
     { scope.is_some() && scope == proc::process_scope().as_deref() }
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     { let _ = scope; true }
+}
+
+fn process_exited(pid: Option<u32>, started: Option<i64>) -> bool {
+    pid.zip(started.and_then(|v| u64::try_from(v).ok()).filter(|v| *v > 0)).is_some_and(|(pid, started)| proc::definitely_exited(pid, started))
 }
 
 pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
@@ -539,16 +544,34 @@ pub fn resource_leases(home: &Path) -> io::Result<Vec<ResourceLease>> {
         let resources = serde_json::from_str(&raw).map_err(io::Error::other)?;
         let evidence = (spawn_intent == Some(false) && worker_pid.is_none() && start_id.is_some()) || (spawn_intent == Some(true) && exit_confirmed == Some(true));
         let owner_gone = owner_scope_matches(owner_scope.as_deref()) && owner_pid.zip(owner_started.and_then(|v| u64::try_from(v).ok())).is_some_and(|(pid, started)| proc::definitely_exited(pid, started));
+        let processes_exited = spawn_intent == Some(true) && owner_gone && owner_started.is_some_and(|v| v > 0) && process_exited(worker_pid, worker_started);
         let state = if owner_gone && evidence { "recoverable" } else { "unknown" };
-        Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent, exit_confirmed, job_name, state })
+        Ok(ResourceLease { id: id.to_string(), run_id, card_id, resources, owner_pid, owner_started: owner_started.map(|v| v.to_string()), worker_pid, worker_started: worker_started.map(|v| v.to_string()), spawn_intent, exit_confirmed, job_name, state, processes_exited })
     }).collect::<io::Result<_>>()?;
     let mut legacy = conn.prepare("SELECT id, run_id, card_id, owner, pid FROM slots WHERE id NOT IN (SELECT slot_id FROM resource_leases) ORDER BY id").map_err(sql)?;
     let rows = legacy.query_map([], |row| Ok((row.get::<_, i64>(0)?, row.get(1)?, row.get(2)?, row.get::<_, u32>(3)?, row.get::<_, u32>(4)?))).map_err(sql)?;
     for row in rows {
         let (id, run_id, card_id, owner, worker) = row.map_err(sql)?;
-        leases.push(ResourceLease { id: format!("legacy:{id}"), run_id, card_id, resources: serde_json::json!([]), owner_pid: (owner != 0).then_some(owner), owner_started: None, worker_pid: (worker != 0).then_some(worker), worker_started: None, spawn_intent: None, exit_confirmed: None, job_name: None, state: "unknown" });
+        leases.push(ResourceLease { id: format!("legacy:{id}"), run_id, card_id, resources: serde_json::json!([]), owner_pid: (owner != 0).then_some(owner), owner_started: None, worker_pid: (worker != 0).then_some(worker), worker_started: None, spawn_intent: None, exit_confirmed: None, job_name: None, state: "unknown", processes_exited: false });
     }
     Ok(leases)
+}
+
+/// A person has checked for remaining child processes; recheck both recorded identities under lock.
+pub fn release_confirmed(home: &Path, id: i64) -> io::Result<()> {
+    let mut conn = index::open(home)?;
+    let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    let row = tx.query_row(
+        "SELECT owner_pid, owner_started, worker_pid, worker_started, spawn_intent, exit_confirmed, owner_scope FROM resource_leases WHERE slot_id = ?1",
+        [id], |r| Ok((r.get::<_, Option<u32>>(0)?, r.get::<_, Option<i64>>(1)?, r.get::<_, Option<u32>>(2)?, r.get::<_, Option<i64>>(3)?, r.get::<_, Option<bool>>(4)?, r.get::<_, Option<bool>>(5)?, r.get::<_, Option<String>>(6)?)),
+    ).optional().map_err(sql)?;
+    let (owner, owner_started, worker, worker_started, phase, exited, scope) = row.ok_or_else(|| io::Error::other("예약을 찾지 못했습니다"))?;
+    if phase != Some(true) || exited == Some(true) || !owner_scope_matches(scope.as_deref()) || !process_exited(owner, owner_started) || !process_exited(worker, worker_started) {
+        return Err(io::Error::other("프로세스 종료 여부가 불명확해 예약을 복구할 수 없습니다"));
+    }
+    tx.execute("DELETE FROM slots WHERE id = ?1", [id]).map_err(sql)?;
+    tx.execute("DELETE FROM resource_leases WHERE slot_id = ?1", [id]).map_err(sql)?;
+    tx.commit().map_err(sql)
 }
 
 /// Recover only with durable evidence of no spawn or a confirmed process-tree exit, and a gone

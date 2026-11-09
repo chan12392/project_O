@@ -15,5 +15,8 @@ o-guard = { path = "../o-guard" }
 chrono.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 
+[dev-dependencies]
+rusqlite.workspace = true
+
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_JobObjects", "Win32_System_Threading"] }

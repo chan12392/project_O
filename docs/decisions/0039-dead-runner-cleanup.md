@@ -5,6 +5,7 @@
 - 관련: [ADR-0022](0022-agent-session-continuations.md), [ADR-0025](0025-parallel-handoff.md), [ADR-0037](0037-parallel-cards-and-subagents.md)
 - 개정 1 (2026-11-10): Codex 검토(커밋 2145dcb) 반영. 예약 복구 증거를 부모 pid 추적에서 카드의 이름 있는 Job Object로 바꾸고, 중단된 카드의 후속 세션 규칙과 읽기 쪽 보완을 더했다.
 - 개정 2 (2026-11-10): Job 이름 부재를 종료 증거에서 제외했다. 별도 Windows watcher가 실행기 종료와 Job의 활성 프로세스 수 0을 확인한 뒤 해당 예약에만 `exit_confirmed`를 남긴다. 새 세션 후속 잠금도 기존 세션 ID 및 다른 실행·카드 조합과 충돌하지 않게 분리했다.
+- 개정 3 (2026-11-10): 실행기와 작업 프로세스의 종료가 확인되지만 자손의 종료 증거가 없는 예약은, 사람이 자손을 직접 확인한 뒤 명시적으로 복구할 수 있다.
 
 ## 배경
 
@@ -96,13 +97,17 @@ watcher가 Job 핸들을 보유하므로 실행기 쪽 핸들만 닫아서는 �
 
 예약을 푸는 것은 여전히 사람이 한다. 앱의 "예약 복구" 버튼이나 `o resources` 복구 명령을 쓴다. O가 자동으로 풀지 않는다. 카드는 실제로 시작했으므로 그날의 시작 수(`starts`)는 돌려주지 않는다.
 
+종료 증거가 없는 시작된 예약은 계속 `unknown`이지만, 실행기와 작업 프로세스 각각의 PID·생성 시각 및 실행기 범위가 일치하고 둘 다 확실히 종료된 경우 `processesExited`가 참이다. 이것은 자손 종료의 증거가 아니다. 사람이 작업에 관련된 모든 자손 프로세스까지 직접 종료됐는지 확인한 뒤 앱의 "직접 확인 후 복구"에서 경고를 읽고 확인하거나 `o resources recover <id> --confirm-exited`를 명시하면 복구할 수 있다. `release_confirmed`는 트랜잭션 안에서 시작 여부와 두 프로세스의 신원을 다시 검사하고, 불명확하면 거부한다. 이 경로는 프로세스를 종료하지 않고 시작 수를 되돌리지 않는다. PID·생성 시각이나 범위를 확인할 수 없는 예약에는 제공하지 않는다. 이미 복구 가능한 예약과 시작 전 예약은 기존 복구만 쓴다.
+
+에이전트는 이 확인을 대신할 수 없다. CLI와 Tauri 명령은 `O_AGENT_ROLE` 또는 `O_CARD_ID`가 있으면 직접 확인 복구를 거부하고, 공용 가드 훅도 에이전트의 `o resources recover ... --confirm-exited`를 차단한다. 이전 예약이나 watcher를 시작하지 못한 예약도 사람이 확인하면 영구적인 작업 차단을 해소할 수 있다.
+
 ### 4. 그대로 두는 것
 
 `LIMITS`, 자원 충돌 규칙, 기존 복구 경우(시작하지 않은 예약, 종료가 확인된 예약), 후속 실행 문구, `events.jsonl` 형식.
 
 ## 이유
 
-- **증거 기반**: "살아 있지 않아 보임"은 증거가 아니다. Windows에서 열 권한이 없는 프로세스를 죽은 것으로 읽으면, 아직 파일을 쓰는 프로세스가 있는데 다른 카드가 같은 파일을 받는다. 실행 닫기는 pid·생성 시각을 함께 검사하는 `definitely_exited`를 쓰고, 시작한 예약의 복구에는 실행기 종료와 카드 전체의 `exit_confirmed`가 필요하다. 실행기나 작업 프로세스 하나의 종료는 자손 종료를 증명하지 않는다. watcher가 열린 핸들을 신뢰하기 전에는 전달받은 생성 시각과 예약 행이 일치해야 한다.
+- **증거 기반**: "살아 있지 않아 보임"은 증거가 아니다. Windows에서 열 권한이 없는 프로세스를 죽은 것으로 읽으면, 아직 파일을 쓰는 프로세스가 있는데 다른 카드가 같은 파일을 받는다. 실행 닫기는 pid·생성 시각을 함께 검사하는 `definitely_exited`를 쓴다. 시작한 예약의 일반 복구에는 실행기 종료와 카드 전체의 `exit_confirmed`가 필요하며, 예외적인 수동 복구는 위의 두 프로세스 종료 검사와 사람의 자손 종료 확인을 함께 요구한다. 실행기나 작업 프로세스 하나의 종료는 자손 종료를 증명하지 않는다. watcher가 열린 핸들을 신뢰하기 전에는 전달받은 생성 시각과 예약 행이 일치해야 한다.
 - **실행 닫기는 자동, 예약 풀기는 사람**: 실행을 닫는 것은 기록만 바꾸므로 잘못 닫혀도 파일이 덮이지 않는다. 예약을 푸는 것은 다른 카드가 같은 파일을 쓰게 하므로, 증거가 갖춰져도 사람이 작업 폴더를 확인한 뒤 누르게 둔다.
 - **부모 pid 추적을 버린 이유**: 처음 안(2145dcb)은 ToolHelp 스냅샷의 부모 pid로 작업 프로세스의 자손을 따라갔다. 두 가지가 틀렸다.
   - 중간 프로세스가 끝나 스냅샷에서 사라지면 그 아래 손자는 작업 프로세스와 이어지지 않는다. 그러면 카드의 프로세스가 아직 도는데 "자손 없음"이 된다.
@@ -110,7 +115,7 @@ watcher가 Job 핸들을 보유하므로 실행기 쪽 핸들만 닫아서는 �
   - 그래서 그 검사(`descendants_alive`)를 지웠다.
 - **Job 이름 부재를 증거로 쓰지 않는 이유**: Microsoft의 [Life Cycle of an Object](https://learn.microsoft.com/en-us/windows-hardware/drivers/kernel/life-cycle-of-an-object)는 임시 객체의 핸들 수가 0이 되면 이름이 사라지지만 참조가 남은 객체는 계속 존재할 수 있다고 설명한다. [Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects)는 `KILL_ON_JOB_CLOSE`의 마지막 핸들 닫기가 소속 프로세스를 종료한다고 설명한다. 그러나 [TerminateJobObject](https://learn.microsoft.com/en-us/windows/win32/api/jobapi2/nf-jobapi2-terminatejobobject)는 각 소속 프로세스에 `TerminateProcess`를 호출하는 것과 같고, [TerminateProcess](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)는 외부 호출 시 비동기이며 진행 중인 I/O가 완료되거나 취소될 때까지 프로세스가 끝나지 않는다. 따라서 이름 부재를 실제 종료 완료로 취급할 수 없다는 것이 이 결정의 판단이다.
 - **Job이 비었다는 확인**: watcher는 검증한 Job 핸들을 유지한 채 명시적으로 종료를 요청하고 `ActiveProcesses == 0`을 기다린다. Microsoft의 [JOBOBJECT_BASIC_ACCOUNTING_INFORMATION](https://learn.microsoft.com/en-us/windows/win32/api/winnt/ns-winnt-jobobject_basic_accounting_information)은 이 값이 현재 Job에 속한 프로세스 수이며 종료한 프로세스가 나가고 참조가 해제될 때 줄어든다고 설명한다. 이 확인 뒤에도 정확히 일치하는 예약 행에만 종료 증거를 기록한다.
-- **Windows만**: 이 watcher의 종료 증거는 Windows Job Object에 한정된다. Linux·macOS에서 실행기가 죽고 종료 확인이 남지 않은 예약은 계속 `unknown`이다. 정상 실행기가 남긴 기존 종료 확인과 시작하지 않은 예약의 복구는 그대로다.
+- **Windows만**: 이 watcher의 종료 증거는 Windows Job Object에 한정된다. Linux·macOS에서 실행기가 죽고 종료 확인이 남지 않은 예약은 계속 `unknown`이며 위 수동 확인 조건을 만족할 때만 사람이 복구할 수 있다. 정상 실행기가 남긴 기존 종료 확인과 시작하지 않은 예약의 복구는 그대로다.
 - **예전 예약은 그대로 `unknown`**: 실행기가 죽고 `exit_confirmed`가 남지 않은 기존 예약에는 새 증거를 소급하지 않는다. `job_name`이 없는 예약과 watcher 도입 전에 시작한 예약 모두 해당한다. 배경의 `20261109-123716-tent` `gui` 예약도 그렇다. 이름 부재나 경과 시간으로 확인을 대신하지 않으며, 사람이 작업 폴더와 프로세스를 직접 확인해야 한다.
 
 ## 결과

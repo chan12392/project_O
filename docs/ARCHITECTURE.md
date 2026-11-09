@@ -52,6 +52,8 @@
 
 숨김 명령 `o _job-watch`는 Windows 전용 `run::job_watch`를 실행한다. 실행기 종료 뒤 카드 Job을 종료하고 활성 프로세스 수 0과 보유한 프로세스 핸들의 종료 신호를 확인한 다음, 정확히 일치하는 자원 예약에 `exit_confirmed`를 남긴다([ADR-0039](decisions/0039-dead-runner-cleanup.md)).
 
+`o resources`와 상태 표시줄의 자원 예약 점검은 남은 예약을 보여 준다. 일반 복구는 종료 증거를 검사한다. 실행기와 작업 프로세스의 종료만 확인되고 자손 종료는 불명인 예약은 사람이 모든 자손의 종료를 직접 확인한 뒤 앱에서 확인하거나 `o resources recover <id> --confirm-exited`로 복구한다. 저장소는 복구 직전 트랜잭션에서 프로세스 신원을 다시 검사한다(ADR-0039 개정 3).
+
 ### `app/src-tauri/src`
 
 `main.rs`는 `commands::handler()`를 등록하고 `commands::window::open_main`으로 메인 창을 띄운다(`tauri.conf.json`의 `create: false`). `commands/{runs,usage,agents,review,tokens,about,lead,projects,update,window}.rs`가 도메인별 명령과 테스트를 가진다. `projects`의 폴더 선택 창(`pick_folder`)은 `tauri-plugin-dialog`를 Rust에서만 연다(화면 capability 없음). `window`는 데스크톱 전용이다: 새 창을 여는 링크(`target="_blank"`, `window.open`)는 웹뷰 창을 만들지 않고 https만 `open_external`과 같은 경로로 브라우저에서 열며, 나머지는 막고 화면에 `project-o:link-blocked` 이벤트로 이유를 알린다(`shell/LinkNotice.tsx`). 팝아웃은 `popout_open`이 고정된 앱 주소(`index.html?popout=panel&source=live…`)로 Tauri 창을 만든다. 카드 완료 알림은 `tauri-plugin-notification`이 화면의 `Notification`을 Windows 알림으로 바꿔 보낸다. 플러그인 권한은 `capabilities/default.json`의 main 창 알림 3개뿐이다(앱 자체 명령은 권한 파일 없이 모든 창에 열려 있다). 모든 명령은 막히는 일을 별도 스레드에서 하고 셸을 쓰지 않는다. `lead`는 총괄 채팅(ADR-0008)이다. `update`는 데스크톱 전용으로 고정 저장소의 릴리스를 `gh`로 확인하며, 사람의 클릭 후에만 설치기를 연다. `uninstall.rs`는 NSIS가 쓰는 별도 데이터 제거 실행 파일이고 `installer_paths.rs`의 경로 검사를 공유한다.

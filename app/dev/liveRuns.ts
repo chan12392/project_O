@@ -513,9 +513,12 @@ export function liveRuns(): Plugin {
         if (req.method === "GET" && path === "/runs") return void o(["runs", "--json", ...withSessions]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/resources") return void o(["resources", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/resources/recover") {
-          const id = new URLSearchParams(req.url?.split("?")[1] ?? "").get("id") ?? "";
+          const params = new URLSearchParams(req.url?.split("?")[1] ?? "");
+          const id = params.get("id") ?? "";
           if (!/^[1-9][0-9]{0,18}$/.test(id)) return send(res, 400, JSON.stringify({ error: "예약 ID가 올바르지 않습니다" }));
-          return void o(["resources", "recover", id]).then(() => send(res, 200, JSON.stringify({ ok: true })), error(res));
+          const confirmed = params.get("confirmExited");
+          if (confirmed !== null && confirmed !== "1") return send(res, 400, JSON.stringify({ error: "종료 확인 값이 올바르지 않습니다" }));
+          return void o(["resources", "recover", id, ...(confirmed === "1" ? ["--confirm-exited"] : [])]).then(() => send(res, 200, JSON.stringify({ ok: true })), error(res));
         }
         if (req.method === "GET" && path === "/usage") return void o(["usage", "--cached", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/usage/refresh") {
