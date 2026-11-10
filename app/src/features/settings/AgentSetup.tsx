@@ -3,6 +3,7 @@ import { useEffect, useState } from "react";
 
 import { canLead } from "../../../../src/core/lead.ts";
 import { useAgentCheck } from "../../data/agents.ts";
+import { errorText } from "../../lib/format.ts";
 import type { ActionResult, AgentId, AgentStatus, Backend, BillingMode } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 
@@ -20,10 +21,6 @@ interface Note {
   ok: boolean;
   message: string;
   log?: string;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Can lead now (installed, a lead agent, not known to be signed out): the composer's rule too. */

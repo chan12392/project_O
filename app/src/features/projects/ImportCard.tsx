@@ -5,6 +5,7 @@ import { isSessionRun } from "../../../../src/core/attention.ts";
 import { folderKey, importCandidates, type ProjectList } from "../../../../src/core/projects.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { importOffered, markImportOffered, projectsApi } from "../../data/projects.ts";
+import { errorText } from "../../lib/format.ts";
 import { registerFolder } from "./ProjectForms.tsx";
 
 interface Candidate {
@@ -75,7 +76,7 @@ export function ImportCard({ root, candidates, onDone, onDismiss }: { root: stri
         const listed = await registerFolder(path);
         first ??= listed;
       } catch (e) {
-        refused.push({ path, reason: e instanceof Error ? e.message : String(e) });
+        refused.push({ path, reason: errorText(e) });
       }
     }
     setBusy(false);

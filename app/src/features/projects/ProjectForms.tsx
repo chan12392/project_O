@@ -2,6 +2,7 @@ import { useId, useRef, useState, type FormEvent, type ReactNode } from "react";
 
 import { sameFolder } from "../../../../src/core/projects.ts";
 import { changeProjects, projectsApi, useProjectList } from "../../data/projects.ts";
+import { errorText } from "../../lib/format.ts";
 
 /**
  * The two ways to put a project on the list (ADR-0009): a new empty folder in the
@@ -15,8 +16,6 @@ interface FormProps {
   onDone: (path: string) => void;
   onCancel?: () => void;
 }
-
-const message = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const INPUT = "h-7 w-full min-w-0 rounded-md border bg-background px-2 text-xs focus-ring";
 const PRIMARY = "flex h-7 shrink-0 items-center rounded-md bg-primary px-2.5 text-xs font-medium whitespace-nowrap text-primary-foreground hover:bg-primary/90 focus-ring disabled:cursor-not-allowed disabled:opacity-50";
@@ -59,7 +58,7 @@ export function NewProjectForm({ compact, onDone, onCancel }: FormProps) {
       setAskRoot(false);
       onDone(made.created);
     } catch (e) {
-      setError(message(e));
+      setError(errorText(e));
       requestAnimationFrame(() => input.current?.focus());
     } finally {
       setBusy(false);
@@ -141,7 +140,7 @@ export function AddFolderForm({ compact, onDone, onCancel }: FormProps) {
       setPath("");
       onDone(listed);
     } catch (err) {
-      setError(message(err));
+      setError(errorText(err));
     } finally {
       setBusy(false);
     }

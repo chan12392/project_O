@@ -3,7 +3,7 @@ import { BookOpen, CircleAlert, CircleCheck, FilePen, FileText, Gauge, Globe, Ho
 import type { CardLogEntry, CardView, RunView } from "../../../../src/core/snapshot.ts";
 import { EMPTY_COMPOSER, type Composer } from "../../../../src/core/panes.ts";
 import { lookOf } from "../office/characters.ts";
-import { PROVIDER_NAME, STATE_WORD, modelLine, timeOf } from "../../lib/format.ts";
+import { PROVIDER_NAME, STATE_WORD, errorText, modelLine, timeOf } from "../../lib/format.ts";
 import { AgentStateDot } from "../../ui/AgentStateDot.tsx";
 import { Avatar } from "../office/Avatar.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -43,7 +43,7 @@ export function CardTranscript({ card, run, names, api, onFollowup, composer }: 
       setDraft("");
       setNotice("후속 지시를 접수했습니다. 작업 상태가 곧 표시됩니다.");
       onFollowup(result.runId);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setError(errorText(e)); }
     finally { setSending(false); }
   };
   // As the lead composer: Ctrl+Enter inserts a line break, Shift+Enter keeps the default one, Enter sends.

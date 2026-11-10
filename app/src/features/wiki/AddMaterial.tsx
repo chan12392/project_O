@@ -1,11 +1,10 @@
 import { useState, type FormEvent } from "react";
 
 import type { Project } from "../../data/projects.ts";
+import { errorText } from "../../lib/format.ts";
 import type { Backend, DreamDoc, DreamInput } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { titleFromFile } from "./wikiTree.ts";
-
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type Mode = "text" | "file" | "url";
 

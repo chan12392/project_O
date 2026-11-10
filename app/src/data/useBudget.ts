@@ -1,9 +1,9 @@
 import { useSyncExternalStore } from "react";
 
-import { backend, type BudgetReport } from "../platform/backend/index.ts";
+import { currentBackend, type BudgetReport } from "../platform/backend/index.ts";
 
 /** The same answer App.tsx's backend gives: the recorded preview only when the link asks for it. */
-const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
+const api = currentBackend();
 /** The budget changes as readings arrive (`o usage`, Claude's stream); it is read from saved snapshots only. */
 const BUDGET_POLL_MS = 15_000;
 

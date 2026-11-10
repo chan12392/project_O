@@ -6,14 +6,14 @@ import type { LeadTab } from "../../../src/core/lead.ts";
 import { chipSummary, isRecent, sameFolder, type AttentionKind } from "../../../src/core/projects.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../lib/dismiss.ts";
-import { PROVIDER_SHORT, STATE_WORD, timeOf } from "../lib/format.ts";
+import { PROVIDER_SHORT, STATE_WORD, errorText, timeOf } from "../lib/format.ts";
 import { isDirecting, LEAD_WORD, useTestGroupOpen, type LeadState, type Project, type useProjectGroups } from "../data/projects.ts";
 import type { ScreenState } from "../data/useRun.ts";
 import { CardSummary, summaryWords } from "../features/office/CardSummary.tsx";
 import { AddFolderForm, canPickFolder, NewProjectForm, pickAndRegister } from "../features/projects/ProjectForms.tsx";
 import { AgentStateDot } from "../ui/AgentStateDot.tsx";
 import { LeadStateDot } from "../ui/LeadStateDot.tsx";
-import { backend } from "../platform/backend/index.ts";
+import { currentBackend } from "../platform/backend/index.ts";
 
 type Groups = ReturnType<typeof useProjectGroups>;
 
@@ -57,8 +57,6 @@ interface Props {
   /** Tickets waiting across every project, and whether that view is open. */
   nextCount?: number;
   nextOpen?: boolean;
-  /** Whether the new-request screen is open. */
-  newOpen?: boolean;
   onNextUp?: () => void;
   /** The account footer pinned under the project list. */
   footer?: ReactNode;
@@ -111,7 +109,7 @@ export function Sidebar(props: Props) {
       const path = await pickAndRegister();
       if (path) listed(path);
     } catch (e) {
-      setNotice(e instanceof Error ? e.message : String(e));
+      setNotice(errorText(e));
     } finally {
       setPicking(false);
     }
@@ -475,7 +473,7 @@ function ProjectMenu({ project, groups, onNewGroup, onUnregister, open, setOpen 
       </button>
       {open && (
         <div ref={panel} role="group" aria-label={`${project.name} 메뉴`} className="bloom absolute top-full right-0 z-20 mt-1 w-52 rounded-lg border bg-popover p-1 text-popover-foreground shadow-lg">
-          <button type="button" className={item} disabled={project.missing} onClick={() => { void backend(new URLSearchParams(window.location.search).get("source") === "demo").projectOpen(project.path).then(close, (e: unknown) => setError(String(e))); }}>폴더 열기</button>
+          <button type="button" className={item} disabled={project.missing} onClick={() => { void currentBackend().projectOpen(project.path).then(close, (e: unknown) => setError(String(e))); }}>폴더 열기</button>
           <button type="button" className={item} onClick={() => { void navigator.clipboard.writeText(project.path).then(close, (e: unknown) => setError(String(e))); }}>경로 복사</button>
           {error && <p role="alert" className="px-2 py-1 text-2xs text-destructive">{error}</p>}
           {movable && (

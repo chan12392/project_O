@@ -4,6 +4,7 @@ import { createPortal } from "react-dom";
 
 import type { DesignNote } from "../../../../src/core/lead.ts";
 import type { LeadState } from "../../data/useLead.ts";
+import { errorText } from "../../lib/format.ts";
 
 type Draft = { note: DesignNote; original?: DesignNote; x: number; y: number };
 type Pin = { note: DesignNote; top: number };
@@ -64,7 +65,7 @@ export function DesignAnnotations({ lead, children }: { lead: LeadState; childre
       await lead.changeNote(thread, { op: draft.original ? "update" : "add", note: { ...draft.note, text, sent: false } });
       setDraft(undefined);
       setError("");
-    } catch (e) { setError(`저장하지 못했습니다: ${e instanceof Error ? e.message : String(e)}`); }
+    } catch (e) { setError(`저장하지 못했습니다: ${errorText(e)}`); }
     finally { saving.current = false; }
   };
   useEffect(() => {

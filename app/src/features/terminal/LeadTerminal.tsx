@@ -5,6 +5,7 @@ import { plansFolder, planGuideText, TERM_DESKTOP_ONLY } from "../../../../src/c
 import type { LeadItem } from "../../../../src/core/lead.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
+import { errorText } from "../../lib/format.ts";
 import type { Backend, TermSession } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { PlanCard } from "../chat/LeadThread.tsx";
@@ -60,7 +61,7 @@ export function LeadTerminal({
       await api.termOpen({ provider: "agy", project, thread });
       refresh();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setOpening(false);
     }

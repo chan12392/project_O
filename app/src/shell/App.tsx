@@ -47,7 +47,7 @@ import { Automation } from "../features/work/Automation.tsx";
 import { UpdatePrompt } from "../features/updates/UpdatePrompt.tsx";
 import { actionCount, useHandled } from "../features/work/NextUp.tsx";
 import { useNow } from "../features/work/WorkTab.tsx";
-import { ICON_BUTTON } from "../lib/format.ts";
+import { ICON_BUTTON, errorText } from "../lib/format.ts";
 import { backend } from "../platform/backend/index.ts";
 import { demoBackend } from "../platform/backend/demo.ts";
 import { useAnnouncer } from "./announcer.ts";
@@ -312,7 +312,7 @@ function MainWindow() {
     try {
       await changeProjects((backendApi) => backendApi.projectsRemove(path));
     } catch (e) {
-      setHeaderError(e instanceof Error ? e.message : String(e));
+      setHeaderError(errorText(e));
     }
   };
 
@@ -351,16 +351,7 @@ function MainWindow() {
           root={root}
           // A project's open lead tabs add up to one state (ADR-0034); the aggregate entry is absent for quiet folders.
           leadDot={(path) => lead.projects.find((p) => sameFolder(p.project, path))?.state}
-          onOverall={
-            root
-              ? () => {
-                  setScreen("app");
-                  setAgentRun(undefined);
-                  select({ project: root, run: undefined, card: undefined });
-                  compose();
-                }
-              : undefined
-          }
+          onOverall={root ? () => openProject(root) : undefined}
           // Picking something in the sidebar leaves onboarding for the chat (onboarding stays unfinished).
           onProject={(path) => {
             setScreen("app");
@@ -392,7 +383,6 @@ function MainWindow() {
           onUnregister={(path) => void unregister(path)}
           nextCount={nextCount}
           nextOpen={screen === "nextup"}
-          newOpen={screen === "new"}
           onNextUp={() => setScreen("nextup")}
           footer={
             <AccountMenu

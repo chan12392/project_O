@@ -5,6 +5,7 @@
  * each `graphOverallPart` answer merges in as it lands (at most 4 in flight). A refresh
  * only applies while its scope key is still on screen (#81).
  */
+import { errorText } from "../../lib/format.ts";
 import type { Backend, GraphLink, GraphNode, GraphView } from "../../platform/backend/types.ts";
 
 /** Which graph is on screen: every project ("overall") or one folder. */
@@ -142,8 +143,6 @@ export interface LoaderDeps {
 /** Part requests run at most this many at a time. */
 export const PART_POOL = 4;
 
-const textOf = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
 export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: string): Promise<void> } {
   let seq = 0;
 
@@ -153,7 +152,7 @@ export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: stri
       const view = await deps.api.graphView(project);
       if (seq === mine) deps.emit(() => ({ key, view, loading: false }));
     } catch (e) {
-      if (seq === mine) deps.emit((s) => ({ key, view: s.key === key ? s.view : undefined, error: textOf(e), loading: false }));
+      if (seq === mine) deps.emit((s) => ({ key, view: s.key === key ? s.view : undefined, error: errorText(e), loading: false }));
     }
   }
 
@@ -175,7 +174,7 @@ export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: stri
         } catch (e) {
           if (seq !== mine) return;
           failed++;
-          const message = textOf(e);
+          const message = errorText(e);
           deps.emit((s) => (s.key === key && s.view ? { ...s, view: markProjectError(s.view, p.path, message) } : s));
         }
       }

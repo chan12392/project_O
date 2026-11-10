@@ -3,7 +3,7 @@ import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, planOrderText, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
-import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
+import { PROVIDER_NAME, errorText, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useSettings } from "../../data/settings.ts";
 import { useBudget } from "../../data/useBudget.ts";
@@ -16,7 +16,6 @@ import { LiveWork, WorkList } from "./LeadWork.tsx";
 
 /** Thread events may name an agent this build does not know; it shows as its id. */
 const LEAD_NAME: Record<string, string> = NAMES;
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 interface Props {
   project: string | undefined;

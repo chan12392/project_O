@@ -7,10 +7,10 @@ import type { RunView } from "../../../../src/core/snapshot.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { settingsNow, useSettings } from "../../data/settings.ts";
 import type { LeadState } from "../../data/useLead.ts";
+import { errorText } from "../../lib/format.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { Markdown } from "./Markdown.tsx";
 
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** Raised by the thread's "답하기" to bring a question set aside back. */
 const OPEN_EVENT = "project-o:open-questions";
 

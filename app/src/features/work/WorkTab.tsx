@@ -3,7 +3,7 @@ import { useEffect, useState, type ReactNode } from "react";
 
 import { earlierPlanOutcome, LEAD_TAB_MAX, latestProposal, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
-import { names, timeOf } from "../../lib/format.ts";
+import { errorText, names, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { readStored, writeStored } from "../../lib/storage.ts";
 import type { PanelViewDef } from "../../shell/SidePanel.tsx";
@@ -79,7 +79,7 @@ function DesignPanel({ lead, runs, onCard, onNewLead }: { lead?: LeadState; runs
   // another tab answers, and stops only at the open-tabs cap.
   const maxed = lead.tabs.length >= LEAD_TAB_MAX;
   return <div className="space-y-3">
-    <div className="flex justify-end"><button type="button" disabled={starting || !onNewLead || maxed} title={maxed ? "열린 총괄은 최대 4개입니다" : "새 총괄 탭을 열어 새 설계를 시작합니다"} onClick={() => { if (!onNewLead) return; setError(undefined); setStarting(true); void onNewLead().catch((e: unknown) => setError(e instanceof Error ? e.message : String(e))).finally(() => setStarting(false)); }} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent focus-ring disabled:opacity-50">{starting ? "시작 중…" : "새 설계"}</button></div>
+    <div className="flex justify-end"><button type="button" disabled={starting || !onNewLead || maxed} title={maxed ? "열린 총괄은 최대 4개입니다" : "새 총괄 탭을 열어 새 설계를 시작합니다"} onClick={() => { if (!onNewLead) return; setError(undefined); setStarting(true); void onNewLead().catch((e: unknown) => setError(errorText(e))).finally(() => setStarting(false)); }} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent focus-ring disabled:opacity-50">{starting ? "시작 중…" : "새 설계"}</button></div>
     {error && <p role="alert" className="text-xs text-destructive">새 설계를 시작하지 못했습니다: {error}</p>}
     <DesignContent key={lead.thread?.threadId} lead={lead} runs={runs} onCard={onCard} />
   </div>;
@@ -131,7 +131,7 @@ function ProposalCard({ proposal, sendable, lead }: { proposal: LeadProposal; se
       await lead.forward(proposal.proposalId);
       setState({});
     } catch (e) {
-      setState({ error: e instanceof Error ? e.message : String(e) });
+      setState({ error: errorText(e) });
     }
   };
   return (

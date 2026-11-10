@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { MODEL_ID } from "../../../../../src/core/lead.ts";
 import { useLeadModels } from "../../../data/useLead.ts";
+import { errorText } from "../../../lib/format.ts";
 import type { Backend, GraphColorBy, GraphSettings } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, Switch } from "../../../ui/controls.tsx";
 import { Rows, Section, type SettingsSectionDef } from "../Section.tsx";
@@ -38,7 +39,7 @@ function GraphSection({ api }: { api: Backend }) {
         if (live) setSettings(next);
       },
       (e) => {
-        if (live) setError(e instanceof Error ? e.message : String(e));
+        if (live) setError(errorText(e));
       },
     );
     return () => {
@@ -60,7 +61,7 @@ function GraphSection({ api }: { api: Backend }) {
       setSettings(await api.graphSettings(change));
       showNote("저장했습니다", false);
     } catch (e) {
-      showNote(`저장하지 못했습니다: ${e instanceof Error ? e.message : String(e)}`, true);
+      showNote(`저장하지 못했습니다: ${errorText(e)}`, true);
     } finally {
       setSaving(false);
     }

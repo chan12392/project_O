@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 
 import { LEAD_VIEW, leadItems, leadTabOf, leadTabsOf, leadView, type LeadModel, type LeadProvider } from "../../../src/core/lead.ts";
 import { createPoll } from "../../../src/core/poll.ts";
+import { errorText } from "../lib/format.ts";
 import type { Backend, LeadDispatched } from "../platform/backend/index.ts";
 
 const POLL_MS = 2_000;
@@ -39,7 +40,7 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
     try {
       dispatchView({ type: "answer", project: asked, thread: askedThread, seq: mine, show: await api.leadShow(asked, askedThread) });
     } catch (e) {
-      dispatchView({ type: "failed", project: asked, thread: askedThread, seq: mine, error: e instanceof Error ? e.message : String(e) });
+      dispatchView({ type: "failed", project: asked, thread: askedThread, seq: mine, error: errorText(e) });
     }
   }, [api, project, thread, enabled]);
 
@@ -201,7 +202,7 @@ export function useLeadModels(api: Backend, provider: LeadProvider | undefined) 
     let current = true;
     api.leadModels(provider).then(
       (r) => current && setState({ provider, models: r.models }),
-      (e) => current && setState({ provider, models: [], failed: e instanceof Error ? e.message : String(e) }),
+      (e) => current && setState({ provider, models: [], failed: errorText(e) }),
     );
     return () => {
       current = false;
