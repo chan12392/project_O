@@ -1164,7 +1164,11 @@ fn queue_then_run() {
     create_run(&home, "r5", &p).unwrap();
     let freeing = home.clone();
     let freer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
+        // Free the slots only once the card is seen waiting; a fixed delay loses to a slow machine.
+        for _ in 0..600 {
+            if read_events(&freeing, "r5").iter().any(|e| e.kind() == "card.queued") { break; }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         for i in 0..slots {
             clear_active(&freeing, "other", &format!("b{i}"));
         }
