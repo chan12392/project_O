@@ -202,6 +202,19 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         spec.args.extend(["--prompt-file".into(), path.into()]);
         Some(prompt)
     } else { None };
+    // ADR-0035 개정 2: a Claude card that gets an authentication variable leaves the project's
+    // settings (and so its hooks) unread. Judged by the names of the environment set below.
+    if card.provider == ProviderId::Claude {
+        let mut names: Vec<std::ffi::OsString> = match clean {
+            // A profile that cannot be made fails the launch below, with its reason.
+            Some(root) => clean::environment(root, card.provider).unwrap_or_default().into_keys().map(Into::into).collect(),
+            None => std::env::vars_os().map(|(name, _)| name).collect(),
+        };
+        names.extend(spec.env.keys().map(Into::into));
+        if crate::providers::claude::keep_project_settings_from_auth(&mut spec, &names, yolo) {
+            emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "프로젝트 설정".into(), summary: crate::providers::claude::PROJECT_SETTINGS_NOTICE.into() })?;
+        }
+    }
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
     #[cfg(windows)]
     let mut watcher_executable = None;

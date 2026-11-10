@@ -43,6 +43,25 @@ fn guard_settings() -> String {
         .to_string()
 }
 
+/// A card about to start with a Claude authentication variable among its environment's `names`
+/// does not read the project's settings (ADR-0035 개정 2, #92): `claude -p` asks no trust for a
+/// folder and runs the hooks its settings files name, with the card's environment — the key
+/// included. `--setting-sources user` leaves the project and local settings unread, as the lead
+/// does; O's guard hook, which this repository's own project settings would have brought, comes
+/// with the run's settings instead (a YOLO card has it already). Only names are looked at.
+pub const PROJECT_SETTINGS_NOTICE: &str = "환경에 Claude 인증 변수가 있어 이 카드는 프로젝트의 Claude 설정·훅(.claude/settings.json)을 읽지 않습니다";
+
+pub fn keep_project_settings_from_auth(spec: &mut LaunchSpec, names: &[std::ffi::OsString], yolo: bool) -> bool {
+    if crate::agents::billing::present_in(crate::run::plan::ProviderId::Claude, names).is_empty() {
+        return false;
+    }
+    spec.args.extend(strings(&["--setting-sources", "user"]));
+    if !yolo {
+        spec.args.extend(strings(&["--settings", &guard_settings()]));
+    }
+    true
+}
+
 /// Deny rules for the commands no agent may run; they hold in every permission mode.
 fn denied_commands() -> Vec<String> {
     AGENT_ONLY_COMMANDS.iter().map(|c| format!("Bash({c}*)")).collect()

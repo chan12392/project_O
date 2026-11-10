@@ -1,6 +1,6 @@
 # ADR-0035: CLI 인증 환경변수 전달
 
-- 상태: 채택 (2026-11-09 개정 1: API 과금 모드 선택)
+- 상태: 채택 (2026-11-09 개정 1: API 과금 모드 선택, 2026-11-11 개정 2: 인증 변수를 받는 Claude 카드는 프로젝트 설정을 읽지 않음)
 - 날짜: 2026-11-09
 - 관련: [ADR-0008](0008-lead-chat.md), [ADR-0013](0013-profile-and-budget-switches.md), [ADR-0015](0015-opencode.md), [인증 조사](../research/agent-chat-and-pstack.md)
 
@@ -51,3 +51,21 @@ CLI의 인증 선택을 사용자가 제어하면서 환경에 남은 키로 인
 
 - 인증 변수 목록은 각 CLI가 쓰는 것으로 명시된 이름뿐이다. 클라우드 자격 증명, CLI 설정 파일의 키, `CLAUDE_CODE_OAUTH_TOKEN` 같은 목록 밖 방식은 보지 않으므로 구독만 모드가 API 과금이 없음을 보증하지 않는다.
 - Windows에서 사용자 환경변수를 지워도 이미 떠 있는 O 앱은 예전 환경을 물려받고 있다. 앱을 다시 시작해야 반영된다.
+
+## 개정 2 (2026-11-11): 인증 변수를 받는 Claude 카드는 프로젝트 설정을 읽지 않는다
+
+이슈 #92. `claude -p`는 폴더 신뢰를 묻지 않고 설정 파일의 훅을 실행한다([문서](https://code.claude.com/docs/en/permissions#what-runs-before-you-trust-a-folder)). 총괄은 그래서 프로젝트 설정을 읽지 않지만(`--setting-sources user`) 카드는 읽어 왔다. 이 ADR로 인증 변수가 카드 환경에 들어가면서, 프로젝트가 제공한 훅(`.claude/settings.json`)이 그 변수를 가진 채 실행될 수 있게 됐다. 깨끗한 프로필과 도구 승인 제한은 이 경로를 막지 못한다.
+
+### 결정
+
+- Claude 카드를 시작하기 직전, 그 카드에 넘길 환경(깨끗한 프로필은 허용 목록을 거친 환경, 평소 프로필은 O가 물려받은 환경에 실행별 변수를 더한 것)에 `ANTHROPIC_API_KEY`나 `ANTHROPIC_AUTH_TOKEN`이 있으면 실행 인자에 `--setting-sources user`를 더한다. 프로젝트·로컬 설정(훅, `env`, `apiKeyHelper`, 권한 규칙 포함)을 읽지 않는다. 일반·YOLO 카드, 첫 실행·후속 지시(`--resume`) 모두 같다.
+- 프로젝트 설정이 싣던 O 가드 훅(`o hook`)이 함께 빠지지 않도록 일반 카드에는 YOLO 카드와 같은 가드 훅 설정(`--settings`)을 더한다. YOLO 카드는 이미 가지고 있다. 훅을 모두 끄는 설정(`disableAllHooks`)은 쓰지 않는다. 사용자 설정의 훅은 사람 자신의 것이라 그대로 둔다.
+- 변수가 없으면 실행 인자는 이전과 한 글자도 다르지 않다. 이름만 보고 값은 읽지 않는다. 변수를 지우거나 인증 방법을 끄는 인자는 더하지 않는다(위 "인증 방법 조항과의 관계"와 같다).
+- 적용되면 카드 기록에 한 줄로 알린다("프로젝트 설정" 도구 줄).
+
+### 한계
+
+- 실제 Claude CLI로 프로젝트 훅이 실행되지 않는지는 확인하지 않았다. 인자 구성만 테스트한다(`tests/providers.rs`). `--setting-sources`·`--settings`는 Claude Code 2.1.302의 `claude --help`에 있는 옵션이다.
+- `--setting-sources user`가 프로젝트의 `CLAUDE.md`·`.mcp.json` 읽기에 미치는 영향은 확인하지 않았다. 지시 파일은 모델에게 주는 글이고 프로세스를 실행하지 않는다. `.mcp.json`의 서버가 승인 없이 실행되는지는 따로 확인이 필요하다.
+- Claude 외의 CLI(Codex의 `.codex/` 훅 — ADR-0017 개정 2, OpenCode 플러그인 — ADR-0015)는 이 개정의 범위가 아니다.
+- `auth_env_names` 밖의 인증 수단(클라우드 자격 증명, `CLAUDE_CODE_OAUTH_TOKEN` 등)이 평소 프로필 환경에 있을 때는 적용되지 않는다.

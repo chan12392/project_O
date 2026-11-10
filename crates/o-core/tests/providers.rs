@@ -591,6 +591,33 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
     assert!(!claude.stdin.unwrap().contains("셸 명령은 승인할 사람이 없어"));
 }
 
+/// ADR-0035 개정 2 (#92): the project's settings, and the hooks they name, are not read by a
+/// Claude card that gets an authentication variable; without one the launch is as it was.
+#[test]
+fn a_claude_card_with_an_auth_variable_leaves_project_settings_unread() {
+    use o_core::providers::claude::keep_project_settings_from_auth as keep;
+    let p = plan();
+    let card = p.cards.iter().find(|c| c.provider == ProviderId::Claude).unwrap();
+    let names = |list: &[&str]| -> Vec<std::ffi::OsString> { list.iter().map(Into::into).collect() };
+    for yolo in [false, true] {
+        let usual = launch_spec_for(card, &p, &TEAM, None, yolo);
+        // No variable, or another CLI's: nothing changes.
+        let mut spec = usual.clone();
+        assert!(!keep(&mut spec, &names(&["PATH", "OPENAI_API_KEY", "O_RUN_ID"]), yolo));
+        assert_eq!(spec, usual);
+        for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
+            let mut spec = usual.clone();
+            assert!(keep(&mut spec, &names(&["PATH", name]), yolo));
+            assert_eq!(spec.args[..usual.args.len()], usual.args[..]);
+            assert_eq!(after(&spec.args, "--setting-sources"), "user");
+            // O's guard hook comes with the run instead, once; never with hooks turned off.
+            assert_eq!(spec.args.iter().filter(|a| *a == "--settings").count(), 1);
+            assert_eq!(after(&spec.args, "--settings"), GUARD_HOOK);
+            assert_eq!((&spec.stdin, &spec.env), (&usual.stdin, &usual.env));
+        }
+    }
+}
+
 fn yolo_lead(provider: ProviderId, session: Option<&str>) -> LaunchSpec {
     let turn = LeadTurn { project: "C:/work/demo", prompt: "고쳐 줘".into(), session, model: None, effort: Some("low"), files_dir: Some("C:/o-lead/t1"), images: &[], app_server: false, approver: None };
     o_core::providers::lead_spec(provider, &turn, true).unwrap()
