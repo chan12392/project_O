@@ -94,6 +94,30 @@ export function mergePart(base: GraphView, part: GraphView, project: string): Gr
   };
 }
 
+/**
+ * The saved `maxNodes` applied to the parts merged into the overall view (#84), the way
+ * `cap_overall` does for the whole view: the root, glowing nodes and their projects stay,
+ * then nodes fill up to the cap in order (an area only with its project). Links keep only
+ * the nodes that stay, and `truncated` is set when something was cut.
+ */
+export function capOverall(view: GraphView, max: number): GraphView {
+  const keep = new Set<string>();
+  for (const n of view.nodes) if (n.kind === "root" || n.glow) keep.add(n.id);
+  const active = new Set(view.nodes.filter((n) => n.glow && n.project !== undefined).map((n) => n.project));
+  for (const n of view.nodes) if (n.kind === "project" && n.project !== undefined && active.has(n.project)) keep.add(n.id);
+  for (const n of view.nodes) {
+    if (keep.size >= max) break;
+    if (n.kind !== "area" || (n.project !== undefined && keep.has(`p:${n.project}`))) keep.add(n.id);
+  }
+  if (keep.size >= view.nodes.length) return view;
+  return {
+    ...view,
+    nodes: view.nodes.filter((n) => keep.has(n.id)),
+    links: view.links.filter((l) => keep.has(endOf(l.source)) && keep.has(endOf(l.target))),
+    truncated: true,
+  };
+}
+
 /** A failed part lands on its own project node (the detail panel reads `error`), never on the whole view. */
 export function markProjectError(view: GraphView, project: string, message: string): GraphView {
   return { ...view, nodes: view.nodes.map((n) => (n.id === `p:${project}` ? { ...n, error: message } : n)) };
@@ -130,7 +154,7 @@ export function levelsOf(view: Pick<GraphView, "nodes" | "links">, parent: Reado
 
 export interface LoaderDeps {
   /** The two calls the loader needs; a test can fake just these. */
-  api: Pick<Backend, "graphView" | "graphOverallPart">;
+  api: Pick<Backend, "graphView" | "graphOverallPart"> & Partial<Pick<Backend, "graphSettings">>;
   /** The scope on screen now — read at call time, so a captured refresh can't aim at a stale scope (#81). */
   scope(): GraphScope;
   /** The listed projects, for the overall skeleton and its part requests. */
@@ -161,7 +185,21 @@ export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: stri
   async function loadParts(mine: number, key: string, projects: ListedProject[]) {
     const part = deps.api.graphOverallPart;
     if (!part) return loadWhole(mine, key);
-    deps.emit((s) => ({ key, view: s.key === key && s.view?.scope === "overall" ? withSkeleton(s.view, projects) : skeletonView(projects), loading: true, error: undefined }));
+    // Every part merges into `raw`; the screen gets it cut to the saved maxNodes (#84), so a later
+    // part or a changed list still sees all nodes. No readable setting means no cap, as before.
+    let raw = skeletonView(projects);
+    deps.emit((s) => {
+      raw = s.key === key && s.view?.scope === "overall" ? withSkeleton(s.view, projects) : skeletonView(projects);
+      return { key, view: raw, loading: true, error: undefined };
+    });
+    const limit = Promise.resolve(deps.api.graphSettings?.()).then(
+      (settings) => settings?.maxNodes,
+      () => undefined,
+    );
+    const shown = async () => {
+      const max = await limit;
+      return max !== undefined && max > 0 ? capOverall(raw, max) : raw;
+    };
     const targets = projects.filter((p) => !p.missing);
     let failed = 0;
     let next = 0;
@@ -171,12 +209,18 @@ export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: stri
         try {
           const slice = await part.call(deps.api, p.path);
           if (seq !== mine) return;
-          deps.emit((s) => (s.key === key && s.view ? { ...s, view: mergePart(s.view, slice, p.path) } : s));
+          raw = mergePart(raw, slice, p.path);
+          const view = await shown();
+          if (seq !== mine) return;
+          deps.emit((s) => (s.key === key && s.view ? { ...s, view } : s));
         } catch (e) {
           if (seq !== mine) return;
           failed++;
           const message = textOf(e);
-          deps.emit((s) => (s.key === key && s.view ? { ...s, view: markProjectError(s.view, p.path, message) } : s));
+          raw = markProjectError(raw, p.path, message);
+          const view = await shown();
+          if (seq !== mine) return;
+          deps.emit((s) => (s.key === key && s.view ? { ...s, view } : s));
         }
       }
     };
