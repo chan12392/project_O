@@ -21,6 +21,19 @@ test("lead status warnings remain visible in the conversation", async () => {
     const html = renderToStaticMarkup(createElement(LeadThread, { project: "C:/project", lead, onCompose() {}, async onStartProject() {} }));
     assert.match(html, /role="status"/);
     assert.ok(html.includes(message));
+    const renderStatus = (busy, active = true) => renderToStaticMarkup(createElement(LeadThread, {
+      project: "C:/project", lead: { items: [], loaded: true, busy: active, thread: { busy } }, onCompose() {}, async onStartProject() {},
+    }));
+    for (const state of ["starting", "claude"]) {
+      const working = renderStatus(state);
+      assert.match(working, /animate-spin/);
+      assert.match(working, /progress-flow/);
+      assert.match(working, state === "starting" ? /총괄 시작 중/ : /Claude Code/);
+    }
+    const unknown = renderStatus("unknown");
+    assert.match(unknown, /총괄 종료 확인 필요/);
+    assert.doesNotMatch(unknown, /animate-spin|progress-flow/);
+    assert.doesNotMatch(renderStatus(undefined, false), /animate-spin|progress-flow|작업 중/);
   } finally {
     delete globalThis.window;
     delete globalThis.document;
