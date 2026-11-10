@@ -27,6 +27,7 @@ import {
   leadToolLabel,
   leadView,
   modelLabel,
+  moveDraft,
   planIsStale,
   restoreDraft,
   takeDraft,
@@ -444,4 +445,37 @@ test("the composer draft is kept per project and tab, not per project alone (ADR
   const { drafts: left, draft } = takeDraft(drafts, a1);
   assert.equal(draft.text, "첫째 탭에게");
   assert.equal(draftOf(left, a2).text, "둘째 탭에게", "taking one tab's draft leaves the other's");
+});
+
+test("a draft moves to its own project's first thread, never to another project's tab (#86)", () => {
+  const a = draftKey("C:\work\A");
+  const aThread = draftKey("C:\work\A", "t1");
+  const bThread = draftKey("C:\work\B", "t9");
+  let drafts: Drafts = editDraft({}, a, () => ({ text: "A에 쓰던 글" }));
+
+  // Same project, the first thread just got named: the draft follows it and leaves the old key empty.
+  const moved = moveDraft(drafts, a, aThread);
+  assert.equal(draftOf(moved, aThread).text, "A에 쓰던 글");
+  assert.equal(draftOf(moved, a).text, "");
+
+  // Another project's tab: nothing moves, A keeps its draft, B gets nothing.
+  assert.equal(moveDraft(drafts, a, bThread), drafts);
+  assert.equal(draftOf(drafts, a).text, "A에 쓰던 글");
+  assert.equal(draftOf(drafts, bThread).text, "");
+
+  // B already has its own draft: both stay as they were.
+  drafts = editDraft(drafts, bThread, () => ({ text: "B에 쓰던 글" }));
+  const both = moveDraft(drafts, a, bThread);
+  assert.equal(draftOf(both, a).text, "A에 쓰던 글");
+  assert.equal(draftOf(both, bThread).text, "B에 쓰던 글");
+
+  // Same project but the thread already has a draft: the old one is not thrown away.
+  const clash = moveDraft(editDraft(drafts, aThread, () => ({ text: "탭에 있던 글" })), a, aThread);
+  assert.equal(draftOf(clash, a).text, "A에 쓰던 글");
+  assert.equal(draftOf(clash, aThread).text, "탭에 있던 글");
+
+  // Tab to tab inside a project, or an empty draft, moves nothing.
+  const t2 = draftKey("C:\work\A", "t2");
+  assert.equal(moveDraft(editDraft({}, aThread, () => ({ text: "x" })), aThread, t2).hasOwnProperty(t2), false);
+  assert.equal(moveDraft({}, a, aThread).hasOwnProperty(aThread), false);
 });

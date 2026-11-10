@@ -537,6 +537,20 @@ export function takeDraft(drafts: Drafts, key: string): { drafts: Drafts; draft:
   return { drafts: { ...drafts, [key]: { text: "", files: [], gen: draft.gen + 1 } }, draft };
 }
 
+/**
+ * A draft typed before the project's first thread was named moves to that thread's key (ADR-0034).
+ * Only the same project's own first thread takes it: another project's tab, a tab-to-tab change, an
+ * empty draft, or a destination that already has a draft leave every draft as it was (#86).
+ */
+export function moveDraft(drafts: Drafts, from: string, to: string): Drafts {
+  if (from === to || from.includes("#") || !to.startsWith(`${from}#`) || to.indexOf("#", from.length + 1) >= 0) return drafts;
+  const gone = draftOf(drafts, from);
+  if (!gone.text && !gone.files.length) return drafts;
+  const there = draftOf(drafts, to);
+  if (there.text || there.files.length) return drafts;
+  return restoreDraft(takeDraft(drafts, from).drafts, to, gone);
+}
+
 /** A send that failed (nothing recorded): its text and files come back, unless a new draft was started meanwhile. */
 export function restoreDraft(drafts: Drafts, key: string, taken: Draft): Drafts {
   return editDraft(drafts, key, (now) => ({ text: now.text || taken.text, files: now.files.length ? now.files : taken.files }));
