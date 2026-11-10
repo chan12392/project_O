@@ -30,8 +30,9 @@ use crate::sys::js::js_string;
 
 pub struct Devin;
 
-/// Why a Devin card is refused while "project_O 프로필 사용" is on.
-pub const PROFILE_UNSUPPORTED: &str = "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요";
+/// Devin has no separate project_O profile, including for clean-profile commands.
+pub const PROFILE_UNSUPPORTED: &str = "Devin은 project_O 프로필을 지원하지 않습니다. Devin 카드는 평소 프로필로 실행합니다(개인 훅·설정이 적용됨)";
+pub const OWN_PROFILE_NOTICE: &str = "Devin은 평소 프로필로 실행합니다(개인 훅·설정이 적용됨)";
 
 /// The permission mode a card runs in: workspace edits approved, every other tool asked
 /// (and so refused, headless). `smart` is not used: a model judges what runs there.
@@ -245,6 +246,7 @@ fn transcript_signals(atif: &Map<String, Value>, refused: &mut Vec<String>) -> V
             }
             let id = result.get("source_call_id").and_then(Value::as_str);
             if let Some((_, name, summary)) = shown.iter().find(|(call, _, _)| call.is_some() && *call == id) {
+                out.push(StreamSignal::ToolError { name: name.clone(), summary: summary.clone(), error: "확인이 필요한 도구 호출이 거절됐습니다".into() });
                 refused.push(if summary.is_empty() { name.clone() } else { format!("{name} {summary}") });
             }
         }

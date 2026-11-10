@@ -139,10 +139,16 @@ pub async fn lead_send(
         req.thread = Some(&thread);
         req.fresh = false;
         let events = lead::send_with_followups(&home, &req, &official_command, &super::runs::start_followup)?;
-        lead::overall::pass_on(&home, &thread, &events, &super::runs::start_forward);
         Ok(json!({ "threadId": thread, "events": events }))
     })
     .await?
+}
+
+/// The person sends the overall lead's proposed requests on (`o lead forward`, ADR-0036);
+/// each goes on as `o _lead-forward` in the background.
+#[tauri::command]
+pub async fn lead_forward(proposal_id: String) -> Result<Value, String> {
+    blocking(move || lead::overall::send_on(&store::default_home(), &proposal_id, &super::runs::start_forward).map(|events| json!({ "events": events }))).await?
 }
 
 /// Runs a proposed plan once after the policy check (`o lead dispatch`); the run starts

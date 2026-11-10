@@ -1,13 +1,13 @@
 //! Claude Code: `claude -p` with a stream-json stdout, the prompt on stdin.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
-use super::stream::{limit_from_text, num, tool_summary};
+use super::stream::{error_text, limit_from_text, num, tool_summary};
 use super::{opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
 use crate::agents::catalog::connection;
@@ -41,6 +41,25 @@ const GUARD_MATCHER: &str = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|R
 fn guard_settings() -> String {
     json!({ "hooks": { "PreToolUse": [{ "matcher": GUARD_MATCHER, "hooks": [{ "type": "command", "command": "o hook", "timeout": 10, "onFailure": "block" }] }] } })
         .to_string()
+}
+
+/// A card about to start with a Claude authentication variable among its environment's `names`
+/// does not read the project's settings (ADR-0035 개정 2, #92): `claude -p` asks no trust for a
+/// folder and runs the hooks its settings files name, with the card's environment — the key
+/// included. `--setting-sources user` leaves the project and local settings unread, as the lead
+/// does; O's guard hook, which this repository's own project settings would have brought, comes
+/// with the run's settings instead (a YOLO card has it already). Only names are looked at.
+pub const PROJECT_SETTINGS_NOTICE: &str = "환경에 Claude 인증 변수가 있어 이 카드는 프로젝트의 Claude 설정·훅(.claude/settings.json)을 읽지 않습니다";
+
+pub fn keep_project_settings_from_auth(spec: &mut LaunchSpec, names: &[std::ffi::OsString], yolo: bool) -> bool {
+    if crate::agents::billing::present_in(crate::run::plan::ProviderId::Claude, names).is_empty() {
+        return false;
+    }
+    spec.args.extend(strings(&["--setting-sources", "user"]));
+    if !yolo {
+        spec.args.extend(strings(&["--settings", &guard_settings()]));
+    }
+    true
 }
 
 /// Deny rules for the commands no agent may run; they hold in every permission mode.
@@ -116,13 +135,19 @@ impl Provider for Claude {
         Some(format!("셸 명령은 승인할 사람이 없어 거부될 수 있습니다({TEAM_COMMAND}·{CONTEXT_COMMAND}만 허용). 파일 읽기·쓰기 도구를 우선 쓰세요."))
     }
 
+    /// The Agent tool asks no permission; its subagents keep the card's permission mode.
+    fn subagent_tool(&self) -> Option<&'static str> {
+        Some("Agent 도구")
+    }
+
     fn searches_context(&self) -> bool {
         true
     }
 
     fn stream_reader(&self) -> ReadLine {
         let mut reset_given = false;
-        Box::new(move |data| read_stream(&mut reset_given, data))
+        let mut calls = HashMap::new();
+        Box::new(move |data| read_stream(&mut reset_given, &mut calls, data))
     }
 
     fn lead_efforts(&self) -> &'static [&'static str] {
@@ -290,9 +315,15 @@ fn mcp_in_state(state: &Value) -> bool {
     servers(state) || state.get("projects").and_then(Value::as_object).is_some_and(|p| p.values().any(servers))
 }
 
+/// Tool calls whose result is still awaited, at most.
+const MAX_OPEN_CALLS: usize = 256;
+
 /// `reset_given`: a rejected `rate_limit_event` already gave this card's reset time, so the
 /// failure text that follows must not set one of its own.
-fn read_stream(reset_given: &mut bool, data: &Map<String, Value>) -> Vec<StreamSignal> {
+///
+/// `calls`: the tool calls still waiting for their result (id → name, summary), so a result
+/// that reports an error can say which call it was.
+fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, String)>, data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
     if kind == Some("system") && data.get("subtype").and_then(Value::as_str) == Some("init") {
         if let Some(id) = data.get("session_id").and_then(Value::as_str) {
@@ -312,12 +343,34 @@ fn read_stream(reset_given: &mut bool, data: &Map<String, Value>) -> Vec<StreamS
                 }
                 if part_type == Some("tool_use") {
                     if let Some(name) = part.get("name").and_then(Value::as_str) {
-                        out.push(StreamSignal::Tool { name: name.to_string(), summary: tool_summary(part.get("input")) });
+                        let summary = tool_summary(part.get("input"));
+                        if let Some(id) = part.get("id").and_then(Value::as_str) {
+                            // Results that never came must not pile up over a long card.
+                            if calls.len() >= MAX_OPEN_CALLS { calls.clear(); }
+                            calls.insert(id.to_string(), (name.to_string(), summary.clone()));
+                        }
+                        out.push(StreamSignal::Tool { name: name.to_string(), summary });
                     }
                 }
             }
             return out;
         }
+    }
+    // Tool results come back as a user message; only a failed one is a signal.
+    if kind == Some("user") {
+        let content = data.get("message").and_then(Value::as_object).and_then(|m| m.get("content")).and_then(Value::as_array);
+        let mut out = Vec::new();
+        for part in content.into_iter().flatten().filter_map(Value::as_object).filter(|p| p.get("type").and_then(Value::as_str) == Some("tool_result")) {
+            let Some((name, summary)) = part.get("tool_use_id").and_then(Value::as_str).and_then(|id| calls.remove(id)) else { continue };
+            if part.get("is_error") != Some(&Value::Bool(true)) { continue; }
+            let error = match part.get("content") {
+                Some(Value::String(text)) => text.clone(),
+                Some(Value::Array(parts)) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+                _ => String::new(),
+            };
+            out.push(StreamSignal::ToolError { name, summary, error: error_text(&error) });
+        }
+        return out;
     }
     if kind == Some("rate_limit_event") {
         if let Some(info) = data.get("rate_limit_info").and_then(Value::as_object) {

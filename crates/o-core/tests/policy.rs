@@ -20,6 +20,8 @@ fn ctx() -> PolicyContext {
         o_home: "C:/Users/me/AppData/Local/project_O".into(),
         user_home: "C:/Users/me".into(),
         resolve: Box::new(|p: &str| p.to_string()),
+        profile_not_ready: Box::new(|_| None),
+        agy_workers_allowed: false,
     }
 }
 
@@ -156,13 +158,16 @@ fn unknown_providers_are_refused() {
 }
 
 #[test]
-fn antigravity_cannot_be_dispatched_with_either_profile() {
+fn antigravity_requires_the_worker_setting_with_either_profile() {
     use o_core::policy::check_plan_for;
     use o_core::run::mode::Profile;
     for profile in [Profile::Own, Profile::ProjectO] {
         let checked = check_plan_for(&plan(vec![code_card(), design_card()]), &ctx(), profile);
         assert!(checked.plan.is_none());
-        assert!(checked.violations.iter().any(|v| v.rule == "provider-terms" && v.card_id.as_deref() == Some("design")));
+        assert!(checked.violations.iter().any(|v| v.rule == "provider-terms" && v.card_id.as_deref() == Some("design") && v.message.contains("o agy --workers on --ack")));
+        let mut enabled = ctx();
+        enabled.agy_workers_allowed = true;
+        assert!(check_plan_for(&plan(vec![code_card(), design_card()]), &enabled, profile).plan.is_some());
     }
 }
 
@@ -281,21 +286,109 @@ fn devin_card() -> Value {
 }
 
 #[test]
-fn devin_cards_are_refused_on_the_project_o_profile_and_run_on_the_persons_own() {
+fn terminal_model_and_effort_are_notices() {
     use o_core::policy::check_plan_for;
     use o_core::run::mode::Profile;
-    let refused = check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::ProjectO);
-    assert!(refused.plan.is_none());
-    let v: Vec<_> = refused.violations.iter().filter(|v| v.rule == "profile-unsupported").collect();
-    assert_eq!(v.len(), 1);
-    assert_eq!(v[0].card_id.as_deref(), Some("fix"));
-    assert_eq!(v[0].message, "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요");
+    let mut context = ctx();
+    context.agy_workers_allowed = true;
+    let checked = check_plan_for(&plan(vec![design_card()]), &context, Profile::Own);
+    assert!(checked.plan.is_some(), "{:?}", checked.violations);
+    assert_eq!(checked.notices, ["터미널 카드는 model·effort를 적용하지 않습니다(CLI의 현재 설정으로 실행)"]);
+}
+
+#[test]
+fn devin_cards_use_the_persons_own_profile_with_a_notice() {
+    use o_core::policy::check_plan_for;
+    use o_core::run::mode::Profile;
+    let checked = check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::ProjectO);
+    assert!(checked.plan.is_some());
+    assert_eq!(checked.notices, [o_core::providers::devin::OWN_PROFILE_NOTICE]);
     // Listed beside the plan's other problems, not only once the rest passes.
     let both = check_plan_for(&plan(vec![with(devin_card(), "effort", json!("ultra"))]), &ctx(), Profile::ProjectO);
-    assert!(has(&both, "plan-shape") && has(&both, "profile-unsupported"));
+    assert!(has(&both, "plan-shape") && !both.notices.is_empty());
     assert!(check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::Own).plan.is_some());
     assert!(check_plan_for(&plan(vec![code_card(), with(design_card(), "provider", json!("claude"))]), &ctx(), Profile::ProjectO).plan.is_some());
     assert!(check_plan(&plan(vec![devin_card()]), &ctx()).plan.is_some());
+}
+
+/// ADR-0040: a Codex card on the project_O profile whose config has no Windows sandbox
+/// selection is refused (it would end "done" having changed nothing); with the selection, with
+/// the person's own setup, or with YOLO (no sandbox) it runs.
+#[test]
+fn codex_cards_wait_for_the_profiles_sandbox_setup() {
+    use o_core::agents::clean::{profile_home, profile_not_ready};
+    use o_core::policy::{check_plan_for, check_plan_in};
+    use o_core::run::mode::{Profile, RunMode};
+    let root = std::env::temp_dir().join(format!("o-policy-sandbox-{}-{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap()));
+    let codex = profile_home(&root, ProviderId::Codex).join(".codex");
+    std::fs::create_dir_all(&codex).unwrap();
+    let in_root = || {
+        let mut ctx = ctx();
+        let root = root.clone();
+        ctx.profile_not_ready = Box::new(move |provider| profile_not_ready(&root, provider));
+        ctx
+    };
+    let claude = with(with(code_card(), "id", json!("doc")), "provider", json!("claude"));
+    let cards = || plan(vec![code_card(), claude.clone()]);
+    let yolo = RunMode { profile: Profile::ProjectO, context: true, yolo: true };
+
+    for config in [None, Some("model = \"m\"\n"), Some("[windows]\n[other]\nsandbox = \"x\"\n")] {
+        if let Some(text) = config {
+            std::fs::write(codex.join("config.toml"), text).unwrap();
+        }
+        let checked = check_plan_for(&cards(), &in_root(), Profile::ProjectO);
+        let refused: Vec<_> = checked.violations.iter().filter(|v| v.rule == "profile-not-ready").collect();
+        if cfg!(windows) {
+            assert!(checked.plan.is_none(), "{config:?}");
+            assert_eq!(refused.len(), 1, "{config:?}");
+            assert_eq!(refused[0].card_id.as_deref(), Some("code"));
+            assert_eq!(refused[0].message, o_core::providers::codex::SANDBOX_NOT_SET);
+        } else {
+            assert!(checked.plan.is_some() && refused.is_empty(), "{config:?}");
+        }
+        assert!(check_plan_for(&cards(), &in_root(), Profile::Own).plan.is_some());
+        assert!(check_plan_in(&cards(), &in_root(), yolo).plan.is_some());
+        assert!(check_plan_for(&plan(vec![claude.clone()]), &in_root(), Profile::ProjectO).plan.is_some());
+    }
+    // ADR-0040 개정 1: the selection alone is not enough; a passing check for this Codex version
+    // and this config is. The version is injected here: the test never asks a real Codex.
+    use o_core::providers::codex_sandbox::{self, Record, CHANGED, NOT_CHECKED};
+    let home = profile_home(&root, ProviderId::Codex);
+    let with_version = |version: &'static str| {
+        let mut ctx = ctx();
+        let home = home.clone();
+        ctx.profile_not_ready = Box::new(move |provider| (provider == ProviderId::Codex).then(|| codex_sandbox::not_ready(&home, || Some(version.into()))).flatten());
+        ctx
+    };
+    let refused = |ctx: &o_core::policy::PolicyContext| -> Option<String> {
+        let checked = check_plan_for(&cards(), ctx, Profile::ProjectO);
+        checked.violations.iter().find(|v| v.rule == "profile-not-ready").map(|v| v.message.clone())
+    };
+    for config in ["[windows]\nsandbox = \"unelevated\"\n", "windows.sandbox = \"elevated\"\n"] {
+        std::fs::write(codex.join("config.toml"), config).unwrap();
+        if cfg!(windows) {
+            assert_eq!(refused(&in_root()).as_deref(), Some(NOT_CHECKED), "{config:?}");
+        }
+        assert_eq!(refused(&with_version("codex-cli 1.0.0")).as_deref(), Some(NOT_CHECKED), "{config:?}");
+        let mut record = Record { ok: true, version: "codex-cli 1.0.0".into(), config_hash: codex_sandbox::config_hash(&home), checked_at: "2026-11-10T00:00:00.000Z".into(), detail: "통과".into() };
+        codex_sandbox::write_record(&home, &record).unwrap();
+        assert_eq!(refused(&with_version("codex-cli 1.0.0")), None, "{config:?}");
+        assert!(check_plan_for(&cards(), &with_version("codex-cli 1.0.0"), Profile::ProjectO).plan.is_some());
+        assert_eq!(refused(&with_version("codex-cli 1.0.1")).as_deref(), Some(CHANGED));
+        record.ok = false;
+        record.detail = "Codex가 멈췄습니다".into();
+        codex_sandbox::write_record(&home, &record).unwrap();
+        assert!(refused(&with_version("codex-cli 1.0.0")).is_some_and(|why| why.contains("Codex가 멈췄습니다")));
+        // The record stays beside the profile home, never inside Codex's own folder.
+        assert_eq!(codex_sandbox::record_path(&home), root.join("codex").join(codex_sandbox::RECORD));
+        std::fs::remove_file(codex_sandbox::record_path(&home)).unwrap();
+    }
+    std::fs::write(codex.join("config.toml"), "[windows]\nsandbox = \"unelevated\"\n").unwrap();
+    let record = Record { ok: true, version: "codex-cli 1.0.0".into(), config_hash: codex_sandbox::config_hash(&home), checked_at: "2026-11-10T00:00:00.000Z".into(), detail: "통과".into() };
+    codex_sandbox::write_record(&home, &record).unwrap();
+    std::fs::write(codex.join("config.toml"), "[windows]\nsandbox = \"unelevated\"\nmodel = \"m\"\n").unwrap();
+    assert_eq!(refused(&with_version("codex-cli 1.0.0")).as_deref(), Some(CHANGED));
+    std::fs::remove_dir_all(&root).ok();
 }
 
 #[test]
@@ -305,4 +398,12 @@ fn devin_has_its_own_concurrency_cap() {
     full.active_by_provider.insert(ProviderId::Devin, 2);
     assert!(has(&check_plan(&plan(vec![devin_card()]), &full), "active-cap"));
     assert!(check_plan(&plan(vec![code_card()]), &full).plan.is_some());
+}
+
+// ADR-0041: "wiki" receives notes and is nobody; a card cannot take the name or speak as it.
+#[test]
+fn wiki_is_a_recipient_only() {
+    let known = vec!["code".to_string()];
+    assert!(check_message("배운 것", &Parties { from: "code", to: "wiki", known: &known }).is_empty());
+    assert!(check_message("hi", &Parties { from: "wiki", to: "code", known: &known }).iter().any(|v| v.rule == "msg-party"));
 }

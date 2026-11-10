@@ -81,9 +81,16 @@ fn quit_activity_in(home: &std::path::Path) -> Result<serde_json::Value, String>
     }
     let cards = o_core::run::store::active_markers(home).len();
     let leads = o_core::lead::active_count(home).map_err(|e| e.to_string())?;
+    let running = |events: &[o_core::run::events::OEvent]| o_core::run::snapshot::snapshot(events).is_some_and(|run| run.status == o_core::run::snapshot::RunStatus::Running);
     let runs = o_core::run::store::list_runs(home).iter().filter(|id| {
-        o_core::run::snapshot::snapshot(&o_core::run::store::read_events(home, id))
-            .is_some_and(|run| run.status == o_core::run::snapshot::RunStatus::Running)
+        let events = o_core::run::store::read_events(home, id);
+        if !running(&events) { return false; }
+        // A run whose runner died is closed on record, not counted as still going (ADR-0039);
+        // the events read under that close are the current ones, closed by this reader or another.
+        match o_core::run::store::close_if_runner_died(home, id, &events) {
+            Ok(Some(current)) => running(&current),
+            _ => true,
+        }
     }).count();
     Ok(serde_json::json!({ "cards": cards, "leads": leads, "runs": runs }))
 }

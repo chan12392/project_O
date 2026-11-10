@@ -1,7 +1,7 @@
 import { ArrowLeft, ChevronRight, ClipboardList, KanbanSquare, LayoutDashboard, ListChecks, type LucideIcon } from "lucide-react";
 import { useEffect, useState, type ReactNode } from "react";
 
-import { earlierPlanOutcome, LEAD_TAB_MAX, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
+import { earlierPlanOutcome, LEAD_TAB_MAX, latestProposal, leadPlans, type LeadItem } from "../../../../src/core/lead.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import { names, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
@@ -10,6 +10,7 @@ import type { PanelViewDef } from "../../shell/SidePanel.tsx";
 import { CardTranscript } from "../chat/CardTranscript.tsx";
 import { PlanCard, PlanDetails } from "../chat/LeadThread.tsx";
 import { Markdown } from "../chat/Markdown.tsx";
+import { BUTTON_PRIMARY } from "../../ui/controls.tsx";
 import { WorkDashboard } from "./WorkDashboard.tsx";
 import { DesignAnnotations } from "./DesignAnnotations.tsx";
 import { IssuesPanel } from "./IssuesPanel.tsx";
@@ -23,6 +24,7 @@ export const WORK_VIEW: PanelViewDef = {
 
 type Sub = "design" | "dashboard" | "issues";
 type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
+type LeadProposal = Extract<LeadItem, { kind: "proposal" }>;
 
 /** What every sub-view of the work tab is drawn from. */
 interface SubContext {
@@ -104,6 +106,9 @@ function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[
     </section>
   );
   const { latest, earlier: earlierPlans } = leadPlans(lead.items);
+  // The overall lead proposes requests for project leads instead of plans (ADR-0036).
+  const { proposal, sendable } = latestProposal(lead.items);
+  if (!latest && proposal) return <DesignAnnotations lead={lead}>{summary}<ProposalCard proposal={proposal} sendable={sendable} lead={lead} /></DesignAnnotations>;
   if (!latest) return <DesignAnnotations lead={lead}>{summary}<p className="text-sm text-muted-foreground">총괄과 작업을 논의하면 제안된 작업이 여기에 나타납니다.</p></DesignAnnotations>;
   const previous = lead.items[lead.items.indexOf(latest) - 1];
   return (
@@ -114,6 +119,59 @@ function DesignContent({ lead, runs, onCard }: { lead: LeadState; runs: RunView[
       <PlanCard plan={latest} lead={lead} run={runs.find((run) => run.runId === latest.runId)} onOpenCard={(run, card) => onCard({ run, card })} />
       {earlierPlans.length > 0 && <details className="text-xs text-muted-foreground"><summary className="cursor-pointer focus-ring">이전 설계 {earlierPlans.length}개</summary><ol className="mt-2 space-y-2">{earlierPlans.map((plan) => <li key={plan.planId}><EarlierPlan plan={plan} /></li>)}</ol></details>}
     </DesignAnnotations>
+  );
+}
+
+/** The overall lead's proposed requests; nothing goes to a project lead until the person presses 요청 전달 (ADR-0036). */
+function ProposalCard({ proposal, sendable, lead }: { proposal: LeadProposal; sendable: boolean; lead: LeadState }) {
+  const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
+  const send = async () => {
+    setState({ busy: true });
+    try {
+      await lead.forward(proposal.proposalId);
+      setState({});
+    } catch (e) {
+      setState({ error: e instanceof Error ? e.message : String(e) });
+    }
+  };
+  return (
+    <section aria-label="프로젝트 요청 제안" className="overflow-hidden rounded-xl border bg-card text-card-foreground">
+      <header className="border-b px-4 py-3">
+        <h2 className="text-sm font-medium">프로젝트 총괄에 넘길 요청</h2>
+        <p className="text-2xs text-muted-foreground">전체 총괄이 제안한 요청 {proposal.items.length}개 · <time dateTime={proposal.at}>{timeOf(proposal.at)}</time></p>
+      </header>
+      <ol className="divide-y">
+        {proposal.items.map((item, i) => (
+          <li key={i} className="px-4 py-3 text-sm">
+            <p className="text-xs font-medium">{item.project}</p>
+            <p className="mt-1 whitespace-pre-wrap break-words">{item.text}</p>
+          </li>
+        ))}
+      </ol>
+      <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
+        {proposal.failed.length > 0 ? (
+          <>
+            <p role="alert" className="w-full text-xs text-status-warning-text">
+              {proposal.failed.length < proposal.items.length ? "일부만 전달했습니다. " : ""}전달을 시작하지 못한 요청: {proposal.failed.join(", ")}. 원인은 대화에 표시됩니다.
+            </p>
+            {sendable
+              ? <button type="button" disabled={state.busy} onClick={() => void send()} className={BUTTON_PRIMARY}>{state.busy ? "전달 중…" : "실패한 요청 다시 전달"}</button>
+              : <p role="status" className="text-xs text-status-warning-text">이후 대화가 있어 다시 전달할 수 없습니다. 전체 총괄에게 최신 제안을 요청하세요.</p>}
+            {sendable && <p className="text-xs text-muted-foreground">이미 전달한 요청은 다시 보내지 않습니다.</p>}
+          </>
+        ) : proposal.sent ? (
+          <p role="status" className="text-xs text-muted-foreground">전달했습니다. 각 프로젝트 총괄의 계획은 전체 총괄이 검토하고, 승인하면 바로 실행합니다.</p>
+        ) : sendable ? (
+          <>
+            <button type="button" disabled={state.busy} onClick={() => void send()} className={BUTTON_PRIMARY}>{state.busy ? "전달 중…" : "요청 전달"}</button>
+            <p className="text-xs text-muted-foreground">전달하면 프로젝트 총괄이 계획을 세우고, 전체 총괄이 검토해 승인한 계획은 바로 실행됩니다.</p>
+          </>
+        ) : (
+          <p role="status" className="text-xs text-status-warning-text">이후 대화가 있어 이 제안은 전달할 수 없습니다. 전체 총괄에게 최신 제안을 요청하세요.</p>
+        )}
+        {state.error && <p role="alert" className="w-full text-xs text-destructive">요청을 전달하지 못했습니다: {state.error}</p>}
+      </footer>
+    </section>
   );
 }
 

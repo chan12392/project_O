@@ -155,6 +155,12 @@ pub(super) fn short_value(value: Option<&Value>) -> String {
     }
 }
 
+/// Why a tool call failed, as one line of at most 300 characters.
+pub(super) fn error_text(text: &str) -> String {
+    let line = squash_spaces(text);
+    if js_len(&line) > 300 { format!("{}...", js_head(&line, 297)) } else { line }
+}
+
 /// One line of at most 120 characters.
 pub(super) fn short(text: &str) -> String {
     let line = squash_spaces(text);

@@ -181,6 +181,10 @@ fn main() {
     assert_managed_owner_handshake_and_lifecycle(&launch);
     assert_explicit_environment_in_real_child(&launch, &owner.0);
     assert_common_native_child(&launch, &owner.0);
+    // cmd's hidden variables start with `=` and are valid names; other `=` placements are not.
+    let names = |names: &[&str]| Launch { executable: launch.executable.clone(), args: vec![], cwd: launch.cwd.clone(), environment: names.iter().map(|name| (OsString::from(name), OsString::from("x"))).collect() }.environment_block();
+    assert!(names(&["=C:", "=ExitCode", "=::"]).is_ok());
+    for bad in ["=", "A=B", "=A=B", ""] { assert!(names(&[bad]).is_err(), "{bad:?}"); }
     let mut duplicate = launch;
     duplicate.environment.push((OsString::from("o_test_value"), OsString::from("duplicate")));
     assert!(duplicate.spawn(&owner.0).is_err());

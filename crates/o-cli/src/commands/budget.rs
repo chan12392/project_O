@@ -41,7 +41,7 @@ fn report(home: &Path, args: &[String]) -> i32 {
         }
     }
     if !cached {
-        budget::refresh_if_stale(home, Utc::now());
+        budget::refresh_if_stale(home, Utc::now(), None);
     }
     let report = match budget::report(home, Utc::now()) {
         Ok(report) => report,

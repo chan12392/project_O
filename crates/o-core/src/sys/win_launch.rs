@@ -1,4 +1,4 @@
-//! Explicit Windows process launch data. This module is not yet wired to the runner.
+//! Explicit Windows process launch data used by the card runner.
 use std::cmp::Ordering;
 use std::ffi::{OsStr, OsString};
 use std::io;
@@ -11,7 +11,7 @@ use std::process::ExitStatus;
 use windows_sys::Win32::Foundation::{DuplicateHandle, GetLastError, DUPLICATE_CLOSE_SOURCE, DUPLICATE_SAME_ACCESS, ERROR_ALREADY_EXISTS, FILETIME, HANDLE, WAIT_OBJECT_0, WAIT_TIMEOUT};
 use windows_sys::Win32::Globalization::CompareStringOrdinal;
 use windows_sys::Win32::Security::Cryptography::{BCryptGenRandom, BCRYPT_USE_SYSTEM_PREFERRED_RNG};
-use windows_sys::Win32::System::JobObjects::{CreateJobObjectW, SetInformationJobObject, JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
+use windows_sys::Win32::System::JobObjects::{CreateJobObjectW, IsProcessInJob, SetInformationJobObject, JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE};
 use windows_sys::Win32::System::Pipes::CreatePipe;
 use windows_sys::Win32::System::Threading::{CreateEventW, CreateProcessW, DeleteProcThreadAttributeList, GetCurrentProcess, GetExitCodeProcess, GetProcessTimes, InitializeProcThreadAttributeList, OpenEventW, OpenProcess, ResumeThread, SetEvent, TerminateProcess, UpdateProcThreadAttribute, WaitForMultipleObjects, WaitForSingleObject, CREATE_NO_WINDOW, CREATE_SUSPENDED, CREATE_UNICODE_ENVIRONMENT, EVENT_MODIFY_STATE, EXTENDED_STARTUPINFO_PRESENT, PROCESS_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_SYNCHRONIZE, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, PROC_THREAD_ATTRIBUTE_JOB_LIST, PROC_THREAD_ATTRIBUTE_PARENT_PROCESS, STARTF_USESTDHANDLES, STARTUPINFOEXW, STARTUPINFOW};
 
@@ -204,17 +204,24 @@ impl Launch {
 
     /// Prototype hooks expose the two sides of CreateProcessW for crash tests.
     pub fn spawn_with_hooks(&self, owner: &impl AsRawHandle, before_create: impl FnOnce() -> io::Result<()>, after_create: impl FnOnce(u32)) -> io::Result<(Child, super::proc::KillOnClose)> {
+        self.spawn_in_job(owner, None, before_create, after_create)
+    }
+
+    /// A card's launch: like `spawn`, in a job named after the run and card with a random suffix
+    /// (`card_job_name`), so a detached watcher can open and empty the same job (ADR-0039).
+    /// When the name cannot be had the job is unnamed and `KillOnClose::job_name` is `None`.
+    pub fn spawn_in_named_job(&self, owner: &impl AsRawHandle, label: &str) -> io::Result<(Child, super::proc::KillOnClose)> {
+        self.spawn_in_job(owner, card_job_name(label), || Ok(()), |_| {})
+    }
+
+    fn spawn_in_job(&self, owner: &impl AsRawHandle, job_name: Option<String>, before_create: impl FnOnce() -> io::Result<()>, after_create: impl FnOnce(u32)) -> io::Result<(Child, super::proc::KillOnClose)> {
         if !self.cwd.is_absolute() { return Err(io::Error::new(io::ErrorKind::InvalidInput, "absolute working directory required")); }
         let mut command = self.command_line()?;
         let mut app = wide(self.executable.as_os_str())?; app.push(0);
         let mut cwd = wide(self.cwd.as_os_str())?; cwd.push(0);
         let environment = self.environment_block()?;
-        let raw_job = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
-        if raw_job.is_null() { return Err(io::Error::last_os_error()); }
-        let job = unsafe { OwnedHandle::from_raw_handle(raw_job) };
-        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
-        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-        if unsafe { SetInformationJobObject(raw_job, JobObjectExtendedLimitInformation, (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), std::mem::size_of_val(&limits) as u32) } == 0 { return Err(io::Error::last_os_error()); }
+        let (job, job_name) = kill_on_close_job(job_name)?;
+        let raw_job = job.as_raw_handle();
         let (stdin, child_stdin) = pipe(false)?;
         let (stdout, child_stdout) = pipe(true)?;
         let (stderr, child_stderr) = pipe(true)?;
@@ -242,9 +249,54 @@ impl Launch {
         let process = unsafe { OwnedHandle::from_raw_handle(info.hProcess) };
         let thread = unsafe { OwnedHandle::from_raw_handle(info.hThread) };
         after_create(info.dwProcessId);
+        // The name is evidence only for a job the worker is confirmed to be in.
+        let mut in_job = 0;
+        let job_name = job_name.filter(|_| unsafe { IsProcessInJob(process.as_raw_handle(), raw_job, &mut in_job) } != 0 && in_job != 0);
         let child = Child { stdin: Some(stdin.into()), stdout: Some(stdout.into()), stderr: Some(stderr.into()), process, thread, id: info.dwProcessId };
-        Ok((child, super::proc::KillOnClose { job: job.into_raw_handle() }))
+        Ok((child, super::proc::KillOnClose { job: job.into_raw_handle(), job_name }))
     }
+}
+
+/// `Global\project_O-job-<run>-<card>-<random hex>`: unguessable, so no other process holds the
+/// name first. `Global\` and not `Local\`: a reader in another logon session (a remote shell)
+/// finds no `Local\` object of this session and would misread the job as gone. `None` when the
+/// random suffix cannot be made; the job is then unnamed.
+pub(crate) fn card_job_name(label: &str) -> Option<String> {
+    let mut random = [0u8; 16];
+    if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), random.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) } < 0 { return None; }
+    let label: String = label.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(100).collect();
+    Some(format!("Global\\project_O-job-{label}-{}", random.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+}
+
+/// A kill-on-close job: Windows ends every process in it when its last handle closes (the runner
+/// holds the only one). No breakaway limit (`JOB_OBJECT_LIMIT_BREAKAWAY_OK`,
+/// `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`) is set, so no process the worker starts can leave the
+/// job; a nested job a CLI makes stays inside this one. A name that is already taken or cannot be
+/// created is never used and the job is made unnamed instead: someone else's job is never adopted.
+pub(crate) fn kill_on_close_job(name: Option<String>) -> io::Result<(OwnedHandle, Option<String>)> {
+    let named = name.and_then(|name| {
+        let mut wide_name: Vec<u16> = name.encode_utf16().collect();
+        if wide_name.contains(&0) { return None; }
+        wide_name.push(0);
+        let raw = unsafe { CreateJobObjectW(std::ptr::null(), wide_name.as_ptr()) };
+        let existed = unsafe { GetLastError() } == ERROR_ALREADY_EXISTS;
+        if raw.is_null() { return None; }
+        // Dropping our handle to someone else's job leaves that job as it was.
+        let job = unsafe { OwnedHandle::from_raw_handle(raw) };
+        (!existed).then_some((job, name))
+    });
+    let (job, name) = match named {
+        Some((job, name)) => (job, Some(name)),
+        None => {
+            let raw = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+            if raw.is_null() { return Err(io::Error::last_os_error()); }
+            (unsafe { OwnedHandle::from_raw_handle(raw) }, None)
+        }
+    };
+    let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if unsafe { SetInformationJobObject(job.as_raw_handle(), JobObjectExtendedLimitInformation, (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(), std::mem::size_of_val(&limits) as u32) } == 0 { return Err(io::Error::last_os_error()); }
+    Ok((job, name))
 }
 
 fn wide(value: &OsStr) -> io::Result<Vec<u16>> {
@@ -296,8 +348,9 @@ impl Launch {
         let mut entries = Vec::with_capacity(self.environment.len());
         for (name, value) in &self.environment {
             let key = wide(name)?;
-            let drive = key.len() == 3 && key[0] == b'=' as u16 && ((b'A' as u16..=b'Z' as u16).contains(&key[1]) || (b'a' as u16..=b'z' as u16).contains(&key[1])) && key[2] == b':' as u16;
-            if key.is_empty() || (!drive && key.contains(&(b'=' as u16))) || key.len() > i32::MAX as usize {
+            // Windows ends a name at the first `=` after its first character, so cmd's hidden
+            // variables (`=C:`, `=ExitCode`, `=::`) are valid names and inherited as they are.
+            if key.is_empty() || key == [b'=' as u16] || key[1..].contains(&(b'=' as u16)) || key.len() > i32::MAX as usize {
                 return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid environment name"));
             }
             entries.push((key, wide(value)?));
@@ -315,5 +368,29 @@ impl Launch {
         if result.is_empty() { result.push(0); }
         result.push(0);
         Ok(result)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_taken_job_name_is_never_adopted() {
+        let name = card_job_name("run-card").unwrap();
+        assert!(name.starts_with("Global\\project_O-job-run-card-"), "{name}");
+        let (first, first_name) = kill_on_close_job(Some(name.clone())).unwrap();
+        assert_eq!(first_name.as_deref(), Some(name.as_str()));
+        let (second, second_name) = kill_on_close_job(Some(name.clone())).unwrap();
+        assert_eq!(second_name, None, "an existing name falls back to an unnamed job");
+        drop(second);
+        let wide: Vec<u16> = name.encode_utf16().chain([0]).collect();
+        let opened = unsafe { windows_sys::Win32::System::JobObjects::OpenJobObjectW(0x0004, 0, wide.as_ptr()) };
+        assert!(!opened.is_null(), "the original named job remains open");
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(opened); }
+        drop(first);
+        assert!(unsafe { windows_sys::Win32::System::JobObjects::OpenJobObjectW(0x0004, 0, wide.as_ptr()) }.is_null());
+        // Characters a kernel object name cannot carry are left out of the label.
+        assert!(card_job_name("a\\b/c d").unwrap().starts_with("Global\\project_O-job-abcd-"));
     }
 }

@@ -6,7 +6,7 @@ import { legendItems, type GraphTheme } from "./graphColors.ts";
  * only the categories actually on screen (ADR-0033). `--muted-foreground` is the same
  * neutral the canvas falls back to for uncolored files.
  */
-export function GraphLegend({ view, colorBy, dark }: { view: GraphView; colorBy: GraphColorBy; dark: boolean }) {
+export function GraphLegend({ view, colorBy, dark }: { view: Pick<GraphView, "nodes">; colorBy: GraphColorBy; dark: boolean }) {
   const theme: GraphTheme = dark ? "dark" : "light";
   const items = legendItems(view, colorBy, theme, "var(--muted-foreground)");
   if (items.length === 0) return null;

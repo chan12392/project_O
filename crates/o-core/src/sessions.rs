@@ -812,6 +812,7 @@ fn at_of(event: &OEvent) -> &str {
         | OEvent::CardInput { at, .. }
         | OEvent::CardMessage { at, .. }
         | OEvent::CardTool { at, .. }
+        | OEvent::CardToolError { at, .. }
         | OEvent::CardLimit { at, .. }
         | OEvent::CardEnd { at, .. }
         | OEvent::Msg { at, .. }

@@ -10,10 +10,10 @@ export function timeOf(iso: string | undefined): string {
 export const PROVIDER_NAME: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Antigravity", opencode: "OpenCode", devin: "Devin" };
 export const PROVIDER_SHORT: Record<ProviderId, string> = { claude: "Claude", codex: "Codex", agy: "Agy", opencode: "OpenCode", devin: "Devin" };
 
-/** Display names for team parties: a card's label and agent, "총괄" for the lead, "모두" for all. */
+/** Display names for team parties: a card's label and agent, "총괄" for the lead, "모두" for all, "Wiki" for a note left for later work (ADR-0041). */
 export function names(run: RunView): (party: string) => string {
   const byId = new Map(run.cards.map((c) => [c.id, `${c.label} (${PROVIDER_SHORT[c.provider]})`]));
-  return (party) => (party === "lead" ? "총괄" : party === "all" ? "모두" : byId.get(party) ?? party);
+  return (party) => (party === "lead" ? "총괄" : party === "all" ? "모두" : byId.get(party) ?? (party === "wiki" ? "Wiki" : party));
 }
 
 export const STATE_WORD: Record<CardState, string> = {

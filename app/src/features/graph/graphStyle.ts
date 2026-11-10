@@ -71,6 +71,18 @@ export function nodeHalo(node: Pick<GraphNode, "glow">, effects: boolean): numbe
   return effects && node.glow === "active" ? 2.2 : effects && node.glow === "path" ? 1.4 : 0;
 }
 
+/**
+ * The soft light around a node (ADR-0041): how far it reaches, in node radii, and how strong
+ * it is at the center. With effects on every node carries a faint one, so the whole graph
+ * glows quietly; a changed file and its path carry a wide bright one once `glow` is on.
+ */
+export function nodeAura(node: Pick<GraphNode, "kind" | "glow">, effects: boolean, glow: boolean): { reach: number; alpha: number } {
+  if (!effects) return { reach: 0, alpha: 0 };
+  if (glow && node.glow === "active") return { reach: 3.4, alpha: 0.6 };
+  if (glow && node.glow === "path") return { reach: 3, alpha: 0.42 };
+  return node.kind === "file" ? { reach: 2.8, alpha: 0.24 } : { reach: 3, alpha: 0.32 };
+}
+
 export function linkColor(link: Pick<GraphLink, "glow">, p: GraphPalette, effects: boolean, dimmed: boolean): string {
   if (effects && link.glow) return p.linkGlow;
   return effects && dimmed ? fade(p.link, p) : p.link;

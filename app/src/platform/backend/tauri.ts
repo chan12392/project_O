@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, AgyReport, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TermChunk, TermSession, TokenReport, DreamDoc, DreamChange, DreamGraph, DreamInput, DreamList, DreamPage } from "./types.ts";
 import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
 /** Raised when the desktop app did not open a link; `shell/LinkNotice.tsx` shows it (also raised by app/src-tauri/src/commands/window.rs). */
@@ -14,8 +14,9 @@ export function linkRefusal(error: unknown): string {
 export function tauriBackend(invoke: Invoke): Backend {
   return {
     kind: "tauri",
+    canDriveTerminals: true,
     resources: () => invoke("resource_leases") as ReturnType<Backend["resources"]>,
-    recoverResource: (id) => invoke("resource_recover", { id }) as Promise<void>,
+    recoverResource: (id, confirmExited = false) => invoke("resource_recover", { id, confirmExited }) as Promise<void>,
     followup: (run, card, text) => invoke("run_followup", { run, card, text }) as Promise<{ runId: string }>,
     changes: (run, card) => invoke("run_changes", { run, card }) as ReturnType<Backend["changes"]>,
     reply: (run, card, text, messageId) => invoke("run_reply", { run, card, text, messageId: messageId ?? null }) as Promise<void>,
@@ -30,6 +31,7 @@ export function tauriBackend(invoke: Invoke): Backend {
   agentsCatalog: (refresh = false) => invoke("agents_catalog", { refresh }) as ReturnType<Backend["agentsCatalog"]>,
     install: (id) => invoke("agent_install", { id }) as Promise<ActionResult>,
     login: (id, clean) => invoke("agent_login", { id, clean }) as Promise<ActionResult>,
+    setup: (id) => invoke("agent_setup", { id }) as Promise<ActionResult>,
     openTerminal: () => invoke("agent_terminal") as Promise<ActionResult>,
     // A refused link (http, or the browser failed) says why on screen even where the caller stays quiet.
     openExternal: (url) =>
@@ -52,6 +54,10 @@ export function tauriBackend(invoke: Invoke): Backend {
     budget: async () => JSON.parse((await invoke("budget")) as string) as BudgetReport,
     setBudgetPercent: async (percent) => JSON.parse((await invoke("budget_set_percent", { percent })) as string) as BudgetReport,
     setBudgetEnabled: async (enabled) => JSON.parse((await invoke("budget_set_enabled", { enabled })) as string) as BudgetReport,
+    ram: () => invoke("ram_get") as ReturnType<Backend["ram"]>,
+    setRam: (change) => invoke("ram_set", { enabled: null, percent: null, ...change }) as ReturnType<Backend["setRam"]>,
+    billing: () => invoke("billing_get") as ReturnType<Backend["billing"]>,
+    setBilling: (mode) => invoke("billing_set", { mode }) as ReturnType<Backend["setBilling"]>,
     yolo: () => invoke("yolo_get") as ReturnType<Backend["yolo"]>,
     setYolo: (change) => invoke("yolo_set", { enabled: null, maxCards: null, perHour: null, dedupeMinutes: null, ...change }) as ReturnType<Backend["setYolo"]>,
     tokens: async (project) => JSON.parse((await invoke("tokens", { project: project ?? null })) as string) as TokenReport,
@@ -80,6 +86,7 @@ export function tauriBackend(invoke: Invoke): Backend {
         events: LeadEvent[];
       }>,
     leadDispatch: (planId, clean) => invoke("lead_dispatch", { planId, clean }) as Promise<LeadDispatched>,
+    leadForward: (proposalId) => invoke("lead_forward", { proposalId }) as Promise<{ events: LeadEvent[] }>,
     leadDecide: (id, allow) => invoke("lead_decide", { id, allow }) as Promise<{ id: string; decision: "allow" | "deny" }>,
     leadStop: (project, thread) => invoke("lead_stop", { project: project ?? null, thread: thread ?? null }) as Promise<{ stopped: boolean }>,
   leadWake: (runId) => invoke("lead_wake", { runId }) as Promise<{ processed: boolean }>,
@@ -87,6 +94,15 @@ export function tauriBackend(invoke: Invoke): Backend {
   leadAnswerApproval: (runId, messageId, text) => invoke("lead_answer_approval", { runId, messageId, text }) as Promise<{ id: string }>,
     leadStopAll: (project) => invoke("lead_stop_all", { project }) as Promise<{ stopped: number }>,
     leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
+    agyGet: () => invoke("agy_get") as Promise<AgyReport>,
+    agySet: (change) => invoke("agy_set", { workers: change.workers ?? null, ack: change.ack ?? null, confirmPaste: change.confirmPaste ?? null }) as Promise<AgyReport>,
+    termOpen: (request) => invoke("term_open", { provider: request.provider, project: request.project, thread: request.thread ?? null, cols: request.cols ?? null, rows: request.rows ?? null }) as Promise<TermSession>,
+    termList: () => invoke("term_list") as Promise<TermSession[]>,
+    termRead: (id, offset) => invoke("term_read", { id, offset }) as Promise<TermChunk>,
+    termWrite: (id, dataBase64) => invoke("term_write", { id, data: dataBase64 }) as Promise<void>,
+    termResize: (id, cols, rows) => invoke("term_resize", { id, cols, rows }) as Promise<void>,
+    termPaste: (id) => invoke("term_paste", { id }) as Promise<void>,
+    termClose: (id) => invoke("term_close", { id }) as Promise<void>,
     graphView: (project) => invoke("graph_view", { project: project ?? null }) as Promise<GraphView>,
     graphOverallPart: (project) => invoke("graph_overall_part", { project }) as Promise<GraphView>,
     graphBuild: (project) => invoke("graph_build", { project }) as Promise<{ ok: boolean; output: string }>,
@@ -99,6 +115,13 @@ export function tauriBackend(invoke: Invoke): Backend {
         clean: (await import("../../data/settings.ts")).settingsNow().clean,
       }) as Promise<GraphDeepResult>,
     graphSettings: (change) => invoke("graph_settings", { change: change ?? null }) as Promise<GraphSettings>,
+    dreamList: () => invoke("dream_list") as Promise<DreamList>,
+    dreamRead: (path) => invoke("dream_read", { path }) as Promise<DreamPage>,
+    dreamGraph: () => invoke("dream_graph") as Promise<DreamGraph>,
+    dreamAdd: (input: DreamInput) => invoke("dream_add", { input }) as Promise<DreamDoc>,
+    dreamRemove: (path) => invoke("dream_remove", { path }) as Promise<void>,
+    dreamChanges: () => invoke("dream_changes") as Promise<DreamChange[]>,
+    dreamRevert: (id, reverted) => invoke("dream_revert", { id, reverted }) as Promise<DreamChange>,
     projects: () => invoke("projects_list") as Promise<ProjectList>,
     projectOpen: (path) => invoke("project_open", { path }) as Promise<void>,
     projectsAdd: (path) => invoke("projects_add", { path }) as Promise<ProjectList>,

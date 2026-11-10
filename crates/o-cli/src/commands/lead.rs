@@ -69,6 +69,7 @@ pub const LEAD: Command = Command {
   o lead attach --project <폴더> [--thread T] --name <이름> <파일|->   첨부 저장 (이미지·문서, 10MB까지)
   o lead dispatch <planId> [--profile project-o|own] [--no-context] [--mode yolo|normal]
                              제안된 계획을 정책 검사 후 한 번 실행, runId 출력 (--profile은 o dispatch와 같음)
+  o lead forward <제안 id>                 전체 총괄이 제안한 요청을 프로젝트 총괄에게 전달 (사람 전용, ADR-0036)
   o lead decide <승인 id> allow|deny         총괄이 기다리는 작업 하나를 허용하거나 거부 (사람 전용)
   o lead stop [--project <폴더>] [--thread T]  답하는 중인 총괄 중지 (탭·프로젝트·전체)
   o lead stop-all --project <폴더>           이 대화의 총괄과 실행을 모두 중지",
@@ -76,10 +77,10 @@ pub const LEAD: Command = Command {
 };
 
 fn lead_main(home: &Path, args: &[String]) -> i32 {
-    if matches!(args.first().map(String::as_str), Some("close" | "writer"))
-        && (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()))
+    if matches!(args.first().map(String::as_str), Some("close" | "writer" | "forward"))
+        && agent_env()
     {
-        eprintln!("에이전트 안에서는 총괄 탭을 닫거나 직접 수정을 맡길 수 없습니다. 사용자가 실행해 주세요.");
+        eprintln!("에이전트 안에서는 총괄 탭을 닫거나 직접 수정을 맡기거나 요청을 전달할 수 없습니다. 사용자가 실행해 주세요.");
         return 2;
     }
     let rest = args.get(1..).unwrap_or_default();
@@ -95,6 +96,7 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("retry") => retry(home, rest),
         Some("attach") => attach(home, rest),
         Some("dispatch") => dispatch(home, rest),
+        Some("forward") => forward(home, rest),
         Some("decide") => decide(home, rest),
         Some("stop") => stop(home, rest),
         Some("stop-all") => stop_all(home, rest),
@@ -220,18 +222,37 @@ fn forward_start(thread_id: &str, index: usize) -> std::io::Result<()> {
     proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_lead-forward", thread_id, &index.to_string()])).map(|_| ())
 }
 
+fn run_start(run_id: &str) -> std::io::Result<()> {
+    proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
+}
+
+fn agent_env() -> bool {
+    std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())
+}
+
+/// `o lead forward <proposalId>`: the person sends the overall lead's proposed requests on (ADR-0036).
+fn forward(home: &Path, args: &[String]) -> i32 {
+    let [proposal_id] = args else { return fail("o lead forward <제안 id>가 필요합니다") };
+    match lead::overall::send_on(home, proposal_id, &forward_start) {
+        Ok(events) => { println!("{}", json!({ "events": events })); 0 }
+        Err(e) => fail(&e),
+    }
+}
+
 /// `o _lead-forward <threadId> <n>`: sends the overall thread's n-th request to its project's
-/// lead (`lead::overall::forward`). Started by O after an overall turn, never by an agent.
+/// lead (`lead::overall::forward`) and has the overall lead review the plan it makes. Started by
+/// O after the person sends a proposal on, or after a review asks for a revision; never by an agent.
 pub const FORWARD: Command = Command {
     name: "_lead-forward",
     usage: "",
     run: |home, args| {
-        if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+        if agent_env() {
             return fail("요청 전달은 O만 시작합니다");
         }
         let [thread_id, index] = args else { return fail("o _lead-forward <threadId> <번호>") };
         let Ok(index) = index.parse() else { return fail("번호가 올바르지 않습니다") };
-        match lead::overall::forward(home, thread_id, index, &official_command) {
+        let starts = lead::overall::Starts { run: &run_start, forward: &forward_start };
+        match lead::overall::forward(home, thread_id, index, &official_command, &starts) {
             Ok(events) => { println!("{}", json!({ "events": events })); 0 }
             Err(e) => fail(&e),
         }
@@ -298,7 +319,6 @@ fn send(home: &Path, args: &[String]) -> i32 {
     let result = if a.manual_dispatch { lead::send_with_followups(home, &req, spawner.as_ref(), &resume) } else { lead::send_with_autorun_and_followups(home, &req, spawner.as_ref(), &start, &resume) };
     match result {
         Ok(events) => {
-            lead::overall::pass_on(home, &thread, &events, &forward_start);
             // A turn that ended in lead.error is still on record: the events say what happened.
             println!("{}", json!({ "threadId": thread, "events": events }));
             0

@@ -13,6 +13,8 @@ fn fixture() -> (PathBuf, PathBuf) {
     let base = std::env::temp_dir().join(format!("o-resource-{}-{unique}", std::process::id()));
     let project = base.join("project");
     std::fs::create_dir_all(&project).unwrap();
+    // Tests hold several slots at once; the RAM cap (ADR-0037) would make them depend on this PC's memory.
+    o_core::run::ram::write_enabled(&base.join("state"), false).unwrap();
     (base.join("state"), project)
 }
 
@@ -183,7 +185,7 @@ fn process_fixture() {
             command.args(["--exact", "process_fixture"]).env_remove("O_RESOURCE_HOME").env_remove("O_RESOURCE_MARK_EXIT").stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null());
             let mut worker = o_core::sys::proc::spawn_worker(&mut command).unwrap();
             let mut tree = o_core::sys::proc::contain(&worker).unwrap();
-            link_slot(&home, lease, worker.id()).unwrap();
+            link_slot(&home, lease, worker.id(), None).unwrap();
             o_core::sys::proc::resume_worker(worker.id()).unwrap();
             worker.wait().unwrap();
             assert!(tree.stop_and_confirm());
@@ -638,7 +640,7 @@ fn dead_child_does_not_erase_lease_without_confirmed_release() {
     let mut command = std::process::Command::new(std::env::current_exe().unwrap());
     command.args(["--exact", "process_fixture"]).env("O_RESOURCE_FAKE", "1");
     let mut child = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
-    link_slot(&home, &lease, child.id()).unwrap();
+    link_slot(&home, &lease, child.id(), None).unwrap();
     child.kill().unwrap();
     child.wait().unwrap();
     assert_eq!(o_core::run::store::held_by_provider(&home).unwrap().get(&ProviderId::Claude), Some(&1));
@@ -680,7 +682,7 @@ fn dead_workers_with_unreleased_leases_still_fill_provider_capacity() {
     for n in 0..o_core::policy::LIMITS.max_active_per_provider(ProviderId::Claude) {
         let id = format!("run{n}");
         let lease = granted(reserve(&home, &project, &id, &card(&id, vec![res(ResourceKind::External, &id, ResourceMode::Write)])));
-        link_slot(&home, &lease, child.id()).unwrap();
+        link_slot(&home, &lease, child.id(), None).unwrap();
     }
     child.kill().unwrap();
     child.wait().unwrap();
@@ -874,7 +876,7 @@ fn stop_never_kills_an_unowned_or_mismatched_marker_pid() {
     }).collect();
     for run in ["legacy", "mismatch"] { create_run(&home, run, &plan).unwrap(); }
     let lease = granted(reserve(&home, &project, "mismatch", &card));
-    link_slot(&home, &lease, children[1].id()).unwrap();
+    link_slot(&home, &lease, children[1].id(), None).unwrap();
     for run in ["legacy", "mismatch"] {
         mark_active(&home, &ActiveMarker { run_id: run.into(), card_id: card.id.clone(), provider: card.provider, pid: children[0].id() }).unwrap();
         assert!(stop_run(&home, run).unwrap());

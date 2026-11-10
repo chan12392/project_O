@@ -1,6 +1,20 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { hasGlow, linkColor, linkParticles, nodeColor, nodeHalo, nodeSize, palette } from "../app/src/features/graph/graphStyle.ts";
+import { hasGlow, linkColor, linkParticles, nodeAura, nodeColor, nodeHalo, nodeSize, palette } from "../app/src/features/graph/graphStyle.ts";
+
+test("nodeAura gives every node a faint light with effects on, and glowing nodes a wide bright one", () => {
+  assert.deepEqual(nodeAura({ kind: "file" }, false, false), { reach: 0, alpha: 0 });
+  assert.deepEqual(nodeAura({ kind: "file", glow: "active" }, false, true), { reach: 0, alpha: 0 });
+  const file = nodeAura({ kind: "file" }, true, true);
+  const area = nodeAura({ kind: "area" }, true, true);
+  const path = nodeAura({ kind: "file", glow: "path" }, true, true);
+  const active = nodeAura({ kind: "file", glow: "active" }, true, true);
+  assert.ok(file.alpha > 0 && file.alpha <= 0.25, "faint, not a spotlight");
+  assert.ok(area.alpha > file.alpha && area.reach > file.reach);
+  assert.ok(path.alpha > area.alpha && active.alpha > path.alpha && active.reach > path.reach);
+  // While the reveal holds glow back, a changed file carries only the faint light.
+  assert.deepEqual(nodeAura({ kind: "file", glow: "active" }, true, false), file);
+});
 
 // A palette with distinct names so each slot is recognizable in assertions.
 const CSS: Record<string, string> = {

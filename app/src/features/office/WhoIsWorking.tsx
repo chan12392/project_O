@@ -22,7 +22,10 @@ export function WhoIsWorking({ runs, onOpen }: { runs: RunView[]; onOpen: (run: 
   useDismiss(panel, open, close, button);
 
   const cards = runs.flatMap((run) => run.cards.map((card) => ({ run, card })));
-  const working = cards.filter(({ card }) => card.state === "running" || card.state === "queued");
+  // Only running cards count as working: a card waiting its turn (an unfinished depends_on, a
+  // resource another card holds, a full slot) shows its reason instead, so a serial plan does not look parallel.
+  const working = cards.filter(({ card }) => card.state === "running");
+  const waiting = cards.filter(({ card }) => card.state === "queued" || card.state === "waiting");
   const recent = cards
     .filter(({ card }) => card.endedAt)
     .sort((a, b) => (b.card.endedAt ?? "").localeCompare(a.card.endedAt ?? ""))
@@ -57,11 +60,13 @@ export function WhoIsWorking({ runs, onOpen }: { runs: RunView[]; onOpen: (run: 
         >
           <div className="flex items-center justify-between border-b px-3.5 py-2.5">
             <span className="text-xs font-semibold">지금 누가 무엇을</span>
-            <span className="text-2xs text-muted-foreground">작업 중 {working.length} · 최근 끝남 {recent.length}</span>
+            <span className="text-2xs text-muted-foreground">
+              작업 중 {working.length} · 차례 기다림 {waiting.length} · 최근 끝남 {recent.length}
+            </span>
           </div>
           <div className="scrollbar-sleek max-h-[60vh] overflow-y-auto">
-            {working.length === 0 && recent.length === 0 && <p className="px-3.5 py-4 text-xs text-muted-foreground">이 프로젝트에 맡긴 카드가 없습니다.</p>}
-            {[...working, ...recent].map(({ run, card }) => (
+            {working.length === 0 && waiting.length === 0 && recent.length === 0 && <p className="px-3.5 py-4 text-xs text-muted-foreground">이 프로젝트에 맡긴 카드가 없습니다.</p>}
+            {[...working, ...waiting, ...recent].map(({ run, card }) => (
               <Row key={`${run.runId}/${card.id}`} run={run} card={card} onOpen={() => (onOpen(run.runId, card.id), close())} />
             ))}
           </div>
@@ -72,7 +77,7 @@ export function WhoIsWorking({ runs, onOpen }: { runs: RunView[]; onOpen: (run: 
 }
 
 function Row({ run, card, onOpen }: { run: RunView; card: CardView; onOpen: () => void }) {
-  const live = card.state === "running" || card.state === "queued";
+  const live = card.state === "running";
   return (
     <button
       type="button"

@@ -8,6 +8,7 @@
 
 mod about;
 mod agents;
+mod agy;
 mod graph;
 mod lead;
 mod images;
@@ -16,8 +17,10 @@ mod projects;
 mod review;
 mod runs;
 mod schedule;
+mod term;
 mod tokens;
 mod usage;
+mod dream;
 pub(crate) mod update;
 pub(crate) mod window;
 
@@ -25,6 +28,13 @@ pub(crate) mod window;
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         runs::runs,
+        term::term_open,
+        term::term_list,
+        term::term_read,
+        term::term_write,
+        term::term_resize,
+        term::term_paste,
+        term::term_close,
         runs::run_changes,
         runs::run_followup,
         runs::run_reply,
@@ -35,12 +45,19 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         usage::budget,
         usage::budget_set_percent,
         usage::budget_set_enabled,
+        usage::ram_get,
+        usage::ram_set,
+        usage::billing_get,
+        usage::billing_set,
+        agy::agy_get,
+        agy::agy_set,
         usage::yolo_get,
         usage::yolo_set,
         agents::agents_status,
         agents::agents_catalog,
         agents::agent_install,
         agents::agent_login,
+        agents::agent_setup,
         agents::agent_terminal,
         agents::open_external,
         about::about,
@@ -59,6 +76,7 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         lead::lead_attach,
         lead::lead_send,
         lead::lead_dispatch,
+        lead::lead_forward,
         lead::lead_stop,
         lead::lead_decide,
         lead::lead_wake,
@@ -71,6 +89,13 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         graph::graph_build,
         graph::graph_deep,
         graph::graph_settings,
+        dream::dream_list,
+        dream::dream_read,
+        dream::dream_graph,
+        dream::dream_add,
+        dream::dream_remove,
+        dream::dream_changes,
+        dream::dream_revert,
         images::image_read,
         images::image_open,
         schedule::schedule_list,

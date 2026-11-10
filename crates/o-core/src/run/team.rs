@@ -137,6 +137,10 @@ fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, k
     if !violations.is_empty() {
         return Err(Refused::Policy(violations));
     }
+    // Nobody reads "wiki" as an inbox (ADR-0041): a question or a reply sent there would wait for ever.
+    if to == crate::policy::WIKI_PARTY && !speaker.cards.iter().any(|card| card == to) && (kind != "message" || reply_to.is_some()) {
+        return Err(Refused::Io(io::Error::other("wiki에게는 질문이나 답장을 보낼 수 없습니다. 남길 내용만 메시지로 보내세요")));
+    }
     if key.is_some_and(|key| key.is_empty() || key.len() > 64 || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')) {
         return Err(Refused::Io(io::Error::other("메시지 키는 영문·숫자·-·_ 1~64자여야 합니다")));
     }
@@ -161,7 +165,7 @@ fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, k
                 return Err(io::Error::other("이미 답한 질문입니다. 기존 답변을 확인해 주세요"));
             }
         }
-        let mut event = json!({"t":"msg", "at":now_iso(), "id":id, "kind":kind, "from":speaker.me, "to":to, "text":text});
+        let mut event = json!({"t":"msg", "at":now_iso(), "from":speaker.me, "to":to, "text":text, "id":id, "kind":kind});
         if let Some(question_id) = reply_to { event["replyTo"] = json!(question_id); }
         append_value(file, &event)?;
         Ok(id)

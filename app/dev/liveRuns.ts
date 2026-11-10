@@ -116,7 +116,7 @@ function sameOrigin(req: IncomingMessage): boolean {
 }
 
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
-const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode|devin)\/(install|login)$/;
+const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode|devin)\/(install|login|setup)$/;
 
 /** A PR number or github.com pull address, as `o review` takes it (platform/backend PR_SELECTOR). */
 const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
@@ -136,8 +136,11 @@ const LEAD_PROVIDER = /^(claude|codex|agy)$/;
 const LEAD_EFFORT = /^(minimal|low|medium|high|xhigh|max)$/;
 const THREAD_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
 const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
+const PROPOSAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-f\d{1,4}$/;
 /** A waiting approval's id (`<threadId>-a<n>`, crates/o-core/src/lead/approvals.rs); `o lead decide` checks it again. */
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
+/** Terminal session ids as `o term` makes them (crates/o-core/src/term `is_session_id`); it checks them again. */
+const TERM_ID = /^t-\d{8}-\d{6}-[A-Za-z0-9]{4}$/;
 /** How long a lead model list is reused before the CLI is asked again (the Tauri `lead_models` keeps it as long). */
 const MODELS_TTL_MS = 10 * 60_000;
 const leadModels = new Map<string, { at: number; out: string }>();
@@ -301,6 +304,16 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
     }));
     return true;
   }
+  if (path === "/lead/forward") {
+    const proposal = query.get("proposal") ?? "";
+    if (!PROPOSAL_ID.test(proposal)) { fail(400, "요청 제안 id 형식이 아닙니다"); return true; }
+    run(o(["about", "--json"]).then((text) => {
+      const caps: unknown = JSON.parse(text).capabilities;
+      if (!Array.isArray(caps) || !caps.includes("overall-review-v1")) throw new Error("이 O CLI는 전체 총괄의 요청 전달을 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하세요");
+      return o(["lead", "forward", proposal]);
+    }));
+    return true;
+  }
   if (!projectOk) {
     fail(400, "프로젝트 폴더가 필요합니다");
     return true;
@@ -424,6 +437,50 @@ async function graph(req: IncomingMessage, res: ServerResponse, path: string, qu
   return false;
 }
 
+/** A document path as `o dream read` takes it: relative, Markdown, no climbing out, never read as an option; it checks the list again. */
+const DREAM_DOC = /^(?![\\/-])(?!.*(?:^|[\\/])\.\.(?:[\\/]|$))[^:*?"<>|\0]{1,400}\.md$/i;
+
+/** The Wiki and Dreaming tabs' twins of the Tauri dream_* commands (app/src-tauri/src/commands/dream.rs, ADR-0041). */
+function dream(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): boolean {
+  const fail = (status: number, message: string) => {
+    send(res, status, JSON.stringify({ error: message }));
+    return true;
+  };
+  const run = (work: Promise<string>) => {
+    void work.then((out) => send(res, 200, out), (e: Error) => fail(500, e.message));
+    return true;
+  };
+  if (req.method === "GET" && path === "/dream/changes") return run(o(["dream", "changes", "--json"]));
+  if (req.method === "POST" && path === "/dream/revert") {
+    return run(
+      body(req, 4096).then((input) => {
+        const { id, reverted } = JSON.parse(input.toString("utf8")) as { id?: unknown; reverted?: unknown };
+        if (typeof id !== "string" || !/^[0-9a-f]{16}$/.test(id)) throw new Error("변경 ID가 올바르지 않습니다");
+        return o(["dream", reverted === false ? "restore" : "revert", id]);
+      }),
+    );
+  }
+  if (req.method === "GET" && (path === "/dream/list" || path === "/dream/graph")) return run(o(["dream", path.slice("/dream/".length), "--json"]));
+  if (req.method === "GET" && path === "/dream/read") {
+    const document = query.get("path") ?? "";
+    return DREAM_DOC.test(document) ? run(o(["dream", "read", document, "--json"])) : fail(400, "문서 경로가 올바르지 않습니다");
+  }
+  if (req.method === "POST" && path === "/dream/add") {
+    // The material goes to `o dream add -` as sent: it checks every field itself.
+    return run(body(req, 8 * 1024 * 1024).then((input) => oWithInput(["dream", "add", "-"], input, 60_000), () => Promise.reject(new Error("자료가 너무 큽니다"))));
+  }
+  if (req.method === "POST" && path === "/dream/remove") {
+    return run(
+      body(req, 4096).then((input) => {
+        const document = (JSON.parse(input.toString("utf8")) as { path?: unknown }).path;
+        if (typeof document !== "string" || !DREAM_DOC.test(document)) throw new Error("문서 경로가 올바르지 않습니다");
+        return o(["dream", "remove", document]);
+      }),
+    );
+  }
+  return false;
+}
+
 /** A new project's folder name as `o projects new` takes it; it checks the name again. */
 const PROJECT_NAME = /^[^\\/:*?"<>|\0]{1,64}$/;
 
@@ -477,6 +534,50 @@ async function projects(req: IncomingMessage, res: ServerResponse, path: string,
 }
 
 /**
+ * The terminal sessions' twins of the Tauri term_* commands (app/src-tauri/src/commands/term.rs, ADR-0042).
+ * Only the read routes and resize are offered: a local process can forge Origin, so
+ * the dev server cannot tell a person from an agent (ADR-0042 구현 메모) — the
+ * human-only operations (open, write, paste, close, `agy` changes) live in the
+ * Tauri commands and `o` itself instead.
+ */
+export async function term(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
+  const fail = (status: number, message: string) => {
+    send(res, status, JSON.stringify({ error: message }));
+    return true;
+  };
+  const run = (p: Promise<string>) => {
+    void p.then((out) => send(res, 200, out || "{}"), (e: Error & { code?: number }) => fail(e.code === 2 ? 409 : 500, e.message));
+    return true;
+  };
+  const jsonBody = async () => {
+    try {
+      const data: unknown = JSON.parse((await body(req, 65_536)).toString("utf8"));
+      return data && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const idOf = (data: Record<string, unknown> | undefined): string | undefined => (typeof data?.id === "string" && TERM_ID.test(data.id) ? data.id : undefined);
+  if (req.method === "GET" && path === "/term") return run(o(["term", "list", "--json"]));
+  if (req.method === "GET" && path === "/term/read") {
+    const id = query.get("id") ?? "";
+    const offset = query.get("offset") ?? "";
+    if (!TERM_ID.test(id) || !/^\d{1,20}$/.test(offset)) return fail(400, "터미널 ID나 위치가 올바르지 않습니다");
+    return run(o(["term", "read", id, "--offset", offset, "--json"]));
+  }
+  if (req.method !== "POST") return false;
+  // Human-only mutations are deliberately absent (see the comment above `term`).
+  if (path === "/term/resize") {
+    const input = await jsonBody();
+    const id = idOf(input);
+    const dim = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 32767;
+    if (!id || !dim(input?.cols) || !dim(input?.rows)) return fail(400, "터미널 크기가 올바르지 않습니다");
+    return run(o(["term", "resize", id, String(input.cols), String(input.rows)]));
+  }
+  return false;
+}
+
+/**
  * Dev-server stand-in for the desktop shell (src/platform/backend, src/data/useLiveRuns.ts): runs, usage,
  * agent CLI status, the official install and sign-in, and About, each through `o`.
  */
@@ -502,13 +603,18 @@ export function liveRuns(): Plugin {
         if (req.method === "GET" && path === "/runs") return void o(["runs", "--json", ...withSessions]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/resources") return void o(["resources", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/resources/recover") {
-          const id = new URLSearchParams(req.url?.split("?")[1] ?? "").get("id") ?? "";
+          const params = new URLSearchParams(req.url?.split("?")[1] ?? "");
+          const id = params.get("id") ?? "";
           if (!/^[1-9][0-9]{0,18}$/.test(id)) return send(res, 400, JSON.stringify({ error: "예약 ID가 올바르지 않습니다" }));
-          return void o(["resources", "recover", id]).then(() => send(res, 200, JSON.stringify({ ok: true })), error(res));
+          const confirmed = params.get("confirmExited");
+          if (confirmed !== null && confirmed !== "1") return send(res, 400, JSON.stringify({ error: "종료 확인 값이 올바르지 않습니다" }));
+          return void o(["resources", "recover", id, ...(confirmed === "1" ? ["--confirm-exited"] : [])]).then(() => send(res, 200, JSON.stringify({ ok: true })), error(res));
         }
         if (req.method === "GET" && path === "/usage") return void o(["usage", "--cached", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/usage/refresh") {
-          refreshing ??= o(["usage", "--json"]).finally(() => (refreshing = undefined));
+          // Whose login to ask (`o usage --profile`); anything else leaves the choice to `o`.
+          const profile = new URLSearchParams(req.url?.split("?")[1] ?? "").get("profile") ?? "";
+          refreshing ??= o(["usage", "--json", ...(profile === "project-o" || profile === "own" ? ["--profile", profile] : [])]).finally(() => (refreshing = undefined));
           return void refreshing.then((out) => send(res, 200, out), error(res));
         }
         const query = new URLSearchParams(req.url?.split("?")[1] ?? "");
@@ -531,6 +637,25 @@ export function liveRuns(): Plugin {
           if (value !== "on" && value !== "off") return send(res, 400, JSON.stringify({ error: "하루 사용 예산은 on 또는 off입니다" }));
           return void o(["budget", "--json", "--cached", `--${value}`]).then((out) => send(res, 200, out), error(res));
         }
+        if (req.method === "GET" && path === "/ram") return void o(["ram", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/ram") {
+          // RAM 상한 (ADR-0037): `o ram --on|--off --percent <n>`; `o ram` checks the range again.
+          const args = ["ram", "--json"];
+          const enabled = query.get("enabled");
+          const percent = query.get("percent");
+          if (enabled !== null && enabled !== "on" && enabled !== "off") return send(res, 400, JSON.stringify({ error: "RAM 상한은 on 또는 off입니다" }));
+          if (percent !== null && !/^(5\d|[6-8]\d|9[0-5])$/.test(percent)) return send(res, 400, JSON.stringify({ error: "RAM 상한은 50~95 사이의 정수입니다" }));
+          if (enabled !== null) args.push(`--${enabled}`);
+          if (percent !== null) args.push("--percent", percent);
+          return void o(args).then((out) => send(res, 200, out), error(res));
+        }
+        if (req.method === "GET" && path === "/billing") return void o(["billing", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/billing") {
+          // API 과금 (ADR-0035 개정 1): `o billing --warn|--subscription`.
+          const mode = query.get("mode");
+          if (mode !== "warn" && mode !== "subscription") return send(res, 400, JSON.stringify({ error: "API 과금 설정은 warn 또는 subscription입니다" }));
+          return void o(["billing", "--json", `--${mode}`]).then((out) => send(res, 200, out), error(res));
+        }
           if (req.method === "GET" && path === "/yolo") return void o(["yolo", "--json"]).then((out) => send(res, 200, out), error(res));
           if (req.method === "POST" && path === "/yolo") {
             void (async () => {
@@ -550,6 +675,13 @@ export function liveRuns(): Plugin {
             })();
             return;
           }
+        // Antigravity state is read-only here: a local process can forge Origin, so the
+        // dev server cannot tell a person from an agent (ADR-0042 구현 메모). `o agy`
+        // changes run through the Tauri command or `o` itself.
+        if (req.method === "GET" && path === "/agy") return void o(["agy", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (path === "/term" || path?.startsWith("/term/")) {
+          return void term(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
+        }
         const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/agents/catalog") return void o(["agents", "list", "--all", "--json"]).then((out) => send(res, 200, out), error(res));
@@ -602,14 +734,16 @@ export function liveRuns(): Plugin {
         if (path?.startsWith("/graph/")) {
           return void graph(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
+        if (path?.startsWith("/dream/") && dream(req, res, path, query)) return;
         if (path?.startsWith("/lead/")) {
           return void lead(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
         const action = req.method === "POST" ? AGENT_ACTION.exec(path ?? "") : null;
         if (action) {
           const [, id, verb] = action;
-          const args = verb === "install" ? ["agents", "install", id, "--json"] : ["agents", "open-login", id, "--json", ...clean];
-          return void o(args, verb === "install" ? INSTALL_TIMEOUT_MS : 60_000).then((out) => send(res, 200, out), error(res));
+          const args = verb === "install" ? ["agents", "install", id, "--json"] : verb === "setup" ? ["agents", "setup", id, "--json"] : ["agents", "open-login", id, "--json", ...clean];
+          // The sandbox check (setup up to 5 minutes, then a probe card up to 2) needs as long as an install.
+          return void o(args, verb === "login" ? 60_000 : INSTALL_TIMEOUT_MS).then((out) => send(res, 200, out), error(res));
         }
         next();
       });

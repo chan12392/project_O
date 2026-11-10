@@ -90,7 +90,29 @@ pub fn spawn_detached(command: &mut Command) -> std::io::Result<Child> {
         use std::os::unix::process::CommandExt;
         command.process_group(0);
     }
-    command.spawn()
+    without_inherited_stdio(|| command.spawn())
+}
+
+#[cfg(not(windows))]
+fn without_inherited_stdio<T>(spawn: impl FnOnce() -> T) -> T { spawn() }
+
+/// Windows hands every inheritable handle to a new process, so a detached runner would keep this
+/// process's stdout pipe open and a caller reading `o dispatch`'s output would wait until the run
+/// ended. The standard handles stay out of `spawn` and get their flag back afterwards.
+#[cfg(windows)]
+fn without_inherited_stdio<T>(spawn: impl FnOnce() -> T) -> T {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Foundation::{GetHandleInformation, SetHandleInformation, HANDLE_FLAG_INHERIT};
+    let handles = [std::io::stdin().as_raw_handle(), std::io::stdout().as_raw_handle(), std::io::stderr().as_raw_handle()];
+    let cleared: Vec<_> = handles.into_iter().filter(|handle| !handle.is_null()).filter(|&handle| {
+        let mut flags = 0;
+        unsafe { GetHandleInformation(handle, &mut flags) != 0 && flags & HANDLE_FLAG_INHERIT != 0 && SetHandleInformation(handle, HANDLE_FLAG_INHERIT, 0) != 0 }
+    }).collect();
+    let result = spawn();
+    for handle in cleared {
+        unsafe { SetHandleInformation(handle, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) };
+    }
+    result
 }
 
 /// Windows holds a kill-on-close job; Linux only tracks the directly owned child.
@@ -99,6 +121,9 @@ pub struct KillOnClose {
     pub(crate) monitor: super::macos_worker::Monitor,
     #[cfg(windows)]
     pub(crate) job: windows_sys::Win32::Foundation::HANDLE,
+    /// The job's name, only when the worker is confirmed in that job (`win_launch::spawn_in_named_job`).
+    #[cfg(windows)]
+    pub(crate) job_name: Option<String>,
     #[cfg(target_os = "linux")]
     pid: u32,
     #[cfg(target_os = "linux")]
@@ -112,12 +137,22 @@ impl Drop for KillOnClose {
     fn drop(&mut self) {
         #[cfg(windows)]
         unsafe {
+            // A dead-runner watcher may hold another handle, so close alone no longer ends the tree.
+            windows_sys::Win32::System::JobObjects::TerminateJobObject(self.job, 1);
             windows_sys::Win32::Foundation::CloseHandle(self.job);
         }
     }
 }
 
 impl KillOnClose {
+    /// The name of the card's job, recorded with its resource lease (ADR-0039).
+    pub fn job_name(&self) -> Option<&str> {
+        #[cfg(windows)]
+        { self.job_name.as_deref() }
+        #[cfg(not(windows))]
+        { None }
+    }
+
     /// Stop the job and confirm that no processes remain before reusing resources.
     #[cfg(windows)]
     pub fn stop_and_confirm(&mut self) -> bool {
@@ -176,7 +211,7 @@ pub fn contain(child: &Child) -> Option<KillOnClose> {
             CloseHandle(job);
             return None;
         }
-        Some(KillOnClose { job })
+        Some(KillOnClose { job, job_name: None })
     }
 }
 
@@ -240,8 +275,25 @@ impl Drop for Contained {
 /// returns its exit status, stdout and stderr. A command still running at the
 /// deadline is ended with its tree.
 pub fn capture(command: &mut Command, timeout: Duration) -> Result<(ExitStatus, String, String), String> {
-    command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped());
+    capture_input(command, None, timeout)
+}
+
+/// What `capture` and `capture_input` return for a command still running at the deadline.
+pub const TIMED_OUT: &str = "실패 (시간 초과)";
+
+/// `capture` with `input` written to the command's stdin, which is then closed (`None`: no stdin).
+/// At the deadline the command's tree is ended (`kill_tree`, then its job closes).
+pub fn capture_input(command: &mut Command, input: Option<&str>, timeout: Duration) -> Result<(ExitStatus, String, String), String> {
+    command.stdin(if input.is_some() { Stdio::piped() } else { Stdio::null() }).stdout(Stdio::piped()).stderr(Stdio::piped());
     let mut probe = Contained::spawn(command).map_err(|e| format!("실행 실패: {e}"))?;
+    if let (Some(text), Some(mut stdin)) = (input, probe.child.stdin.take()) {
+        let text = text.to_string();
+        // A child that never reads must not hold this thread: the write is its own.
+        thread::spawn(move || {
+            use std::io::Write;
+            let _ = stdin.write_all(text.as_bytes());
+        });
+    }
     let drain = |pipe: Option<Box<dyn Read + Send>>| {
         thread::spawn(move || {
             let mut out = Vec::new();
@@ -259,7 +311,10 @@ pub fn capture(command: &mut Command, timeout: Duration) -> Result<(ExitStatus, 
         match probe.child.try_wait() {
             Ok(Some(status)) => break status,
             Ok(None) if Instant::now() < deadline => thread::sleep(Duration::from_millis(50)),
-            Ok(None) => return Err("실패 (시간 초과)".into()),
+            Ok(None) => {
+                kill_tree(probe.child.id());
+                return Err(TIMED_OUT.into());
+            }
             Err(e) => return Err(format!("실행 실패: {e}")),
         }
     };

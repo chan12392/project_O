@@ -2,8 +2,10 @@ import { Bot, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { updateSettings, useSettings } from "../../../data/settings.ts";
-import { BUDGET_PERCENTS, type AgentCatalogEntry, type Backend, type BudgetPercent, type BudgetReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
+import { BUDGET_PERCENTS, type AgentCatalogEntry, type AgyChange, type AgyReport, type Backend, type BudgetPercent, type BillingMode, type BillingReport, type BudgetReport, type RamChange, type RamReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SubHeading, Switch } from "../../../ui/controls.tsx";
+import { TERM_DESKTOP_ONLY } from "../../../../../src/core/terminal.ts";
+import { ExternalAnchor } from "../../../ui/ExternalAnchor.tsx";
 import { AgentList, useAgents } from "../AgentSetup.tsx";
 import { Path, Rows, Section, type SettingsSectionDef } from "../Section.tsx";
 
@@ -17,6 +19,7 @@ export const AGENTS_SECTION = {
 function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agentsHome?: string; onOnboarding: () => void }) {
   const settings = useSettings();
   const agents = useAgents(api, settings.clean);
+  const billing = useBilling(api);
   return (
     <Section title="에이전트" description="작업카드를 맡을 공식 CLI의 설치·연결 상태와 실행 프로필입니다.">
       <Rows>
@@ -25,7 +28,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           label="project_O 프로필 사용"
           description={
             <>
-              켜면 작업카드와 총괄을 Project O의 깨끗한 에이전트 프로필로 실행합니다(개인 훅·전역 지침·스킬·플러그인·MCP·메모리 없음). 끄면 이 PC의 평소 CLI 설정 그대로 실행합니다. 이전 작업 컨텍스트 공유와 보안 규칙은 어느 쪽이든 같습니다. 아래 에이전트 CLI의 설치·로그인 확인과 연결도 이 선택의 프로필로 합니다.
+              켜면 작업카드와 총괄을 Project O의 깨끗한 에이전트 프로필로 실행합니다(개인 훅·전역 지침·스킬·플러그인·MCP·메모리 없음). 끄면 이 PC의 평소 CLI 설정 그대로 실행합니다. Antigravity 터미널 카드와 Devin 카드는 어느 쪽이든 평소 설정으로 실행됩니다. 이전 작업 컨텍스트 공유와 보안 규칙은 어느 쪽이든 같습니다. 아래 에이전트 CLI의 설치·로그인 확인과 연결도 이 선택의 프로필로 합니다.
               <span className="mt-1 block text-2xs">
                 프로필에 개인 설정이 섞였는지 검사하는 기능은 아직 앱에 없습니다. 개발자는 터미널의{" "}
                 <code className="rounded bg-muted px-1 py-0.5 font-mono text-2xs text-foreground">o agents doctor</code>로 볼 수 있습니다.
@@ -46,7 +49,10 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           control={null}
         />
         <BudgetRows api={api} />
+        <RamRows api={api} />
+        <BillingRow billing={billing} />
         <YoloRows api={api} />
+        <AgyRows api={api} />
       </Rows>
       <div>
         <div className="flex items-end justify-between gap-3">
@@ -62,7 +68,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
           </div>
         </div>
         <div className="mt-3">
-          <AgentList state={agents} showApiKeyWarning />
+          <AgentList state={agents} showApiKeyWarning billingMode={billing.report?.mode} />
         </div>
       </div>
       <AgentCatalog api={api} />
@@ -107,6 +113,188 @@ function AgentCatalog({ api }: { api: Backend }) {
       {entry.installUrl && <button type="button" className={BUTTON_SECONDARY} onClick={() => void api.openExternal(entry.installUrl!)}>공식 설치 안내</button>}
     </li>)}</ul>}
   </div>;
+}
+
+const RAM_PERCENTS = [50, 60, 70, 80, 90] as const;
+
+/**
+ * RAM 상한 (ADR-0037): kept in O's settings.json like the budget, because the runner reads it
+ * when a card is about to start. A saved percent outside the buttons (`o ram --percent 75`) shows unselected.
+ */
+function RamRows({ api }: { api: Backend }) {
+  const [report, setReport] = useState<RamReport>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void api.ram().then(setReport, (e) => setError(`지금 값을 읽지 못했습니다: ${String(e)}`)); }, [api]);
+  const save = async (change: RamChange) => {
+    setBusy(true);
+    try { setReport(await api.setRam(change)); setError(""); }
+    catch (e) { setError(`저장하지 못했습니다: ${String(e)}`); }
+    finally { setBusy(false); }
+  };
+  const used = report?.used == null ? "이 PC에서는 사용률을 읽지 못해 상한이 적용되지 않습니다." : `지금 사용률 ${report.used}%.`;
+  return <>
+    <SettingsRow id="ram-label" label="RAM 상한" description={<>
+      {report?.enabled === false
+        ? "꺼져 있습니다. 메모리 사용률과 관계없이 동시 실행 상한까지 작업카드를 시작합니다."
+        : `메모리 사용률이 ${report?.percent ?? 70}% 이상이면 새 작업카드를 시작하지 않고 차례를 기다리게 합니다. 실행 중인 카드가 하나도 없으면 시작하고, 이미 실행 중인 카드는 끝내지 않습니다.`}{" "}
+      {report && used}
+      {error && <span role="alert" className="block text-destructive">{error}</span>}
+    </>} control={<Switch checked={report?.enabled ?? true} disabled={!report || busy} labelledBy="ram-label" onChange={(enabled) => void save({ enabled })} />} />
+    <SettingsRow label="RAM 상한 비율" description="작업카드를 더 시작하지 않는 메모리 사용률입니다." control={
+      <Segmented
+        label="RAM 상한 비율"
+        value={String(report?.percent ?? "")}
+        disabled={report?.enabled === false}
+        onChange={!report || busy || !report.enabled ? undefined : (value) => void save({ percent: Number(value) })}
+        options={RAM_PERCENTS.map((p) => ({ value: String(p), label: `${p}%` }))}
+      />
+    } />
+  </>;
+}
+
+/**
+ * API 과금 (ADR-0035 개정 1): kept in O's settings.json, because the runner, the lead and reviews
+ * read it before they start a CLI. Held here so the agent list's API-key warning follows the mode.
+ */
+function useBilling(api: Backend) {
+  const [report, setReport] = useState<BillingReport>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  useEffect(() => { void api.billing().then(setReport, (e) => setError(`지금 값을 읽지 못했습니다: ${String(e)}`)); }, [api]);
+  const save = async (mode: BillingMode) => {
+    setBusy(true);
+    try { setReport(await api.setBilling(mode)); setError(""); }
+    catch (e) { setError(`저장하지 못했습니다: ${String(e)}`); }
+    finally { setBusy(false); }
+  };
+  return { report, error, busy, save };
+}
+
+/**
+ * Antigravity (ADR-0042): the terminal lead is always on — the person talks in its official
+ * terminal themselves. Cards through O's worker paste count as third-party handling, so the
+ * switch stays off until the policy acknowledgement is ticked; `o agy` enforces the same.
+ */
+function AgyRows({ api }: { api: Backend }) {
+  const [report, setReport] = useState<AgyReport>();
+  const [error, setError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [ack, setAck] = useState(false);
+  useEffect(() => {
+    void api.agyGet().then(setReport, (e) => setError(`읽지 못했습니다: ${e instanceof Error ? e.message : String(e)}`));
+  }, [api]);
+  const save = async (change: AgyChange) => {
+    setBusy(true);
+    try {
+      setReport(await api.agySet(change));
+      setError("");
+      if (change.workers === true) setAck(false);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  const notice = report?.notice;
+  if (!api.canDriveTerminals) {
+    // The dev server does not offer `o agy` changes (ADR-0042): show the state read-only.
+    return (
+      <>
+        <SettingsRow label="Antigravity" description="총괄: 터미널에서 직접 대화 (항상 가능)" control={null} />
+        <SettingsRow
+          label="작업 에이전트로 사용"
+          description={
+            <>
+              {TERM_DESKTOP_ONLY}
+              {report && (
+                <span className="mt-1 block text-2xs text-muted-foreground">
+                  현재: 작업 에이전트 {report.workers ? "사용" : "사용 안 함"} · 붙여넣기 전에 확인 {report.confirmPaste ? "켜짐" : "꺼짐"}
+                </span>
+              )}
+              {error && (
+                <span role="alert" className="mt-1 block text-destructive">
+                  {error}
+                </span>
+              )}
+            </>
+          }
+          control={null}
+        />
+      </>
+    );
+  }
+  return (
+    <>
+      <SettingsRow label="Antigravity" description="총괄: 터미널에서 직접 대화 (항상 가능)" control={null} />
+      <SettingsRow
+        id="agy-workers-label"
+        label="작업 에이전트로 사용"
+        description={
+          <>
+            켜면 계획이 Antigravity 작업카드를 만들 수 있습니다. "붙여넣기 전에 확인"이 켜져 있으면 작업 내용을 터미널에 붙여넣을 때마다 사람이 승인하고, 꺼져 있으면 터미널이 준비되면 O가 한 번 자동으로 붙여넣습니다. 끄면 카드를 만들지 않습니다.
+            {!report?.workers && (
+              <span className="mt-2 flex items-start gap-2">
+                <input id="agy-ack" type="checkbox" checked={ack} disabled={!report || busy} onChange={(e) => setAck(e.target.checked)} className="mt-0.5 accent-primary" />
+                <label htmlFor="agy-ack" className="text-foreground">
+                  정책과 약관을 읽었고 내 계정으로 사용하는 것에 동의합니다
+                </label>
+              </span>
+            )}
+            {notice && (
+              <span className="mt-2 block rounded-md border px-3 py-2.5 text-xs">
+                {notice.quotes.map((quote, i) => (
+                  <span key={i} className="block italic text-muted-foreground">
+                    “{quote}”
+                  </span>
+                ))}
+                <span className="mt-1.5 flex flex-wrap gap-3">
+                  {notice.links.map((link) => (
+                    <ExternalAnchor key={link.url} href={link.url} className="underline focus-ring">
+                      {link.label}
+                    </ExternalAnchor>
+                  ))}
+                </span>
+                <span className="mt-1.5 block text-status-warning-text">{notice.warning}</span>
+              </span>
+            )}
+            {report?.workers && report.acknowledgedAt && <span className="mt-1.5 block text-2xs text-muted-foreground">동의한 시각: {report.acknowledgedAt}</span>}
+            {error && (
+              <span role="alert" className="mt-1 block text-destructive">
+                {error}
+              </span>
+            )}
+          </>
+        }
+        control={<Switch checked={report?.workers ?? false} disabled={!report || busy || (!report.workers && !ack)} labelledBy="agy-workers-label" onChange={(workers) => void save(workers ? { workers: true, ack: true } : { workers: false })} />}
+      />
+      {report?.workers && (
+        <SettingsRow
+          id="agy-paste-label"
+          label="붙여넣기 전에 확인"
+          description="켜면 작업 내용을 Antigravity 터미널에 붙여넣기 전에 한 번씩 사람이 승인합니다. 끄면 터미널이 준비되면 O가 한 번 자동으로 붙여넣습니다."
+          control={<Switch checked={report.confirmPaste} disabled={busy} labelledBy="agy-paste-label" onChange={(confirmPaste) => void save({ confirmPaste })} />}
+        />
+      )}
+    </>
+  );
+}
+
+function BillingRow({ billing: { report, error, busy, save } }: { billing: ReturnType<typeof useBilling> }) {
+  return <SettingsRow label="API 과금" description={<>
+    {report?.mode === "subscription"
+      ? "구독만: 그 CLI가 쓰는 API 키 환경변수가 있으면 작업카드·총괄·검토를 시작하지 않고 변수 이름을 알려 줍니다."
+      : "경고만: API 키 환경변수가 있어도 그대로 전달하고 경고만 표시합니다. 구독 대신 API 요금이 나갈 수 있습니다."}{" "}
+    O는 변수를 지우거나 값을 읽지 않습니다.
+    {error && <span role="alert" className="block text-destructive">{error}</span>}
+  </>} control={
+    <Segmented
+      label="API 과금"
+      value={report?.mode ?? ""}
+      onChange={!report || busy ? undefined : (mode) => { if (mode !== report.mode) void save(mode as BillingMode); }}
+      options={[{ value: "warn", label: "경고만" }, { value: "subscription", label: "구독만" }]}
+    />
+  } />;
 }
 
 function YoloRows({ api }: { api: Backend }) {

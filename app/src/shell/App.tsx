@@ -17,10 +17,11 @@ import {
   type Project,
 } from "../data/projects.ts";
 import { rememberedThread, rememberThread } from "../data/leadThreads.ts";
-import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow } from "../data/settings.ts";
+import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow, useSettings } from "../data/settings.ts";
 import { useLead } from "../data/useLead.ts";
 import { useRunSource } from "../data/useLiveRuns.ts";
 import { readParams, writeParam, type PanelView, type ScreenState } from "../data/useRun.ts";
+import { sessionForThread } from "../../../src/core/terminal.ts";
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadTabs } from "../features/chat/LeadTabs.tsx";
@@ -28,7 +29,9 @@ import { LeadThread } from "../features/chat/LeadThread.tsx";
 import { LeadApprovalCard, useApprovalAlert } from "../features/chat/LeadApprovalCard.tsx";
 import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
-import { GraphScreen } from "../features/graph/GraphScreen.tsx";
+import { DreamingScreen } from "../features/dreaming/DreamingScreen.tsx";
+import { LeadTerminal } from "../features/terminal/LeadTerminal.tsx";
+import { useTermSessions } from "../features/terminal/useTermSessions.ts";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
 import { NewRequest } from "../features/projects/NewRequest.tsx";
@@ -58,7 +61,7 @@ const initial = readParams();
 /** The machine side (agents, about): the recorded demo answers with fixed data. */
 const api = backend(!window.__TAURI_INTERNALS__ && new URLSearchParams(window.location.search).get("source") === "demo");
 
-type Screen = "app" | "onboarding" | "settings" | "nextup" | "new" | "search" | "dashboard" | "automation" | "wiki" | "graph";
+type Screen = "app" | "onboarding" | "settings" | "nextup" | "new" | "search" | "dashboard" | "automation" | "dreaming";
 
 export function App() {
   return initial.popout ? <PopoutPanel /> : <MainWindow />;
@@ -176,6 +179,16 @@ function MainWindow() {
     : undefined;
   const lead = useLead(api, project?.path, leadThread, leadEnabled);
   useApprovalAlert(lead, api);
+  const settings = useSettings();
+  // Terminal leads (ADR-0042): the thread's running session plus each tab's "Antigravity · 터미널" pick.
+  const { sessions: termSessions, refresh: refreshTerms } = useTermSessions(api, leadEnabled && Boolean(project?.path));
+  const [terminalPicks, setTerminalPicks] = useState<Readonly<Record<string, boolean>>>({});
+  const leadTermSession = sessionForThread(termSessions, lead.selected);
+  const terminalOn = Boolean(project?.path && lead.selected && (terminalPicks[lead.selected] ?? (leadTermSession !== undefined || settings.leadAgent === "agy")));
+  const setTerminalOn = (on: boolean) => {
+    const thread = lead.selected;
+    if (thread) setTerminalPicks((p) => ({ ...p, [thread]: on }));
+  };
   // A picked tab that closed (or a backend that fell back to the project's current thread) makes
   // the answer's thread the pick; the correction then lands in selection, memory and URL at once.
   useEffect(() => {
@@ -373,8 +386,7 @@ function MainWindow() {
           onSearch={() => setScreen("search")}
           onDashboard={() => setScreen("dashboard")}
           onAutomation={() => setScreen("automation")}
-          onWiki={() => setScreen("wiki")}
-          onGraph={() => setScreen("graph")}
+          onDreaming={() => setScreen("dreaming")}
           currentScreen={screen}
           onListed={openProject}
           onUnregister={(path) => void unregister(path)}
@@ -393,8 +405,7 @@ function MainWindow() {
         />
       </div>
       {screen === "onboarding" && <Onboarding api={api} onDone={finishOnboarding} onSettings={() => openSettings("agents")} />}
-      {screen === "wiki" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">WIKI</header><p className="p-5 text-sm text-muted-foreground">위키는 준비 중입니다.</p></section>}
-      {screen === "graph" && <GraphScreen api={api} projects={projects} current={project?.path} />}
+      {screen === "dreaming" && <DreamingScreen api={api} projects={projects} current={project?.path} />}
       {screen === "automation" && <Automation api={api} projects={projects} current={project?.path} />}
       {screen === "dashboard" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">대시보드</header><div className="mx-auto max-w-5xl p-5"><WorkDashboard runs={views} now={now} global onCard={(run, card) => { setScreen("app"); openCard(run, card); }} /></div></section>}
       {screen === "search" && <section className="min-h-0 min-w-0 overflow-auto bg-chat-canvas"><header className="border-b bg-tab-bar px-4 py-2 text-sm font-medium">검색</header><div className="mx-auto max-w-3xl space-y-4 p-5"><input autoFocus aria-label="프로젝트와 작업 검색" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="프로젝트 또는 작업 검색" className="w-full rounded-md border bg-background px-3 py-2 text-sm focus-ring" />{query.trim() && <><h2 className="text-xs font-semibold text-muted-foreground">프로젝트</h2>{projects.filter((p) => `${p.name} ${p.path}`.toLowerCase().includes(query.toLowerCase())).map((p) => <button key={p.path} type="button" onClick={() => openProject(p.path)} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{p.name}<span className="ml-2 text-xs text-muted-foreground">{p.path}</span></button>)}<h2 className="text-xs font-semibold text-muted-foreground">작업</h2>{views.flatMap((run) => run.cards.filter((card) => `${run.title} ${card.label} ${card.activity}`.toLowerCase().includes(query.toLowerCase())).map((card) => <button key={`${run.runId}/${card.id}`} type="button" onClick={() => { setScreen("app"); openCard(run.runId, card.id); }} className="block w-full rounded-md px-2 py-2 text-left text-sm hover:bg-accent focus-ring">{card.label}<span className="ml-2 text-xs text-muted-foreground">{run.title}</span></button>))}</>}</div></section>}
@@ -473,7 +484,21 @@ function MainWindow() {
               }}
             />
           )}
-          {live && state !== "error" ? (
+          {terminalOn && project?.path && lead.selected ? (
+            <div key={project.path} className="bloom flex min-h-0 flex-1 flex-col">
+              <LeadTerminal
+                api={api}
+                project={project.path}
+                thread={lead.selected}
+                lead={lead}
+                session={leadTermSession}
+                sessionsReady={termSessions !== undefined}
+                runs={runViews}
+                onOpenCard={openCard}
+                refresh={refreshTerms}
+              />
+            </div>
+          ) : live && state !== "error" ? (
             <div key={project?.path ?? "none"} className="bloom flex min-h-0 flex-1 flex-col">
               <LeadThread
                 project={project?.path}
@@ -502,7 +527,7 @@ function MainWindow() {
             </div>
           )}
           {live && state !== "error" && <div className="shrink-0 bg-chat-canvas px-6"><LeadApprovalCard lead={lead} api={api} /></div>}
-          <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
+          <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} terminal={terminalOn} onTerminal={setTerminalOn} onAgents={() => setScreen("onboarding")} />
         </section>
         )}
         {showPanel && (

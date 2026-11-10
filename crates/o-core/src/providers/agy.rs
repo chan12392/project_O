@@ -30,6 +30,10 @@ const USAGE: [&str; 6] = ["-p", "/usage", "--output-format", "json", "--print-ti
 const LEAD_DENY: [&str; 5] = ["write_file(*)", "command(*)", "mcp(*)", "read_url(*)", "execute_url(*)"];
 
 impl Provider for Agy {
+    fn terminal_card(&self) -> bool { true }
+
+    fn daily_budget(&self) -> bool { false }
+
     fn launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         // agy allow-rules match whole commands only, so it gets two fixed ones and
         // writes what it sends to its outbox file first (see `o msg post`).
@@ -182,7 +186,7 @@ impl Provider for Agy {
         }
     }
 
-    fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
+    fn usage_windows(&self, _profile_root: Option<&Path>) -> Option<Result<Vec<UsageWindow>, String>> {
         Some(Err(crate::policy::AGY_UNAVAILABLE.into()))
     }
 }

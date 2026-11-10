@@ -8,17 +8,44 @@ use std::thread;
 
 use serde_json::Value;
 
+use crate::agents::clean;
 use crate::providers;
+use crate::run::mode::Profile;
 use crate::run::plan::ProviderId;
 use crate::run::store::to_pretty;
 use crate::sys::js::now_iso;
 use crate::usage::{Unavailable, UsageReading};
 
+/// The profile the saved reading was taken in, when it says.
+pub fn saved_profile(home: &Path) -> Option<Profile> {
+    load_usage(home).ok().flatten().and_then(|v| v.get("profile").and_then(Value::as_str).and_then(Profile::parse))
+}
+
+/// A reading in the profile `asked` for: the login whose subscription a run in that profile
+/// spends. Not told, it is the profile the last reading was taken in; with none on record, the
+/// project_O profile runs use unless told otherwise, and the person's own setup when that
+/// profile answers nothing (nobody signed in there).
+pub fn read_usage(home: &Path, asked: Option<Profile>) -> UsageReading {
+    if let Some(profile) = asked.or_else(|| saved_profile(home)) {
+        return read_in(profile);
+    }
+    let reading = read_in(Profile::ProjectO);
+    if reading.windows.is_empty() {
+        let own = read_in(Profile::Own);
+        if !own.windows.is_empty() {
+            return own;
+        }
+    }
+    reading
+}
+
 /// Every probe at once; windows and failures keep the provider order (codex, agy).
-pub fn read_usage() -> UsageReading {
-    let mut reading = UsageReading { at: now_iso(), windows: Vec::new(), unavailable: Vec::new() };
+fn read_in(profile: Profile) -> UsageReading {
+    let mut reading = UsageReading { at: now_iso(), profile: Some(profile), windows: Vec::new(), unavailable: Vec::new() };
+    let root = profile.is_clean().then(clean::default_root);
+    let root = root.as_deref();
     let outcomes: Vec<_> = thread::scope(|s| {
-        let probes: Vec<_> = ProviderId::ALL.into_iter().map(|p| (p, s.spawn(move || providers::get(p).usage_windows()))).collect();
+        let probes: Vec<_> = ProviderId::ALL.into_iter().map(|p| (p, s.spawn(move || providers::get(p).usage_windows(root)))).collect();
         probes.into_iter().map(|(provider, probe)| (provider, probe.join())).collect()
     });
     for (provider, outcome) in outcomes {

@@ -23,7 +23,7 @@ use crate::rules::{
 };
 
 /// Keep in sync with .github/workflows/branch-flow.yml.
-pub const PERSONAL_BRANCHES: [&str; 3] = ["younchan", "yongwoo", "eunmi"];
+pub const PERSONAL_BRANCHES: [&str; 4] = ["younchan", "yongwoo", "eunmi", "yeeun"];
 
 /// The free integration branch: anyone may merge PRs into it.
 const FREE_MERGE_BRANCH: &str = "test_2";
@@ -41,7 +41,8 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
-static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|review|_review|lead\s+(?:send|dispatch|forward|decide|stop-all|stop))\b"#).unwrap());
+static AGENT_CONFIRMED_RECOVERY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+resources\s+recover\s+[^\r\n;&|]*--confirm-exited\b"#).unwrap());
 static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
@@ -125,7 +126,7 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
 
     if matches!(tool, "Bash" | "shell" | "PowerShell") {
         let command = string_of(args.get("command"));
-        if (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) && AGENT_DISPATCH.is_match(&command) {
+        if (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) && (AGENT_DISPATCH.is_match(&command) || AGENT_CONFIRMED_RECOVERY.is_match(&command)) {
             reasons.push("에이전트 안에서는 작업을 시작할 수 없습니다. 사용자가 실행해 주세요".into());
         }
         reasons.extend(find_hits(&command, code_rules()).into_iter().map(|hit| hit.reason.to_string()));
@@ -779,6 +780,7 @@ mod tests {
     fn agent_cannot_stop_leads() {
         assert!(AGENT_DISPATCH.is_match("o lead stop"));
         assert!(AGENT_DISPATCH.is_match("o lead stop-all"));
+        assert!(AGENT_DISPATCH.is_match("o lead forward 20261109-x-f1"));
         assert!(!AGENT_DISPATCH.is_match("o lead status"));
         assert!(AGENT_DISPATCH.is_match("o _lead-forward 20261107-x 0"));
     }

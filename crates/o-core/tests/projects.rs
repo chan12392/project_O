@@ -112,6 +112,37 @@ fn registering_normalizes_dedupes_and_never_touches_the_folder() {
     assert!(projects::remove(&f.home, &f.user, &spelled).unwrap_err().contains("등록된 폴더가 아닙니다"));
 }
 
+/// The app, the preview window and `o` share one list: changes made at the same moment all stay.
+#[test]
+fn changes_made_at_the_same_moment_are_all_kept() {
+    let f = fixture("together");
+    let folders: Vec<PathBuf> = (0..12).map(|i| f.base.join("elsewhere").join(format!("p{i:02}"))).collect();
+    for folder in &folders { fs::create_dir_all(folder).unwrap(); }
+    let other = f.base.join("another-root");
+    std::thread::scope(|s| {
+        for folder in &folders {
+            s.spawn(|| projects::add(&f.home, &f.user, &folder.to_string_lossy()).unwrap());
+        }
+        s.spawn(|| projects::set_root(&f.home, &f.user, Some(&other.to_string_lossy())).unwrap());
+    });
+    let listing = projects::list(&f.home, &f.user).unwrap();
+    let mut registered = names(&listing, Kind::Registered);
+    registered.sort_unstable();
+    assert_eq!(registered, (0..12).map(|i| format!("p{i:02}")).collect::<Vec<_>>());
+    assert_eq!(listing.root, slashes(&other));
+    // Taking some off while others go on loses neither.
+    std::thread::scope(|s| {
+        for folder in &folders[..6] {
+            s.spawn(|| projects::remove(&f.home, &f.user, &folder.to_string_lossy()).unwrap());
+        }
+        s.spawn(|| projects::set_root(&f.home, &f.user, None).unwrap());
+    });
+    let listing = projects::list(&f.home, &f.user).unwrap();
+    assert_eq!(names(&listing, Kind::Registered).len(), 6);
+    assert_eq!(listing.root, slashes(&default_root(&f.user)));
+    fs::remove_dir_all(&f.base).unwrap();
+}
+
 #[test]
 fn registering_refuses_what_a_card_project_may_not_be() {
     let f = fixture("refuse");

@@ -1,9 +1,10 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
 import type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
 import type { ListedProject, ProjectCheck, ProjectList } from "../../../../src/core/projects.ts";
+import type { TermChunk, TermSession } from "../../../../src/core/terminal.ts";
 import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
-export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
+export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList, TermChunk, TermSession };
 
 export type AgentId = "claude" | "codex" | "agy" | "opencode" | "devin";
 
@@ -45,6 +46,8 @@ export interface AgentStatus {
   canInstall: boolean;
   installUrl: string;
   profileUnsupported?: string;
+  /** With the project_O profile: why its cards cannot work until a setup and a passing check (Codex's Windows sandbox, ADR-0040 개정 1). */
+  profileNotReady?: string;
   /** Names of present API authentication environment variables, never their values. */
   apiKeyEnv?: string[];
 }
@@ -158,6 +161,9 @@ export interface ResourceLease {
   workerStarted: string | null;
   spawnIntent: boolean | null;
   exitConfirmed: boolean | null;
+  processesExited: boolean;
+  /** The card's named kill-on-close job (Windows, ADR-0039); absent or null for older leases. */
+  jobName?: string | null;
   state: "recoverable" | "unknown";
 }
 
@@ -168,8 +174,14 @@ export type WorkspaceChanges = { workspace: string; note: string; baselineRunId?
 
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
+  /**
+   * Whether this backend can run the human-only terminal and `o agy` operations
+   * (ADR-0042): the Tauri commands and the demo can; the dev server cannot — a
+   * local process can forge Origin, so it cannot tell a person from an agent.
+   */
+  canDriveTerminals: boolean;
   resources(): Promise<ResourceLease[]>;
-  recoverResource(id: string): Promise<void>;
+  recoverResource(id: string, confirmExited?: boolean): Promise<void>;
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
   changes(run: string, card: string): Promise<WorkspaceChanges>;
   /** The person's answer to a card's question, sent as the lead on the run's team channel (`o msg send --as lead`). */
@@ -183,6 +195,8 @@ export interface Backend {
   install(id: AgentId): Promise<ActionResult>;
   /** Opens the official sign-in for one CLI (a console window and/or the browser). */
   login(id: AgentId, clean: boolean): Promise<ActionResult>;
+  /** Sets up the project_O profile with no window and checks it with one real card-like command (Codex's Windows sandbox; one small model call; `o agents setup`, ADR-0040 개정 1). Takes minutes at most. */
+  setup(id: AgentId): Promise<ActionResult>;
   openTerminal(): Promise<ActionResult>;
   /** Opens a web page in the person's browser. */
   openExternal(url: string): Promise<void>;
@@ -217,6 +231,14 @@ export interface Backend {
   setBudgetPercent(percent: BudgetPercent): Promise<BudgetReport>;
   /** Turns the daily budget on or off (`o budget --on|--off`) and returns the new report. */
   setBudgetEnabled(enabled: boolean): Promise<BudgetReport>;
+  /** The RAM cap on card starts (`o ram --json`, ADR-0037). */
+  ram(): Promise<RamReport>;
+  /** Saves the RAM cap's switch and/or percent (50–95) and returns the new report. */
+  setRam(change: RamChange): Promise<RamReport>;
+  /** Whether a CLI auth variable only warns or keeps cards, leads and reviews from starting (`o billing --json`, ADR-0035 개정 1). */
+  billing(): Promise<BillingReport>;
+  /** Saves the API billing mode (`o billing --warn|--subscription`) and returns the new report. */
+  setBilling(mode: BillingMode): Promise<BillingReport>;
   yolo(): Promise<YoloReport>;
   setYolo(change: YoloChange): Promise<YoloReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
@@ -239,6 +261,8 @@ export interface Backend {
   leadSend(request: LeadSendRequest): Promise<{ threadId: string | null; events: LeadEvent[] }>;
   /** Runs a proposed plan after the policy check; rejects with the policy's reasons when refused. */
   leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
+  /** The person sends the overall lead's proposed requests on to project leads (`o lead forward`, ADR-0036). */
+  leadForward(proposalId: string): Promise<{ events: LeadEvent[] }>;
   /** The person's 허용/거부 for one action the lead waits on (`o lead decide`); only the person's click, never chat text. */
   leadDecide(id: string, allow: boolean): Promise<{ id: string; decision: "allow" | "deny" }>;
   /** Stops one lead thread while it answers (`thread`), or the project's open threads without one. */
@@ -249,6 +273,26 @@ export interface Backend {
   leadStopAll(project: string): Promise<{ stopped: number }>;
   /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
   leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
+
+  // Terminal agents (ADR-0042): `o agy` consent and `o term` sessions.
+  // The screen shows the terminal's raw output; it never re-renders it as chat.
+
+  /** Antigravity worker consent and the always-shown policy notice (`o agy --json`). */
+  agyGet(): Promise<AgyReport>;
+  /** One consent change (`o agy --workers on --ack …`); enabling workers without `ack` rejects. */
+  agySet(change: AgyChange): Promise<AgyReport>;
+  /** Opens a lead terminal for `provider` in `project` (and `thread`); the person types in it (`o term open`). */
+  termOpen(request: TermOpenRequest): Promise<TermSession>;
+  /** Every terminal session the host knows (`o term list --json`). */
+  termList(): Promise<TermSession[]>;
+  /** The output bytes since `offset`; `start` is where the buffer now begins (`o term read`). */
+  termRead(id: string, offset: number): Promise<TermChunk>;
+  /** Writes the person's keystrokes, base64-encoded, to a session (`o term write ID -`). */
+  termWrite(id: string, dataBase64: string): Promise<void>;
+  termResize(id: string, cols: number, rows: number): Promise<void>;
+  /** Approves a card task paste the session is holding (`state` "awaiting-paste"). */
+  termPaste(id: string): Promise<void>;
+  termClose(id: string): Promise<void>;
 
   // The Graph tab (ADR-0033). `graphDeep` spends the person's subscription once, only after a click.
 
@@ -266,6 +310,23 @@ export interface Backend {
   graphDeep(project: string, provider?: "codex" | "claude", model?: string): Promise<GraphDeepResult>;
   /** `o graph settings`: read (no `change`) or save the Graph tab's settings. */
   graphSettings(change?: Partial<GraphSettings>): Promise<GraphSettings>;
+
+  // The Wiki and Dreaming tabs (ADR-0041): materials a person put in and a record per finished card. Local, no LLM.
+
+  /** `o dream list`: every Dreaming document with its title. */
+  dreamList(): Promise<DreamList>;
+  /** `o dream read`: one listed document's text and what it is wired to, both ways. */
+  dreamRead(path: string): Promise<DreamPage>;
+  /** `o dream graph`: the documents as one graph, for the Dreaming tab. */
+  dreamGraph(): Promise<DreamGraph>;
+  /** `o dream add`: puts a material in — pasted or file text, or a web address fetched once. */
+  dreamAdd(input: DreamInput): Promise<DreamDoc>;
+  /** `o dream remove`: takes one material out. Records cannot be removed. */
+  dreamRemove(path: string): Promise<void>;
+  /** `o dream changes`: the lines Dreaming added to card prompts from repeated failures (ADR-0041 개정 1), latest failure first. */
+  dreamChanges(): Promise<DreamChange[]>;
+  /** `o dream revert|restore`: takes one change back, or lets it apply again. */
+  dreamRevert(id: string, reverted: boolean): Promise<DreamChange>;
 
   // The project list (ADR-0009). Nothing here deletes a folder; refusals reject with the reason.
 
@@ -298,6 +359,20 @@ export interface ScheduleRequest {
 }
 export type ScheduleJob = ScheduleRequest & { id: string; enabled: boolean; last?: { at: string; ok: boolean; error?: string } };
 
+export interface RamReport {
+  enabled: boolean;
+  percent: number;
+  /** This machine's used memory now; null where O cannot read it (the cap then does nothing). */
+  used: number | null;
+}
+export type RamChange = { enabled?: boolean; percent?: number };
+
+/** `warn` passes CLI auth variables and only warns; `subscription` refuses to start while one is set (ADR-0035 개정 1). */
+export type BillingMode = "warn" | "subscription";
+export interface BillingReport {
+  mode: BillingMode;
+}
+
 export interface YoloReport {
   enabled: boolean;
   budgetEnabled: boolean;
@@ -325,6 +400,34 @@ export interface LeadDispatched {
   events: string;
   cards: string[];
   clean: boolean;
+  /** What the plan check wants said but does not block on (`o dispatch --json`; absent in older answers). */
+  notices?: string[];
+}
+
+/** Antigravity worker consent as `o agy --json` reports it; `notice` is always shown with the switch (ADR-0042 §6). */
+export interface AgyReport {
+  workers: boolean;
+  /** When consent was last given; null while workers are off (the report drops it then). */
+  acknowledgedAt: string | null;
+  /** A card's task paste waits for the person's "붙여넣기 승인" before it goes in (on by default). */
+  confirmPaste: boolean;
+  notice: { quotes: string[]; links: { label: string; url: string }[]; warning: string };
+}
+
+/** One `o agy` change; `--workers on` is refused without `ack: true` in the same call. */
+export interface AgyChange {
+  workers?: boolean;
+  ack?: boolean;
+  confirmPaste?: boolean;
+}
+
+/** `o term open`: the CLI to run, the folder it runs in, and the lead thread it answers to. */
+export interface TermOpenRequest {
+  provider: string;
+  project: string;
+  thread?: string;
+  cols?: number;
+  rows?: number;
 }
 
 /** `o graph view --json`: the whole workspace (root → projects → areas) or one project (project → folders → files). */
@@ -382,6 +485,67 @@ export interface GraphLink {
   /** On a glowing path. */
   glow?: boolean;
 }
+
+/** What a Dreaming document is: a material a person put in, or a finished card's record. */
+export type DreamKind = "external" | "done" | "failed" | "tool" | "note";
+
+/** One Dreaming document (`o dream list`). */
+export interface DreamDoc {
+  /** Where the list shows it, `/`-separated: `외부 자료/…`, `작업 성공/<프로젝트>/…`, `작업 실패/<프로젝트>/…`, `도구 오류/<프로젝트>/…`. */
+  path: string;
+  title: string;
+  kind: DreamKind;
+  /** The project a record ran in, or the one a material was filed under. */
+  project?: string;
+  /** When it was added or when the card ended (ISO). */
+  at: string;
+  size: number;
+  /** What it is found by, lower case, without the `#`: a note's own `#tags` (its card's record and failed calls take them too), a material's tags. */
+  tags?: string[];
+}
+
+export interface DreamList {
+  docs: DreamDoc[];
+  /** More documents than the list holds (2000 of each kind). */
+  truncated: boolean;
+}
+
+/** `o dream read --json`. */
+export interface DreamPage extends Omit<DreamDoc, "size"> {
+  /** Where a material came from: a web address or a file name. */
+  source?: string;
+  text: string;
+  /** The document is longer than `text` (1 MiB). */
+  truncated: boolean;
+  /** Documents this one is wired to, and documents wired to it. */
+  links: string[];
+  backlinks: string[];
+}
+
+/** `o dream graph --json`: Dreaming → kind → project → document, and `references` between documents. */
+export interface DreamGraph {
+  nodes: GraphNode[];
+  links: GraphLink[];
+  truncated: boolean;
+}
+
+/** One thing Dreaming changed: a line this project's cards get because the same failure kept happening. */
+export interface DreamChange {
+  id: string;
+  kind: "tool-failure" | "card-failure";
+  project: string;
+  text: string;
+  count: number;
+  firstAt: string;
+  lastAt: string;
+  /** `applied`, `reverted` (a person took it back) or `expired` (it stopped happening). */
+  state: "applied" | "reverted" | "expired";
+  changedAt: string;
+  evidence: { runId: string; cardId: string }[];
+}
+
+/** What `o dream add` takes: text as given (`source` names where it came from), or a web address to fetch. `tags`: words apart by commas or spaces. */
+export type DreamInput = { kind: "text"; title?: string; text: string; source?: string; project?: string; tags?: string } | { kind: "url"; url: string; title?: string; project?: string; tags?: string };
 
 /** What file and area nodes take their colors from (`o graph settings --color-by`). */
 export type GraphColorBy = "language" | "area";

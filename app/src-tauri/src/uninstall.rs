@@ -8,7 +8,7 @@ use std::process::{Command, Stdio};
 use installer_paths::{fresh_dir, no_links};
 use o_core::sys::proc;
 
-const LOCAL_NAMES: &[&str] = &["project_O", "project_O-agents", "project_O-lead", "local.project-o.desktop"];
+const LOCAL_NAMES: &[&str] = &["project_O", "project_O-agents", "project_O-lead", "project_O-term", "local.project-o.desktop"];
 const TASKS: &[&str] = &["project_O mirror sync (test)", "project_O mirror sync (test_1)", "project_O mirror sync (test_2)", "project_O mirror sync (main)"];
 
 fn root(name: &str) -> Result<PathBuf, String> {
@@ -108,6 +108,7 @@ mod tests {
         let local = base.join("Local");
         let roaming = base.join("Roaming");
         let paths = targets(&local, &roaming).unwrap();
+        assert!(paths.contains(&local.join("project_O-term")));
         for path in &paths {
             fs::create_dir_all(path.join("attachments")).unwrap();
             fs::write(path.join("attachments/fake.txt"), b"fake").unwrap();

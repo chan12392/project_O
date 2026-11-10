@@ -38,7 +38,8 @@ use crate::run::store::RunRecord;
 /// 2: `runs.prefix_hash` and `runs.modified`, so a rewritten file is told from an appended one.
 /// 3: `slots`, the card slots runners hold from before a CLI starts until it ends.
 /// 7: Linux and macOS reservation owners include their boot scope.
-const SCHEMA_VERSION: i64 = 7;
+/// 8: `resource_leases.job_name`, the Windows card's named kill-on-close job (ADR-0039).
+const SCHEMA_VERSION: i64 = 8;
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS runs (
@@ -104,6 +105,10 @@ pub fn open(home: &Path) -> io::Result<Connection> {
         let has_scope: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'owner_scope')", [], |row| row.get(0)).map_err(sql)?;
         if !has_scope {
             tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN owner_scope TEXT;").map_err(sql)?;
+        }
+        let has_job: bool = tx.query_row("SELECT EXISTS (SELECT 1 FROM pragma_table_info('resource_leases') WHERE name = 'job_name')", [], |row| row.get(0)).map_err(sql)?;
+        if !has_job {
+            tx.execute_batch("ALTER TABLE resource_leases ADD COLUMN job_name TEXT;").map_err(sql)?;
         }
         tx.pragma_update(None, "user_version", SCHEMA_VERSION).map_err(sql)?;
         tx.commit().map_err(sql)?;

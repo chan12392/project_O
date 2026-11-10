@@ -14,8 +14,8 @@ test("settings shows only the agent's detected API variable names", async () => 
   try {
     const { AgentList } = await server.ssrLoadModule("/src/features/settings/AgentSetup.tsx");
     const agent = { id: "claude", name: "Claude Code", installed: true, loggedIn: true, installHint: "", canInstall: true, installUrl: "" };
-    const render = (apiKeyEnv, showApiKeyWarning = true, id = "claude") => renderToStaticMarkup(createElement(AgentList, {
-      state: { agents: [{ ...agent, id, apiKeyEnv }], busy: {}, notes: {}, checking: false }, showApiKeyWarning,
+    const render = (apiKeyEnv, showApiKeyWarning = true, id = "claude", billingMode = undefined) => renderToStaticMarkup(createElement(AgentList, {
+      state: { agents: [{ ...agent, id, apiKeyEnv }], busy: {}, notes: {}, checking: false }, showApiKeyWarning, billingMode,
     }));
     const html = render(["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"]);
     assert.match(html, /role="note"/);
@@ -25,6 +25,11 @@ test("settings shows only the agent's detected API variable names", async () => 
     assert.match(render(["CODEX_API_KEY"], true, "codex"), /CLI의 인증 방식과 과금이 달라질 수 있습니다/);
     for (const value of [[], undefined]) assert.doesNotMatch(render(value), /인증 환경변수/);
     assert.doesNotMatch(render(["ANTHROPIC_API_KEY"], false), /인증 환경변수/);
+    assert.doesNotMatch(html, /구독만 모드/);
+    assert.doesNotMatch(render(["ANTHROPIC_API_KEY"], true, "claude", "warn"), /구독만 모드/);
+    const refused = render(["CODEX_API_KEY"], true, "codex", "subscription");
+    assert.match(refused, /구독만 모드라 이 변수가 있는 동안 이 CLI의 작업은 시작하지 않습니다/);
+    assert.doesNotMatch(refused, /사용 전 인증 설정을 확인해 주세요/);
   } finally {
     await server.close();
   }

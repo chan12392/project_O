@@ -30,6 +30,34 @@ const FAKE_SLEEP: &str = "O_FAKE_CLI_SLEEP_MS";
 const DUMP_ENV: &str = "--dump-env";
 
 fn main() {
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("_job-watch") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        let _ = o_core::run::job_watch::run(&args);
+        return;
+    }
+    #[cfg(windows)]
+    if let Ok(mode) = std::env::var("O_TERM_FAKE") {
+        use std::io::BufRead;
+        println!("READY");
+        let mut line = String::new();
+        let _ = std::io::stdin().lock().read_line(&mut line);
+        if mode == "stop" { std::thread::sleep(Duration::from_secs(60)); return; }
+        if mode == "missing" { return; }
+        let folder = PathBuf::from(std::env::var_os("O_TERM_FAKE_FOLDER").unwrap());
+        let record: serde_json::Value = serde_json::from_slice(&std::fs::read(folder.join("delivery.json")).unwrap()).unwrap();
+        let nonce = if mode == "wrong" { "wrong" } else { record["nonce"].as_str().unwrap() };
+        let header = format!("O-DONE {}/{} {nonce}\n", record["runId"].as_str().unwrap(), record["cardId"].as_str().unwrap());
+        if mode == "headeronly" { std::fs::write(folder.join("done.md"), header).unwrap(); return; }
+        if mode == "partial" || mode == "empty" {
+            use std::io::Write;
+            std::fs::write(folder.join("done.md"), if mode == "empty" { "" } else { &header }).unwrap();
+            std::thread::sleep(Duration::from_secs(3));
+            let body = if mode == "empty" { format!("{header}작업 완료\nO-END {nonce}\n") } else { format!("작업 완료\nO-END {nonce}\n") };
+            std::fs::OpenOptions::new().append(true).open(folder.join("done.md")).unwrap().write_all(body.as_bytes()).unwrap();
+        } else { std::fs::write(folder.join("done.md"), format!("{header}작업 완료\nO-END {nonce}\n")).unwrap(); }
+        return;
+    }
     let args: Vec<String> = std::env::args().collect();
     if args.get(1).map(String::as_str) == Some("--fake-raw") {
         std::io::stdout().write_all(b"\xff\r\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"ok\"}\r\n").unwrap();
@@ -56,7 +84,13 @@ fn main() {
         }
         return;
     }
-    let tests: [(&str, fn()); 35] = [
+    let tests: &[(&str, fn())] = &[
+        ("agy cards stop before launching without consent", agy_card_never_launches),
+        #[cfg(windows)]
+        ("terminal card completion, approval, failure and stop", terminal_cards),
+        #[cfg(windows)]
+        ("terminal card rechecks consent at the start gate", terminal_consent_rechecked),
+        ("a clean Codex card without a passing sandbox check ends failed, unstarted", codex_sandbox_not_set_refused),
         ("a card's prompt skills and harness blocks are recorded by name", guides_recorded),
         ("non-Git handoffs deliver changes and refuse unsafe copies", non_git_handoffs),
         ("a file turned into a folder, or back, is handed off as the exact tree", file_folder_handoffs),
@@ -68,6 +102,8 @@ fn main() {
         ("stopping a card cancels the follow-up queued behind it", followup_cancelled_with_source),
         ("a stop recorded before the follow-up's runner looks still cancels it", followup_cancelled_when_stop_lands_before_runner),
         ("follow-up resumes the saved session in the original isolated workspace", followup_resumes_workspace),
+        ("a card cut off by a dead runner is followed up in a fresh session", followup_after_dead_runner_starts_fresh),
+        ("fresh follow-up locks cannot collide with sessions or other run-card pairs", fresh_followup_locks_do_not_collide),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
         ("a repository with a submodule entry is refused before any worker starts", isolated_worktrees_refuse_submodules),
@@ -91,10 +127,11 @@ fn main() {
         ("a clean run starts its cards with only the clean environment", clean_run),
         ("cards of one provider in one plan never take more than its slots", same_provider_slots_in_one_plan),
         ("a card's CLI inherits API key variables", api_keys_inherited),
+        ("the subscription billing mode refuses a card whose CLI would get an API key", subscription_mode_refuses_api_keys),
         ("an OpenCode card without YOLO does not start under OpenCode project config", opencode_project_config_refused),
     ];
     let mut failed = 0;
-    for (name, test) in tests {
+    for &(name, test) in tests {
         let ok = std::panic::catch_unwind(test).is_ok();
         println!("test {name} ... {}", if ok { "ok" } else { "FAILED" });
         failed += usize::from(!ok);
@@ -102,6 +139,92 @@ fn main() {
     println!("\nrunner: {} passed; {failed} failed", tests.len() - failed);
     if failed > 0 {
         std::process::exit(1);
+    }
+}
+
+fn agy_card_never_launches() {
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Agy, "x")]);
+    let called = Arc::new(AtomicBool::new(false));
+    let flag = called.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |_, _| { flag.store(true, Ordering::SeqCst); Err(std::io::Error::other("unexpected launch")) });
+    create_run(&home, "agy-off", &p).unwrap();
+    assert_eq!(run_plan(&home, "agy-off", &p, None, spawner).unwrap(), CardStatus::Failed);
+    assert!(read_events(&home, "agy-off").iter().any(|event| matches!(event, OEvent::CardEnd { result: Some(text), .. } if text.contains("o agy --workers on --ack"))));
+    assert!(!called.load(Ordering::SeqCst));
+    assert!(o_core::term::list(&home).unwrap().is_empty());
+}
+
+#[cfg(windows)]
+fn terminal_consent_rechecked() {
+    use std::time::Instant;
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Agy, "do work")]);
+    o_core::agents::agy::set(&home, o_core::agents::agy::Change { workers: Some(true), ack: Some(true), ..Default::default() }).unwrap();
+    create_run(&home, "terminal-consent", &p).unwrap();
+    let gate = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(o_core::run::store::run_dir(&home, "terminal-consent").join("start-stop.lock")).unwrap();
+    gate.lock().unwrap();
+    let folder = home.with_file_name(format!("{}-term", home.file_name().unwrap().to_string_lossy())).join("terminal-consent/a");
+    let spawner: Arc<Spawner> = Arc::new(|_, cwd| { let mut launch = o_core::sys::launch::Launch::new(std::env::current_exe()?); launch.current_dir(cwd); Ok(launch) });
+    let worker_home = home.clone();
+    let worker = std::thread::spawn(move || run_plan(&worker_home, "terminal-consent", &p, None, spawner).unwrap());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    while !folder.join("delivery.json").exists() { assert!(Instant::now() < deadline); std::thread::sleep(Duration::from_millis(20)); }
+    o_core::agents::agy::set(&home, o_core::agents::agy::Change { workers: Some(false), ..Default::default() }).unwrap();
+    drop(gate);
+    assert_eq!(worker.join().unwrap(), CardStatus::Failed);
+    assert!(o_core::term::list(&home).unwrap().is_empty());
+    assert!(!o_core::run::store::resource_held(&home, "terminal-consent", "a").unwrap());
+}
+
+#[cfg(windows)]
+fn terminal_cards() {
+    use std::time::Instant;
+    for (mode, confirm, expected) in [("valid", false, CardStatus::Done), ("partial", false, CardStatus::Done), ("empty", false, CardStatus::Done), ("valid", true, CardStatus::Done), ("wrong", false, CardStatus::Failed), ("headeronly", false, CardStatus::Failed), ("missing", false, CardStatus::Failed), ("startfail", false, CardStatus::Failed), ("stop", false, CardStatus::Stopped)] {
+        let home = temp_home();
+        let p = plan(vec![card("a", ProviderId::Agy, "do work")]);
+        o_core::agents::agy::set(&home, o_core::agents::agy::Change { workers: Some(true), ack: Some(true), confirm_paste: Some(confirm) }).unwrap();
+        create_run(&home, "terminal-test", &p).unwrap();
+        let folder = home.with_file_name(format!("{}-term", home.file_name().unwrap().to_string_lossy())).join("terminal-test/a");
+        let task_folder = folder.clone();
+        let wrong = mode == "wrong";
+        let headeronly = mode == "headeronly";
+        let startfail = mode == "startfail";
+        let mode = mode.to_string();
+        let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+            assert!(spec.args.is_empty());
+            let mut launch = o_core::sys::launch::Launch::new(if mode == "startfail" { folder.join("missing-executable.exe") } else { std::env::current_exe()? });
+            launch.current_dir(cwd).env("O_TERM_FAKE", &mode).env("O_TERM_FAKE_FOLDER", folder.as_os_str());
+            Ok(launch)
+        });
+        let worker_home = home.clone();
+        let worker = std::thread::spawn(move || run_plan(&worker_home, "terminal-test", &p, None, spawner).unwrap());
+        let deadline = Instant::now() + Duration::from_secs(20);
+        let session = loop {
+            if let Some(session) = o_core::term::list(&home).unwrap().into_iter().next() { break session; }
+            assert!(Instant::now() < deadline, "terminal did not open");
+            std::thread::sleep(Duration::from_millis(30));
+        };
+        if confirm {
+            std::thread::sleep(Duration::from_millis(300));
+            assert_eq!(o_core::term::get(&home, &session.id).unwrap().state, "awaiting-paste");
+            o_core::term::paste(&home, &session.id).unwrap();
+        }
+        if expected == CardStatus::Stopped {
+            std::thread::sleep(Duration::from_secs(2));
+            request_stop(&home, "terminal-test").unwrap();
+        }
+        assert_eq!(worker.join().unwrap(), expected);
+        let task = std::fs::read_to_string(task_folder.join("task.md")).unwrap();
+        assert!(task.contains("팀 대화 명령을 사용할 수 있다고 가정하지 마세요") && !task.contains("헤드리스 모드") && task.contains("O-DONE") && task.contains("O-END"));
+        assert!(!o_core::run::store::resource_held(&home, "terminal-test", "a").unwrap());
+        assert_eq!(started_on(&home, Utc::now()).unwrap(), usize::from(!startfail));
+        let events = read_events(&home, "terminal-test");
+        if expected == CardStatus::Done { assert!(events.iter().any(|event| matches!(event, OEvent::CardEnd { result: Some(text), .. } if text.contains("작업 완료") && text.contains("완료 문서:") && !text.contains("O-END")))); }
+        else if expected == CardStatus::Failed && !startfail { assert!(events.iter().any(|event| matches!(event, OEvent::CardEnd { result: Some(text), .. } if text.contains("완료 보고 없이 끝났습니다")))); }
+        if wrong { assert_eq!(events.iter().filter(|event| matches!(event, OEvent::CardTool { name, .. } if name == "확인되지 않은 완료 문서")).count(), 1); }
+        if headeronly { assert!(!events.iter().any(|event| matches!(event, OEvent::CardTool { name, .. } if name == "확인되지 않은 완료 문서"))); }
+        assert_eq!(o_core::run::followup::start(&home, "terminal-test", "a", "again", &|_| Ok(())).unwrap_err(), "터미널 카드는 후속 지시를 받지 않습니다");
     }
 }
 
@@ -215,7 +338,7 @@ fn followup_resumes_workspace() {
     assert!(!o_core::run::store::run_is_live(&home, &failed));
     assert!(read_events(&home, &failed).iter().any(|event| matches!(event, OEvent::RunEnd { status: CardStatus::Failed, .. })));
     let retry = o_core::run::followup::target(&home, &failed, "a").unwrap();
-    assert_eq!(retry.session, "s1");
+    assert_eq!(retry.session.as_deref(), Some("s1"));
     #[cfg(windows)]
     assert!(!retry.workspace.to_string_lossy().starts_with(r"\\?\"), "{}", retry.workspace.display());
     assert_eq!(std::fs::read_to_string(retry.workspace.join("file.txt")).unwrap(), "changed");
@@ -226,6 +349,92 @@ fn followup_resumes_workspace() {
     assert!(record.events.iter().any(|event| event["t"] == "card.end" && event["status"] == "failed"));
     assert!(record.events.iter().any(|event| event["t"] == "run.end" && event["status"] == "failed"));
     assert!(o_core::run::followup::target(&home, &interrupted, "a").is_err());
+}
+
+/// ADR-0039: a card whose dead runner's close ended it is followed up in a fresh session, never
+/// resuming the session that was cut off.
+fn followup_after_dead_runner_starts_fresh() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
+    initial.project = project.to_string_lossy().into_owned();
+    create_run(&home, "cut", &initial).unwrap();
+    let dir = o_core::run::store::run_dir(&home, "cut");
+    let lines = [
+        serde_json::json!({"t":"run.start","at":"2026-11-09T12:37:16.000Z","runId":"cut","title":"t","project":initial.project,"cards":[{"id":"a","provider":"claude"}]}),
+        serde_json::json!({"t":"card.start","at":"2026-11-09T12:37:17.000Z","cardId":"a"}),
+        serde_json::json!({"t":"card.session","at":"2026-11-09T12:37:18.000Z","cardId":"a","sessionId":"s1"}),
+    ];
+    std::fs::write(dir.join("events.jsonl"), lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
+    // The runner: a process that has certainly exited.
+    let mut command = if cfg!(windows) { let mut c = Command::new("cmd"); c.args(["/C", "exit 0"]); c } else { let mut c = Command::new("sh"); c.args(["-c", "exit 0"]); c };
+    let mut runner = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
+    let started = o_core::sys::proc::started_at(runner.id()).unwrap();
+    runner.wait().unwrap();
+    std::fs::write(dir.join("runner.json"), serde_json::json!({"pid":runner.id(),"started":started}).to_string()).unwrap();
+    o_core::run::store::read_runs(&home, &o_core::run::index::RunQuery { limit: 50, project: None }).unwrap();
+    assert!(read_events(&home, "cut").iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Failed, .. })));
+
+    let id = o_core::run::followup::start(&home, "cut", "a", "이어서 해 주세요", &|_| Ok(())).unwrap();
+    let follow: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
+    let fresh = fake_cli(|spec| {
+        assert!(!spec.args.iter().any(|arg| arg == "--resume" || arg == "s1"), "{:?}", spec.args);
+        assert!(spec.stdin.as_ref().unwrap().contains("이어서 해 주세요"));
+        vec![r#"{"type":"system","subtype":"init","session_id":"s2"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+    });
+    assert_eq!(run_plan(&home, &id, &follow, None, fresh).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &id));
+    let sessions: Vec<String> = read_events(&home, &id).into_iter().filter_map(|e| match e { OEvent::CardSession { session_id, .. } => Some(session_id), _ => None }).collect();
+    assert_eq!(sessions, ["s2"]);
+    // The next follow-up resumes the new session.
+    assert_eq!(o_core::run::followup::target(&home, &id, "a").unwrap().session.as_deref(), Some("s2"));
+}
+
+fn fresh_followup_locks_do_not_collide() {
+    for (outer_run, outer_card, outer_fresh, inner_run, inner_card) in [
+        ("other", "a", false, "cut", "a"),
+        ("cut-a", "b", true, "cut", "a-b"),
+    ] {
+        let fixture = temp_home();
+        let home = fixture.join("state");
+        o_core::run::ram::write_enabled(&home, false).unwrap();
+        let project = fixture.join("project");
+        std::fs::create_dir_all(&project).unwrap();
+        let seed = |run_id: &str, card_id: &str, fresh: bool| {
+            let mut p = plan(vec![card(card_id, ProviderId::Claude, "first")]);
+            p.project = project.to_string_lossy().into_owned();
+            p.cards[0].resources = vec![o_core::run::plan::Resource { kind: o_core::run::plan::ResourceKind::External, key: format!("lock-test-{run_id}"), mode: o_core::run::plan::ResourceMode::Write }];
+            create_run(&home, run_id, &p).unwrap();
+            let result = if fresh { "실행기가 끝나 이 카드를 마치지 못했습니다(중단됨). 작업 폴더를 확인하고 다시 보내 주세요" } else { "ok" };
+            let status = if fresh { "failed" } else { "done" };
+            let lines = [
+                serde_json::json!({"t":"run.start","at":"2026-11-09T12:37:16.000Z","runId":run_id,"title":"t","project":p.project,"cards":[{"id":card_id,"provider":"claude"}]}),
+                serde_json::json!({"t":"card.session","at":"2026-11-09T12:37:17.000Z","cardId":card_id,"sessionId":"fresh-cut-a"}),
+                serde_json::json!({"t":"card.end","at":"2026-11-09T12:37:18.000Z","cardId":card_id,"status":status,"result":result}),
+                serde_json::json!({"t":"run.end","at":"2026-11-09T12:37:19.000Z","status":status}),
+            ];
+            std::fs::write(o_core::run::store::run_dir(&home, run_id).join("events.jsonl"), lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
+            let id = o_core::run::followup::start(&home, run_id, card_id, "continue", &|_| Ok(())).unwrap();
+            let next: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
+            (id, next)
+        };
+        let (outer_id, outer) = seed(outer_run, outer_card, outer_fresh);
+        let (inner_id, inner) = seed(inner_run, inner_card, true);
+        let nested_home = home.clone();
+        let outer_cli = fake_cli(move |spec| {
+            assert_eq!(spec.args.iter().any(|a| a == "--resume"), !outer_fresh);
+            if !outer_fresh { assert!(spec.args.iter().any(|a| a == "fresh-cut-a")); }
+            // The outer card already holds its lock here; run the other card before releasing it.
+            let fresh_cli = fake_cli(|spec| {
+                assert!(!spec.args.iter().any(|a| a == "--resume"));
+                vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+            });
+            assert_eq!(run_plan(&nested_home, &inner_id, &inner, None, fresh_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&nested_home, &inner_id));
+            vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
+        });
+        assert_eq!(run_plan(&home, &outer_id, &outer, None, outer_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &outer_id));
+    }
 }
 
 fn isolated_copies() {
@@ -723,6 +932,8 @@ fn fake_cli(lines_for: impl Fn(&LaunchSpec) -> Vec<&'static str> + Send + Sync +
 fn temp_home() -> PathBuf {
     let dir = std::env::temp_dir().join(format!("o-test-{}-{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap()));
     std::fs::create_dir_all(&dir).unwrap();
+    // Tests hold several slots at once; the RAM cap (ADR-0037) would make them depend on this PC's memory.
+    o_core::run::ram::write_enabled(&dir, false).unwrap();
     dir
 }
 
@@ -801,6 +1012,55 @@ fn parallel_and_limit() {
 
 /// #37: OpenCode loads `opencode.json(c)` and `.opencode/` (plugins too) from the folder up to the
 /// root, so a card without YOLO is refused when the project or a parent has one.
+/// ADR-0040: checked again right before the start, so a run checked earlier (or a follow-up)
+/// never starts a Codex card that would end "done" having changed nothing.
+fn codex_sandbox_not_set_refused() {
+    if !cfg!(windows) {
+        return;
+    }
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let root = fixture.join("agents");
+    let p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, _: &str| {
+        seen.store(true, Ordering::SeqCst);
+        Err(std::io::Error::other("fake start"))
+    });
+    create_run(&home, "cx-unset", &p).unwrap();
+    assert_eq!(run_plan(&home, "cx-unset", &p, Some(&root), Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert!(read_events(&home, "cx-unset").iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Failed, result: Some(reason), .. } if reason == o_core::providers::codex::SANDBOX_NOT_SET)));
+    let view = o_core::run::snapshot::snapshot(&read_events(&home, "cx-unset")).unwrap();
+    assert_eq!(view.cards[0].state, o_core::run::snapshot::CardState::Failed);
+
+    // The person's own setup is not refused.
+    create_run(&home, "cx-own", &p).unwrap();
+    run_plan(&home, "cx-own", &p, None, Arc::clone(&spawner)).unwrap();
+    assert!(launched.swap(false, Ordering::SeqCst));
+
+    // The selection alone does not start it (ADR-0040 개정 1): no check passed yet, or the last one
+    // failed, ends the card with that reason. (A passing record is decided in tests/policy.rs and
+    // the codex_sandbox unit tests, where the Codex version is injected.)
+    use o_core::providers::codex_sandbox::{self, Record, NOT_CHECKED};
+    let profile = o_core::agents::clean::profile_home(&root, ProviderId::Codex);
+    std::fs::create_dir_all(profile.join(".codex")).unwrap();
+    std::fs::write(profile.join(".codex").join("config.toml"), "[windows]\nsandbox = \"unelevated\"\n").unwrap();
+    let failed = Record { ok: false, version: "codex-cli 1.0.0".into(), config_hash: codex_sandbox::config_hash(&profile), checked_at: "2026-11-10T00:00:00.000Z".into(), detail: "Codex가 멈췄습니다".into() };
+    for (run, record) in [("cx-set", None), ("cx-failed", Some(failed))] {
+        if let Some(record) = &record { codex_sandbox::write_record(&profile, record).unwrap(); }
+        create_run(&home, run, &p).unwrap();
+        assert_eq!(run_plan(&home, run, &p, Some(&root), Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+        assert!(!launched.load(Ordering::SeqCst), "{run}");
+        let reason = read_events(&home, run).iter().find_map(|e| match e { OEvent::CardEnd { result: Some(reason), .. } => Some(reason.clone()), _ => None }).unwrap();
+        match &record {
+            None => assert_eq!(reason, NOT_CHECKED),
+            Some(record) => assert_eq!(reason, codex_sandbox::failed_reason(record)),
+        }
+    }
+}
+
 fn opencode_project_config_refused() {
     let fixture = temp_home();
     let home = fixture.join("state");
@@ -894,22 +1154,26 @@ fn guides_recorded() {
 
 fn queue_then_run() {
     let home = temp_home();
-    // Live markers from another run fill agy's slots (this test process stands in as their pid).
-    let slots = LIMITS.max_active_per_provider(ProviderId::Agy);
+    // Live markers from another run fill Claude's slots (this test process stands in as their pid).
+    let slots = LIMITS.max_active_per_provider(ProviderId::Claude);
     for i in 0..slots {
-        let marker = ActiveMarker { run_id: "other".into(), card_id: format!("b{i}"), provider: ProviderId::Agy, pid: std::process::id() };
+        let marker = ActiveMarker { run_id: "other".into(), card_id: format!("b{i}"), provider: ProviderId::Claude, pid: std::process::id() };
         mark_active(&home, &marker).unwrap();
     }
-    let p = plan(vec![card("a", ProviderId::Agy, "x")]);
+    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
     create_run(&home, "r5", &p).unwrap();
     let freeing = home.clone();
     let freer = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(300));
+        // Free the slots only once the card is seen waiting; a fixed delay loses to a slow machine.
+        for _ in 0..600 {
+            if read_events(&freeing, "r5").iter().any(|e| e.kind() == "card.queued") { break; }
+            std::thread::sleep(Duration::from_millis(50));
+        }
         for i in 0..slots {
             clear_active(&freeing, "other", &format!("b{i}"));
         }
     });
-    run_plan(&home, "r5", &p, None, fake_cli(|_| vec![r#"{"event":"result","result":{"status":"SUCCESS","response":"ok"}}"#])).unwrap();
+    run_plan(&home, "r5", &p, None, fake_cli(|_| vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])).unwrap();
     freer.join().unwrap();
     let kinds: Vec<&str> = read_events(&home, "r5").iter().map(OEvent::kind).collect();
     let at = |k: &str| kinds.iter().position(|x| *x == k).unwrap();
@@ -921,14 +1185,16 @@ fn clean_run() {
     let home = temp_home();
     let root = home.join("agents");
     let dump = home.join("env.json");
+    let devin_dump = home.join("devin-env.json");
     std::env::set_var("ORCA_TERMINAL_ID", "t1");
     std::env::set_var("BEAKHO_RELEASE", "pinned");
-    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    let p = plan(vec![card("a", ProviderId::Claude, "x"), card("b", ProviderId::Devin, "x")]);
     create_run(&home, "r6", &p).unwrap();
     let target = dump.clone();
-    let spawner: Arc<Spawner> = Arc::new(move |_: &LaunchSpec, cwd: &str| {
+    let devin_target = devin_dump.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
         let mut command = support::fake_worker_launch()?;
-        command.current_dir(cwd).arg(DUMP_ENV).arg(&target);
+        command.current_dir(cwd).arg(DUMP_ENV).arg(if spec.bin == "devin" { &devin_target } else { &target });
         Ok(command)
     });
     assert_eq!(run_plan(&home, "r6", &p, Some(&root), spawner).unwrap(), CardStatus::Done);
@@ -941,6 +1207,10 @@ fn clean_run() {
     assert_eq!(get("CLAUDE_CONFIG_DIR"), Some(profile.join(".claude").to_string_lossy().into_owned()));
     assert!(get("PATH").is_some());
     assert!(get("ORCA_TERMINAL_ID").is_none() && get("BEAKHO_RELEASE").is_none());
+    let devin_env: BTreeMap<String, String> = serde_json::from_str(&std::fs::read_to_string(devin_dump).unwrap()).unwrap();
+    assert_eq!(devin_env.get("ORCA_TERMINAL_ID").map(String::as_str), Some("t1"));
+    assert_eq!(devin_env.get("BEAKHO_RELEASE").map(String::as_str), Some("pinned"));
+    assert!(read_events(&home, "r6").iter().any(|e| matches!(e, OEvent::CardTool { card_id, summary, .. } if card_id == "b" && summary == o_core::providers::devin::OWN_PROFILE_NOTICE)));
     assert!(profile.join(".claude").join("settings.json").is_file());
 }
 
@@ -1179,6 +1449,38 @@ fn api_keys_inherited() {
     let opencode = env_of("opencode");
     assert!(has(&opencode, "ANTHROPIC_API_KEY") && has(&opencode, "O_CUSTOM_PROVIDER_API_KEY"));
     assert_eq!(claude.get("O_CARD_ID").map(String::as_str), Some("a"));
+}
+
+/// ADR-0035 개정 1: in 구독만 a card whose launch environment holds an authentication variable its
+/// CLI uses never starts and says which by name; in 경고만 (the default) the same card runs. The
+/// fake key is set on the launch only, never in this process, and is a placeholder.
+fn subscription_mode_refuses_api_keys() {
+    use o_core::agents::billing;
+    const VALUE: &str = "placeholder-not-a-key";
+    let with_key = |remove: bool| -> Arc<Spawner> {
+        Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+            let mut command = quiet()(spec, cwd)?;
+            if remove { command.env_remove("ANTHROPIC_API_KEY").env_remove("ANTHROPIC_AUTH_TOKEN"); } else { command.env("ANTHROPIC_API_KEY", VALUE); }
+            Ok(command)
+        })
+    };
+    let home = temp_home();
+    let p = plan(vec![card("a", ProviderId::Claude, "x")]);
+    billing::write_mode(&home, "subscription").unwrap();
+    create_run(&home, "bill-sub", &p).unwrap();
+    assert_eq!(run_plan(&home, "bill-sub", &p, None, with_key(false)).unwrap(), CardStatus::Failed);
+    let events = read_events(&home, "bill-sub");
+    let reason = events.iter().find_map(|e| match e { OEvent::CardEnd { result: Some(text), .. } => Some(text.clone()), _ => None }).unwrap();
+    assert!(reason.contains("구독만") && reason.contains("ANTHROPIC_API_KEY") && reason.contains("o billing --warn"), "{reason}");
+    assert!(!serde_json::to_string(&events).unwrap().contains(VALUE));
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 0);
+
+    create_run(&home, "bill-sub-clear", &p).unwrap();
+    assert_eq!(run_plan(&home, "bill-sub-clear", &p, None, with_key(true)).unwrap(), CardStatus::Done);
+
+    billing::write_mode(&home, "warn").unwrap();
+    create_run(&home, "bill-warn", &p).unwrap();
+    assert_eq!(run_plan(&home, "bill-warn", &p, None, with_key(false)).unwrap(), CardStatus::Done);
 }
 
 use std::sync::Mutex;

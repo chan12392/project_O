@@ -15,11 +15,14 @@ fn lead_monitor_stops_when_its_parent_closes_stdin() {
 fn marked_agents_cannot_start_work_through_cli() {
     for role in ["lead", "card"] {
         for args in [
-            vec!["dispatch"], vec!["followup", "run", "card"], vec!["_run", "run"], vec!["_lead-watch"], vec!["_followup", "run"], vec!["review", "1"], vec!["_review", "1"],
+            vec!["dispatch"], vec!["followup", "run", "card"], vec!["_run", "run"], vec!["_lead-watch"], vec!["_job-watch"], vec!["_followup", "run"], vec!["review", "1"], vec!["_review", "1"],
             vec!["lead", "send"], vec!["lead", "dispatch", "plan"], vec!["lead", "note", "thread", "-"], vec!["lead", "wake", "run"], vec!["lead", "retry", "run", "message"],
             // An agent never approves its own action (ADR-0008 개정 3).
             vec!["lead", "decide", "20261104-000000-abcd-a1", "allow"],
+            vec!["resources", "recover", "3", "--confirm-exited"],
             vec!["schedule", "run", "test"], vec!["image", "read"], vec!["projects", "open", "x"],
+            // The sandbox check makes a model call; only a person starts it (ADR-0040 개정 1).
+            vec!["agents", "setup", "codex"],
             vec!["issues", "record", "finding.json"], vec!["issues", "classify", "1", "external"], vec!["issues", "resolve", "1", "run", "card", "evidence"], vec!["issues", "reopen", "1"],
         ] {
             let (key, value) = if role == "card" { ("O_CARD_ID", "card-1") } else { ("O_AGENT_ROLE", "lead") };
@@ -40,7 +43,7 @@ fn empty_agent_markers_do_not_hide_normal_argument_errors() {
 fn marked_agent_hook_blocks_dispatch_command() {
     use std::io::Write;
     use std::process::Stdio;
-    for command in ["o dispatch plan.json", "o followup run card", "o _followup run", "o lead decide 20261104-000000-abcd-a1 allow"] {
+    for command in ["o dispatch plan.json", "o followup run card", "o _followup run", "o lead decide 20261104-000000-abcd-a1 allow", "o resources recover 3 --confirm-exited"] {
     let mut child = Command::new(env!("CARGO_BIN_EXE_o"))
         .arg("hook").env("O_AGENT_ROLE", "lead").stdin(Stdio::piped()).stderr(Stdio::piped()).spawn().unwrap();
     child.stdin.take().unwrap().write_all(serde_json::json!({"tool_name":"Bash","tool_input":{"command":command}}).to_string().as_bytes()).unwrap();
