@@ -74,6 +74,15 @@ fn clean_env_keeps_system_variables_and_points_home_at_the_profile() {
     let codex = clean_env_from(parent.clone(), home, ProviderId::Codex);
     assert_eq!(codex["CODEX_HOME"], home.join(".codex").to_string_lossy());
     assert!(!codex.contains_key("CLAUDE_CONFIG_DIR"));
+    // Windows: Codex gets the profile's own temp folder, never the person's (ADR-0040 개정 2).
+    let with_temp = parent.clone().into_iter().chain([("Temp".to_string(), r"C:\Users\someone\AppData\Local\Temp".to_string())]);
+    let codex = clean_env_from(with_temp.clone(), home, ProviderId::Codex);
+    if cfg!(windows) {
+        assert_eq!(codex["TEMP"], r"D:\profiles\claude\tmp");
+        assert_eq!(codex["TMP"], r"D:\profiles\claude\tmp");
+        assert!(!codex.contains_key("Temp"));
+    }
+    assert_eq!(clean_env_from(with_temp, home, ProviderId::Claude)["Temp"], r"C:\Users\someone\AppData\Local\Temp");
     let agy = clean_env_from(parent, home, ProviderId::Agy);
     assert_eq!(agy["AGY_CLI_DISABLE_AUTO_UPDATE"], "true");
 }

@@ -60,3 +60,34 @@
 - 이 PC처럼 Codex가 첫 명령에서 멈추는 동안 Codex 카드는 시작하지 않고, 총괄은 다른 에이전트로 계획한다. Codex가 고쳐지면 다시 점검해 통과하는 순간부터 쓴다.
 - Codex를 업데이트하거나 프로필 `config.toml`이 바뀌면 다시 점검해야 한다. Codex가 스스로 `config.toml`을 고치는 경우에도 재점검을 요구한다.
 - 점검마다 작은 모델 호출 한 번이 든다. 사람이 누를 때만 든다.
+
+## 개정 2 (2026-11-10): 멈춤의 원인은 TEMP였다 — 프로필에 자기 임시 폴더를 준다
+
+### 배경
+
+개정 1은 멈춤을 열린 Codex 버그(openai/codex#50725)로 보고 고쳐질 때까지 기다리기로 했다. 같은 PC에서 조건을 하나씩 바꿔 실제 명령(`cmd /c "echo o-sandbox-ok> probe.txt"`)을 돌려 원인을 좁혔다.
+
+| 조건 | 결과 |
+|---|---|
+| 평소 환경변수 그대로, `CODEX_HOME`만 project_O 프로필 | 멈춤 |
+| 같은 작업 폴더, 잘 도는 다른 `CODEX_HOME` | 통과(약 10초) |
+| project_O 프로필 + 잘 도는 쪽의 설정을 `-c`로 모두 적용 | 멈춤 |
+| project_O 프로필 + 샌드박스 도우미 실행 파일 복사 | 멈춤 |
+| project_O 프로필의 `codex sandbox <명령>`(모델 호출 없음) | 통과 |
+| project_O 프로필 + `TEMP`·`TMP`를 빈 새 폴더로 | **통과(11초)** |
+
+- 깨끗한 환경의 허용 목록도, 설정 파일도 원인이 아니다.
+- Codex의 Windows 샌드박스는 `CODEX_HOME`마다 쓰기 가능 폴더별 식별자(`cap_sid`의 `writable_root_by_path`)를 만들고, 첫 명령 전에 그 식별자에 `TEMP` 쓰기 권한을 준다. Windows는 이 권한을 폴더 안의 모든 항목에 적용한다.
+- 이 PC의 `TEMP`는 최상위 항목만 95,414개다. 잘 도는 `CODEX_HOME`의 식별자는 이미 `TEMP`의 권한 목록에 있었고, project_O 프로필의 식별자는 없었다. 권한 적용이 카드나 점검의 제한 시간 안에 끝나지 못하고 매번 처음부터 다시 시작한 것이다. 멈춘 동안 Codex 아래에는 셸 프로세스가 하나도 없었다.
+
+### 결정
+
+- `Provider::clean_temp(home)`(기본 `None`)을 둔다. Codex는 Windows에서 프로필 홈 옆의 `tmp`(`<에이전트 루트>/codex/tmp`)를 돌려준다. `clean::clean_env_from`은 그 값이 있으면 부모의 `TEMP`·`TMP`를 버리고 이 폴더로 바꾼다. 폴더는 `prepare_profile`이 만든다.
+- 다른 프로바이더와 내 설정(`--profile own`) 실행의 `TEMP`는 그대로다.
+- 준비 상태의 근거는 개정 1 그대로 실제 명령 점검 기록이다. 이 변경 뒤 이 PC의 `o agents setup codex`가 codex-cli 0.167.0에서 통과했다.
+
+### 결과
+
+- project_O 프로필의 Codex 카드가 Codex 수정을 기다리지 않고 돈다.
+- 샌드박스 안의 명령이 사람의 `TEMP`에 쓰지 못한다. 카드의 임시 파일은 프로필의 `tmp`에 쌓이므로 정리 대상이 하나 는다.
+- 내 설정으로 도는 Codex는 그 `CODEX_HOME`이 `TEMP` 권한 적용을 한 번 끝낸 적이 있어야 한다. O는 그 프로필을 건드리지 않는다.

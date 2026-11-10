@@ -76,6 +76,12 @@ pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: 
     }
     let (name, value) = providers::get(provider).clean_env(home);
     env.insert(name.into(), value);
+    if let Some(temp) = providers::get(provider).clean_temp(home) {
+        env.retain(|name, _| !name.eq_ignore_ascii_case("TEMP") && !name.eq_ignore_ascii_case("TMP"));
+        let temp = temp.to_string_lossy().into_owned();
+        env.insert("TEMP".into(), temp.clone());
+        env.insert("TMP".into(), temp);
+    }
     env
 }
 

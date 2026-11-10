@@ -141,6 +141,11 @@ pub trait Provider: Sync {
     /// The one variable a clean launch adds: the CLI's config folder inside the
     /// profile home, or a switch when the CLI keeps its own folder there.
     fn clean_env(&self, home: &Path) -> (&'static str, String);
+    /// A temp folder of the profile's own that a clean launch uses as TEMP/TMP instead of the
+    /// person's. `None` (the default): the person's temp folder is kept.
+    fn clean_temp(&self, _home: &Path) -> Option<std::path::PathBuf> {
+        None
+    }
     /// Makes what the profile needs before first use.
     fn prepare_profile(&self, home: &Path, real_home: &Path) -> io::Result<()>;
     /// Flags what in the profile home would bring a personal harness back.
