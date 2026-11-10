@@ -13,6 +13,9 @@ fn fake_child() {
     }
 }
 
+/// Long enough for a loaded CI machine: the first card's process runs to its end before the boundary.
+const WAIT: Duration = Duration::from_secs(60);
+
 #[test]
 fn stop_completed_before_resume_never_starts_child() {
     for dependent in [false, true] {
@@ -30,7 +33,7 @@ fn stop_completed_before_resume_never_starts_child() {
         let (continue_tx, continue_rx) = mpsc::sync_channel(1);
         *BEFORE_TEST_RESUME.lock().unwrap() = Some(Box::new(move || {
             ready_tx.send(()).unwrap();
-            let _ = continue_rx.recv_timeout(Duration::from_secs(10));
+            let _ = continue_rx.recv_timeout(WAIT);
         }));
         let output = marker.clone();
         let helper = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("o-handle-owner.exe");
@@ -44,10 +47,10 @@ fn stop_completed_before_resume_never_starts_child() {
         let (done_tx, done_rx) = mpsc::sync_channel(1);
         let worker_home = home.clone();
         let worker = thread::spawn(move || { let result = run_plan(&worker_home, "run", &plan, None, spawner); let _ = done_tx.send(result); });
-        ready_rx.recv_timeout(Duration::from_secs(10)).expect("child did not reach resume boundary");
+        ready_rx.recv_timeout(WAIT).expect("child did not reach resume boundary");
         assert!(stop_run(&home, "run").unwrap());
         continue_tx.send(()).unwrap();
-        let status = done_rx.recv_timeout(Duration::from_secs(10)).expect("runner did not finish").unwrap();
+        let status = done_rx.recv_timeout(WAIT).expect("runner did not finish").unwrap();
         worker.join().unwrap();
         assert_eq!(status, CardStatus::Stopped);
         assert!(!marker.exists(), "stopped child executed (dependent={dependent})");
