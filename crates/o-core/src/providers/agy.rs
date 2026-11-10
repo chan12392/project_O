@@ -182,7 +182,7 @@ impl Provider for Agy {
         }
     }
 
-    fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
+    fn usage_windows(&self, _profile_root: Option<&Path>) -> Option<Result<Vec<UsageWindow>, String>> {
         Some(Err(crate::policy::AGY_UNAVAILABLE.into()))
     }
 }

@@ -17,7 +17,7 @@ use serde_json::{json, Map, Value};
 use super::codex_sandbox;
 use super::stream::{error_text, limit_from_text, num, short, short_value};
 use super::{list_command, opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel};
-use crate::agents::clean::LoginState;
+use crate::agents::clean::{self, LoginState};
 use crate::agents::catalog::connection;
 use crate::run::events::StreamSignal;
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -176,8 +176,8 @@ impl Provider for Codex {
         flag(!skills.is_empty(), format!("skills에 내장(.system) 밖 스킬이 있음: {}", skills.join(", ")));
     }
 
-    fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
-        Some(app_server_windows())
+    fn usage_windows(&self, profile_root: Option<&Path>) -> Option<Result<Vec<UsageWindow>, String>> {
+        Some(app_server_windows(profile_root))
     }
 }
 
@@ -272,8 +272,20 @@ pub use super::codex_sandbox::SANDBOX_NOT_SET;
 
 const TIMEOUT: Duration = Duration::from_secs(20);
 
-/// A short-lived, read-only app-server answers account/rateLimits/read (no model turn).
-fn app_server_windows() -> Result<Vec<UsageWindow>, String> {
+/// The usage probe's command. With `profile_root` it runs as the project_O profile's Codex
+/// (its CODEX_HOME and clean environment), so the windows are those of the login that profile's
+/// cards spend; a profile nobody set up is not made here, only reported.
+fn usage_command(profile_root: Option<&Path>) -> Result<Command, String> {
+    let profile = match profile_root {
+        Some(root) => {
+            let home = clean::profile_home(root, ProviderId::Codex);
+            if !home.join(".codex").is_dir() {
+                return Err(clean::login_needed(ProviderId::Codex));
+            }
+            Some(home)
+        }
+        None => None,
+    };
     let cli = resolve_cli("codex").ok_or("codex CLI를 찾지 못했습니다")?;
     let mut command = Command::new(&cli.command);
     command
@@ -282,6 +294,16 @@ fn app_server_windows() -> Result<Vec<UsageWindow>, String> {
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null());
+    if let Some(home) = profile {
+        let parent = std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?)));
+        command.env_clear().envs(clean::clean_env_from(parent, &home, ProviderId::Codex));
+    }
+    Ok(command)
+}
+
+/// A short-lived, read-only app-server answers account/rateLimits/read (no model turn).
+fn app_server_windows(profile_root: Option<&Path>) -> Result<Vec<UsageWindow>, String> {
+    let mut command = usage_command(profile_root)?;
     let mut probe = Contained::spawn(&mut command).map_err(|e| e.to_string())?;
     let mut stdin = probe.child.stdin.take().ok_or("codex app-server stdin")?;
     let stdout = probe.child.stdout.take().ok_or("codex app-server stdout")?;
@@ -537,6 +559,14 @@ pub fn unwrap_shell(command: &str) -> String {
 #[cfg(test)]
 mod default_model_version_tests {
     use super::supports_ephemeral_version;
+
+    #[test]
+    fn the_usage_probe_of_a_profile_nobody_set_up_is_refused_not_made() {
+        let root = std::env::temp_dir().join(format!("o-codex-usage-{}", std::process::id()));
+        let error = super::usage_command(Some(&root)).unwrap_err();
+        assert!(error.contains("로그인 필요(codex)"), "{error}");
+        assert!(!root.exists());
+    }
 
     #[test]
     fn only_known_or_newer_release_versions_enable_the_probe() {

@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::sync::Mutex;
 
+use o_core::run::mode::Profile;
 use o_core::run::store;
 use o_core::usage::{budget, probe, UsageReading};
 use serde_json::{json, Value};
@@ -35,12 +36,12 @@ pub fn usage_json(home: &Path) -> Result<String, String> {
 /// One usage probe at a time; a refresh asked for meanwhile gets that probe's reading.
 static REFRESH: Mutex<()> = Mutex::new(());
 
-fn refresh_usage(home: &Path) -> Result<String, String> {
+fn refresh_usage(home: &Path, profile: Option<Profile>) -> Result<String, String> {
     let Ok(_probing) = REFRESH.try_lock() else {
         drop(REFRESH.lock());
         return usage_json(home);
     };
-    let reading = probe::read_usage();
+    let reading = probe::read_usage(home, profile);
     probe::save_usage(home, &reading).map_err(|e| e.to_string())?;
     Ok(json!(reading).to_string())
 }
@@ -69,9 +70,14 @@ pub async fn usage() -> Result<String, String> {
 }
 
 /// Asks Codex and Antigravity for their windows again and saves the reading (`o usage`).
+/// `profile`: whose login to ask — the app's "project_O 프로필 사용" switch (`o usage --profile`).
 #[tauri::command]
-pub async fn usage_refresh() -> Result<String, String> {
-    blocking(|| refresh_usage(&store::default_home())).await?
+pub async fn usage_refresh(profile: Option<String>) -> Result<String, String> {
+    let profile = match profile.as_deref() {
+        None => None,
+        Some(name) => Some(Profile::parse(name).ok_or("profile은 project-o 또는 own이어야 합니다")?),
+    };
+    blocking(move || refresh_usage(&store::default_home(), profile)).await?
 }
 
 /// Today's usage budget from the saved snapshots, without asking any CLI (`o budget --json --cached`).

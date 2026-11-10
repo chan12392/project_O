@@ -227,6 +227,9 @@ pub fn run_plan_with(
     // Dreaming's tuning (ADR-0041 개정 1): what kept failing in this project's runs, read once
     // for the run — reading it scans a month of events, which every card start need not repeat.
     let lessons = Arc::new(crate::tuning::section(home, &plan.project));
+    // The Wiki's tags for this project, read once like the lessons: a card finds by them and
+    // opens only the documents it needs (ADR-0041 개정 2).
+    let wiki = Arc::new(crate::dream::hint(home, &plan.project));
     let mut pending: Vec<Card> = plan.cards.clone();
     let mut queued: HashSet<String> = HashSet::new();
     // This run's cards handed to a thread and not yet ended.
@@ -397,6 +400,7 @@ pub fn run_plan_with(
             let (contexts, workdir) = (Arc::clone(&contexts), Arc::clone(&workdir));
             let workspaces = workspaces.clone();
             let lessons = Arc::clone(&lessons);
+            let wiki = Arc::clone(&wiki);
             running.push(card.id.clone());
             thread::spawn(move || {
                 let mut context = contexts.get(&card.id).cloned().unwrap_or_default();
@@ -423,6 +427,12 @@ pub fn run_plan_with(
                 if let Some(lessons) = lessons.as_deref() {
                     context.push('\n');
                     context.push_str(lessons);
+                    context.push('\n');
+                }
+                // Only a CLI that may run `o context` itself can follow it.
+                if let Some(wiki) = wiki.as_deref().filter(|_| crate::providers::get(card.provider).searches_context()) {
+                    context.push('\n');
+                    context.push_str(wiki);
                     context.push('\n');
                 }
                 if !card.depends_on.is_empty() {
@@ -511,7 +521,7 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
         // Codex and Antigravity report usage only when asked: a stale reading is read again before the budget check.
         let probed = |c: &Value| matches!(c.get("provider").and_then(Value::as_str), Some("codex" | "agy"));
         if plan.get("cards").and_then(Value::as_array).is_some_and(|cards| cards.iter().any(probed)) {
-            budget::refresh_if_stale(home, Utc::now());
+            budget::refresh_if_stale(home, Utc::now(), Some(Profile::of_clean(is_clean(home, run_id))));
         }
         let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
         let mode = RunMode { profile: Profile::of_clean(is_clean(home, run_id)), context: true, yolo: is_yolo(home, run_id) };

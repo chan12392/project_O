@@ -9,7 +9,7 @@ import { backend, type Backend, type DreamDoc, type DreamList, type DreamPage } 
 import { BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { safeUrl } from "../chat/markdown.ts";
 import { AddMaterial } from "./AddMaterial.tsx";
-import { buildTree, countDocs, fileName, filterDocs, firstDoc, KIND_WORD, resolveLink, type WikiFolder } from "./wikiTree.ts";
+import { buildTree, countDocs, fileName, filterDocs, firstDoc, KIND_WORD, resolveLink, tagCounts, toggleTag, type WikiFolder } from "./wikiTree.ts";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -67,6 +67,12 @@ export function WikiScreen({ api, projects, doc, onDoc }: {
   const shown = useMemo(() => filterDocs(docs ?? [], query), [docs, query]);
   const tree = useMemo(() => buildTree(shown), [shown]);
   const paths = useMemo(() => (docs ?? []).map((d) => d.path), [docs]);
+  // The most used tags, and any the query asks for beyond them.
+  const asked = useMemo(() => new Set(query.toLowerCase().split(/\s+/).filter((w) => w.startsWith("#")).map((w) => w.slice(1))), [query]);
+  const tags = useMemo(() => {
+    const all = tagCounts(docs ?? []);
+    return [...all.slice(0, MAX_TAG_CHIPS), ...all.slice(MAX_TAG_CHIPS).filter(({ tag }) => asked.has(tag))];
+  }, [docs, asked]);
   const current = page?.key === open ? page : undefined;
 
   const remove = (path: string) =>
@@ -93,6 +99,15 @@ export function WikiScreen({ api, projects, doc, onDoc }: {
           <Search className="size-3.5 shrink-0" aria-hidden="true" />
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="문서 찾기" aria-label="문서 찾기" className="min-w-0 flex-1 bg-transparent text-xs text-foreground outline-none placeholder:text-muted-foreground" />
         </label>
+        {tags.length > 0 && (
+          <div className="flex shrink-0 flex-wrap gap-1 border-b px-2 py-1.5" aria-label="태그로 찾기">
+            {tags.map(({ tag, count }) => (
+              <button key={tag} type="button" aria-pressed={asked.has(tag)} onClick={() => setQuery((q) => toggleTag(q, tag))} title={`${count}개 문서`} className={TAG_CHIP}>
+                #{tag}
+              </button>
+            ))}
+          </div>
+        )}
         <div className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto p-1.5">
           {!list && <Hint>문서를 찾는 중…</Hint>}
           {list?.error && <Hint alert>문서 목록을 읽지 못했습니다: {list.error}</Hint>}
@@ -121,7 +136,7 @@ export function WikiScreen({ api, projects, doc, onDoc }: {
             {current?.error && <p role="alert" className="p-6 text-sm text-destructive">문서를 읽지 못했습니다: {current.error}</p>}
             {current?.value && (
               <div className="mx-auto max-w-3xl px-6 py-5">
-                <PageHead key={current.value.path} page={current.value} onRemove={remove} />
+                <PageHead key={current.value.path} page={current.value} onRemove={remove} onTag={(tag) => setQuery(`#${tag}`)} />
                 <Document page={current.value} paths={paths} onDoc={onDoc} />
                 {current.value.truncated && <p className="mt-4 text-xs text-muted-foreground">문서가 길어 앞부분만 표시했습니다.</p>}
                 <LinkList title="이 문서가 이어진 문서" paths={current.value.links} docs={docs ?? []} onDoc={onDoc} />
@@ -136,6 +151,9 @@ export function WikiScreen({ api, projects, doc, onDoc }: {
 }
 
 const EMPTY: ReadonlySet<string> = new Set();
+/** Tags offered under the search field. */
+const MAX_TAG_CHIPS = 12;
+const TAG_CHIP = "rounded border px-1.5 py-0.5 text-2xs text-muted-foreground focus-ring hover:bg-sidebar-accent hover:text-foreground aria-pressed:border-transparent aria-pressed:bg-accent aria-pressed:font-medium aria-pressed:text-foreground";
 
 function toggled(set: ReadonlySet<string>, path: string): ReadonlySet<string> {
   const next = new Set(set);
@@ -192,7 +210,7 @@ function FolderRows({ folder, depth, open, closed, onToggle, onDoc }: { folder: 
 }
 
 /** What the document is and where it came from; a material can be taken out here (asked twice). */
-function PageHead({ page, onRemove }: { page: DreamPage; onRemove: (path: string) => Promise<void> }) {
+function PageHead({ page, onRemove, onTag }: { page: DreamPage; onRemove: (path: string) => Promise<void>; onTag: (tag: string) => void }) {
   const [asking, setAsking] = useState(false);
   const [error, setError] = useState<string>();
   const source = page.source && safeUrl(page.source);
@@ -239,6 +257,15 @@ function PageHead({ page, onRemove }: { page: DreamPage; onRemove: (path: string
           ) : (
             page.source
           )}
+        </p>
+      )}
+      {page.tags && page.tags.length > 0 && (
+        <p className="mt-1.5 flex flex-wrap gap-1" aria-label="태그">
+          {page.tags.map((tag) => (
+            <button key={tag} type="button" onClick={() => onTag(tag)} title="이 태그가 붙은 문서만 보기" className={TAG_CHIP}>
+              #{tag}
+            </button>
+          ))}
         </p>
       )}
       {/* A material that opens with its own heading already shows its title. */}

@@ -445,6 +445,8 @@ export interface DreamDoc {
   /** When it was added or when the card ended (ISO). */
   at: string;
   size: number;
+  /** What it is found by, lower case, without the `#`: a note's own `#tags` (its card's record and failed calls take them too), a material's tags. */
+  tags?: string[];
 }
 
 export interface DreamList {
@@ -487,8 +489,8 @@ export interface DreamChange {
   evidence: { runId: string; cardId: string }[];
 }
 
-/** What `o dream add` takes: text as given (`source` names where it came from), or a web address to fetch. */
-export type DreamInput = { kind: "text"; title?: string; text: string; source?: string; project?: string } | { kind: "url"; url: string; title?: string; project?: string };
+/** What `o dream add` takes: text as given (`source` names where it came from), or a web address to fetch. `tags`: words apart by commas or spaces. */
+export type DreamInput = { kind: "text"; title?: string; text: string; source?: string; project?: string; tags?: string } | { kind: "url"; url: string; title?: string; project?: string; tags?: string };
 
 /** What file and area nodes take their colors from (`o graph settings --color-by`). */
 export type GraphColorBy = "language" | "area";

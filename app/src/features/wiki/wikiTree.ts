@@ -51,14 +51,33 @@ export function countDocs(folder: WikiFolder): number {
   return folder.docs.length + folder.folders.reduce((sum, sub) => sum + countDocs(sub), 0);
 }
 
-/** The documents whose title, path or project holds every word of the query (any case). */
+/**
+ * The documents whose title, path, project or tags hold every word of the query (any case).
+ * A word written as `#tag` asks for exactly that tag.
+ */
 export function filterDocs(docs: DreamDoc[], query: string): DreamDoc[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (words.length === 0) return docs;
   return docs.filter((doc) => {
-    const text = `${doc.path}\n${doc.title}\n${doc.project ?? ""}`.toLowerCase();
-    return words.every((word) => text.includes(word));
+    const tags = doc.tags ?? [];
+    const text = `${doc.path}\n${doc.title}\n${doc.project ?? ""}\n${tags.join("\n")}`.toLowerCase();
+    return words.every((word) => (word.startsWith("#") && word.length > 1 ? tags.includes(word.slice(1)) : text.includes(word)));
   });
+}
+
+/** The tags the documents carry, the most used first (then by name). */
+export function tagCounts(docs: DreamDoc[]): { tag: string; count: number }[] {
+  const counts = new Map<string, number>();
+  for (const doc of docs) for (const tag of doc.tags ?? []) counts.set(tag, (counts.get(tag) ?? 0) + 1);
+  return [...counts].map(([tag, count]) => ({ tag, count })).sort((a, b) => b.count - a.count || a.tag.localeCompare(b.tag));
+}
+
+/** The query with `#tag` added, or taken out when it is already asked for. */
+export function toggleTag(query: string, tag: string): string {
+  const word = `#${tag}`;
+  const words = query.split(/\s+/).filter(Boolean);
+  const kept = words.filter((w) => w.toLowerCase() !== word);
+  return (kept.length === words.length ? [...words, word] : kept).join(" ");
 }
 
 /** A document's file name without its folders. */

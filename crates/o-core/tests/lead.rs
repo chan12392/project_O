@@ -2063,6 +2063,13 @@ fn round_trip() {
     lead::send(&home, &request(&project, "좋아"), claude.as_ref()).unwrap();
     let prompt = seen.lock().unwrap()[2].stdin.clone().unwrap();
     assert!(!prompt.contains("main 브랜치는 절대"), "{prompt}");
+    // A resumed CLI that never started heard nothing: the next turn tells it that message too.
+    let (dead, _) = fake(Vec::new());
+    let events = lead::send(&home, &request(&project, "테스트도 넣어 줘"), dead.as_ref()).unwrap();
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Seen { .. })), "{events:?}");
+    lead::send(&home, &request(&project, "다시 보냅니다"), claude.as_ref()).unwrap();
+    let prompt = seen.lock().unwrap()[3].stdin.clone().unwrap();
+    assert!(prompt.contains("테스트도 넣어 줘"), "{prompt}");
 }
 /// `leads/current.json` (project → its thread) is replaced whole. One that cannot be read is
 /// not taken as empty: a new thread is not started over it (which dropped every other

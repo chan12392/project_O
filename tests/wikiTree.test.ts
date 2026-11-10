@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildTree, countDocs, fileName, filterDocs, firstDoc, resolveLink, titleFromFile } from "../app/src/features/wiki/wikiTree.ts";
+import { buildTree, countDocs, fileName, filterDocs, firstDoc, resolveLink, tagCounts, titleFromFile, toggleTag } from "../app/src/features/wiki/wikiTree.ts";
 import type { DreamDoc } from "../app/src/platform/backend/types.ts";
 
 const doc = (path: string, title: string, at: string, project?: string): DreamDoc => ({ path, title, kind: path.startsWith("외부 자료/") ? "external" : path.startsWith("작업 성공/") ? "done" : path.startsWith("도구 오류/") ? "tool" : path.startsWith("배운 것/") ? "note" : "failed", project, at, size: 1 });
@@ -36,6 +36,16 @@ test("filterDocs matches every word against the title, the path or the project",
   assert.deepEqual(filterDocs(DOCS, "빌드 실패").map((d) => d.path), ["작업 실패/blog/r2-build.md"]);
   assert.deepEqual(filterDocs(DOCS, "WORK/APP").map((d) => d.path), ["작업 성공/app/r0-copy.md"]);
   assert.deepEqual(filterDocs(DOCS, "nothing"), []);
+});
+
+test("documents are found by their tags, and a #word asks for exactly that tag", () => {
+  const tagged = [{ ...DOCS[0], tags: ["서명", "배포"] }, { ...DOCS[1], tags: ["서명키"] }, { ...DOCS[4], tags: ["배포"] }, DOCS[3]];
+  assert.deepEqual(filterDocs(tagged, "서명").map((d) => d.path), ["작업 실패/blog/r2-build.md", "작업 성공/blog/r1-build.md"]);
+  assert.deepEqual(filterDocs(tagged, "#서명").map((d) => d.path), ["작업 실패/blog/r2-build.md"]);
+  assert.deepEqual(filterDocs(tagged, "#배포 안내").map((d) => d.path), ["외부 자료/20260101-guide.md"]);
+  assert.deepEqual(tagCounts(tagged), [{ tag: "배포", count: 2 }, { tag: "서명", count: 1 }, { tag: "서명키", count: 1 }]);
+  assert.equal(toggleTag("빌드", "배포"), "빌드 #배포");
+  assert.equal(toggleTag("빌드 #배포  #서명", "배포"), "빌드 #서명");
 });
 
 test("firstDoc opens the newest document", () => {

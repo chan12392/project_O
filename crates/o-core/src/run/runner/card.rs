@@ -402,11 +402,16 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
     let mut reader = StreamReader::new(card.provider);
     let mut last: Option<(bool, String)> = None;
     let mut last_message = String::new();
+    // The session this card runs in: the resumed one, or the one the stream names.
+    let mut session = followup.as_ref().and_then(|target| target.session.clone());
     let mut take = |signal: StreamSignal| -> io::Result<()> {
         let at = now_iso();
         let card_id = card.id.clone();
         match signal {
-            StreamSignal::Session { session_id } => emit(OEvent::CardSession { at, card_id, session_id })?,
+            StreamSignal::Session { session_id } => {
+                session = Some(session_id.clone());
+                emit(OEvent::CardSession { at, card_id, session_id })?
+            }
             StreamSignal::Message { text } => {
                 last_message = text.clone();
                 emit(OEvent::CardMessage { at, card_id, text })?;
@@ -417,7 +422,14 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
                 let until = set_cooldown(home, card.provider, &until, Utc::now())?;
                 emit(OEvent::CardLimit { at: now_iso(), card_id, until })?;
             }
-            StreamSignal::Usage { input, cached, output, complete } => emit(OEvent::CardUsage { at, card_id, input, cached, output, complete: Some(complete) })?,
+            StreamSignal::Usage { input, cached, output, complete } => {
+                // Codex reports its thread's total: a resumed card counts only what this turn added.
+                let [input, cached, output] = match session.as_deref().filter(|_| card.provider == ProviderId::Codex && complete) {
+                    Some(session) => crate::usage::thread_total::turn(home, session, [input, cached, output], Utc::now()),
+                    None => [input, cached, output],
+                };
+                emit(OEvent::CardUsage { at, card_id, input, cached, output, complete: Some(complete) })?
+            }
             StreamSignal::Quota { window, used, resets_at } => {
                 // A snapshot for the daily budget; the event stays the record either way.
                 let reading = UsageWindow { provider: card.provider, window: window.clone(), group: None, used, resets_at: resets_at.clone() };

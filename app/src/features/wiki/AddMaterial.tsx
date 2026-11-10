@@ -32,6 +32,7 @@ export function AddMaterial({ api, projects, onAdded, onCancel }: { api: Backend
   const [file, setFile] = useState<{ name: string; text: string }>();
   const [url, setUrl] = useState("");
   const [project, setProject] = useState("");
+  const [tags, setTags] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string>();
 
@@ -54,7 +55,7 @@ export function AddMaterial({ api, projects, onAdded, onCancel }: { api: Backend
   };
 
   const input = (): DreamInput | string => {
-    const common = { title: title.trim() || undefined, project: project || undefined };
+    const common = { title: title.trim() || undefined, project: project || undefined, tags: tags.trim() || undefined };
     if (mode === "url") return /^https?:\/\/\S+$/i.test(url.trim()) ? { kind: "url", url: url.trim(), ...common } : "http:// 또는 https://로 시작하는 주소를 넣으세요.";
     if (mode === "file") return file ? { kind: "text", text: file.text, source: file.name, ...common } : "넣을 파일을 고르세요.";
     return text.trim() ? { kind: "text", text, ...common } : "넣을 글을 적으세요.";
@@ -113,6 +114,10 @@ export function AddMaterial({ api, projects, onAdded, onCancel }: { api: Backend
             </option>
           ))}
         </select>
+      </label>
+      <label className="flex flex-col gap-1">
+        <span className="text-muted-foreground">태그 (쉼표나 띄어쓰기로 나눕니다. 카드가 이 태그로 자료를 찾습니다)</span>
+        <input value={tags} onChange={(e) => setTags(e.target.value)} placeholder="배포, 서명" className={FIELD} />
       </label>
       {error && <p role="alert" className="text-destructive">{error}</p>}
       <div className="flex justify-end gap-2">

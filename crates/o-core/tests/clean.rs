@@ -13,7 +13,7 @@ fn antigravity_shell_login_models_and_usage_do_not_start_the_cli() {
     assert!(o_core::agents::clean::command(root, ProviderId::Agy, &["-p", "test"]).unwrap_err().to_string().contains("Antigravity"));
     assert!(o_core::agents::clean::login_state(root, ProviderId::Agy).detail.contains("Antigravity"));
     assert!(o_core::providers::lead_models(ProviderId::Agy).unwrap_err().contains("Antigravity"));
-    assert!(o_core::providers::get(ProviderId::Agy).usage_windows().unwrap().unwrap_err().contains("Antigravity"));
+    assert!(o_core::providers::get(ProviderId::Agy).usage_windows(None).unwrap().unwrap_err().contains("Antigravity"));
 }
 
 fn temp(name: &str) -> PathBuf {

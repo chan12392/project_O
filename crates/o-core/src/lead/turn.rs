@@ -356,6 +356,8 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     let mut reader = StreamReader::new(req.provider);
     // The session this turn ran in: the resumed one, or the one the stream names.
     let mut used_session = if app_server { None } else { session.clone() };
+    // Whether the stream named its session: a resumed CLI that never started names none.
+    let mut session_named = false;
     let (mut input, mut cached, mut output) = (0.0, 0.0, 0.0);
     let mut used = false;
     let mut usage_complete = true;
@@ -430,9 +432,15 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
                         }
                         if worker.is_some() && session.as_deref() != Some(session_id.as_str()) { index_session(home, &thread_id, &session_id); }
                         used_session = Some(session_id);
+                        session_named = true;
                     }
                     StreamSignal::Message { text } => last_message = text,
                     StreamSignal::Usage { input: i, cached: c, output: o, complete } => {
+                        // `codex exec` reports its thread's total (app-server reports each turn by itself).
+                        let [i, c, o] = match used_session.as_deref().filter(|_| !app_server && req.provider == ProviderId::Codex && complete) {
+                            Some(session) => crate::usage::thread_total::turn(home, session, [i, c, o], chrono::Utc::now()),
+                            None => [i, c, o],
+                        };
                         (input, cached, output, used) = (input + i, cached + c, output + o, true);
                         usage_complete &= complete;
                     }
@@ -616,9 +624,12 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     if let Some(error) = fatal {
         return Err(if unresolved { format!("{error} 총괄 자손의 종료 상태도 불명입니다.") } else { error });
     }
-    // The CLI got this turn's message: its session has seen the thread through it.
-    let session_seen = used_session.is_some();
-    if let Some(session_id) = used_session.as_ref().filter(|_| worker.is_none()) {
+    // A turn app-server finished needs no clean exit: a slow shutdown was ended above.
+    let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && (exit == Some(0) || finished);
+    // The CLI got this turn's message: its session has seen the thread through it. A resumed
+    // session that neither named itself nor answered did not start, so the next turn tells it again.
+    let session_seen = used_session.is_some() && (session_named || ok);
+    if let Some(session_id) = used_session.as_ref().filter(|_| session_seen && worker.is_none()) {
         emit(LeadEvent::Seen { at: now_iso(), provider: req.provider, session_id: session_id.clone(), through: before.len() })?;
         if !pending.is_empty() && notes::change(home, &thread_id, notes::Change::Sent { notes: pending.clone() }).is_err() {
             emit(LeadEvent::Error { at: now_iso(), text: "주석은 전달했지만 전달 상태를 저장하지 못했습니다. 다시 보내기 전에 주석을 확인하세요".into() })?;
@@ -642,8 +653,6 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
         let text = if unknown_saved { "총괄 자손의 종료 상태가 불명입니다." } else { "총괄 자손의 종료 상태가 불명이며 이 상태를 저장하지 못했습니다." };
         emit(LeadEvent::Warning { at: now_iso(), text: text.into() })?;
     }
-    // A turn app-server finished needs no clean exit: a slow shutdown was ended above.
-    let ok = last.as_ref().is_some_and(|(ok, _)| *ok) && (exit == Some(0) || finished);
     let answer = last.map(|(_, text)| text).filter(|t| !t.trim().is_empty()).unwrap_or(last_message);
     if !ok {
         let why = if limited {

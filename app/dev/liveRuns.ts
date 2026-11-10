@@ -566,7 +566,9 @@ export function liveRuns(): Plugin {
         }
         if (req.method === "GET" && path === "/usage") return void o(["usage", "--cached", "--json"]).then((out) => send(res, 200, out), error(res));
         if (req.method === "POST" && path === "/usage/refresh") {
-          refreshing ??= o(["usage", "--json"]).finally(() => (refreshing = undefined));
+          // Whose login to ask (`o usage --profile`); anything else leaves the choice to `o`.
+          const profile = new URLSearchParams(req.url?.split("?")[1] ?? "").get("profile") ?? "";
+          refreshing ??= o(["usage", "--json", ...(profile === "project-o" || profile === "own" ? ["--profile", profile] : [])]).finally(() => (refreshing = undefined));
           return void refreshing.then((out) => send(res, 200, out), error(res));
         }
         const query = new URLSearchParams(req.url?.split("?")[1] ?? "");

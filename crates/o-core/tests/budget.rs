@@ -199,7 +199,7 @@ fn readings_are_kept_as_weekly_snapshots_and_old_ones_dropped() {
     record(&home, &[window(ProviderId::Codex, "seven_day", 0.30)], now - Duration::days(10)).unwrap();
     record(&home, &[window(ProviderId::Codex, "five_hour", 0.90), window(ProviderId::Codex, "seven_day", 0.41)], now - Duration::hours(1)).unwrap();
     // `o usage` saving a reading records it too.
-    let reading = UsageReading { at: o_core::sys::js::iso(now), windows: vec![window(ProviderId::Codex, "seven_day", 0.42)], unavailable: Vec::new() };
+    let reading = UsageReading { at: o_core::sys::js::iso(now), profile: None, windows: vec![window(ProviderId::Codex, "seven_day", 0.42)], unavailable: Vec::new() };
     save_usage(&home, &reading).unwrap();
     let kept: Vec<f64> = weekly_snapshots(&home, ProviderId::Codex).unwrap().iter().map(|s| s.used).collect();
     assert_eq!(kept, [0.41, 0.42]);

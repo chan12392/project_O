@@ -143,12 +143,12 @@ const demoAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toIS
 const DEMO_BLOG = "C:/projects/blog";
 
 let demoDocs: DemoDoc[] = [
-  { path: "외부 자료/20261108-101500-tauri-2-배포-안내.md", title: "Tauri 2 배포 안내", kind: "external", project: DEMO_BLOG, at: demoAgo(50), size: 310, source: "https://example.invalid/tauri/distribute", text: "## 배포 순서\n\n- 서명 키를 준비합니다.\n- `tauri build`로 설치 파일을 만듭니다.\n\n더 볼 것: [[릴리스 점검표]]\n", links: ["외부 자료/20261107-090000-릴리스-점검표.md"] },
-  { path: "외부 자료/20261107-090000-릴리스-점검표.md", title: "릴리스 점검표", kind: "external", at: demoAgo(74), size: 180, source: "release-checklist.md", text: "# 릴리스 점검표\n\n1. 테스트 통과\n2. 라이선스 검사\n3. 프리릴리스 확인\n", links: [] },
-  { path: "작업 성공/blog/20261110-091200-k3fa-build.md", title: "설치 파일 만들기 · 빌드", kind: "done", project: DEMO_BLOG, at: demoAgo(3), size: 240, text: "# 설치 파일 만들기 · 빌드\n\n- **결과**: 성공\n- **프로젝트**: `C:/projects/blog`\n\n## 맡긴 일\n\n설치 파일을 만들고 크기를 확인합니다.\n\n## 결과\n\nhttps://example.invalid/tauri/distribute 순서대로 설치 파일을 만들었습니다.\n\n## 바뀐 파일\n\n- `scripts/build-installer.ps1`\n", links: ["외부 자료/20261108-101500-tauri-2-배포-안내.md", "작업 실패/blog/20261109-173000-p8zq-build.md"] },
+  { path: "외부 자료/20261108-101500-tauri-2-배포-안내.md", title: "Tauri 2 배포 안내", kind: "external", project: DEMO_BLOG, at: demoAgo(50), size: 310, tags: ["배포", "tauri"], source: "https://example.invalid/tauri/distribute", text: "## 배포 순서\n\n- 서명 키를 준비합니다.\n- `tauri build`로 설치 파일을 만듭니다.\n\n더 볼 것: [[릴리스 점검표]]\n", links: ["외부 자료/20261107-090000-릴리스-점검표.md"] },
+  { path: "외부 자료/20261107-090000-릴리스-점검표.md", title: "릴리스 점검표", kind: "external", at: demoAgo(74), size: 180, tags: ["배포", "점검"], source: "release-checklist.md", text: "# 릴리스 점검표\n\n1. 테스트 통과\n2. 라이선스 검사\n3. 프리릴리스 확인\n", links: [] },
+  { path: "작업 성공/blog/20261110-091200-k3fa-build.md", title: "설치 파일 만들기 · 빌드", kind: "done", project: DEMO_BLOG, at: demoAgo(3), size: 240, tags: ["서명", "tauri"], text: "# 설치 파일 만들기 · 빌드\n\n- **결과**: 성공\n- **프로젝트**: `C:/projects/blog`\n\n## 맡긴 일\n\n설치 파일을 만들고 크기를 확인합니다.\n\n## 결과\n\nhttps://example.invalid/tauri/distribute 순서대로 설치 파일을 만들었습니다.\n\n## 바뀐 파일\n\n- `scripts/build-installer.ps1`\n", links: ["외부 자료/20261108-101500-tauri-2-배포-안내.md", "작업 실패/blog/20261109-173000-p8zq-build.md"] },
   { path: "작업 성공/blog/20261110-091200-k3fa-test.md", title: "설치 파일 만들기 · 검증", kind: "done", project: DEMO_BLOG, at: demoAgo(2), size: 120, text: "# 설치 파일 만들기 · 검증\n\n- **결과**: 성공\n\n## 결과\n\n설치와 제거를 확인했습니다.\n", links: ["작업 성공/blog/20261110-091200-k3fa-build.md"] },
   { path: "작업 실패/blog/20261109-173000-p8zq-build.md", title: "설치 파일 만들기 · 빌드", kind: "failed", project: DEMO_BLOG, at: demoAgo(19), size: 200, text: "# 설치 파일 만들기 · 빌드\n\n- **결과**: 실패 (종료 코드 1)\n- **프로젝트**: `C:/projects/blog`\n\n## 결과\n\n서명 키가 없어 `tauri build`가 멈췄습니다.\n\n## 바뀐 파일\n\n- `scripts/build-installer.ps1`\n", links: [] },
-  { path: "배운 것/blog/20261110-091200-k3fa-build-1.md", title: "서명 키는 환경 변수로만 읽는다", kind: "note", project: DEMO_BLOG, at: demoAgo(3), size: 120, source: "설치 파일 만들기 · 빌드", text: "# 서명 키는 환경 변수로만 읽는다\n\n`tauri build` 전에 서명 키 환경 변수가 있어야 합니다. 없으면 설치 파일 단계에서 멈춥니다.\n", links: ["작업 성공/blog/20261110-091200-k3fa-build.md"] },
+  { path: "배운 것/blog/20261110-091200-k3fa-build-1.md", title: "서명 키는 환경 변수로만 읽는다", kind: "note", project: DEMO_BLOG, at: demoAgo(3), size: 120, tags: ["서명", "tauri"], source: "설치 파일 만들기 · 빌드", text: "# 서명 키는 환경 변수로만 읽는다\n\n`tauri build` 전에 서명 키 환경 변수가 있어야 합니다. 없으면 설치 파일 단계에서 멈춥니다. #서명 #tauri\n", links: ["작업 성공/blog/20261110-091200-k3fa-build.md"] },
   { path: "도구 오류/blog/20261109-173000-p8zq-build.md", title: "도구 오류 3건 · 설치 파일 만들기 · 빌드", kind: "tool", project: DEMO_BLOG, at: demoAgo(19), size: 3, text: "# 도구 오류 3건 · 설치 파일 만들기 · 빌드\n\n- **프로젝트**: `C:/projects/blog`\n- **실패한 호출**: 3건 (서로 다른 호출 2개)\n\n## 실패한 호출\n\n- **Bash** `npm run tauri biuld` — 2번\n  - Missing script: biuld\n- **Read** `src-tauri/tauri.conf.json5`\n  - File does not exist.\n", links: ["작업 실패/blog/20261109-173000-p8zq-build.md"] },
   { path: "작업 성공/landing/20261106-140000-w2ab-copy.md", title: "첫 화면 문구 · 작성", kind: "done", project: "C:/projects/landing", at: demoAgo(96), size: 90, text: "# 첫 화면 문구 · 작성\n\n- **결과**: 성공\n\n## 결과\n\n문구 세 가지를 제안했습니다.\n", links: [] },
 ];
@@ -425,7 +425,7 @@ export const demoBackend: Backend = {
     usage: { input: 42100, output: 980 },
   }),
   graphSettings: async (change) => (demoGraphSettings = { ...demoGraphSettings, ...change }),
-  dreamList: async () => ({ docs: demoDocs.map(({ path, title, kind, project, at, size }) => ({ path, title, kind, project, at, size })), truncated: false }),
+  dreamList: async () => ({ docs: demoDocs.map(({ path, title, kind, project, at, size, tags }) => ({ path, title, kind, project, at, size, tags })), truncated: false }),
   dreamRead: async (path): Promise<DreamPage> => {
     const doc = demoDocs.find((d) => d.path === path);
     if (!doc) throw new Error(`목록에 없는 문서입니다: ${path}`);
@@ -438,7 +438,7 @@ export const demoBackend: Backend = {
     const text = input.kind === "text" ? input.text.trim() : `미리보기에서는 주소를 읽어 오지 않습니다: ${input.url}`;
     if (!text) throw new Error("넣을 내용이 비어 있습니다");
     const title = input.title?.trim() || (input.kind === "url" ? input.url : (text.split("\n").find((l) => l.trim()) ?? "자료").replace(/^#\s*/, "")).slice(0, 120);
-    const doc: DemoDoc = { path: `외부 자료/${Date.now()}-${title.replace(/[^\p{L}\p{N}]+/gu, "-").slice(0, 40)}.md`, title, kind: "external", project: input.project, at: new Date().toISOString(), size: text.length, source: input.kind === "url" ? input.url : input.source, text, links: [] };
+    const doc: DemoDoc = { path: `외부 자료/${Date.now()}-${title.replace(/[^\p{L}\p{N}]+/gu, "-").slice(0, 40)}.md`, title, kind: "external", project: input.project, at: new Date().toISOString(), size: text.length, tags: [...new Set((input.tags ?? "").toLowerCase().split(/[\s,]+/).map((tag) => tag.replace(/^#+/, "")).filter(Boolean))], source: input.kind === "url" ? input.url : input.source, text, links: [] };
     demoDocs = [doc, ...demoDocs];
     const { text: _text, source: _source, links: _links, ...listed } = doc;
     return listed;
