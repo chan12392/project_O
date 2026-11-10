@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { buildTree, countDocs, fileName, filterDocs, firstDoc, resolveLink, tagCounts, titleFromFile, toggleTag } from "../app/src/features/wiki/wikiTree.ts";
+import { buildTree, countDocs, editorAfterSave, fileName, filterDocs, firstDoc, resolveLink, tagCounts, titleFromFile, toggleTag } from "../app/src/features/wiki/wikiTree.ts";
 import type { DreamDoc } from "../app/src/platform/backend/types.ts";
 
 const doc = (path: string, title: string, at: string, project?: string): DreamDoc => ({ path, title, kind: path.startsWith("외부 자료/") ? "external" : path.startsWith("작업 성공/") ? "done" : path.startsWith("도구 오류/") ? "tool" : path.startsWith("배운 것/") ? "note" : "failed", project, at, size: 1 });
@@ -36,6 +36,14 @@ test("filterDocs matches every word against the title, the path or the project",
   assert.deepEqual(filterDocs(DOCS, "빌드 실패").map((d) => d.path), ["작업 실패/blog/r2-build.md"]);
   assert.deepEqual(filterDocs(DOCS, "WORK/APP").map((d) => d.path), ["작업 성공/app/r0-copy.md"]);
   assert.deepEqual(filterDocs(DOCS, "nothing"), []);
+});
+
+test("a save closes its own editor and leaves a newer one open", () => {
+  assert.equal(editorAfterSave(1, 1), 0);
+  // Editor 1 was left for a document and editor 2 opened before 1's save landed.
+  assert.equal(editorAfterSave(2, 1), 2);
+  // Left for a document, nothing open: nothing to close (and the person's document stays).
+  assert.equal(editorAfterSave(0, 1), 0);
 });
 
 test("documents are found by their tags, and a #word asks for exactly that tag", () => {

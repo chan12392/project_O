@@ -54,6 +54,24 @@ export function fitDistance(radius: number, fovDegrees: number, aspect: number):
   return (Math.max(radius, MIN_FIT_RADIUS) / Math.sin(half)) * 1.15;
 }
 
+/**
+ * Whether a frame writes the node buffers, and whether one more write is owed after it. A frame
+ * inside a move owes the frame after the move its final state: frames can stop (a hidden window)
+ * and come back past the move's end, where neither "moving" nor "dirty" would ask for it.
+ */
+export function frameWrite(moving: boolean, dirty: boolean, owed: boolean): { write: boolean; owed: boolean } {
+  return { write: moving || dirty || owed, owed: moving };
+}
+
+/**
+ * Whether the camera's one fit per scope visit is used up: nothing more is on its way and what
+ * was placed is the layout of the view on screen. A layout of an earlier, smaller view still
+ * frames the camera, but the fit stays owed to the layout that replaces it.
+ */
+export function fitSettled(state: { loading: boolean; busy: boolean; placed: string; current: string }): boolean {
+  return !state.loading && !state.busy && state.placed === state.current;
+}
+
 type Vec = { x: number; y: number; z: number };
 
 /** The nearest node sphere a ray meets (origin + t·direction, direction normalized), or -1. */

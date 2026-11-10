@@ -65,6 +65,14 @@ export function filterDocs(docs: DreamDoc[], query: string): DreamDoc[] {
   });
 }
 
+/**
+ * The editor left open (0: none) once the save of editor `finished` lands. Only the editor that
+ * was saved closes: a save that lands late leaves a newer editor, and its draft, as they are.
+ */
+export function editorAfterSave(open: number, finished: number): number {
+  return open === finished ? 0 : open;
+}
+
 /** The tags the documents carry, the most used first (then by name). */
 export function tagCounts(docs: DreamDoc[]): { tag: string; count: number }[] {
   const counts = new Map<string, number>();

@@ -11,7 +11,7 @@ import type { GraphColorBy, GraphLink, GraphNode } from "../../platform/backend/
 import { baseColor, type GraphTheme } from "./graphColors.ts";
 import type { GraphLibs } from "./graphLib.ts";
 import { levelsOf, parentsOf } from "./graphLoad.ts";
-import { boundsOf, easeOut, fitDistance, GROW_MS, pickSphere, revealDelay } from "./graphMotion.ts";
+import { boundsOf, easeOut, fitDistance, fitSettled, frameWrite, GROW_MS, pickSphere, revealDelay } from "./graphMotion.ts";
 import { hasGlow, linkColor, linkParticles, nodeAura, nodeColor, nodeSize, palette, type GraphPalette } from "./graphStyle.ts";
 import type { Three, ThreeAttribute, ThreeCamera, ThreeGeometry, ThreeInstanced, ThreeMaterial, ThreeObject, ThreeScene } from "./graphThree.ts";
 import type { LayoutAnswer, LayoutRequest } from "./layoutWorker.ts";
@@ -182,6 +182,8 @@ export class GraphScene {
   private revealDone = false;
   private fitPending = true;
   private animUntil = 0;
+  /** A frame inside a move was written: the first frame after the move writes where it ends. */
+  private settling = false;
   private dirty = true;
   private raf = 0;
   private disposed = false;
@@ -605,7 +607,7 @@ export class GraphScene {
     else [dx, dy, dz] = [dx / length, dy / length, dz / length];
     const look = { x: center[0], y: center[1], z: center[2] };
     this.host.cameraPosition({ x: look.x + dx * distance, y: look.y + dy * distance, z: look.z + dz * distance }, look, this.options.reducedMotion ? 0 : 700);
-    if (!this.options.loading && !this.pending && !this.layoutTimer) this.fitPending = false;
+    if (fitSettled({ loading: this.options.loading, busy: !!this.pending || !!this.layoutTimer, placed: this.laidOut, current: this.signature(this.view) })) this.fitPending = false;
   }
 
   // Style
@@ -667,7 +669,9 @@ export class GraphScene {
     if (this.disposed) return;
     this.raf = requestAnimationFrame(this.tick);
     const moving = now < this.animUntil;
-    if (moving || this.dirty) {
+    const frame = frameWrite(moving, this.dirty, this.settling);
+    this.settling = frame.owed;
+    if (frame.write) {
       this.dirty = false;
       this.write(now);
     }

@@ -1,7 +1,32 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { boundsOf, easeOut, fitDistance, pickSphere, REVEAL_SPREAD_MS, revealDelay } from "../app/src/features/graph/graphMotion.ts";
+import { boundsOf, easeOut, fitDistance, fitSettled, frameWrite, pickSphere, REVEAL_SPREAD_MS, revealDelay } from "../app/src/features/graph/graphMotion.ts";
+
+test("a move that frames stopped in still gets its final write", () => {
+  // The frames a move from t=0 to t=100 gets: one early, then none until long after its end.
+  let state = { dirty: true, owed: false };
+  const frame = (now: number) => {
+    const { write, owed } = frameWrite(now < 100, state.dirty, state.owed);
+    state = { dirty: write ? false : state.dirty, owed };
+    return write;
+  };
+  assert.equal(frame(10), true);
+  assert.equal(frame(5_000), true, "the first frame past the end writes where the move ends");
+  assert.equal(frame(5_016), false, "and then the buffers rest");
+  // Nothing moving and nothing changed: no write. A change alone is written once.
+  assert.deepEqual(frameWrite(false, false, false), { write: false, owed: false });
+  assert.deepEqual(frameWrite(false, true, false), { write: true, owed: false });
+});
+
+test("the camera's fit is used up only by the layout of the view on screen", () => {
+  const settled = { loading: false, busy: false, placed: "a|b|c", current: "a|b|c" };
+  assert.equal(fitSettled(settled), true);
+  // A part's layout answered after the whole view arrived: the fit stays owed to the next layout.
+  assert.equal(fitSettled({ ...settled, placed: "a|b" }), false);
+  assert.equal(fitSettled({ ...settled, loading: true }), false);
+  assert.equal(fitSettled({ ...settled, busy: true }), false);
+});
 
 test("easeOut runs 0 → 1 and holds outside the move", () => {
   assert.equal(easeOut(-1), 0);

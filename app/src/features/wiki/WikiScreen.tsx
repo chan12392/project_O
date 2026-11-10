@@ -1,5 +1,5 @@
 import { ChevronRight, CircleCheck, CircleX, FileText, Folder, Lightbulb, Plus, RefreshCw, Search, Trash2, TriangleAlert } from "lucide-react";
-import { memo, useEffect, useMemo, useState, type MouseEvent, type ReactNode } from "react";
+import { memo, useEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -9,7 +9,7 @@ import { backend, type Backend, type DreamDoc, type DreamList, type DreamPage } 
 import { BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { safeUrl } from "../chat/markdown.ts";
 import { AddMaterial } from "./AddMaterial.tsx";
-import { buildTree, countDocs, fileName, filterDocs, firstDoc, KIND_WORD, resolveLink, tagCounts, toggleTag, type WikiFolder } from "./wikiTree.ts";
+import { buildTree, countDocs, editorAfterSave, fileName, filterDocs, firstDoc, KIND_WORD, resolveLink, tagCounts, toggleTag, type WikiFolder } from "./wikiTree.ts";
 
 const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
@@ -36,7 +36,13 @@ export function WikiScreen({ api, projects, doc, onDoc }: {
   const [query, setQuery] = useState("");
   const [closed, setClosed] = useState<ReadonlySet<string>>(new Set());
   const [reload, setReload] = useState(0);
-  const [adding, setAdding] = useState(false);
+  // The open "add material" editor (0: none). Each opening is its own editor, so a save that
+  // lands after the person moved on closes nothing but the editor it was started from.
+  const [editor, setEditor] = useState(0);
+  const editors = useRef(0);
+  const openEditor = useRef(editor);
+  openEditor.current = editor;
+  const adding = editor !== 0;
 
   useEffect(() => {
     let live = true;
@@ -87,7 +93,7 @@ export function WikiScreen({ api, projects, doc, onDoc }: {
     <div className="flex min-h-0 flex-1">
       <nav className="flex w-64 shrink-0 flex-col border-r" aria-label="문서 목록">
         <div className="flex shrink-0 items-center gap-1.5 border-b p-2">
-          <button type="button" onClick={() => setAdding(true)} className={`${BUTTON_SECONDARY} h-7 flex-1 justify-center`}>
+          <button type="button" onClick={() => !adding && setEditor(++editors.current)} className={`${BUTTON_SECONDARY} h-7 flex-1 justify-center`}>
             <Plus className="size-3.5" aria-hidden="true" />
             외부 자료 넣기
           </button>
@@ -113,20 +119,23 @@ export function WikiScreen({ api, projects, doc, onDoc }: {
           {list?.error && <Hint alert>문서 목록을 읽지 못했습니다: {list.error}</Hint>}
           {docs && docs.length === 0 && <Hint>아직 쌓인 것이 없습니다. 외부 자료를 넣거나 카드를 실행하면 여기에 모입니다.</Hint>}
           {docs && docs.length > 0 && shown.length === 0 && <Hint>찾는 문서가 없습니다.</Hint>}
-          {docs && <FolderRows folder={tree} depth={0} open={adding ? undefined : open} closed={query ? EMPTY : closed} onToggle={(path) => setClosed((s) => toggled(s, path))} onDoc={(path) => { setAdding(false); onDoc(path); }} />}
+          {docs && <FolderRows folder={tree} depth={0} open={adding ? undefined : open} closed={query ? EMPTY : closed} onToggle={(path) => setClosed((s) => toggled(s, path))} onDoc={(path) => { setEditor(0); onDoc(path); }} />}
           {list?.value?.truncated && <Hint>문서가 많아 최근 것만 표시합니다.</Hint>}
         </div>
       </nav>
       <article className="scrollbar-sleek min-w-0 flex-1 overflow-y-auto bg-chat-canvas">
         {adding ? (
           <AddMaterial
+            key={editor}
             api={api}
             projects={projects}
-            onCancel={() => setAdding(false)}
+            onCancel={() => setEditor(0)}
             onAdded={(added) => {
-              setAdding(false);
-              onDoc(added.path);
               setReload((n) => n + 1);
+              if (editorAfterSave(openEditor.current, editor) !== 0) return;
+              // Still this editor, or none: the material opens unless the person went to a document meanwhile.
+              if (openEditor.current === editor) onDoc(added.path);
+              setEditor(0);
             }}
           />
         ) : (

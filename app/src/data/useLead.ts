@@ -78,12 +78,16 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
   const send = useCallback(
     async (input: SendInput) => {
       if (!project) throw new Error("프로젝트 폴더를 먼저 정하세요");
+      // The tab this message was written in, fixed before any wait: switching tabs while a note
+      // is still being saved must not carry it to the other tab (#87). A tab closed meanwhile
+      // is refused by the core, and the composer gives the draft back.
+      const thread = selectedRef.current;
       setSending(true);
       // The message is on record before the lead starts: show it (and the busy lead) right away.
       const early = window.setTimeout(() => void refresh(), 400);
       try {
         if (noteWrite.current) await noteWrite.current;
-        await api.leadSend({ project, thread: selectedRef.current, ...input });
+        await api.leadSend({ project, thread, ...input });
       } finally {
         window.clearTimeout(early);
         setSending(false);
