@@ -166,7 +166,13 @@ pub(super) fn run(home: &Path, run_id: &str, plan: &Plan, card: &Card, cwd: &str
 
 #[allow(clippy::too_many_arguments)]
 #[cfg(not(windows))]
-pub(super) fn run(_: &Path, _: &str, _: &Plan, _: &Card, _: &str, _: Option<&str>, _: &Spawner, _: &[(String, String)], _: Slot<'_>) -> io::Result<CardStatus> {
+pub(super) fn run(home: &Path, run_id: &str, _: &Plan, card: &Card, _: &str, _: Option<&str>, _: &Spawner, _: &[(String, String)], slot: Slot<'_>) -> io::Result<CardStatus> {
+    // Consent comes first here too: a card without it ends the same way on every system.
+    if !crate::agents::agy::workers_allowed(home) {
+        drop(slot);
+        append_event(home, run_id, &OEvent::CardEnd { at: now_iso(), card_id: card.id.clone(), status: CardStatus::Failed, result: Some(crate::policy::AGY_WORKERS_DISABLED.into()), exit_code: None })?;
+        return Ok(CardStatus::Failed);
+    }
     Err(io::Error::new(io::ErrorKind::Unsupported, "이 운영체제에서는 터미널을 지원하지 않습니다"))
 }
 

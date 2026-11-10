@@ -39,6 +39,15 @@ fn exited_process() -> (u32, u64) {
     (pid, started)
 }
 
+/// Linux and macOS call an owner gone only where its boot and PID namespace can be read
+/// (`proc::process_scope`); an unprivileged Linux user (CI) cannot read init's namespace.
+fn owner_scope_known() -> bool {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    { proc::process_scope().is_some() }
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    { true }
+}
+
 fn mark_dead_runner(home: &Path, run_id: &str) {
     let (pid, started) = exited_process();
     fs::write(run_dir(home, run_id).join("runner.json"), json!({"pid":pid,"started":started}).to_string()).unwrap();
@@ -237,6 +246,12 @@ fn a_dead_runners_lease_without_a_job_name_stays_unknown() {
     let leases = store::resource_leases(&home).unwrap();
     assert_eq!(leases[0].job_name, None);
     assert_eq!(leases[0].state, "unknown");
+    if !owner_scope_known() {
+        // Nothing proves the owner gone here: the person is never offered the release.
+        assert!(!leases[0].processes_exited);
+        assert!(store::release_confirmed(&home, leases[0].id.parse().unwrap()).is_err());
+        return;
+    }
     assert!(leases[0].processes_exited);
     let id = leases[0].id.parse().unwrap();
     assert!(store::recover_resource(&home, id).is_err());

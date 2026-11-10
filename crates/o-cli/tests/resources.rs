@@ -67,6 +67,13 @@ fn person_can_release_an_unknown_lease_after_checking_children() {
     let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
     conn.execute("UPDATE resource_leases SET owner_pid=?1,owner_started=?2,worker_pid=?3,worker_started=?4", rusqlite::params![owner, owner_started, worker, worker_started]).unwrap();
     let id = store::resource_leases(&home).unwrap()[0].id.clone();
+    // Linux and macOS prove the owner gone only where its boot and PID namespace can be read;
+    // an unprivileged Linux user (CI) cannot, and the lease then rightly stays unknown.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if o_core::sys::proc::process_scope().is_none() {
+        assert!(!store::resource_leases(&home).unwrap()[0].processes_exited);
+        return;
+    }
     let mut command = Command::new(env!("CARGO_BIN_EXE_o"));
     command.args(["resources", "recover", &id, "--confirm-exited"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID");
     let output = o_core::sys::proc::hide_window(&mut command).output().unwrap();
