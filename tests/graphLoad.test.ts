@@ -103,6 +103,7 @@ test("levelsOf walks the contains tree: root 0, each level one under its parent"
 interface FakeApi {
   graphView: (project?: string) => Promise<GraphView>;
   graphOverallPart?: (project: string) => Promise<GraphView>;
+  graphSettings?: () => Promise<{ maxNodes: number }>;
 }
 
 /** A loader wired like the hook: mutable scope/projects, emits applied to a state var. */
@@ -275,4 +276,50 @@ test("a project list that arrives after the overall graph opened grows into it w
   assert.deepEqual(later.nodes.map((n) => n.id), ["o:root", "p:C:/p/a", "a:C:/p/a|src", "p:C:/p/b"]);
   assert.ok(later.links.some((l) => l.source === "o:root" && l.target === "p:C:/p/b"));
   assert.equal(withSkeleton(later, [{ path: "C:/p/b", name: "b" }]), later, "nothing missing: the same view");
+});
+
+test("the overall graph assembled from parts honors the saved maxNodes (#84)", async () => {
+  const projects = Array.from({ length: 8 }, (_, i) => ({ path: `/p/${i}`, name: `${i}` }));
+  const areas = Array.from({ length: 12 }, (_, i) => `a${i}`);
+  const api = {
+    graphView: async () => {
+      throw new Error("whole view must not be needed");
+    },
+    graphOverallPart: async (project: string) => partOf(project, areas),
+    graphSettings: async () => ({ maxNodes: 100 }),
+  };
+  const r = rig(projects, api);
+  await r.loader.refresh();
+  const view = r.state.view!;
+  assert.equal(view.nodes.length, 100, "1 root + 8 projects x 13 = 105 is cut to the saved cap");
+  assert.equal(view.truncated, true);
+  const ids = new Set(view.nodes.map((n) => n.id));
+  assert.ok(view.links.every((l) => ids.has(l.source as string) && ids.has(l.target as string)), "links only join kept nodes");
+  assert.ok(ids.has("o:root"));
+});
+
+test("maxNodes keeps glowing nodes and their project, and a graph under the cap is not truncated (#84)", async () => {
+  const projects = Array.from({ length: 4 }, (_, i) => ({ path: `/p/${i}`, name: `${i}` }));
+  const glowing = (project: string): GraphView => {
+    const part = partOf(project, ["x", "y", "z"]);
+    part.nodes[3] = { ...part.nodes[3], glow: "active" };
+    return part;
+  };
+  const api = {
+    graphView: async () => {
+      throw new Error("whole view must not be needed");
+    },
+    graphOverallPart: async (project: string) => (project === "/p/3" ? glowing(project) : partOf(project, ["x", "y", "z"])),
+    graphSettings: async () => ({ maxNodes: 5 }),
+  };
+  const r = rig(projects, api);
+  await r.loader.refresh();
+  const ids = new Set(r.state.view!.nodes.map((n) => n.id));
+  assert.ok(ids.has("a:/p/3|z") && ids.has("p:/p/3"), "the glowing area and its project always stay");
+  assert.equal(r.state.view!.truncated, true);
+
+  const roomy = rig(projects, { ...api, graphSettings: async () => ({ maxNodes: 1500 }) });
+  await roomy.loader.refresh();
+  assert.equal(roomy.state.view!.nodes.length, 1 + 4 * 4);
+  assert.equal(roomy.state.view!.truncated, false);
 });
