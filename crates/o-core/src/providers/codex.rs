@@ -34,8 +34,9 @@ const SUBAGENTS: [&str; 2] = ["--enable", "multi_agent"];
 
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
-    /// O never marks a project trusted (#35): Codex then skips the project's `.codex/` layers
-    /// (config, MCP servers, hooks), and `--skip-git-repo-check` lets it run outside a Git repository.
+    /// O never marks a project trusted (#35), and `--skip-git-repo-check` lets Codex run outside a
+    /// Git repository. Inside one, Codex records the repository as trusted itself on the first
+    /// card and loads its `.codex/` layers (config, MCP servers, hooks) from then on (ADR-0017 개정 2).
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
