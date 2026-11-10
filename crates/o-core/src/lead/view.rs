@@ -113,9 +113,14 @@ fn tab_view(home: &Path, id: &str, events: &[LeadEvent], writer: Option<&str>, l
     let asked = events.iter().rev().find_map(|event| match event { LeadEvent::Ask { .. } => Some(true), LeadEvent::User { .. } => Some(false), _ => None }).unwrap_or(false);
     let plan = events.iter().rev().find_map(|event| match event { LeadEvent::Plan { plan_id, ok, .. } => Some((plan_id, ok)), _ => None });
     let pending_plan = plan.is_some_and(|(id, ok)| *ok && !events.iter().any(|event| matches!(event, LeadEvent::Dispatch { plan_id, .. } if plan_id == id)));
-    // The overall lead's latest proposal not sent on yet (ADR-0036).
+    // The overall lead's latest proposal not sent on yet, or with a request that did not start (ADR-0036).
     let pending_proposal = events.iter().rev().find_map(|event| match event { LeadEvent::ForwardPlan { proposal_id, .. } => Some(Some(proposal_id)), LeadEvent::User { .. } => Some(None), _ => None })
-        .flatten().is_some_and(|id| !events.iter().any(|event| matches!(event, LeadEvent::Forward { proposal: Some(p), .. } if p == id)));
+        .flatten().is_some_and(|id| {
+            let unstarted = overall::unstarted(events);
+            let mut sent = events.iter().filter(|event| matches!(event, LeadEvent::Forward { .. })).enumerate()
+                .filter(|(_, event)| matches!(event, LeadEvent::Forward { proposal: Some(p), .. } if p == id)).peekable();
+            sent.peek().is_none() || sent.any(|(n, _)| unstarted.contains(&n))
+        });
     // shortcut: display checks eight recent runs; use an active-run index if older live runs must stay visible.
     let state = if busy.as_deref() == Some("unknown") || asked || pending_plan || pending_proposal || pending_approval { "waiting" }
         else if busy.is_some() || events.iter().rev().filter_map(|event| match event {

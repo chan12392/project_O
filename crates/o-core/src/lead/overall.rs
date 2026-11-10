@@ -5,7 +5,8 @@
 //! itself. What it may pass on, and which plan it reviews, is fixed here, not left to the model.
 //!
 //! ```text
-//! leads/<threadId>/forward-plans/<proposalId>   made once, when the person sends a proposal on
+//! leads/<threadId>/forward-plans/<proposalId>   made once, when the person sends a proposal on;
+//!                                               sent again, only its requests that did not start go
 //! leads/<threadId>/forwarded/<n>                made once, when `o _lead-forward` takes the thread's n-th lead.forward
 //! ```
 
@@ -146,21 +147,42 @@ fn project_name(project: &str) -> String {
 }
 
 /// Starts `o _lead-forward` (through `start`, with the thread and the request's number) for each
-/// request; a start that fails is noted in the thread.
-fn start_forwards(home: &Path, thread_id: &str, indexes: impl Iterator<Item = usize>, start: &dyn Fn(&str, usize) -> io::Result<()>) {
+/// request; a start that fails is recorded in the thread (`lead.forward-start` with its error),
+/// which is what lets the person send that request again. The failures come back.
+fn start_forwards(home: &Path, thread_id: &str, indexes: impl Iterator<Item = usize>, start: &dyn Fn(&str, usize) -> io::Result<()>) -> Vec<LeadEvent> {
+    let mut failed = Vec::new();
     for index in indexes {
         if let Err(error) = start(thread_id, index) {
-            let _ = append(home, thread_id, &LeadEvent::Warning { at: now_iso(), text: format!("요청 전달을 시작하지 못했습니다: {error}") });
+            let event = LeadEvent::ForwardStart { at: now_iso(), index, error: Some(error.to_string()) };
+            let _ = append(home, thread_id, &event);
+            failed.push(event);
         }
     }
+    failed
+}
+
+/// The thread's requests (`lead.forward`s by their number) whose `o _lead-forward` did not start
+/// and was not started again since: what the last `lead.forward-start` of each says.
+pub fn unstarted(events: &[LeadEvent]) -> BTreeSet<usize> {
+    let mut failed = BTreeSet::new();
+    for event in events {
+        if let LeadEvent::ForwardStart { index, error, .. } = event {
+            if error.is_some() { failed.insert(*index); } else { failed.remove(index); }
+        }
+    }
+    failed
 }
 
 /// `o lead forward <proposalId>` (ADR-0036): the person sends the overall lead's proposed requests
 /// on, once, while the proposal is its open thread's latest word and no turn answers there. The
 /// requests are checked again and recorded as `lead.forward`s, then go on through `start`.
+///
+/// A proposal sent on before goes again only for its requests whose start failed ([`unstarted`])
+/// and that no `o _lead-forward` took: each is marked as started again first, under the same
+/// lock, so two retries at once start it once. Requests that started are never started twice.
 pub fn send_on(home: &Path, proposal_id: &str, start: &dyn Fn(&str, usize) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
     let thread_id = proposal_thread(proposal_id).ok_or_else(|| format!("요청 제안 id 형식이 아닙니다: {proposal_id}"))?;
-    let (first, added) = {
+    let (indexes, mut added) = {
         // The dispatch order: the thread list, the thread's turn, its dispatch.
         let _current = super::tabs::current_lock(home).map_err(|e| e.to_string())?;
         let turn = super::turn_lock(home, thread_id).map_err(|e| e.to_string())?;
@@ -181,23 +203,42 @@ pub fn send_on(home: &Path, proposal_id: &str, start: &dyn Fn(&str, usize) -> io
         }
         let Some(LeadEvent::ForwardPlan { items, provider, model, effort, profile, .. }) =
             events.iter().find(|e| matches!(e, LeadEvent::ForwardPlan { proposal_id: id, .. } if id == proposal_id)).cloned() else { return Err("그런 제안이 없습니다".into()) };
-        let items = check(home, items)?;
         let marks = thread_dir(home, thread_id).join("forward-plans");
-        fs::create_dir_all(&marks).map_err(|e| e.to_string())?;
-        OpenOptions::new().write(true).create_new(true).open(marks.join(proposal_id)).map_err(|_| "이미 전달한 제안입니다".to_string())?;
-        let first = events.iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).count();
         let mut added = Vec::new();
-        for item in items {
-            let event = LeadEvent::Forward {
-                at: now_iso(), project: item.project, text: item.text, provider, model: model.clone(), effort: effort.clone(), profile,
-                proposal: Some(proposal_id.to_string()), revision: None,
-            };
-            append(home, thread_id, &event).map_err(|e| e.to_string())?;
-            added.push(event);
+        if marks.join(proposal_id).exists() {
+            let failed = unstarted(&events);
+            let taken = thread_dir(home, thread_id).join("forwarded");
+            let (indexes, again): (Vec<usize>, Vec<Forward>) = events.iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).enumerate()
+                .filter_map(|(n, e)| match e {
+                    LeadEvent::Forward { project, text, proposal: Some(p), .. } if p == proposal_id && failed.contains(&n) && !taken.join(n.to_string()).exists() =>
+                        Some((n, Forward { project: project.clone(), text: text.clone() })),
+                    _ => None,
+                }).unzip();
+            if indexes.is_empty() { return Err("이미 전달한 제안입니다".into()); }
+            check(home, again)?;
+            for index in &indexes {
+                let event = LeadEvent::ForwardStart { at: now_iso(), index: *index, error: None };
+                append(home, thread_id, &event).map_err(|e| e.to_string())?;
+                added.push(event);
+            }
+            (indexes, added)
+        } else {
+            let items = check(home, items)?;
+            fs::create_dir_all(&marks).map_err(|e| e.to_string())?;
+            OpenOptions::new().write(true).create_new(true).open(marks.join(proposal_id)).map_err(|_| "이미 전달한 제안입니다".to_string())?;
+            let first = events.iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).count();
+            for item in items {
+                let event = LeadEvent::Forward {
+                    at: now_iso(), project: item.project, text: item.text, provider, model: model.clone(), effort: effort.clone(), profile,
+                    proposal: Some(proposal_id.to_string()), revision: None,
+                };
+                append(home, thread_id, &event).map_err(|e| e.to_string())?;
+                added.push(event);
+            }
+            ((first..first + added.len()).collect(), added)
         }
-        (first, added)
     };
-    start_forwards(home, thread_id, first..first + added.len(), start);
+    added.extend(start_forwards(home, thread_id, indexes.into_iter(), start));
     Ok(added)
 }
 

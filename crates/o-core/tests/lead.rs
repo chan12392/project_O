@@ -119,8 +119,9 @@ Usage: codex [OPTIONS] [PROMPT]
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 12] = [
+    let extra: [(&str, fn()); 13] = [
         ("the overall lead designs and proposes; the person sends requests on to listed projects, once each", overall_forwards),
+        ("a request whose forward did not start can be sent again, alone and once (#96)", overall_forward_retries),
         ("stopped or closed overall threads do not deliver pending requests", overall_cancelled_forwards),
         ("the overall lead's approval runs the plan; a revision goes back at most twice", overall_reviews),
         ("an approved plan still keeps to the auto-run limits and a newer request", overall_review_limits),
@@ -324,6 +325,59 @@ fn overall_forwards() {
     refused(forward_block(&[(&alpha, "하나"), (&alpha, "둘")]), "하나만");
     refused(forward_block(&[(&alpha, "1"), (&beta, "2"), (&alpha, "3"), (&beta, "4")]), "1~3");
     assert!(forward_with(&home, &lead::current_thread(&home, &alpha).unwrap(), 0, spawner.as_ref(), &started).unwrap_err().contains("전체 총괄 대화가 아닙니다"));
+}
+
+fn overall_forward_retries() {
+    let (home, root, alpha, beta) = setup_overall("overall-retry");
+    let (spawner, _) = fake(claude_answer("o1", &forward_block(&[(&alpha, "로그인 화면 정리"), (&beta, "테스트 보강")])));
+    let events = lead::send(&home, &request(&root, "둘 다 진행해"), spawner.as_ref()).unwrap();
+    let id = proposal(&events);
+    let thread = lead::current_thread(&home, &root).unwrap();
+    let state = || lead::show(&home, Some(&root), None).unwrap()["threads"][0]["state"].clone();
+    let failures = |events: &[LeadEvent]| -> Vec<usize> { events.iter().filter_map(|e| match e { LeadEvent::ForwardStart { index, error: Some(_), .. } => Some(*index), _ => None }).collect() };
+
+    // The first request starts, the second does not: it alone is recorded as not started.
+    let started = Started::default();
+    let second_fails = |id: &str, n: usize| if n == 1 { Err(std::io::Error::other("o CLI가 맞지 않습니다")) } else { started.forward(id, n) };
+    let sent = lead::overall::send_on(&home, &id, &second_fails).unwrap();
+    assert_eq!(failures(&sent), [1]);
+    assert_eq!(*started.forwards.lock().unwrap(), [(thread.clone(), 0)]);
+    assert_eq!(lead::overall::unstarted(&lead::read_thread(&home, &thread)).into_iter().collect::<Vec<_>>(), [1]);
+    assert_eq!(state(), "waiting");
+    // Still failing: it stays as it was. The cause gone: the second goes, alone, once.
+    assert_eq!(failures(&lead::overall::send_on(&home, &id, &second_fails).unwrap()), [1]);
+    let again = lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).unwrap();
+    assert!(matches!(again.as_slice(), [LeadEvent::ForwardStart { index: 1, error: None, .. }]), "{again:?}");
+    assert_eq!(*started.forwards.lock().unwrap(), [(thread.clone(), 0), (thread.clone(), 1)]);
+    assert!(lead::overall::unstarted(&lead::read_thread(&home, &thread)).is_empty());
+    assert!(lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).unwrap_err().contains("이미"));
+    assert_eq!(started.forwards.lock().unwrap().len(), 2);
+    assert_eq!(lead::read_thread(&home, &thread).iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).count(), 2);
+
+    // Every start failing: all go again, at once from two sides each is started once.
+    let (spawner, _) = fake(claude_answer("o1", &forward_block(&[(&alpha, "하나"), (&beta, "둘")])));
+    let events = lead::send(&home, &request(&root, "다시 제안해"), spawner.as_ref()).unwrap();
+    let id = proposal(&events);
+    assert_eq!(failures(&lead::overall::send_on(&home, &id, &|_, _| Err(std::io::Error::other("없음"))).unwrap()), [2, 3]);
+    let started = Started::default();
+    let results: Vec<bool> = std::thread::scope(|s| {
+        let retries: Vec<_> = (0..2).map(|_| s.spawn(|| lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).is_ok())).collect();
+        retries.into_iter().map(|retry| retry.join().unwrap()).collect()
+    });
+    assert_eq!(results.iter().filter(|ok| **ok).count(), 1, "{results:?}");
+    let mut forwards = started.forwards.lock().unwrap().clone();
+    forwards.sort();
+    assert_eq!(forwards, [(thread.clone(), 2), (thread.clone(), 3)]);
+
+    // A request `o _lead-forward` already took is not started again, whatever the record says.
+    let (spawner, _) = fake(claude_answer("o1", &forward_block(&[(&alpha, "셋")])));
+    let events = lead::send(&home, &request(&root, "하나 더"), spawner.as_ref()).unwrap();
+    let id = proposal(&events);
+    lead::overall::send_on(&home, &id, &|_, _| Err(std::io::Error::other("없음"))).unwrap();
+    let (project, _) = fake_by_folder(vec![("alpha", claude_answer("p1", "네"))]);
+    forward_with(&home, &thread, 4, project.as_ref(), &started).unwrap();
+    assert!(lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).unwrap_err().contains("이미"));
+    assert_eq!(started.forwards.lock().unwrap().len(), 2);
 }
 
 fn overall_reviews() {

@@ -149,7 +149,17 @@ function ProposalCard({ proposal, sendable, lead }: { proposal: LeadProposal; se
         ))}
       </ol>
       <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
-        {proposal.sent ? (
+        {proposal.failed.length > 0 ? (
+          <>
+            <p role="alert" className="w-full text-xs text-status-warning-text">
+              {proposal.failed.length < proposal.items.length ? "일부만 전달했습니다. " : ""}전달을 시작하지 못한 요청: {proposal.failed.join(", ")}. 원인은 대화에 표시됩니다.
+            </p>
+            {sendable
+              ? <button type="button" disabled={state.busy} onClick={() => void send()} className={BUTTON_PRIMARY}>{state.busy ? "전달 중…" : "실패한 요청 다시 전달"}</button>
+              : <p role="status" className="text-xs text-status-warning-text">이후 대화가 있어 다시 전달할 수 없습니다. 전체 총괄에게 최신 제안을 요청하세요.</p>}
+            {sendable && <p className="text-xs text-muted-foreground">이미 전달한 요청은 다시 보내지 않습니다.</p>}
+          </>
+        ) : proposal.sent ? (
           <p role="status" className="text-xs text-muted-foreground">전달했습니다. 각 프로젝트 총괄의 계획은 전체 총괄이 검토하고, 승인하면 바로 실행합니다.</p>
         ) : sendable ? (
           <>

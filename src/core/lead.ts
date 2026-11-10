@@ -108,6 +108,8 @@ export type LeadEvent =
   | { t: "lead.forward-plan"; at: string; proposalId: string; items: LeadForwardItem[]; provider: ProviderId; model?: string; effort?: string }
   /** A request passed on to a project lead; `revision` names the plan an overall review asked to revise. */
   | { t: "lead.forward"; at: string; project: string; text: string; proposal?: string; revision?: string }
+  /** The thread's `index`-th lead.forward did not start (`error`), or was sent again (no `error`); the last one counts (#96). */
+  | { t: "lead.forward-start"; at: string; index: number; error?: string }
   /** The overall lead's review of a project lead's plan, in both threads (ADR-0036). */
   | { t: "lead.review"; at: string; planId: string; project: string; verdict: LeadVerdict; notes?: string }
   | { t: "lead.worker"; at: string; runId: string; cardId: string; messageId: string; text: string }
@@ -240,9 +242,10 @@ export type LeadVerdict = "approve" | "revise";
 
 export type LeadItem =
   | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string; origin?: string }
-  /** The overall lead's proposed requests; `sent` once the person sent them on. */
-  | { kind: "proposal"; at: string; proposalId: string; items: LeadForwardItem[]; sent: boolean }
-  | { kind: "forward"; at: string; project: string; text: string; revision?: string }
+  /** The overall lead's proposed requests; `sent` once the person sent them on, `failed` the projects whose request did not start. */
+  | { kind: "proposal"; at: string; proposalId: string; items: LeadForwardItem[]; sent: boolean; failed: string[] }
+  /** `failed`: why its start failed, until it is sent again. */
+  | { kind: "forward"; at: string; project: string; text: string; proposal?: string; revision?: string; failed?: string }
   | { kind: "review"; at: string; planId: string; project: string; verdict: LeadVerdict; notes: string }
   | { kind: "worker"; at: string; runId: string; cardId: string; text: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
@@ -279,6 +282,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
     if (!work) { work = { kind: "work", at, entries: [] }; items.push(work); }
     return work;
   };
+  const forwards: (LeadForward | undefined)[] = [];
   for (const raw of events) {
     const e = raw as LeadEvent;
     switch (e.t) {
@@ -304,14 +308,28 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
       case "lead.forward-plan": {
         // Stored data: requests without a project or text are left out.
         const forwards = (Array.isArray(e.items) ? e.items : []).filter((item): item is LeadForwardItem => isObject(item) && typeof item.project === "string" && typeof item.text === "string");
-        if (typeof e.proposalId === "string" && forwards.length > 0) items.push({ kind: "proposal", at: e.at, proposalId: e.proposalId, items: forwards, sent: false });
+        if (typeof e.proposalId === "string" && forwards.length > 0) items.push({ kind: "proposal", at: e.at, proposalId: e.proposalId, items: forwards, sent: false, failed: [] });
         break;
       }
-      case "lead.forward":
-        if (typeof e.project !== "string" || typeof e.text !== "string") break;
+      case "lead.forward": {
+        // Every lead.forward has a number, drawn or not: lead.forward-start names it by that.
+        const valid = typeof e.project === "string" && typeof e.text === "string";
+        const forward: LeadForward | undefined = valid
+          ? { kind: "forward", at: e.at, project: e.project, text: e.text, ...(typeof e.proposal === "string" ? { proposal: e.proposal } : {}), ...(typeof e.revision === "string" ? { revision: e.revision } : {}) }
+          : undefined;
+        forwards.push(forward);
+        if (!forward) break;
         for (const item of items) if (item.kind === "proposal" && item.proposalId === e.proposal) item.sent = true;
-        items.push({ kind: "forward", at: e.at, project: e.project, text: e.text, ...(typeof e.revision === "string" ? { revision: e.revision } : {}) });
+        items.push(forward);
         break;
+      }
+      case "lead.forward-start": {
+        const forward = forwards[e.index];
+        if (!forward) break;
+        if (typeof e.error === "string") forward.failed = e.error;
+        else delete forward.failed;
+        break;
+      }
       case "lead.review":
         if (typeof e.planId !== "string" || (e.verdict !== "approve" && e.verdict !== "revise")) break;
         for (const item of items) if (item.kind === "plan" && item.planId === e.planId) item.review = { verdict: e.verdict, notes: e.notes ?? "" };
@@ -355,9 +373,13 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         break;
     }
   }
+  for (const item of items) {
+    if (item.kind === "proposal") item.failed = forwards.flatMap((forward) => (forward?.failed !== undefined && forward.proposal === item.proposalId ? [forward.project] : []));
+  }
   return items;
 }
 
+type LeadForward = Extract<LeadItem, { kind: "forward" }>;
 type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
 
 /**
@@ -373,13 +395,14 @@ type LeadProposal = Extract<LeadItem, { kind: "proposal" }>;
 
 /**
  * The overall lead's latest proposal of requests (ADR-0036), and whether it may still be sent on:
- * not yet sent, and nothing the person wrote since (O refuses a stale one the same way).
+ * not yet sent or with a request that did not start (only those go again, #96), and nothing the
+ * person wrote since (O refuses a stale one the same way).
  */
 export function latestProposal(items: readonly LeadItem[]): { proposal?: LeadProposal; sendable: boolean } {
   const position = items.findLastIndex((item) => item.kind === "proposal");
   if (position < 0) return { sendable: false };
   const proposal = items[position] as LeadProposal;
-  return { proposal, sendable: !proposal.sent && !items.slice(position + 1).some((item) => item.kind === "user") };
+  return { proposal, sendable: (!proposal.sent || proposal.failed.length > 0) && !items.slice(position + 1).some((item) => item.kind === "user") };
 }
 
 /** A plan the user wrote after, or the lead proposed another after, is out of date: it is not dispatched. */
@@ -577,11 +600,24 @@ export function editDraft(drafts: Drafts, key: string, change: (draft: Draft) =>
 /**
  * An upload finished: it lands in the draft it was started from, only if that draft has not
  * been sent since (same generation) and still has its chip. Another project's draft never gets it.
+ * A draft started before the project's first conversation was named has moved to that
+ * conversation's key meanwhile: the answer follows its chip there (#88).
  */
 export function uploadDone(drafts: Drafts, key: string, gen: number, fileKey: string, result: { saved?: LeadAttachment; error?: string }): Drafts {
-  const draft = drafts[key];
-  if (!draft || draft.gen !== gen || !draft.files.some((f) => f.key === fileKey)) return drafts;
-  return editDraft(drafts, key, (d) => ({ files: d.files.map((f) => (f.key === fileKey ? { ...f, ...result, image: result.saved?.image ?? f.image } : f)) }));
+  const holds = (at: string) => drafts[at]?.files.some((f) => f.key === fileKey) ?? false;
+  const at = drafts[key]?.gen === gen && holds(key) ? key : movedChip(drafts, key, holds);
+  if (at === undefined) return drafts;
+  return editDraft(drafts, at, (d) => ({ files: d.files.map((f) => (f.key === fileKey ? { ...f, ...result, image: result.saved?.image ?? f.image } : f)) }));
+}
+
+/**
+ * Where a chip of the project's own draft (a key without a conversation) is now: one conversation
+ * of that same project, when it still has the chip. A removed chip, a sent draft, another project
+ * and a draft that belonged to a conversation from the start give nothing.
+ */
+function movedChip(drafts: Drafts, key: string, holds: (at: string) => boolean): string | undefined {
+  if (key.includes("#")) return undefined;
+  return Object.keys(drafts).find((at) => at.startsWith(`${key}#`) && !at.includes("#", key.length + 1) && holds(at));
 }
 
 /** The draft taken to send: emptied, and its generation moved on. */

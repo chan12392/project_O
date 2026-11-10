@@ -51,6 +51,11 @@ pub enum LeadEvent {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         revision: Option<String>,
     },
+    /// What became of starting the thread's `index`-th `lead.forward` (0 is the first), when it
+    /// did not simply start: `error` says why `o _lead-forward` could not be started; without one
+    /// the person sent the request again (`overall::send_on`). The last one of an index counts.
+    #[serde(rename = "lead.forward-start")]
+    ForwardStart { at: String, index: usize, #[serde(default, skip_serializing_if = "Option::is_none")] error: Option<String> },
     /// Requests the overall lead proposes to pass on (ADR-0036); they go on when the person
     /// presses 요청 전달 (`overall::send_on`), as `lead.forward`s.
     #[serde(rename = "lead.forward-plan")]

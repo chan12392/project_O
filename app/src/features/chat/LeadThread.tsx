@@ -176,8 +176,9 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
     case "plan":
       return <p className="text-xs text-chat-foreground-faint">{item.title} · {item.runId ? `분배한 작업 ${item.runId}` : "오른쪽 설계에서 최신 분배안을 확인하세요."}</p>;
     case "proposal":
-      return <p className="text-xs text-chat-foreground-faint">프로젝트 요청 {item.items.length}개 제안 · {item.sent ? "전달함" : "오른쪽 설계에서 확인하고 전달하세요."}</p>;
+      return <p className="text-xs text-chat-foreground-faint">프로젝트 요청 {item.items.length}개 제안 · {item.failed.length > 0 ? `${item.failed.length}개는 전달을 시작하지 못함 — 오른쪽 설계에서 다시 전달하세요.` : item.sent ? "전달함" : "오른쪽 설계에서 확인하고 전달하세요."}</p>;
     case "forward":
+      if (item.failed !== undefined) return <p role="alert" className="text-xs text-status-warning-text">{item.project}에 {item.revision ? "보완 요청" : "요청"} 전달을 시작하지 못했습니다: {item.failed}</p>;
       return <p role="status" className="text-xs text-chat-foreground-faint">{item.project}에 {item.revision ? "보완 요청을" : "요청을"} 넘겼습니다 · <time dateTime={item.at}>{timeOf(item.at)}</time></p>;
     case "review":
       return (
