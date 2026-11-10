@@ -213,6 +213,12 @@ fn codex_shell_commands_are_shown_without_their_shell_wrapper() {
     );
     assert_eq!(unwrap_shell("/bin/bash -lc 'npm test'"), "npm test");
     assert_eq!(unwrap_shell("git status"), "git status");
+    // Other PowerShell switches, a single-quoted program, and the command's own quotes.
+    assert_eq!(unwrap_shell(r#"powershell.exe -NoLogo -NoProfile -ExecutionPolicy Bypass -Command "rg \"a b\" src""#), r#"rg "a b" src"#);
+    assert_eq!(unwrap_shell(r#"'C:\Program Files\PowerShell\7\pwsh.exe' -Command 'git diff'"#), "git diff");
+    // A program whose name only ends like a shell's is the command itself.
+    assert_eq!(unwrap_shell("publish -c release"), "publish -c release");
+    assert_eq!(unwrap_shell("dotnet-sh /c build"), "dotnet-sh /c build");
     let tool = StreamReader::new(ProviderId::Codex)
         .read(r#"{"type":"item.completed","item":{"type":"command_execution","command":"\"C:\\pwsh.exe\" -Command \"git diff\""}}"#);
     assert_eq!(tool, [StreamSignal::Tool { name: "shell".into(), summary: "git diff".into() }]);
@@ -245,6 +251,7 @@ fn card_prompt_keeps_the_common_prefix_ahead_of_task_details() {
         "보내기: o msg send --to <카드 id|lead|all> \"내용\"   받기: o msg read",
         "일반 질문은 o msg send --to <카드 id|lead> --question --id <재시도키> \"내용\". 사람의 승인이나 권한 결정은 --question 대신 --approval로 요청하세요. 승인 요청에는 총괄이 자동으로 답하지 않습니다. 답을 기다릴 때는 o msg wait를 사용하세요.",
         "받은 메시지는 처리한 뒤 o msg ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.",
+        "다음 작업에도 쓸 사실·함정·해결법을 알게 되면 받는 사람을 wiki 로 한 팀 메시지로 남기세요(첫 줄은 제목, 로그인 정보·개인 정보는 적지 않음).",
         "다른 카드는 자원·실행 한도로 대기할 수 있습니다. 작업 폴더가 분리될 수 있으니 다른 카드의 변경은 인계 후 확인하세요. 맡은 파일 밖은 수정하지 말고 공용 파일·포트·서비스는 조율하세요.",
         "작업: 랜딩 개편 · 코딩",
         "프로젝트: C:/work/demo",
@@ -842,4 +849,62 @@ fn opencode_project_config_is_found_from_the_folder_up() {
     std::fs::write(deep.join("opencode.jsonc"), "{}").unwrap();
     assert_eq!(project_config(&deep), Some(deep.join("opencode.jsonc")));
     std::fs::remove_dir_all(&base).unwrap();
+}
+
+// Dreaming's 도구 오류 (ADR-0041): a failed or refused call is reported after the call itself.
+#[test]
+fn failed_tool_calls_are_reported_with_the_call_they_belong_to() {
+    let mut claude = StreamReader::new(ProviderId::Claude);
+    let call = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_1","name":"Read","input":{"file_path":"src/missing.ts"}},{"type":"tool_use","id":"toolu_2","name":"Bash","input":{"command":"npm test"}}]}}"#;
+    assert_eq!(claude.read(call).len(), 2);
+    let results = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"toolu_1","is_error":true,"content":[{"type":"text","text":"File does not exist.\nDid you mean a.ts?"}]},{"type":"tool_result","tool_use_id":"toolu_2","content":"ok"}]}}"#;
+    assert_eq!(claude.read(results), [StreamSignal::ToolError { name: "Read".into(), summary: "src/missing.ts".into(), error: "File does not exist. Did you mean a.ts?".into() }]);
+    // A result is read once, and one for a call never seen says nothing.
+    assert_eq!(claude.read(results), []);
+    assert_eq!(claude.read(r#"{"type":"user","message":{"content":"plain text"}}"#), []);
+
+    let codex = |line: &str| StreamReader::new(ProviderId::Codex).read(line);
+    assert_eq!(
+        codex(r#"{"type":"item.completed","item":{"type":"command_execution","command":"bash -lc 'npm run biuld'","aggregated_output":"npm error Missing script: biuld\n\nnpm error To see a list of scripts, run:\n","exit_code":1,"status":"failed"}}"#),
+        [
+            StreamSignal::Tool { name: "shell".into(), summary: "npm run biuld".into() },
+            StreamSignal::ToolError { name: "shell".into(), summary: "npm run biuld".into(), error: "종료 코드 1: npm error Missing script: biuld / npm error To see a list of scripts, run:".into() },
+        ]
+    );
+    assert_eq!(codex(r#"{"type":"item.completed","item":{"type":"command_execution","command":"git status","aggregated_output":"clean","exit_code":0,"status":"completed"}}"#).len(), 1);
+    assert_eq!(
+        codex(r#"{"type":"item.completed","item":{"type":"command_execution","command":"git push","status":"declined"}}"#)[1],
+        StreamSignal::ToolError { name: "shell".into(), summary: "git push".into(), error: "명령 실행 요청이 거절됐습니다".into() }
+    );
+
+    assert_eq!(
+        codex(r#"{"type":"item.completed","item":{"type":"command_execution","command":"git push","status":"declined"}}"#)[0],
+        StreamSignal::Tool { name: "권한".into(), summary: "명령 실행 요청이 거절됐습니다: git push".into() }
+    );
+    // Code 1 with nothing said is "not found" or "false", not a failed call; with words, or another code, it failed.
+    let quiet = |command: &str, code: i64| codex(&format!(r#"{{"type":"item.completed","item":{{"type":"command_execution","command":"{command}","aggregated_output":"\n","exit_code":{code},"status":"failed"}}}}"#)).len();
+    assert_eq!((quiet("rg nothing src", 1), quiet("git diff --quiet", 1), quiet("rg nothing src", 2)), (1, 1, 2));
+    // A patch that did not apply, a refused one, and a failed MCP call.
+    let change = |status: &str| codex(&format!(r#"{{"type":"item.completed","item":{{"type":"file_change","changes":[{{"path":"C:\\work\\src\\a.ts","kind":"update"}}],"status":"{status}"}}}}"#));
+    let edited = r#"[{"path":"a.ts","kind":"update"}]"#;
+    assert_eq!(change("completed"), [StreamSignal::Tool { name: "edit".into(), summary: edited.into() }]);
+    assert_eq!(change("failed")[1], StreamSignal::ToolError { name: "edit".into(), summary: edited.into(), error: "파일 변경이 적용되지 않았습니다".into() });
+    assert_eq!(change("declined")[1], StreamSignal::ToolError { name: "edit".into(), summary: edited.into(), error: "파일 변경 요청이 거절됐습니다".into() });
+    assert_eq!(
+        codex(r#"{"type":"item.completed","item":{"type":"mcp_tool_call","server":"docs","tool":"search","arguments":{"query":"tauri"},"status":"failed","error":{"message":"timed out"}}}"#),
+        [
+            StreamSignal::Tool { name: "docs.search".into(), summary: r#"{"query":"tauri"}"#.into() },
+            StreamSignal::ToolError { name: "docs.search".into(), summary: r#"{"query":"tauri"}"#.into(), error: "timed out".into() },
+        ]
+    );
+    // A reconnect notice that quotes a 429 is not a usage limit; a failed turn that says so is.
+    let notice = codex(r#"{"type":"error","message":"Reconnecting... 2/5 (unexpected status 429 Too Many Requests: rate limit reached)"}"#);
+    assert!(!notice.iter().any(|s| matches!(s, StreamSignal::Limit { .. })), "{notice:?}");
+    assert!(codex(r#"{"type":"turn.failed","error":{"message":"You have hit your usage limit."}}"#).iter().any(|s| matches!(s, StreamSignal::Limit { .. })));
+
+    let denied = r#"{"type":"tool_use","sessionID":"ses_a","part":{"type":"tool","tool":"shell","state":{"status":"error","input":{"command":"echo hi > made.txt"},"error":"Permission denied: shell"}}}"#;
+    assert_eq!(
+        StreamReader::new(ProviderId::OpenCode).read(denied)[2],
+        StreamSignal::ToolError { name: "shell".into(), summary: "echo hi > made.txt".into(), error: "Permission denied: shell".into() }
+    );
 }

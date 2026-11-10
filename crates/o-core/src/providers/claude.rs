@@ -1,13 +1,13 @@
 //! Claude Code: `claude -p` with a stream-json stdout, the prompt on stdin.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io;
 use std::path::Path;
 
 use serde_json::{json, Map, Value};
 
-use super::stream::{limit_from_text, num, tool_summary};
+use super::stream::{error_text, limit_from_text, num, tool_summary};
 use super::{opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel, AGENT_ONLY_COMMANDS, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState, INSTRUCTION_FILES};
 use crate::agents::catalog::connection;
@@ -127,7 +127,8 @@ impl Provider for Claude {
 
     fn stream_reader(&self) -> ReadLine {
         let mut reset_given = false;
-        Box::new(move |data| read_stream(&mut reset_given, data))
+        let mut calls = HashMap::new();
+        Box::new(move |data| read_stream(&mut reset_given, &mut calls, data))
     }
 
     fn lead_efforts(&self) -> &'static [&'static str] {
@@ -295,9 +296,15 @@ fn mcp_in_state(state: &Value) -> bool {
     servers(state) || state.get("projects").and_then(Value::as_object).is_some_and(|p| p.values().any(servers))
 }
 
+/// Tool calls whose result is still awaited, at most.
+const MAX_OPEN_CALLS: usize = 256;
+
 /// `reset_given`: a rejected `rate_limit_event` already gave this card's reset time, so the
 /// failure text that follows must not set one of its own.
-fn read_stream(reset_given: &mut bool, data: &Map<String, Value>) -> Vec<StreamSignal> {
+///
+/// `calls`: the tool calls still waiting for their result (id → name, summary), so a result
+/// that reports an error can say which call it was.
+fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, String)>, data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
     if kind == Some("system") && data.get("subtype").and_then(Value::as_str) == Some("init") {
         if let Some(id) = data.get("session_id").and_then(Value::as_str) {
@@ -317,12 +324,34 @@ fn read_stream(reset_given: &mut bool, data: &Map<String, Value>) -> Vec<StreamS
                 }
                 if part_type == Some("tool_use") {
                     if let Some(name) = part.get("name").and_then(Value::as_str) {
-                        out.push(StreamSignal::Tool { name: name.to_string(), summary: tool_summary(part.get("input")) });
+                        let summary = tool_summary(part.get("input"));
+                        if let Some(id) = part.get("id").and_then(Value::as_str) {
+                            // Results that never came must not pile up over a long card.
+                            if calls.len() >= MAX_OPEN_CALLS { calls.clear(); }
+                            calls.insert(id.to_string(), (name.to_string(), summary.clone()));
+                        }
+                        out.push(StreamSignal::Tool { name: name.to_string(), summary });
                     }
                 }
             }
             return out;
         }
+    }
+    // Tool results come back as a user message; only a failed one is a signal.
+    if kind == Some("user") {
+        let content = data.get("message").and_then(Value::as_object).and_then(|m| m.get("content")).and_then(Value::as_array);
+        let mut out = Vec::new();
+        for part in content.into_iter().flatten().filter_map(Value::as_object).filter(|p| p.get("type").and_then(Value::as_str) == Some("tool_result")) {
+            let Some((name, summary)) = part.get("tool_use_id").and_then(Value::as_str).and_then(|id| calls.remove(id)) else { continue };
+            if part.get("is_error") != Some(&Value::Bool(true)) { continue; }
+            let error = match part.get("content") {
+                Some(Value::String(text)) => text.clone(),
+                Some(Value::Array(parts)) => parts.iter().filter_map(|p| p.get("text").and_then(Value::as_str)).collect::<Vec<_>>().join("\n"),
+                _ => String::new(),
+            };
+            out.push(StreamSignal::ToolError { name, summary, error: error_text(&error) });
+        }
+        return out;
     }
     if kind == Some("rate_limit_event") {
         if let Some(info) = data.get("rate_limit_info").and_then(Value::as_object) {

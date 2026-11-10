@@ -1,4 +1,4 @@
-import type { AgentId, Backend, BillingReport, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, RamReport, TokenCounts, TokenGroup } from "./types.ts";
+import type { AgentId, Backend, BillingReport, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, RamReport, TokenCounts, TokenGroup, DreamDoc, DreamChange, DreamGraph, DreamPage } from "./types.ts";
 import { LEAD_TAB_MAX, type LeadShow, type LeadTab } from "../../../../src/core/lead.ts";
 import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS } from "../updates.ts";
@@ -131,6 +131,52 @@ const DEMO_MODELS: Record<LeadProvider, LeadModel[]> = {
     ] as const
   ).flatMap(([id, name]) => (["high", "medium", "low"] as const).map((level) => ({ id: `${id}-${level}`, label: `${name} (${level[0].toUpperCase()}${level.slice(1)})` }))),
 };
+
+/** The preview's Dreaming documents (ADR-0041): two materials and a few card records, and what wires them. */
+interface DemoDoc extends DreamDoc {
+  text: string;
+  source?: string;
+  links: string[];
+}
+
+const demoAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString();
+const DEMO_BLOG = "C:/projects/blog";
+
+let demoDocs: DemoDoc[] = [
+  { path: "외부 자료/20261108-101500-tauri-2-배포-안내.md", title: "Tauri 2 배포 안내", kind: "external", project: DEMO_BLOG, at: demoAgo(50), size: 310, source: "https://example.invalid/tauri/distribute", text: "## 배포 순서\n\n- 서명 키를 준비합니다.\n- `tauri build`로 설치 파일을 만듭니다.\n\n더 볼 것: [[릴리스 점검표]]\n", links: ["외부 자료/20261107-090000-릴리스-점검표.md"] },
+  { path: "외부 자료/20261107-090000-릴리스-점검표.md", title: "릴리스 점검표", kind: "external", at: demoAgo(74), size: 180, source: "release-checklist.md", text: "# 릴리스 점검표\n\n1. 테스트 통과\n2. 라이선스 검사\n3. 프리릴리스 확인\n", links: [] },
+  { path: "작업 성공/blog/20261110-091200-k3fa-build.md", title: "설치 파일 만들기 · 빌드", kind: "done", project: DEMO_BLOG, at: demoAgo(3), size: 240, text: "# 설치 파일 만들기 · 빌드\n\n- **결과**: 성공\n- **프로젝트**: `C:/projects/blog`\n\n## 맡긴 일\n\n설치 파일을 만들고 크기를 확인합니다.\n\n## 결과\n\nhttps://example.invalid/tauri/distribute 순서대로 설치 파일을 만들었습니다.\n\n## 바뀐 파일\n\n- `scripts/build-installer.ps1`\n", links: ["외부 자료/20261108-101500-tauri-2-배포-안내.md", "작업 실패/blog/20261109-173000-p8zq-build.md"] },
+  { path: "작업 성공/blog/20261110-091200-k3fa-test.md", title: "설치 파일 만들기 · 검증", kind: "done", project: DEMO_BLOG, at: demoAgo(2), size: 120, text: "# 설치 파일 만들기 · 검증\n\n- **결과**: 성공\n\n## 결과\n\n설치와 제거를 확인했습니다.\n", links: ["작업 성공/blog/20261110-091200-k3fa-build.md"] },
+  { path: "작업 실패/blog/20261109-173000-p8zq-build.md", title: "설치 파일 만들기 · 빌드", kind: "failed", project: DEMO_BLOG, at: demoAgo(19), size: 200, text: "# 설치 파일 만들기 · 빌드\n\n- **결과**: 실패 (종료 코드 1)\n- **프로젝트**: `C:/projects/blog`\n\n## 결과\n\n서명 키가 없어 `tauri build`가 멈췄습니다.\n\n## 바뀐 파일\n\n- `scripts/build-installer.ps1`\n", links: [] },
+  { path: "배운 것/blog/20261110-091200-k3fa-build-1.md", title: "서명 키는 환경 변수로만 읽는다", kind: "note", project: DEMO_BLOG, at: demoAgo(3), size: 120, source: "설치 파일 만들기 · 빌드", text: "# 서명 키는 환경 변수로만 읽는다\n\n`tauri build` 전에 서명 키 환경 변수가 있어야 합니다. 없으면 설치 파일 단계에서 멈춥니다.\n", links: ["작업 성공/blog/20261110-091200-k3fa-build.md"] },
+  { path: "도구 오류/blog/20261109-173000-p8zq-build.md", title: "도구 오류 3건 · 설치 파일 만들기 · 빌드", kind: "tool", project: DEMO_BLOG, at: demoAgo(19), size: 3, text: "# 도구 오류 3건 · 설치 파일 만들기 · 빌드\n\n- **프로젝트**: `C:/projects/blog`\n- **실패한 호출**: 3건 (서로 다른 호출 2개)\n\n## 실패한 호출\n\n- **Bash** `npm run tauri biuld` — 2번\n  - Missing script: biuld\n- **Read** `src-tauri/tauri.conf.json5`\n  - File does not exist.\n", links: ["작업 실패/blog/20261109-173000-p8zq-build.md"] },
+  { path: "작업 성공/landing/20261106-140000-w2ab-copy.md", title: "첫 화면 문구 · 작성", kind: "done", project: "C:/projects/landing", at: demoAgo(96), size: 90, text: "# 첫 화면 문구 · 작성\n\n- **결과**: 성공\n\n## 결과\n\n문구 세 가지를 제안했습니다.\n", links: [] },
+];
+
+let demoChanges: DreamChange[] = [
+  { id: "demo-tool-1", kind: "tool-failure", project: DEMO_BLOG, text: "`Bash npm run tauri biuld` 호출이 실패했습니다: Missing script: biuld (3번)", count: 3, firstAt: demoAgo(43), lastAt: demoAgo(19), state: "applied", changedAt: demoAgo(19), evidence: [{ runId: "20261108-173000-a1bc", cardId: "build" }, { runId: "20261109-173000-p8zq", cardId: "build" }] },
+  { id: "demo-card-1", kind: "card-failure", project: DEMO_BLOG, text: "카드가 같은 이유로 실패했습니다: 서명 키가 없어 tauri build가 멈췄습니다 (2번)", count: 2, firstAt: demoAgo(43), lastAt: demoAgo(19), state: "applied", changedAt: demoAgo(19), evidence: [{ runId: "20261109-173000-p8zq", cardId: "build" }] },
+];
+
+/** The Dreaming graph of the preview's documents: today's records glow with what they are wired to. */
+function demoDreamGraph(): DreamGraph {
+  const fresh = (d: DemoDoc) => Date.now() - Date.parse(d.at) < 24 * 3_600_000;
+  const glowOf = (d: DemoDoc) => (fresh(d) ? "active" : demoDocs.some((other) => fresh(other) && other.links.includes(d.path)) ? "path" : undefined);
+  const folders = [...new Set(demoDocs.flatMap((d) => d.path.split("/").slice(0, -1).map((_, i, parts) => parts.slice(0, i + 1).join("/"))))];
+  const under = (dir: string) => demoDocs.filter((d) => d.path.startsWith(`${dir}/`));
+  const parentOf = (path: string) => (path.includes("/") ? `d:${path.slice(0, path.lastIndexOf("/"))}` : "dream");
+  const nodes: GraphNode[] = [
+    { id: "dream", label: "Dreaming", kind: "root", size: demoDocs.length, glow: demoDocs.some(fresh) ? "active" : undefined },
+    ...folders.map((dir): GraphNode => ({ id: `d:${dir}`, label: dir.split("/").pop() ?? dir, kind: "area", path: dir, size: under(dir).length, glow: under(dir).some(fresh) ? "active" : under(dir).some(glowOf) ? "path" : undefined })),
+    ...demoDocs.map((d): GraphNode => ({ id: `f:${d.path}`, label: d.title, kind: "file", project: d.project, path: d.path, size: 1 + demoDocs.filter((other) => other.links.includes(d.path)).length, glow: glowOf(d), summary: d.source })),
+  ];
+  const links: GraphLink[] = [
+    ...folders.map((dir): GraphLink => ({ source: parentOf(dir), target: `d:${dir}`, kind: "contains", weight: 1, glow: under(dir).some(glowOf) || undefined })),
+    ...demoDocs.map((d): GraphLink => ({ source: parentOf(d.path), target: `f:${d.path}`, kind: "contains", weight: 1, glow: glowOf(d) !== undefined || undefined })),
+    ...demoDocs.flatMap((d) => d.links.filter((to) => demoDocs.some((other) => other.path === to)).map((to): GraphLink => ({ source: `f:${d.path}`, target: `f:${to}`, kind: "references", weight: 1, glow: fresh(d) || undefined }))),
+  ];
+  return { nodes, links, truncated: false };
+}
 
 /** The preview's graph settings (ADR-0033); saved for this window only. */
 let demoGraphSettings: GraphSettings = { effects: true, particles: true, deepProvider: "codex", codexModel: "gpt-6.1-terra", claudeModel: "sonnet", warnDeep: true, maxNodes: 1500, depth: 2 };
@@ -379,6 +425,36 @@ export const demoBackend: Backend = {
     usage: { input: 42100, output: 980 },
   }),
   graphSettings: async (change) => (demoGraphSettings = { ...demoGraphSettings, ...change }),
+  dreamList: async () => ({ docs: demoDocs.map(({ path, title, kind, project, at, size }) => ({ path, title, kind, project, at, size })), truncated: false }),
+  dreamRead: async (path): Promise<DreamPage> => {
+    const doc = demoDocs.find((d) => d.path === path);
+    if (!doc) throw new Error(`목록에 없는 문서입니다: ${path}`);
+    const { size: _size, links, ...page } = doc;
+    return { ...page, truncated: false, links: links.filter((to) => demoDocs.some((d) => d.path === to)), backlinks: demoDocs.filter((d) => d.links.includes(path)).map((d) => d.path) };
+  },
+  dreamGraph: async () => demoDreamGraph(),
+  dreamAdd: async (input) => {
+    // The preview fetches nothing: a web address is kept as a note of where the material would come from.
+    const text = input.kind === "text" ? input.text.trim() : `미리보기에서는 주소를 읽어 오지 않습니다: ${input.url}`;
+    if (!text) throw new Error("넣을 내용이 비어 있습니다");
+    const title = input.title?.trim() || (input.kind === "url" ? input.url : (text.split("\n").find((l) => l.trim()) ?? "자료").replace(/^#\s*/, "")).slice(0, 120);
+    const doc: DemoDoc = { path: `외부 자료/${Date.now()}-${title.replace(/[^\p{L}\p{N}]+/gu, "-").slice(0, 40)}.md`, title, kind: "external", project: input.project, at: new Date().toISOString(), size: text.length, source: input.kind === "url" ? input.url : input.source, text, links: [] };
+    demoDocs = [doc, ...demoDocs];
+    const { text: _text, source: _source, links: _links, ...listed } = doc;
+    return listed;
+  },
+  dreamRemove: async (path) => {
+    if (!demoDocs.some((d) => d.path === path && d.kind === "external")) throw new Error("외부 자료만 뺄 수 있습니다");
+    demoDocs = demoDocs.filter((d) => d.path !== path);
+  },
+  dreamChanges: async () => demoChanges,
+  dreamRevert: async (id, reverted) => {
+    const change = demoChanges.find((c) => c.id === id);
+    if (!change) throw new Error(`없는 변경입니다: ${id}`);
+    const next: DreamChange = { ...change, state: reverted ? "reverted" : "applied", changedAt: new Date().toISOString() };
+    demoChanges = demoChanges.map((c) => (c.id === id ? next : c));
+    return next;
+  },
   projects: async () => demoList(),
   projectsAdd: async (path) => {
     if (!ABSOLUTE.test(path)) throw new Error("project는 절대 경로여야 합니다");

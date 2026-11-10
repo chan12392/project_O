@@ -348,6 +348,9 @@ fn prompt_text(card: &Card, plan: &Plan, team: &TeamChannel, context: Option<&st
     let how = provider.team_how_to(card, team);
     let talks = how.iter().any(|line| line.contains(TEAM_COMMAND));
     lines.extend(how);
+    if talks {
+        lines.push(format!("다음 작업에도 쓸 사실·함정·해결법을 알게 되면 받는 사람을 {} 로 한 팀 메시지로 남기세요(첫 줄은 제목, 로그인 정보·개인 정보는 적지 않음).", crate::policy::WIKI_PARTY));
+    }
     if !others.is_empty() {
         lines.push("다른 카드는 자원·실행 한도로 대기할 수 있습니다. 작업 폴더가 분리될 수 있으니 다른 카드의 변경은 인계 후 확인하세요. 맡은 파일 밖은 수정하지 말고 공용 파일·포트·서비스는 조율하세요.".into());
     }

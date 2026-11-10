@@ -106,7 +106,7 @@ fn scan_run(home: &Path, run: &str, pages: &mut std::fs::File, page: &mut u64, r
             let value: Option<Value> = serde_json::from_reader(source.by_ref().take(len)).ok();
             let typed = complete.then(|| value.clone().and_then(|v| serde_json::from_value::<OEvent>(v).ok())).flatten();
             let kind = value.as_ref().and_then(|v| v.get("t")).and_then(Value::as_str).unwrap_or("unknown");
-            let private = matches!(kind, "msg" | "msg.state" | "card.tool" | "card.message" | "card.input");
+            let private = matches!(kind, "msg" | "msg.state" | "card.tool" | "card.tool.error" | "card.message" | "card.input");
             // An unparseable line cannot be proven not to be a private team or tool event.
             let keep = value.is_some() && !private && (typed.is_none() || matches!(kind, "run.start" | "run.blocked" | "run.end" | "card.queued" | "card.start" | "card.end"));
             if typed.is_none() { unknown += 1; }

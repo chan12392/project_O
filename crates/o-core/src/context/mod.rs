@@ -184,20 +184,25 @@ fn card_files(conn: &Connection, run_id: &str, card_id: &str) -> io::Result<Stri
     let mut files: Vec<String> = Vec::new();
     for (name, summary) in rows {
         let (Some(name), Some(summary)) = (name, summary) else { continue };
-        if !edits_files(&name) {
-            continue;
-        }
-        let paths: Vec<String> = match serde_json::from_str::<Value>(&summary) {
-            Ok(Value::Array(changes)) => changes.iter().filter_map(|c| c.get("path").and_then(Value::as_str).map(str::to_string)).collect(),
-            _ => vec![summary],
-        };
-        for path in paths.into_iter().map(|p| p.trim().replace('\\', "/")).filter(|p| !p.is_empty()) {
+        for path in tool_paths(&name, &summary) {
             if !files.contains(&path) {
                 files.push(path);
             }
         }
     }
     Ok(files.join(" "))
+}
+
+/// The files one `card.tool` event changed: none unless the tool edits files.
+pub(crate) fn tool_paths(name: &str, summary: &str) -> Vec<String> {
+    if !edits_files(name) {
+        return Vec::new();
+    }
+    let paths: Vec<String> = match serde_json::from_str::<Value>(summary) {
+        Ok(Value::Array(changes)) => changes.iter().filter_map(|c| c.get("path").and_then(Value::as_str).map(str::to_string)).collect(),
+        _ => vec![summary.to_string()],
+    };
+    paths.into_iter().map(|p| p.trim().replace('\\', "/")).filter(|p| !p.is_empty()).collect()
 }
 
 /// Whether the run's file still starts with the `bytes` that hashed to `hash` (the index's own check).

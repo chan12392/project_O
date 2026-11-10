@@ -245,6 +245,7 @@ fn transcript_signals(atif: &Map<String, Value>, refused: &mut Vec<String>) -> V
             }
             let id = result.get("source_call_id").and_then(Value::as_str);
             if let Some((_, name, summary)) = shown.iter().find(|(call, _, _)| call.is_some() && *call == id) {
+                out.push(StreamSignal::ToolError { name: name.clone(), summary: summary.clone(), error: "확인이 필요한 도구 호출이 거절됐습니다".into() });
                 refused.push(if summary.is_empty() { name.clone() } else { format!("{name} {summary}") });
             }
         }

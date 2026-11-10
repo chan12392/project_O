@@ -58,13 +58,13 @@ pub struct GraphLink {
     pub glow: Option<bool>,
 }
 
-fn node(id: String, label: String, kind: &str, project: Option<&str>, path: Option<&str>, size: usize, glow: Option<&str>) -> GraphNode {
+pub(crate) fn node(id: String, label: String, kind: &str, project: Option<&str>, path: Option<&str>, size: usize, glow: Option<&str>) -> GraphNode {
     GraphNode { id, label, kind: kind.into(), project: project.map(str::to_owned), path: path.map(str::to_owned), size: size.max(1), glow: glow.map(str::to_owned), summary: None, indexed: None }
 }
-fn link(source: &str, target: &str, kind: &str, weight: usize, glow: bool) -> GraphLink {
+pub(crate) fn link(source: &str, target: &str, kind: &str, weight: usize, glow: bool) -> GraphLink {
     GraphLink { source: source.into(), target: target.into(), kind: kind.into(), weight, glow: glow.then_some(true) }
 }
-fn name(path: &str) -> &str { path.trim_end_matches('/').rsplit('/').next().unwrap_or(path) }
+pub(crate) fn name(path: &str) -> &str { path.trim_end_matches('/').rsplit('/').next().unwrap_or(path) }
 fn dirs(path: &str) -> Vec<String> {
     let parts: Vec<_> = path.split('/').collect();
     (1..parts.len().min(3)).map(|n| parts[..n].join("/")).collect()

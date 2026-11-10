@@ -91,3 +91,11 @@ test("area legend names the top-level folders of the visible nodes and caps at 8
   assert.equal(items2[0].label, "src");
   assert.deepEqual(new Set(items2.map((i) => i.label)), new Set(["src", "app"]));
 });
+
+test("Dreaming's top folders keep their meaning in color: material, success, failure and tool errors never share a hue", () => {
+  for (const theme of ["dark", "light"] as const) {
+    const colors = ["배운 것", "외부 자료", "작업 성공", "작업 실패", "도구 오류"].map((name) => areaColor(name, theme));
+    assert.equal(new Set(colors).size, 5);
+  }
+  assert.equal(areaColor("작업 실패", "dark"), "#ffa198");
+});

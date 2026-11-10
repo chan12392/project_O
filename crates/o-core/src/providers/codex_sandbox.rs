@@ -100,7 +100,9 @@ pub fn config_hash(home: &Path) -> String {
 
 /// `sandbox = …` inside `[windows]`, or the dotted `windows.sandbox = …`.
 static WINDOWS_SANDBOX: LazyLock<regex::Regex> =
-    LazyLock::new(|| regex::Regex::new(r"(?m)^\s*windows\.sandbox\s*=|^\s*\[windows\]\s*\n(?:[^\[\n]*\n)*?\s*sandbox\s*=").unwrap());
+    // Inside the table: any lines that do not open another table, then the key. A comment
+    // after the header and brackets inside a value or a comment do not end the table.
+    LazyLock::new(|| regex::Regex::new(r"(?m)^\s*windows\.sandbox\s*=|^[ \t]*\[windows\][ \t]*(?:#[^\n]*)?\r?\n(?:[ \t]*(?:[^\[\s][^\n]*)?\r?\n)*?[ \t]*sandbox\s*=").unwrap());
 
 /// Whether config.toml names a Windows sandbox at all: the cheap first reason.
 pub fn sandbox_selected(home: &Path) -> bool {
@@ -421,6 +423,19 @@ mod tests {
         assert_eq!(decide(Some(&record(true)), "abd", || panic!("a changed config needs no version")).as_deref(), Some(CHANGED));
         assert_eq!(decide(Some(&record(true)), "abc", || Some("codex-cli 1.2.4".into())).as_deref(), Some(CHANGED));
         assert_eq!(decide(Some(&record(true)), "abc", || None).as_deref(), Some(CHANGED));
+    }
+
+    #[test]
+    fn the_windows_sandbox_is_found_however_the_table_is_written() {
+        let set = |toml: &str| WINDOWS_SANDBOX.is_match(toml);
+        assert!(set("windows.sandbox = \"elevated\"\n"));
+        assert!(set("[windows]\nsandbox = \"elevated\"\n"));
+        assert!(set("model = \"x\"\r\n\r\n[windows] # 샌드박스\r\n# [see docs]\r\nnotes = [\"a\", \"b\"]\r\n\r\n  sandbox = \"unelevated\"\r\n"));
+        // Another table's key, a commented key, and no key at all.
+        assert!(!set("[windows]\nnotes = 1\n[other]\nsandbox = \"elevated\"\n"));
+        assert!(!set("[windows]\n# sandbox = \"elevated\"\n"));
+        assert!(!set("[windows_extra]\nsandbox = \"elevated\"\n"));
+        assert!(!set(""));
     }
 
     #[test]

@@ -76,8 +76,12 @@ export function languageColor(ext: string, theme: GraphTheme): string | undefine
   return group ? (theme === "light" ? LANG_LIGHT : LANG_DARK)[group] : undefined;
 }
 
+/** Dreaming's top folders (ADR-0041) mean something, so their slots are picked: purple notes, blue material, green success, red failure, yellow tool errors. */
+const NAMED_AREAS: Record<string, number> = { "배운 것": 4, "외부 자료": 1, "작업 성공": 2, "작업 실패": 5, "도구 오류": 3 };
+
 /** A name → one slot of the categorical ramp, stable across views (djb2). */
 function areaIndex(name: string): number {
+  if (name in NAMED_AREAS) return NAMED_AREAS[name];
   let hash = 5381;
   for (let i = 0; i < name.length; i++) hash = ((hash << 5) + hash + name.charCodeAt(i)) | 0;
   return Math.abs(hash) % AREA_DARK.length;

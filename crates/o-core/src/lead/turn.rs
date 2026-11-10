@@ -445,6 +445,8 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
                         let _ = budget::record(home, &[reading], Utc::now());
                     }
                     StreamSignal::Final { ok, text } => last = Some((ok, text)),
+                    // Dreaming collects cards' failed calls (ADR-0041); a lead turn keeps none.
+                    StreamSignal::ToolError { .. } => {}
                     StreamSignal::Tool { name, summary } => {
                         match name.to_ascii_lowercase().as_str() {
                             "read" | "read_file" => counts[0] += 1,

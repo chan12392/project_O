@@ -15,7 +15,7 @@ use regex::Regex;
 use serde_json::{json, Map, Value};
 
 use super::codex_sandbox;
-use super::stream::{limit_from_text, num, short, short_value};
+use super::stream::{error_text, limit_from_text, num, short, short_value};
 use super::{list_command, opt, strings, LaunchSpec, LeadTurn, ModelChoice, Official, Provider, ReadLine, TeamChannel};
 use crate::agents::clean::LoginState;
 use crate::agents::catalog::connection;
@@ -247,16 +247,21 @@ static PROBED: LazyLock<Mutex<HashMap<String, bool>>> = LazyLock::new(|| Mutex::
 /// app-server subcommand's help: once per CLI command line per process, no shell, no window,
 /// no stdin, within `PROBE_TIMEOUT`. A CLI without the subcommand reads `app-server` as a
 /// prompt and prints the top-level help, so success alone is not enough. A failed or slow
-/// probe counts as no app-server: the lead then uses the read-only `exec` launch.
+/// probe counts as no app-server: the lead then uses the read-only `exec` launch. Only an
+/// answer is remembered: a probe that could not start or ran out of time is asked again, so
+/// one slow start does not leave the lead without its approval path until the app restarts.
 pub fn supports_app_server(mut command: Command) -> bool {
     let key = format!("{:?} {:?}", command.get_program(), command.get_args().collect::<Vec<_>>());
     let mut probed = PROBED.lock().unwrap_or_else(|e| e.into_inner());
     if let Some(known) = probed.get(&key) {
         return *known;
     }
-    let supported = matches!(capture(&mut command, PROBE_TIMEOUT),
+    let answer = capture(&mut command, PROBE_TIMEOUT);
+    let supported = matches!(&answer,
         Ok((status, stdout, _)) if status.success() && stdout.lines().any(|line| line.contains("Usage:") && line.contains("app-server")));
-    probed.insert(key, supported);
+    if supported || answer.is_ok_and(|(status, ..)| status.code().is_some()) {
+        probed.insert(key, supported);
+    }
     supported
 }
 
@@ -304,7 +309,10 @@ fn app_server_windows() -> Result<Vec<UsageWindow>, String> {
     let deadline = Instant::now() + TIMEOUT;
     loop {
         let left = deadline.checked_duration_since(Instant::now()).ok_or_else(timeout)?;
-        let line = rx.recv_timeout(left).map_err(|_| timeout())?;
+        let line = rx.recv_timeout(left).map_err(|e| match e {
+            mpsc::RecvTimeoutError::Timeout => timeout(),
+            mpsc::RecvTimeoutError::Disconnected => "codex app-server가 답하기 전에 끝났습니다 (로그인 상태와 Codex 버전을 확인하세요)".to_string(),
+        })?;
         let Ok(message) = serde_json::from_str::<Value>(&line) else { continue };
         match message.get("id").and_then(Value::as_f64) {
             Some(1.0) => {
@@ -393,16 +401,30 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                 }
             }
             Some("command_execution") => {
-                if item.get("status").and_then(Value::as_str) == Some("declined") {
-                    return tool("권한", "명령 실행 요청이 거절됐습니다".into());
+                let command = short(&unwrap_shell(&coalesce([item.get("command")]).map(js_string).unwrap_or_default()));
+                let status = item.get("status").and_then(Value::as_str);
+                if status == Some("declined") {
+                    // The log line names the command: no "shell" line was written for it.
+                    let mut out = tool("권한", short(&format!("명령 실행 요청이 거절됐습니다: {command}")));
+                    out.push(StreamSignal::ToolError { name: "shell".into(), summary: command, error: "명령 실행 요청이 거절됐습니다".into() });
+                    return out;
                 }
-                let command = coalesce([item.get("command")]).map(js_string).unwrap_or_default();
-                return tool("shell", short(&unwrap_shell(&command)));
+                let mut out = tool("shell", command.clone());
+                let code = item.get("exit_code").and_then(Value::as_i64);
+                if status == Some("failed") || code.is_some_and(|c| c != 0) {
+                    let said = item.get("aggregated_output").and_then(Value::as_str).unwrap_or_default();
+                    // The end of the output is where a command says what went wrong.
+                    let tail: Vec<&str> = said.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+                    let tail = tail[tail.len().saturating_sub(4)..].join(" / ");
+                    // Code 1 with nothing said is an answer, not a failure: a search that found
+                    // nothing, a test that is false (rg, grep, findstr, `test -f`, `git diff --quiet`).
+                    if tail.is_empty() && code == Some(1) { return out; }
+                    let exit = code.map_or_else(|| "실패".to_string(), |c| format!("종료 코드 {c}"));
+                    out.push(StreamSignal::ToolError { name: "shell".into(), summary: command, error: error_text(&if tail.is_empty() { exit } else { format!("{exit}: {tail}") }) });
+                }
+                return out;
             }
             Some("file_change") => {
-                if item.get("status").and_then(Value::as_str) == Some("declined") {
-                    return tool("권한", "파일 변경 요청이 거절됐습니다".into());
-                }
                 // File names only: full Windows paths of two files already overflow the summary's length.
                 let changes: Vec<Value> = item
                     .get("changes")
@@ -426,7 +448,32 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                             .collect()
                     })
                     .unwrap_or_default();
-                return tool("edit", short(&Value::Array(changes).to_string()));
+                let summary = short(&Value::Array(changes).to_string());
+                return match item.get("status").and_then(Value::as_str) {
+                    Some("declined") => vec![
+                        StreamSignal::Tool { name: "권한".into(), summary: "파일 변경 요청이 거절됐습니다".into() },
+                        StreamSignal::ToolError { name: "edit".into(), summary, error: "파일 변경 요청이 거절됐습니다".into() },
+                    ],
+                    // A patch that did not apply is still shown as the edit it tried.
+                    Some("failed") => vec![
+                        StreamSignal::Tool { name: "edit".into(), summary: summary.clone() },
+                        StreamSignal::ToolError { name: "edit".into(), summary, error: "파일 변경이 적용되지 않았습니다".into() },
+                    ],
+                    _ => tool("edit", summary),
+                };
+            }
+            Some("mcp_tool_call") => {
+                let part = |key: &str| item.get(key).and_then(Value::as_str).unwrap_or_default();
+                let name = [part("server"), part("tool")].into_iter().filter(|p| !p.is_empty()).collect::<Vec<_>>().join(".");
+                if name.is_empty() { return Vec::new(); }
+                let plain = |value: &Value| value.as_str().map_or_else(|| value.to_string(), str::to_string);
+                let summary = item.get("arguments").filter(|a| !a.is_null()).map(|a| short(&plain(a))).unwrap_or_default();
+                let mut out = tool(&name, summary.clone());
+                if item.get("status").and_then(Value::as_str) == Some("failed") {
+                    let said = item.get("error").filter(|e| !e.is_null()).map(|e| plain(e.get("message").unwrap_or(e))).unwrap_or_default();
+                    out.push(StreamSignal::ToolError { name, summary, error: error_text(&said) });
+                }
+                return out;
             }
             Some("web_search") => return tool("web_search", short_value(item.get("query"))),
             // item.type === "error" items are config warnings; the turn still runs.
@@ -455,7 +502,9 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
             None => data.get("message"),
         };
         let text = coalesce([source]).map(js_string).unwrap_or_default().trim().to_string();
-        let mut out = limit_from_text(&text, false);
+        // Codex reports each reconnect attempt as an "error" and the turn goes on; the 429 such a
+        // notice may quote is not a usage limit, and must not rest the service for other cards.
+        let mut out = if kind == Some("error") && RETRY_NOTICE.is_match(&text) { Vec::new() } else { limit_from_text(&text, false) };
         out.push(StreamSignal::Final { ok: false, text });
         return out;
     }
@@ -463,9 +512,15 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
 }
 
 static SHELL_WRAPPER: LazyLock<Regex> = LazyLock::new(|| {
-    let shell = r"(?:pwsh|powershell|bash|sh|cmd|zsh)(?:\.exe)?";
-    Regex::new(&format!(r#"(?is)^\s*(?:"[^"]*?{shell}"|\S*?{shell})\s+(?:-NoProfile\s+)?(?:-Command|-lc|-c|/c)\s+(.+)$"#)).unwrap()
+    // The shell is the program itself, not the end of another program's name ("publish -c release").
+    let shell = r"(?:[^\s\x22']*[\\/])?(?:pwsh|powershell|bash|sh|cmd|zsh)(?:\.exe)?";
+    let quoted = r"(?:[^\x22']*[\\/])?(?:pwsh|powershell|bash|sh|cmd|zsh)(?:\.exe)?";
+    let flags = r"(?:-(?:NoProfile|NoLogo|NonInteractive|ExecutionPolicy\s+\S+)\s+)*";
+    Regex::new(&format!(r#"(?is)^\s*(?:"{quoted}"|'{quoted}'|{shell})\s+{flags}(?:-Command|-lc|-c|/c)\s+(.+)$"#)).unwrap()
 });
+
+/// A reconnect notice: "Reconnecting... 2/5", "stream error: …; retrying 1/5 in 200ms".
+static RETRY_NOTICE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\breconnecting\b|\bretrying\b").unwrap());
 
 /// Codex reports commands wrapped in their shell (`"C:\…\pwsh.exe" -Command "…"`);
 /// people want the command itself.
@@ -473,7 +528,10 @@ pub fn unwrap_shell(command: &str) -> String {
     let Some(found) = SHELL_WRAPPER.captures(command) else { return command.to_string() };
     let inner = found[1].trim();
     let quoted = inner.len() >= 2 && ((inner.starts_with('"') && inner.ends_with('"')) || (inner.starts_with('\'') && inner.ends_with('\'')));
-    if quoted { inner[1..inner.len() - 1].to_string() } else { inner.to_string() }
+    if !quoted { return inner.to_string(); }
+    let body = &inner[1..inner.len() - 1];
+    // Inside double quotes the command's own quotes arrive escaped; the same command reads the same from any shell.
+    if inner.starts_with('"') { body.replace("\\\"", "\"") } else { body.to_string() }
 }
 
 #[cfg(test)]

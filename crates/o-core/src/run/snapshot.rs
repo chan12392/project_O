@@ -298,6 +298,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
             | OEvent::CardMessage { card_id, .. }
             | OEvent::CardInput { card_id, .. }
             | OEvent::CardTool { card_id, .. }
+            | OEvent::CardToolError { card_id, .. }
             | OEvent::CardLimit { card_id, .. }
             | OEvent::CardEnd { card_id, .. }
             | OEvent::CardUsage { card_id, .. }
@@ -321,6 +322,12 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.activity = describe_tool(name, summary);
                 let mut log = entry(at, LogKind::Tool, format!("{name} {summary}").trim().to_string());
                 log.tool = Some(ToolWords { word: tool_word(name), detail: tool_detail(summary) });
+                card.log.push(log);
+            }
+            // The call itself is already in the log; this line says it failed and why.
+            OEvent::CardToolError { at, name, error, .. } => {
+                let mut log = entry(at, LogKind::Tool, format!("{name} 실패: {error}").trim().to_string());
+                log.tool = Some(ToolWords { word: format!("{} 실패", tool_word(name)), detail: error.clone() });
                 card.log.push(log);
             }
             OEvent::CardMessage { at, text, .. } => {

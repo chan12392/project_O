@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport, DreamDoc, DreamChange, DreamGraph, DreamInput, DreamList, DreamPage } from "./types.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS, type About, type UpdateCheck } from "../updates.ts";
 
 async function json<T>(res: Response): Promise<T> {
@@ -110,6 +110,13 @@ export const devBackend: Backend = {
     change === undefined
       ? fetch("/api/graph/settings").then((r) => json<GraphSettings>(r))
       : fetch("/api/graph/settings", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<GraphSettings>(r)),
+  dreamList: () => fetch("/api/dream/list").then((r) => json<DreamList>(r)),
+  dreamRead: (path) => fetch(`/api/dream/read?${new URLSearchParams({ path })}`).then((r) => json<DreamPage>(r)),
+  dreamGraph: () => fetch("/api/dream/graph").then((r) => json<DreamGraph>(r)),
+  dreamAdd: (input: DreamInput) => fetch("/api/dream/add", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(input) }).then((r) => json<DreamDoc>(r)),
+  dreamRemove: (path) => fetch("/api/dream/remove", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path }) }).then((r) => json<unknown>(r)).then(() => undefined),
+  dreamChanges: () => fetch("/api/dream/changes").then((r) => json<DreamChange[]>(r)),
+  dreamRevert: (id, reverted) => fetch("/api/dream/revert", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, reverted }) }).then((r) => json<DreamChange>(r)),
   projects: () => fetch("/api/projects").then((r) => json<ProjectList>(r)),
   projectOpen: (path) => fetch(`/api/projects/open?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   projectsAdd: (path) => fetch(`/api/projects/add?${new URLSearchParams({ path })}`, { method: "POST" }).then((r) => json<ProjectList>(r)),

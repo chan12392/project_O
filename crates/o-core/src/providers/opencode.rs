@@ -23,7 +23,7 @@ use std::time::Duration;
 
 use serde_json::{json, Map, Value};
 
-use super::stream::{is_limit_text, num, short, tool_summary};
+use super::stream::{error_text, is_limit_text, num, short, tool_summary};
 use super::{list_command, strings, LaunchSpec, ModelChoice, Official, Provider, ReadLine, TeamChannel, TEAM_COMMAND};
 use crate::agents::clean::{has_content, is_blank, read_json, LoginState};
 use crate::agents::clean;
@@ -331,10 +331,16 @@ fn read_stream(session: &mut bool, answer: &mut String, data: &Map<String, Value
                     let path = input.and_then(|i| i.get("path").or_else(|| i.get("filePath"))).and_then(Value::as_str);
                     summary = path.map(short).unwrap_or_default();
                 }
-                if state.and_then(|s| s.get("status")).and_then(Value::as_str) == Some("error") {
+                let failed = state.and_then(|s| s.get("status")).and_then(Value::as_str) == Some("error");
+                let call = summary.clone();
+                if failed {
                     summary = short(&format!("거부·실패 {summary}"));
                 }
                 out.push(StreamSignal::Tool { name: name.to_string(), summary });
+                if failed {
+                    let error = state.and_then(|s| s.get("error")).map(crate::sys::js::js_string).unwrap_or_default();
+                    out.push(StreamSignal::ToolError { name: name.to_string(), summary: call, error: error_text(&error) });
+                }
             }
         }
         Some("step_finish") => {

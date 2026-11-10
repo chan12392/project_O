@@ -18,6 +18,7 @@ mod runs;
 mod schedule;
 mod tokens;
 mod usage;
+mod dream;
 pub(crate) mod update;
 pub(crate) mod window;
 
@@ -77,6 +78,13 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         graph::graph_build,
         graph::graph_deep,
         graph::graph_settings,
+        dream::dream_list,
+        dream::dream_read,
+        dream::dream_graph,
+        dream::dream_add,
+        dream::dream_remove,
+        dream::dream_changes,
+        dream::dream_revert,
         images::image_read,
         images::image_open,
         schedule::schedule_list,

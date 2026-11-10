@@ -35,6 +35,7 @@ mod status;
 mod stop;
 mod tokens;
 mod usage;
+mod dream;
 mod yolo;
 
 pub struct Command {
@@ -71,6 +72,7 @@ pub const COMMANDS: &[Command] = &[
     schedule::SCHEDULE,
     projects::PROJECTS,
     graph::GRAPH,
+    dream::DREAM,
     guard::HOOK,
     guard::SCAN,
     mirror::SYNC_MIRROR,

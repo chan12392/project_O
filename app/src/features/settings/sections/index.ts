@@ -8,13 +8,12 @@ import { LEAD_SECTION } from "./Lead.tsx";
 import { NOTIFICATIONS_SECTION } from "./Notifications.tsx";
 import { PROJECTS_SECTION } from "./Projects.tsx";
 import { SHORTCUTS_SECTION } from "./Shortcuts.tsx";
-import { WIKI_SECTION } from "./Wiki.tsx";
 
 /** Settings navigation: groups of sections, in order. A new section is a file here and its entry below. */
 export const SETTINGS_GROUPS = [
   { title: "기본", items: [ACCOUNT_SECTION, GENERAL_SECTION, APPEARANCE_SECTION] },
   { title: "작업", items: [PROJECTS_SECTION, LEAD_SECTION, AGENTS_SECTION, NOTIFICATIONS_SECTION] },
-  { title: "지식", items: [GRAPH_SECTION, WIKI_SECTION] },
+  { title: "지식", items: [GRAPH_SECTION] },
   { title: "도움말", items: [SHORTCUTS_SECTION, ABOUT_SECTION] },
 ] as const;
 

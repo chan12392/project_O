@@ -284,6 +284,23 @@ export interface Backend {
   /** `o graph settings`: read (no `change`) or save the Graph tab's settings. */
   graphSettings(change?: Partial<GraphSettings>): Promise<GraphSettings>;
 
+  // The Wiki and Dreaming tabs (ADR-0041): materials a person put in and a record per finished card. Local, no LLM.
+
+  /** `o dream list`: every Dreaming document with its title. */
+  dreamList(): Promise<DreamList>;
+  /** `o dream read`: one listed document's text and what it is wired to, both ways. */
+  dreamRead(path: string): Promise<DreamPage>;
+  /** `o dream graph`: the documents as one graph, for the Dreaming tab. */
+  dreamGraph(): Promise<DreamGraph>;
+  /** `o dream add`: puts a material in — pasted or file text, or a web address fetched once. */
+  dreamAdd(input: DreamInput): Promise<DreamDoc>;
+  /** `o dream remove`: takes one material out. Records cannot be removed. */
+  dreamRemove(path: string): Promise<void>;
+  /** `o dream changes`: the lines Dreaming added to card prompts from repeated failures (ADR-0041 개정 1), latest failure first. */
+  dreamChanges(): Promise<DreamChange[]>;
+  /** `o dream revert|restore`: takes one change back, or lets it apply again. */
+  dreamRevert(id: string, reverted: boolean): Promise<DreamChange>;
+
   // The project list (ADR-0009). Nothing here deletes a folder; refusals reject with the reason.
 
   /** The projects root, its projects and the registered folders (`o projects --json`). */
@@ -413,6 +430,65 @@ export interface GraphLink {
   /** On a glowing path. */
   glow?: boolean;
 }
+
+/** What a Dreaming document is: a material a person put in, or a finished card's record. */
+export type DreamKind = "external" | "done" | "failed" | "tool" | "note";
+
+/** One Dreaming document (`o dream list`). */
+export interface DreamDoc {
+  /** Where the list shows it, `/`-separated: `외부 자료/…`, `작업 성공/<프로젝트>/…`, `작업 실패/<프로젝트>/…`, `도구 오류/<프로젝트>/…`. */
+  path: string;
+  title: string;
+  kind: DreamKind;
+  /** The project a record ran in, or the one a material was filed under. */
+  project?: string;
+  /** When it was added or when the card ended (ISO). */
+  at: string;
+  size: number;
+}
+
+export interface DreamList {
+  docs: DreamDoc[];
+  /** More documents than the list holds (2000 of each kind). */
+  truncated: boolean;
+}
+
+/** `o dream read --json`. */
+export interface DreamPage extends Omit<DreamDoc, "size"> {
+  /** Where a material came from: a web address or a file name. */
+  source?: string;
+  text: string;
+  /** The document is longer than `text` (1 MiB). */
+  truncated: boolean;
+  /** Documents this one is wired to, and documents wired to it. */
+  links: string[];
+  backlinks: string[];
+}
+
+/** `o dream graph --json`: Dreaming → kind → project → document, and `references` between documents. */
+export interface DreamGraph {
+  nodes: GraphNode[];
+  links: GraphLink[];
+  truncated: boolean;
+}
+
+/** One thing Dreaming changed: a line this project's cards get because the same failure kept happening. */
+export interface DreamChange {
+  id: string;
+  kind: "tool-failure" | "card-failure";
+  project: string;
+  text: string;
+  count: number;
+  firstAt: string;
+  lastAt: string;
+  /** `applied`, `reverted` (a person took it back) or `expired` (it stopped happening). */
+  state: "applied" | "reverted" | "expired";
+  changedAt: string;
+  evidence: { runId: string; cardId: string }[];
+}
+
+/** What `o dream add` takes: text as given (`source` names where it came from), or a web address to fetch. */
+export type DreamInput = { kind: "text"; title?: string; text: string; source?: string; project?: string } | { kind: "url"; url: string; title?: string; project?: string };
 
 /** What file and area nodes take their colors from (`o graph settings --color-by`). */
 export type GraphColorBy = "language" | "area";

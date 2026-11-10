@@ -387,3 +387,11 @@ fn devin_has_its_own_concurrency_cap() {
     assert!(has(&check_plan(&plan(vec![devin_card()]), &full), "active-cap"));
     assert!(check_plan(&plan(vec![code_card()]), &full).plan.is_some());
 }
+
+// ADR-0041: "wiki" receives notes and is nobody; a card cannot take the name or speak as it.
+#[test]
+fn wiki_is_a_recipient_only() {
+    let known = vec!["code".to_string()];
+    assert!(check_message("배운 것", &Parties { from: "code", to: "wiki", known: &known }).is_empty());
+    assert!(check_message("hi", &Parties { from: "wiki", to: "code", known: &known }).iter().any(|v| v.rule == "msg-party"));
+}

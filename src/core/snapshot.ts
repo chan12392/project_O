@@ -193,6 +193,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.activity = describeTool(e.name, e.summary);
         card.log.push({ at: e.at, kind: "tool", text: `${e.name} ${e.summary}`.trim(), tool: { word: toolWord(e.name), detail: toolDetail(e.summary) } });
         break;
+      // The call itself is already in the log; this line says it failed and why.
+      case "card.tool.error":
+        card.log.push({ at: e.at, kind: "tool", text: `${e.name} 실패: ${e.error}`.trim(), tool: { word: `${toolWord(e.name)} 실패`, detail: e.error } });
+        break;
       case "card.message":
         card.activity = firstLine(e.text);
         card.log.push({ at: e.at, kind: "message", text: e.text });

@@ -296,6 +296,7 @@ fn the_section_sits_between_the_task_and_the_team_channel() {
         "보내기: o msg send --to <카드 id|lead|all> \"내용\"   받기: o msg read",
         "일반 질문은 o msg send --to <카드 id|lead> --question --id <재시도키> \"내용\". 사람의 승인이나 권한 결정은 --question 대신 --approval로 요청하세요. 승인 요청에는 총괄이 자동으로 답하지 않습니다. 답을 기다릴 때는 o msg wait를 사용하세요.",
         "받은 메시지는 처리한 뒤 o msg ack --id <메시지 id>로 확인하세요. 처리 여부가 불명이면 확인 없이 재시도하지 마세요.",
+        "다음 작업에도 쓸 사실·함정·해결법을 알게 되면 받는 사람을 wiki 로 한 팀 메시지로 남기세요(첫 줄은 제목, 로그인 정보·개인 정보는 적지 않음).",
         "작업: 새 작업",
         "프로젝트: C:/work/game",
         "",

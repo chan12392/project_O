@@ -412,6 +412,7 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
                 emit(OEvent::CardMessage { at, card_id, text })?;
             }
             StreamSignal::Tool { name, summary } => emit(OEvent::CardTool { at, card_id, name, summary })?,
+            StreamSignal::ToolError { name, summary, error } => emit(OEvent::CardToolError { at, card_id, name, summary, error })?,
             StreamSignal::Limit { until } => {
                 let until = set_cooldown(home, card.provider, &until, Utc::now())?;
                 emit(OEvent::CardLimit { at: now_iso(), card_id, until })?;

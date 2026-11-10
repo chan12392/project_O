@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport } from "./types.ts";
+import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport, DreamDoc, DreamChange, DreamGraph, DreamInput, DreamList, DreamPage } from "./types.ts";
 import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
 /** Raised when the desktop app did not open a link; `shell/LinkNotice.tsx` shows it (also raised by app/src-tauri/src/commands/window.rs). */
@@ -105,6 +105,13 @@ export function tauriBackend(invoke: Invoke): Backend {
         clean: (await import("../../data/settings.ts")).settingsNow().clean,
       }) as Promise<GraphDeepResult>,
     graphSettings: (change) => invoke("graph_settings", { change: change ?? null }) as Promise<GraphSettings>,
+    dreamList: () => invoke("dream_list") as Promise<DreamList>,
+    dreamRead: (path) => invoke("dream_read", { path }) as Promise<DreamPage>,
+    dreamGraph: () => invoke("dream_graph") as Promise<DreamGraph>,
+    dreamAdd: (input: DreamInput) => invoke("dream_add", { input }) as Promise<DreamDoc>,
+    dreamRemove: (path) => invoke("dream_remove", { path }) as Promise<void>,
+    dreamChanges: () => invoke("dream_changes") as Promise<DreamChange[]>,
+    dreamRevert: (id, reverted) => invoke("dream_revert", { id, reverted }) as Promise<DreamChange>,
     projects: () => invoke("projects_list") as Promise<ProjectList>,
     projectOpen: (path) => invoke("project_open", { path }) as Promise<void>,
     projectsAdd: (path) => invoke("projects_add", { path }) as Promise<ProjectList>,

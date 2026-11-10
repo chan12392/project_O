@@ -56,7 +56,10 @@ pub const AGY_UNAVAILABLE: &str = "Antigravity는 제3자 앱을 통한 사용�
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
 /// Team-channel names a card must not take: its messages would read as the lead's or as a broadcast.
-const RESERVED_CARD_IDS: [&str; 2] = ["lead", "all"];
+const RESERVED_CARD_IDS: [&str; 3] = ["lead", "all", WIKI_PARTY];
+
+/// The team-message recipient that is nobody's inbox: what a card sends there is a Wiki note (ADR-0041).
+pub const WIKI_PARTY: &str = "wiki";
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
 /// Whether a model id has the shape a card's `model` field takes (the lead's `--model` uses it too).
@@ -364,7 +367,7 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
     if !CARD_ID.is_match(&id) {
         fail(found, "plan-shape".into(), "카드 id는 영문 소문자·숫자·하이픈 32자 이내입니다".into());
     } else if RESERVED_CARD_IDS.contains(&id.as_str()) {
-        fail(found, "plan-shape".into(), format!("카드 id {id}는 팀 대화의 총괄(lead)·전체 방송(all)용으로 예약돼 있어 쓸 수 없습니다"));
+        fail(found, "plan-shape".into(), format!("카드 id {id}는 팀 대화의 총괄(lead)·전체 방송(all)·Wiki 메모(wiki)용으로 예약돼 있어 쓸 수 없습니다"));
     }
     let provider = raw.get("provider").and_then(Value::as_str).and_then(ProviderId::parse);
     if provider.is_none() {
@@ -452,8 +455,9 @@ pub fn check_message(text: &str, parties: &Parties) -> Vec<Violation> {
     if js_len(text) > LIMITS.max_message_chars {
         found.add("msg-size", format!("메시지는 {}자 이내입니다", LIMITS.max_message_chars), None);
     }
-    for party in [parties.from, parties.to] {
-        if !(party == "lead" || party == "all" || parties.known.iter().any(|k| k == party)) {
+    for (party, receives) in [(parties.from, false), (parties.to, true)] {
+        // A run planned before "wiki" was reserved may have a card of that name; it keeps its inbox.
+        if !(party == "lead" || party == "all" || (receives && party == WIKI_PARTY) || parties.known.iter().any(|k| k == party)) {
             found.add("msg-party", format!("이 실행에 없는 상대입니다: {party}"), None);
         }
     }

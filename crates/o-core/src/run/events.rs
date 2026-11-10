@@ -68,6 +68,9 @@ pub enum OEvent {
     CardInput { at: String, card_id: String, text: String },
     #[serde(rename = "card.tool")]
     CardTool { at: String, card_id: String, name: String, summary: String },
+    /// A tool call that failed or was refused (ADR-0041): the call as "card.tool" names it, and why.
+    #[serde(rename = "card.tool.error")]
+    CardToolError { at: String, card_id: String, name: String, summary: String, error: String },
     #[serde(rename = "card.limit")]
     CardLimit { at: String, card_id: String, until: String },
     #[serde(rename = "card.end")]
@@ -183,6 +186,7 @@ impl OEvent {
             OEvent::CardMessage { .. } => "card.message",
             OEvent::CardInput { .. } => "card.input",
             OEvent::CardTool { .. } => "card.tool",
+            OEvent::CardToolError { .. } => "card.tool.error",
             OEvent::CardLimit { .. } => "card.limit",
             OEvent::CardEnd { .. } => "card.end",
             OEvent::Msg { .. } => "msg",
@@ -206,6 +210,8 @@ pub enum StreamSignal {
     Session { session_id: String },
     Message { text: String },
     Tool { name: String, summary: String },
+    /// A tool call that failed or was refused; it follows the call's own "Tool" signal.
+    ToolError { name: String, summary: String, error: String },
     Limit { until: String },
     Usage { input: f64, cached: f64, output: f64, complete: bool },
     Quota { window: String, used: f64, resets_at: String },

@@ -435,6 +435,50 @@ async function graph(req: IncomingMessage, res: ServerResponse, path: string, qu
   return false;
 }
 
+/** A document path as `o dream read` takes it: relative, Markdown, no climbing out, never read as an option; it checks the list again. */
+const DREAM_DOC = /^(?![\\/-])(?!.*(?:^|[\\/])\.\.(?:[\\/]|$))[^:*?"<>|\0]{1,400}\.md$/i;
+
+/** The Wiki and Dreaming tabs' twins of the Tauri dream_* commands (app/src-tauri/src/commands/dream.rs, ADR-0041). */
+function dream(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): boolean {
+  const fail = (status: number, message: string) => {
+    send(res, status, JSON.stringify({ error: message }));
+    return true;
+  };
+  const run = (work: Promise<string>) => {
+    void work.then((out) => send(res, 200, out), (e: Error) => fail(500, e.message));
+    return true;
+  };
+  if (req.method === "GET" && path === "/dream/changes") return run(o(["dream", "changes", "--json"]));
+  if (req.method === "POST" && path === "/dream/revert") {
+    return run(
+      body(req, 4096).then((input) => {
+        const { id, reverted } = JSON.parse(input.toString("utf8")) as { id?: unknown; reverted?: unknown };
+        if (typeof id !== "string" || !/^[0-9a-f]{16}$/.test(id)) throw new Error("변경 ID가 올바르지 않습니다");
+        return o(["dream", reverted === false ? "restore" : "revert", id]);
+      }),
+    );
+  }
+  if (req.method === "GET" && (path === "/dream/list" || path === "/dream/graph")) return run(o(["dream", path.slice("/dream/".length), "--json"]));
+  if (req.method === "GET" && path === "/dream/read") {
+    const document = query.get("path") ?? "";
+    return DREAM_DOC.test(document) ? run(o(["dream", "read", document, "--json"])) : fail(400, "문서 경로가 올바르지 않습니다");
+  }
+  if (req.method === "POST" && path === "/dream/add") {
+    // The material goes to `o dream add -` as sent: it checks every field itself.
+    return run(body(req, 8 * 1024 * 1024).then((input) => oWithInput(["dream", "add", "-"], input, 60_000), () => Promise.reject(new Error("자료가 너무 큽니다"))));
+  }
+  if (req.method === "POST" && path === "/dream/remove") {
+    return run(
+      body(req, 4096).then((input) => {
+        const document = (JSON.parse(input.toString("utf8")) as { path?: unknown }).path;
+        if (typeof document !== "string" || !DREAM_DOC.test(document)) throw new Error("문서 경로가 올바르지 않습니다");
+        return o(["dream", "remove", document]);
+      }),
+    );
+  }
+  return false;
+}
+
 /** A new project's folder name as `o projects new` takes it; it checks the name again. */
 const PROJECT_NAME = /^[^\\/:*?"<>|\0]{1,64}$/;
 
@@ -635,6 +679,7 @@ export function liveRuns(): Plugin {
         if (path?.startsWith("/graph/")) {
           return void graph(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }
+        if (path?.startsWith("/dream/") && dream(req, res, path, query)) return;
         if (path?.startsWith("/lead/")) {
           return void lead(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
         }

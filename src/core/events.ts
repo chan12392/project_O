@@ -28,6 +28,8 @@ export type OEvent =
   | { t: "card.message"; at: string; cardId: string; text: string }
   | { t: "card.input"; at: string; cardId: string; text: string }
   | { t: "card.tool"; at: string; cardId: string; name: string; summary: string }
+  /** A tool call that failed or was refused (ADR-0041): the call as "card.tool" names it, and why. */
+  | { t: "card.tool.error"; at: string; cardId: string; name: string; summary: string; error: string }
   | { t: "card.limit"; at: string; cardId: string; until: string }
   | { t: "card.end"; at: string; cardId: string; status: CardStatus; result?: string; exitCode: number | null }
   /** A team message between agents of one run (`o msg send`), "lead" for the supervisor, "all" for everyone. */
