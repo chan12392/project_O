@@ -2,6 +2,7 @@ import { FolderTree } from "lucide-react";
 import { useId, useState, type FormEvent } from "react";
 
 import { changeProjects, projectsApi, useProjectList } from "../../../data/projects.ts";
+import { errorText } from "../../../lib/format.ts";
 import { canPickFolder } from "../../projects/ProjectForms.tsx";
 import { Path, Section, type SettingsSectionDef } from "../Section.tsx";
 
@@ -25,7 +26,7 @@ function ProjectsSection() {
       await change();
       return true;
     } catch (e) {
-      setProblem(e instanceof Error ? e.message : String(e));
+      setProblem(errorText(e));
       return false;
     } finally {
       setBusy(false);

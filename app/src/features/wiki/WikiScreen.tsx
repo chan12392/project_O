@@ -4,14 +4,12 @@ import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
 import type { Project } from "../../data/projects.ts";
-import { ICON_BUTTON } from "../../lib/format.ts";
+import { ICON_BUTTON, errorText } from "../../lib/format.ts";
 import { backend, type Backend, type DreamDoc, type DreamList, type DreamPage } from "../../platform/backend/index.ts";
 import { BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { safeUrl } from "../chat/markdown.ts";
 import { AddMaterial } from "./AddMaterial.tsx";
 import { buildTree, countDocs, editorAfterSave, fileName, filterDocs, firstDoc, KIND_WORD, resolveLink, tagCounts, toggleTag, type WikiFolder } from "./wikiTree.ts";
-
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const timeText = (at: string) => {
   const time = new Date(at);

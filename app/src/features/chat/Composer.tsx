@@ -29,6 +29,7 @@ import { useLeadModels, type LeadState } from "../../data/useLead.ts";
 import { useAgentCheck } from "../../data/agents.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { useAutoGrow } from "../../lib/autoGrow.ts";
+import { errorText } from "../../lib/format.ts";
 import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
@@ -40,8 +41,6 @@ const PROFILE_TIP = {
 } as const;
 /** The model menu's "type an id" row; a leading space never starts a model id. */
 const TYPE_MODEL = " 직접 입력";
-
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /**
  * The agents that may lead right now (`canLead`), from the check every screen shares

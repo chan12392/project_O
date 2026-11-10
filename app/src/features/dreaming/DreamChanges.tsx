@@ -1,9 +1,8 @@
 import { RotateCcw, Undo2, X } from "lucide-react";
 import { useState } from "react";
 
+import { errorText } from "../../lib/format.ts";
 import type { Backend, DreamChange } from "../../platform/backend/index.ts";
-
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const KIND_WORD: Record<DreamChange["kind"], string> = { "tool-failure": "되풀이된 도구 오류", "card-failure": "되풀이된 작업 실패" };
 const STATE_WORD: Record<DreamChange["state"], string> = { applied: "적용 중", reverted: "되돌림", expired: "끝남" };

@@ -1,6 +1,7 @@
 import { ArrowLeft } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
+import { errorText } from "../../lib/format.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import type { AboutState, SectionContext, SettingsSectionDef } from "./Section.tsx";
 import { SETTINGS_GROUPS, type SettingsSection } from "./sections/index.ts";
@@ -74,7 +75,7 @@ function useAbout(api: Backend) {
     let live = true;
     api.about().then(
       (data) => live && setState({ data }),
-      (e: unknown) => live && setState({ error: e instanceof Error ? e.message : String(e) }),
+      (e: unknown) => live && setState({ error: errorText(e) }),
     );
     return () => {
       live = false;

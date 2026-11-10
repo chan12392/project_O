@@ -1,4 +1,5 @@
 import { useEffect, useState } from "react";
+import { errorText } from "../../lib/format.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, SettingsRow } from "../../ui/controls.tsx";
 import { UNINSTALL_KEEP, UNINSTALL_PURGE, UPDATE_EVENT, updateStatusLine, type UpdateStatus } from "../../platform/updates.ts";
@@ -20,7 +21,7 @@ export function UpdateSettings({ api }: { api: Backend }) {
       const result = await api.checkUpdate();
       setNote(result.message);
       if (result.release) window.dispatchEvent(new CustomEvent(UPDATE_EVENT, { detail: result.release }));
-    } catch (e) { setError(true); setNote(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setError(true); setNote(errorText(e)); }
     finally { setBusy(false); }
   };
   return <div className="divide-y">

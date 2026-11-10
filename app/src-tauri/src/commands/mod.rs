@@ -131,6 +131,15 @@ fn o_binary() -> Option<std::path::PathBuf> {
     beside.or_else(|| o_core::sys::resolve::which("o"))
 }
 
+/// An absolute folder that exists; o-core checks again whether it may be a project.
+fn project_arg(project: &str) -> Result<(), String> {
+    let path = std::path::Path::new(project);
+    if !path.is_absolute() || !path.is_dir() {
+        return Err(format!("프로젝트 폴더가 없습니다: {project}"));
+    }
+    Ok(())
+}
+
 async fn blocking<T: Send + 'static>(work: impl FnOnce() -> T + Send + 'static) -> Result<T, String> {
     tauri::async_runtime::spawn_blocking(work).await.map_err(|e| e.to_string())
 }

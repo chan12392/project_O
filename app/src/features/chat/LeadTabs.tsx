@@ -4,6 +4,7 @@ import { useRef, useState, type KeyboardEvent } from "react";
 import { LEAD_TAB_MAX, LEAD_TAB_WORD, type LeadTab } from "../../../../src/core/lead.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useDismiss } from "../../lib/dismiss.ts";
+import { errorText } from "../../lib/format.ts";
 import { LeadStateDot } from "../../ui/LeadStateDot.tsx";
 
 interface LeadTabsProps {
@@ -38,7 +39,6 @@ export function LeadTabs({ name, path, lead, onNew, onSelect, onClose, onWriter,
   const menuRef = useRef<HTMLDivElement>(null);
   useDismiss(menuRef, menuFor !== undefined, () => setMenuFor(undefined));
   const tabs = lead.tabs;
-  const reason = (e: unknown) => (e instanceof Error ? e.message : String(e));
   const maxed = tabs.length >= LEAD_TAB_MAX;
 
   const add = async () => {
@@ -46,7 +46,7 @@ export function LeadTabs({ name, path, lead, onNew, onSelect, onClose, onWriter,
     try {
       await onNew();
     } catch (e) {
-      onError(`새 총괄을 열지 못했습니다: ${reason(e)}`);
+      onError(`새 총괄을 열지 못했습니다: ${errorText(e)}`);
     } finally {
       setAdding(false);
     }
@@ -57,7 +57,7 @@ export function LeadTabs({ name, path, lead, onNew, onSelect, onClose, onWriter,
     try {
       await onClose(tab);
     } catch (e) {
-      onError(`총괄 탭을 닫지 못했습니다: ${reason(e)}`);
+      onError(`총괄 탭을 닫지 못했습니다: ${errorText(e)}`);
     } finally {
       setClosing((s) => {
         const next = new Set(s);
@@ -138,7 +138,7 @@ export function LeadTabs({ name, path, lead, onNew, onSelect, onClose, onWriter,
                     className="flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-left text-xs hover:bg-accent focus-ring"
                     onClick={() => {
                       setMenuFor(undefined);
-                      void onWriter(tab).catch((e: unknown) => onError(`직접 수정을 맡기지 못했습니다: ${reason(e)}`));
+                      void onWriter(tab).catch((e: unknown) => onError(`직접 수정을 맡기지 못했습니다: ${errorText(e)}`));
                     }}
                   >
                     <Pencil className="size-3.5" aria-hidden="true" />

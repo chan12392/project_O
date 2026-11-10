@@ -112,6 +112,9 @@ function localHost(req: IncomingMessage): boolean {
  */
 function sameOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
+  // A browser says where a request comes from even when it sends no Origin (an <img> on another site).
+  const site = req.headers["sec-fetch-site"];
+  if (site && site !== "same-origin" && site !== "none") return false;
   return !origin || origin === `http://${req.headers.host}`;
 }
 
@@ -121,7 +124,7 @@ const AGENT_ACTION = /^\/agents\/(claude|codex|agy|opencode|devin)\/(install|log
 /** A PR number or github.com pull address, as `o review` takes it (platform/backend PR_SELECTOR). */
 const PR_SELECTOR = /^(?:[1-9]\d{0,6}|https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/[1-9]\d{0,6})$/;
 /** An absolute folder; `o review`'s policy check decides whether it may be a project. */
-const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/)/;
+const ABSOLUTE = /^(?:[A-Za-z]:[\\/]|\/(?!\/))/;
 /** Settings → 에이전트 → 하루 사용 예산: the day's allowance, percent of the weekly window. */
 const BUDGET_PERCENT = /^1[234]$/;
 

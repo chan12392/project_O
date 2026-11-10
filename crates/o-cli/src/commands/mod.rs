@@ -110,6 +110,10 @@ pub fn help() -> &'static str {
     &HELP
 }
 
+/// Whether a lead turn or a card runs this `o`. Such a caller may read settings but not
+/// start work or change what the person decides.
+pub use o_core::agents::agy::inside_agent;
+
 fn fail(message: &str) -> i32 {
     eprintln!("{message}");
     1

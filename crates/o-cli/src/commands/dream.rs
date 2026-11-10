@@ -84,7 +84,7 @@ fn run(home: &Path, args: &[String]) -> Result<Value, String> {
         }
         ("remove", [document]) if !document.starts_with("--") => dream::remove(home, document).map(|()| json!({ "ok": true })),
         ("changes", []) => tuning::refresh(home).map(|v| json!(v)),
-        ("revert" | "restore", _) if in_card() || std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) => Err("Dreaming이 바꾼 것은 사람만 되돌리거나 다시 적용할 수 있습니다".into()),
+        ("revert" | "restore", _) if super::inside_agent() => Err("Dreaming이 바꾼 것은 사람만 되돌리거나 다시 적용할 수 있습니다".into()),
         ("revert" | "restore", [id]) if !id.starts_with("--") => tuning::set_reverted(home, id, command == "revert").map(|v| json!(v)),
         ("list" | "graph" | "read" | "add" | "remove" | "changes" | "revert" | "restore", _) => Err(format!("dream {command}의 인자가 올바르지 않습니다")),
         _ => Err(format!("알 수 없는 dream 명령: {command}")),

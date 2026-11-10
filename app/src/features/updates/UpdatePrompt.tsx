@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { errorText } from "../../lib/format.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { settingsNow, updateSettings } from "../../data/settings.ts";
@@ -53,7 +54,7 @@ export function UpdatePrompt({ api }: { api: Backend }) {
     setBusy(true);
     setError("");
     try { await api.installUpdate(release.tag); }
-    catch (e) { if (!dismissed.current) setError(e instanceof Error ? e.message : String(e)); }
+    catch (e) { if (!dismissed.current) setError(errorText(e)); }
     finally { installing.current = false; setBusy(false); }
   };
 

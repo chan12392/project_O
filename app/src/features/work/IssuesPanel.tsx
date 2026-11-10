@@ -1,13 +1,14 @@
 import { useState, type FormEvent } from "react";
 import type { RunView } from "../../../../src/core/snapshot.ts";
-import { backend, type FindingRow, type Issue } from "../../platform/backend/index.ts";
+import { errorText } from "../../lib/format.ts";
+import { currentBackend, type FindingRow, type Issue } from "../../platform/backend/index.ts";
 
 const field = "w-full rounded-md border bg-background px-2 py-1.5 text-sm focus-ring";
 const button = "rounded-md border px-2.5 py-1.5 text-xs hover:bg-accent focus-ring disabled:opacity-50";
 
 /** Local findings are linked to GitHub issues only after a person checks the candidates. */
 export function IssuesPanel({ runs }: { runs: RunView[] }) {
-  const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
+  const api = currentBackend();
   const [repo, setRepo] = useState("");
   const [loadedRepo, setLoadedRepo] = useState("");
   const [rows, setRows] = useState<FindingRow[]>([]);
@@ -34,7 +35,7 @@ export function IssuesPanel({ runs }: { runs: RunView[] }) {
   };
   const work = async (fn: () => Promise<void>) => {
     setBusy(true); setError(""); setStatus("");
-    try { await fn(); } catch (e) { setError(e instanceof Error ? e.message : String(e)); } finally { setBusy(false); }
+    try { await fn(); } catch (e) { setError(errorText(e)); } finally { setBusy(false); }
   };
   const load = async () => { setRows(await api.issuesList(repo.trim())); setLoadedRepo(repo.trim()); };
   const record = (event: FormEvent) => {

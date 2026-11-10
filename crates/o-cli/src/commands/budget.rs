@@ -21,6 +21,10 @@ pub const BUDGET: Command = Command {
 
 fn report(home: &Path, args: &[String]) -> i32 {
     let (mut as_json, mut cached) = (false, false);
+    // A lead turn or a card may read the budget but not switch it off or change its share.
+    if args.iter().any(|arg| matches!(arg.as_str(), "--on" | "--off" | "--percent")) && super::inside_agent() {
+        return fail("에이전트 안에서는 하루 사용 예산 설정을 바꿀 수 없습니다. 사용자가 실행해 주세요.");
+    }
     let mut items = args.iter();
     while let Some(arg) = items.next() {
         match arg.as_str() {

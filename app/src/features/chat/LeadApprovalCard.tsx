@@ -5,11 +5,11 @@ import { approvalNotice, approvalView, detailIsLong, remainingText } from "../..
 import { LEAD_NAME } from "../../../../src/core/lead.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useSettings } from "../../data/settings.ts";
+import { errorText } from "../../lib/format.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { alertPerson } from "./QuestionDialog.tsx";
 
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const NAMES: Record<string, string> = LEAD_NAME;
 
 /** A shell command or a request as sent: in full, folded when long. */

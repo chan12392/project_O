@@ -63,10 +63,6 @@ pub enum Refused {
 }
 
 /// Checks and appends one message.
-pub fn send(home: &Path, speaker: &Speaker, to: &str, text: &str) -> Result<(), Refused> {
-    send_tracked(home, speaker, to, text, false, None).map(|_| ())
-}
-
 /// `key` makes retries by the same sender idempotent, including after a lost response.
 pub fn send_tracked(home: &Path, speaker: &Speaker, to: &str, text: &str, question: bool, key: Option<&str>) -> Result<String, Refused> {
     send_reply(home, speaker, to, text, question, key, None)

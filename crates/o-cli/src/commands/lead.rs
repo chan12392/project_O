@@ -122,7 +122,7 @@ fn retry(home: &Path, args: &[String]) -> i32 {
 }
 
 fn log_page(home: &Path, args: &[String]) -> i32 {
-    if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+    if agent_env() {
         return fail("원본 로그는 사람만 읽을 수 있습니다");
     }
     let [flag, project, run, hash, offset] = args else { return fail("o lead log-page --project <폴더> <runId> <SHA-256|-> <바이트 위치>가 필요합니다") };
@@ -226,9 +226,7 @@ fn run_start(run_id: &str) -> std::io::Result<()> {
     proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
 }
 
-fn agent_env() -> bool {
-    std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())
-}
+use super::inside_agent as agent_env;
 
 /// `o lead forward <proposalId>`: the person sends the overall lead's proposed requests on (ADR-0036).
 fn forward(home: &Path, args: &[String]) -> i32 {
@@ -310,13 +308,10 @@ fn send(home: &Path, args: &[String]) -> i32 {
     req.thread = Some(&thread);
     req.fresh = false;
     let spawner: Arc<Spawner> = Arc::new(official_command);
-    let start = |run_id: &str| -> std::io::Result<()> {
-        proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
-    };
     let resume = |run_id: &str| -> std::io::Result<()> {
         proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_followup", run_id])).map(|_| ())
     };
-    let result = if a.manual_dispatch { lead::send_with_followups(home, &req, spawner.as_ref(), &resume) } else { lead::send_with_autorun_and_followups(home, &req, spawner.as_ref(), &start, &resume) };
+    let result = if a.manual_dispatch { lead::send_with_followups(home, &req, spawner.as_ref(), &resume) } else { lead::send_with_autorun_and_followups(home, &req, spawner.as_ref(), &run_start, &resume) };
     match result {
         Ok(events) => {
             // A turn that ended in lead.error is still on record: the events say what happened.
@@ -445,12 +440,8 @@ fn dispatch(home: &Path, args: &[String]) -> i32 {
         Err(e) => return fail(&e),
     };
     let [plan_id] = a.words.as_slice() else { return fail("o lead dispatch <planId> [--profile project-o|own]") };
-    let start = |run_id: &str| -> std::io::Result<()> {
-        let exe = std::env::current_exe()?;
-        proc::spawn_detached(Process::new(exe).args(["_run", run_id])).map(|_| ())
-    };
     let mode = RunMode { yolo: yolo::resolve(home, a.yolo), ..a.mode };
-    match lead::dispatch(home, plan_id, mode, &start) {
+    match lead::dispatch(home, plan_id, mode, &run_start) {
         Ok(done) => {
             println!("{}", json!(done));
             0

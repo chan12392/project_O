@@ -4,7 +4,7 @@ use std::path::Path;
 
 use o_core::agents::billing::{self, Mode};
 
-use super::{fail, help, Command};
+use super::{fail, help, inside_agent, Command};
 
 pub const BILLING: Command = Command {
     name: "billing",
@@ -14,11 +14,6 @@ pub const BILLING: Command = Command {
                              (변수 이름만 확인, 값은 읽거나 지우지 않음. 상태·사용량·모델 조회는 두 모드 모두 실행)",
     run: report,
 };
-
-/// A card or a lead turn may read the mode but not change it: the person picks how they pay.
-fn inside_agent() -> bool {
-    ["O_AGENT_ROLE", "O_CARD_ID"].iter().any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty()))
-}
 
 fn report(home: &Path, args: &[String]) -> i32 {
     let mut as_json = false;
@@ -37,6 +32,7 @@ fn report(home: &Path, args: &[String]) -> i32 {
         }
     }
     if let Some(mode) = mode {
+        // A card or a lead turn may read the mode but not change it: the person picks how they pay.
         if inside_agent() {
             return fail("에이전트 안에서는 API 과금 모드를 바꿀 수 없습니다. 사용자가 실행해 주세요.");
         }

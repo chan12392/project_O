@@ -10,6 +10,7 @@ mod resources;
 pub mod index;
 #[cfg(windows)]
 pub mod job_watch;
+mod leases;
 pub mod mode;
 pub mod plan;
 pub mod ram;

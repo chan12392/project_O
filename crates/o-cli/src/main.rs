@@ -29,7 +29,7 @@ fn main() {
 }
 
 fn run(args: &[String]) -> i32 {
-    if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+    if commands::inside_agent() {
         let blocked = matches!(args.first().map(String::as_str), Some("dispatch" | "followup" | "_run" | "_lead-watch" | "_job-watch" | "_followup" | "review" | "_review" | "image" | "schedule" | "changes"))
             || matches!((args.first().map(String::as_str), args.get(1).map(String::as_str)), (Some("lead"), Some("send" | "dispatch" | "note" | "wake" | "retry" | "decide")) | (Some("projects"), Some("open")) | (Some("agents"), Some("setup")) | (Some("issues"), Some("record" | "classify" | "resolve" | "reopen")))
             || (args.first().is_some_and(|a| a == "resources") && args.get(1).is_some_and(|a| a == "recover") && args.iter().any(|a| a == "--confirm-exited"));

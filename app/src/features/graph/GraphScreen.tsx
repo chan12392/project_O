@@ -3,6 +3,7 @@ import { useCallback, useEffect, useState } from "react";
 
 import type { Project } from "../../data/projects.ts";
 import { useReducedMotion, useSettings } from "../../data/settings.ts";
+import { errorText } from "../../lib/format.ts";
 import type { Backend, GraphNode, GraphSettings } from "../../platform/backend/index.ts";
 import { CanvasState } from "./CanvasState.tsx";
 import { DeepConfirm } from "./DeepConfirm.tsx";
@@ -15,8 +16,6 @@ import { deepModelOf } from "./modelTier.ts";
 import { NodeDetail } from "./NodeDetail.tsx";
 import { ScopeList } from "./ScopeList.tsx";
 import { projectOf, useGraphView, type GraphScope } from "./useGraphView.ts";
-
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const darkQuery = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
 

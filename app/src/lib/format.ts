@@ -39,6 +39,9 @@ export function modelLine(model: string | undefined, effort: string | undefined)
   return [model, effort].filter(Boolean).join(" ");
 }
 
+/** A caught value as text: an Error's message, anything else as a string. */
+export const errorText = (e: unknown): string => (e instanceof Error ? e.message : String(e));
+
 /** Token counts and the like, short: 12.3만. */
 export const compact = new Intl.NumberFormat("ko-KR", { notation: "compact", maximumFractionDigits: 1 });
 

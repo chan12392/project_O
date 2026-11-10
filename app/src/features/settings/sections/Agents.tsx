@@ -2,6 +2,7 @@ import { Bot, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { updateSettings, useSettings } from "../../../data/settings.ts";
+import { errorText } from "../../../lib/format.ts";
 import { BUDGET_PERCENTS, type AgentCatalogEntry, type AgyChange, type AgyReport, type Backend, type BudgetPercent, type BillingMode, type BillingReport, type BudgetReport, type RamChange, type RamReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SubHeading, Switch } from "../../../ui/controls.tsx";
 import { TERM_DESKTOP_ONLY } from "../../../../../src/core/terminal.ts";
@@ -182,7 +183,7 @@ function AgyRows({ api }: { api: Backend }) {
   const [busy, setBusy] = useState(false);
   const [ack, setAck] = useState(false);
   useEffect(() => {
-    void api.agyGet().then(setReport, (e) => setError(`읽지 못했습니다: ${e instanceof Error ? e.message : String(e)}`));
+    void api.agyGet().then(setReport, (e) => setError(`읽지 못했습니다: ${errorText(e)}`));
   }, [api]);
   const save = async (change: AgyChange) => {
     setBusy(true);
@@ -191,7 +192,7 @@ function AgyRows({ api }: { api: Backend }) {
       setError("");
       if (change.workers === true) setAck(false);
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -369,7 +370,7 @@ function BudgetRows({ api }: { api: Backend }) {
       keep(await change);
       setNote("");
     } catch (e) {
-      setNote(`저장하지 못했습니다: ${e instanceof Error ? e.message : String(e)}`);
+      setNote(`저장하지 못했습니다: ${errorText(e)}`);
     } finally {
       setSaving(false);
     }

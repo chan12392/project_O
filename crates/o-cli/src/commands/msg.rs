@@ -55,7 +55,7 @@ fn message(home: &Path, args: &[String]) -> i32 {
                 Err(error) => return fail(&error.to_string()),
             }
         } else { false };
-        if approval && (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) {
+        if approval && super::inside_agent() {
             return fail("승인 요청에는 사용자가 직접 답해야 합니다");
         }
         let result = if flags.contains_key("approval") {
@@ -87,7 +87,7 @@ fn message(home: &Path, args: &[String]) -> i32 {
     }};
     match verb {
         "answer-approval" => {
-            if std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty()) {
+            if super::inside_agent() {
                 return fail("승인 요청에는 사용자가 직접 답해야 합니다");
             }
             let Some(id) = flags.get("id") else { return fail("--id가 필요합니다") };

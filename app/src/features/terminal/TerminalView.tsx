@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import { b64ToBytes, bytesToB64, nextOffset, TERM_DESKTOP_ONLY, termWriteChunks, termWriteQueueEnd, termWriteQueueFor, type TermSession, type TermWriteQueue } from "../../../../src/core/terminal.ts";
+import { errorText } from "../../lib/format.ts";
 import type { Backend } from "../../platform/backend/types.ts";
 import { BUTTON_GHOST, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { loadXterm } from "./xtermLib.ts";
@@ -111,7 +112,7 @@ export function TerminalView({ api, session, title, onClosed, className }: { api
         dark.disconnect();
       });
       void poll();
-    }, (e) => setFailed(e instanceof Error ? e.message : String(e)));
+    }, (e) => setFailed(errorText(e)));
 
     return () => {
       live = false;
@@ -127,7 +128,7 @@ export function TerminalView({ api, session, title, onClosed, className }: { api
       await api.termPaste(session.id);
       setState("running");
     } catch (e) {
-      setFailed(e instanceof Error ? e.message : String(e));
+      setFailed(errorText(e));
     } finally {
       setBusy(false);
     }
@@ -140,7 +141,7 @@ export function TerminalView({ api, session, title, onClosed, className }: { api
       await api.termClose(session.id);
       onClosed?.();
     } catch (e) {
-      setFailed(e instanceof Error ? e.message : String(e));
+      setFailed(errorText(e));
     } finally {
       setBusy(false);
     }

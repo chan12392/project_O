@@ -76,10 +76,6 @@ pub fn cache_path(home: &Path) -> PathBuf {
     home.join("sessions-cache.json")
 }
 
-pub fn is_session_run(run_id: &str) -> bool {
-    run_id.starts_with(SESSION_PREFIX)
-}
-
 // ---------------------------------------------------------------------------
 // Finding the files (the privacy boundary: nothing else is ever opened)
 
@@ -896,24 +892,13 @@ pub fn with_sessions(runs: Vec<RunRecord>, sessions: Vec<RunRecord>) -> Vec<RunR
     newest_first(all)
 }
 
-/// Folder paths as the run index compares them: `/` slashes, no trailing one, any case on Windows.
-fn same_folder(a: &str, b: &str) -> bool {
-    let norm = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
-    let (a, b) = (norm(a), norm(b));
-    if cfg!(windows) {
-        a.eq_ignore_ascii_case(&b)
-    } else {
-        a == b
-    }
-}
-
 /// [`with_sessions`] under the same `--project` and `--limit` as the O runs: sessions of
 /// other projects are left out, and the merged list is cut to the limit.
 pub fn with_sessions_for(runs: Vec<RunRecord>, sessions: Vec<RunRecord>, query: &RunQuery) -> Vec<RunRecord> {
     let sessions = match query.project {
         Some(project) => sessions
             .into_iter()
-            .filter(|s| s.events.first().and_then(|e| e.get("project")).and_then(Value::as_str).is_some_and(|p| same_folder(p, project)))
+            .filter(|s| s.events.first().and_then(|e| e.get("project")).and_then(Value::as_str).is_some_and(|p| crate::projects::same(p, project)))
             .collect(),
         None => sessions,
     };

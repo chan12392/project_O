@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "
 import { isSessionRun } from "../../../src/core/attention.ts";
 import { folderKey, ownerOf, threadStartedAt, type ProjectKind, type ProjectList } from "../../../src/core/projects.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
+import { errorText } from "../lib/format.ts";
 import { readStored, writeStored } from "../lib/storage.ts";
 import type { Backend } from "../platform/backend/index.ts";
 
@@ -90,7 +91,7 @@ export async function refreshProjects(): Promise<void> {
     const list = await api.projects();
     if (api === listApi) setList({ list, pending: false });
   } catch (e) {
-    if (api === listApi) setList({ ...listState, error: e instanceof Error ? e.message : String(e), pending: false });
+    if (api === listApi) setList({ ...listState, error: errorText(e), pending: false });
   }
 }
 

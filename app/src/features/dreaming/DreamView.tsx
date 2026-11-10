@@ -2,7 +2,7 @@ import { BookOpen, RefreshCw, Wrench } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
 import { useReducedMotion, useSettings } from "../../data/settings.ts";
-import { ICON_BUTTON } from "../../lib/format.ts";
+import { ICON_BUTTON, errorText } from "../../lib/format.ts";
 import type { Backend, DreamChange, DreamGraph, GraphNode, GraphSettings } from "../../platform/backend/index.ts";
 import { BUTTON_SECONDARY } from "../../ui/controls.tsx";
 import { Graph3D } from "../graph/Graph3D.tsx";
@@ -10,8 +10,6 @@ import { GraphLegend } from "../graph/GraphLegend.tsx";
 import { loadGraphLibs } from "../graph/graphLib.ts";
 import { NodeDetail } from "../graph/NodeDetail.tsx";
 import { DreamChanges } from "./DreamChanges.tsx";
-
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 const darkQuery = () => window.matchMedia("(prefers-color-scheme: dark)").matches;
 

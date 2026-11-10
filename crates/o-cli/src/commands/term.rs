@@ -2,12 +2,11 @@
 use std::io::{self, Read};
 use std::path::Path;
 use o_core::term::{self, OpenRequest};
-use super::{fail, Command};
+use super::{fail, inside_agent, Command};
 
 pub const TERM: Command = Command { name: "term", usage: "  o term open|list|read|write|resize|paste|close  터미널 세션", run: command };
 pub const HOST: Command = Command { name: "_term", usage: "", run: host };
 
-fn inside_agent() -> bool { ["O_AGENT_ROLE", "O_CARD_ID"].iter().any(|name| std::env::var_os(name).is_some_and(|v| !v.is_empty())) }
 fn host(home: &Path, args: &[String]) -> i32 {
     if inside_agent() { return fail("에이전트 안에서는 터미널 호스트를 시작할 수 없습니다"); }
     match args { [id] => match term::host(home, id) { Ok(()) => 0, Err(e) => fail(&e.to_string()) }, _ => fail("터미널 ID가 필요합니다") }
