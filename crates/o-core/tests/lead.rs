@@ -924,6 +924,10 @@ fn autorun() {
     let agy = lead::send_with_scheduled_autorun(&agy_home, &request(&agy_project, "예약"), agy_spawner.as_ref(), &start).unwrap();
     assert!(agy.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("Antigravity"))));
     assert!(!agy.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    o_core::agents::agy::set(&agy_home, o_core::agents::agy::Change { workers: Some(true), ack: Some(true), ..Default::default() }).unwrap();
+    let agy_enabled = lead::send_with_scheduled_autorun(&agy_home, &request(&agy_project, "예약"), agy_spawner.as_ref(), &start).unwrap();
+    assert!(agy_enabled.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("예약에서는 Antigravity"))));
+    assert!(!agy_enabled.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
     let agy_lead = SendRequest { provider: ProviderId::Agy, ..request(&agy_project, "예약") };
     assert!(lead::send_with_scheduled_autorun(&agy_home, &agy_lead, agy_spawner.as_ref(), &start).is_err());
     assert!(lead::send(&agy_home, &agy_lead, agy_spawner.as_ref()).unwrap_err().contains("Antigravity"));
@@ -1134,12 +1138,15 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], agy_workers_allowed: false, budget: &["codex 여유 있음".into()], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
     let first = build(&input);
     for part in ["[O 총괄]", "프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");
     }
     let next = build(&PromptInput { resumed: true, budget: &[], ..input });
+    let enabled = build(&PromptInput { agy_workers_allowed: true, ..input });
+    assert!(enabled.contains("claude|codex|agy|opencode|devin") && enabled.contains("완료 파일") && enabled.contains("후속 지시를 받지"));
+    assert!(first.contains("작업 에이전트가 꺼져"));
     assert!(!next.contains("```o-plan") && next.ends_with("사용자:\n할 일"));
     assert!(!first.contains(o_core::lead::prompt::UNREADY_NOTE) && !next.contains(o_core::lead::prompt::UNREADY_NOTE));
     // A provider whose project_O profile is not ready is named on every turn, fresh or resumed (ADR-0040).
@@ -1148,6 +1155,14 @@ fn prompts() {
         assert!(turn.contains(&format!("{}\n- {}", o_core::lead::prompt::UNREADY_NOTE, unready[0])), "{turn}");
         assert!(turn.ends_with("사용자:\n할 일"));
     }
+    let (home, project) = setup("plan-notice");
+    let mut plan = good_plan();
+    plan["cards"][0]["provider"] = json!("devin");
+    let (plan, violations, notices) = lead::check_lead_plan(&home, &project, plan, RunMode::of(Profile::ProjectO));
+    assert!(violations.is_empty());
+    let event = LeadEvent::Plan { at: Utc::now().to_rfc3339(), plan_id: "p".into(), plan, ok: true, violations, notices };
+    let stored = serde_json::to_value(event).unwrap();
+    assert_eq!(stored["notices"][0], o_core::providers::devin::OWN_PROFILE_NOTICE);
 }
 
 fn send_records_a_plan() {

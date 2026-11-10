@@ -41,6 +41,7 @@ project_O 데스크톱 앱(`project_O.exe`)과 `o` CLI(`o.exe`)를 설치 파일
 | `%LOCALAPPDATA%\project_O` | O 상태 폴더(실행 기록·`o.db`·설정·하위 첨부, `store::default_home()`) | 데이터 삭제 선택 시만 삭제 |
 | `%LOCALAPPDATA%\project_O-agents` | 깨끗한 에이전트 프로필과 그 CLI의 로그인(`clean::default_root()`) | 데이터 삭제 선택 시만 삭제 |
 | `%LOCALAPPDATA%\project_O-lead` | 총괄 채팅에 첨부한 이미지·문서 (ADR-0008) | 데이터 삭제 선택 시만 삭제 |
+| `%LOCALAPPDATA%\project_O-term` | 터미널 카드의 과제·전달 기록·완료 문서 (ADR-0042) | 데이터 삭제 선택 시만 삭제 |
 | `%LOCALAPPDATA%\local.project-o.desktop`, `%APPDATA%\local.project-o.desktop` | 창(WebView2) 데이터·앱 설정 | 데이터 삭제 선택 시만 삭제 |
 
 - Tauri의 사용자별 기본 설치 폴더는 `%LOCALAPPDATA%\<제품 이름>` = `%LOCALAPPDATA%\project_O`로, O 상태 폴더와 겹친다. 그래서 설치 파일이 기본 폴더를 `%LOCALAPPDATA%\Programs\project_O`로 옮긴다(`scripts/installer/hooks.nsh`). 설치 화면에서 상태 폴더를 직접 골라도 같은 곳으로 바꾼다.
@@ -72,7 +73,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\project_O').UninstallString.Trim('"')) -ArgumentList '/S /PURGE' -WindowStyle Hidden -Wait
 ```
 
-`/PURGE`는 설치 위치 기억 키와 `project_O mirror sync (test|test_1|test_2|main)`이라는 정확한 이름의 예약 작업도 제거한다. 거울 git 저장소는 남긴다. 평소 CLI 폴더(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`), 프로젝트와 저장소, 공유 WebView2 런타임에는 손대지 않는다. 별도 첨부 루트는 현재 없으며 O 상태 폴더 안의 첨부만 함께 지운다. 데이터 루트가 비었거나 링크·junction이면 중단한다. 하위 링크는 대상까지 따라가지 않는다. 예약 작업은 위 이름으로 하나씩 확인하므로 PC의 다른 예약 작업이 손상돼 있어도 멈추지 않는다. 사용 중이라 지우지 못한 폴더는 건너뛰고 나머지를 지운 뒤, 남은 폴더를 함께 알려 준다. 제거 중 오류가 나면 앱은 남아 있어 다시 시도할 수 있지만, 앞서 지운 데이터는 복구되지 않는다.
+`/PURGE`는 설치 위치 기억 키와 `project_O mirror sync (test|test_1|test_2|main)`이라는 정확한 이름의 예약 작업도 제거한다. 거울 git 저장소는 남긴다. 평소 CLI 폴더(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`), 프로젝트와 저장소, 공유 WebView2 런타임에는 손대지 않는다. O 상태 폴더 밖의 별도 루트 `project_O-lead`(총괄 첨부·계획 파일)와 `project_O-term`(터미널 카드의 과제·완료 파일)도 함께 지운다. 데이터 루트가 비었거나 링크·junction이면 중단한다. 하위 링크는 대상까지 따라가지 않는다. 예약 작업은 위 이름으로 하나씩 확인하므로 PC의 다른 예약 작업이 손상돼 있어도 멈추지 않는다. 사용 중이라 지우지 못한 폴더는 건너뛰고 나머지를 지운 뒤, 남은 폴더를 함께 알려 준다. 제거 중 오류가 나면 앱은 남아 있어 다시 시도할 수 있지만, 앞서 지운 데이터는 복구되지 않는다.
 
 ## 업데이트 알림
 
@@ -112,7 +113,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 | 설치 폴더 | `%LOCALAPPDATA%\Programs\project_O` (`/D=`로 바꾼 경우 그 폴더) |
 | 제거 레지스트리 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\project_O` — `UninstallString` = `"<설치 폴더>\uninstall.exe"`, `InstallLocation`, `DisplayVersion` |
 | 설치 위치 기억 | `HKCU\Software\Project O\project_O`의 기본값. 다음 설치가 이 폴더를 쓴다. 일반 제거는 남기고 "앱 데이터 삭제"를 고를 때만 지운다 |
-| 상태 폴더 | `%LOCALAPPDATA%\project_O`(`store::default_home()`), `%LOCALAPPDATA%\project_O-agents`(깨끗한 에이전트), `%LOCALAPPDATA%\local.project-o.desktop`(WebView2, 식별자 이름) |
+| 상태 폴더 | `%LOCALAPPDATA%\project_O`(`store::default_home()`), `%LOCALAPPDATA%\project_O-agents`(깨끗한 에이전트), `%LOCALAPPDATA%\project_O-lead`(총괄 첨부·계획), `%LOCALAPPDATA%\project_O-term`(터미널 카드), `%LOCALAPPDATA%\local.project-o.desktop`(WebView2, 식별자 이름) |
 | 릴리스 | `.github/workflows/release.yml`: `test_1` push·`test_1`에서의 수동 실행(다른 ref에서 실행하면 job이 건너뛰어 아무것도 게시하지 않음) → `guard.yml` 전체 검사 → 빌드(서명 비밀이 있으면 서명) → 설치 연기 시험 → 태그 `test_1-<yyyyMMdd(UTC)>-<sha7>` 프리릴리스, 첨부 `project_O_<앱 버전>_x64-setup.exe`, 아티팩트 `project_O-setup`. 같은 날 같은 커밋을 다시 돌리면 파일만 바꾼다 |
 | 버전 | 앱 버전은 `app/src-tauri/Cargo.toml`의 `version`(현재 0.3.0)과 `app/package.json`. 크레이트는 워크스페이스 버전을 따른다 |
 

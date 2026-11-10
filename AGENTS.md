@@ -92,7 +92,8 @@
 개인 하네스(사용자 훅·전역 지시·스킬·플러그인·MCP·메모리)가 없는 공식 CLI로 테스트할 때 쓴다. 평소 설정(`~/.claude`, `~/.codex`, `~/.gemini`, `~/.agents`)은 건드리지 않는다.
 
 - 프로필: `%LOCALAPPDATA%/project_O-agents/<claude|codex|agy|opencode>/home` (`o agents path`). O 상태 폴더(`%LOCALAPPDATA%/project_O`, 보호 대상) 밖에 둔다. 로그인은 CLI마다 한 번 `o agents login <claude|codex|opencode>` (agy는 시스템 로그인을 그대로 씀). OpenCode는 카드만 지원하고 Claude 구독 로그인을 사용하지 않는다(ADR-0015). YOLO가 아닌 OpenCode 카드는 작업 폴더나 그 상위에 `opencode.json(c)`·`.opencode/`가 있으면 시작하지 않는다(프로젝트 플러그인을 끌 공식 옵션이 없음). O는 Codex 프로필에 프로젝트 신뢰를 기록하지 않는다. 다만 Git 저장소에서 Codex 카드가 한 번 돌면 Codex가 스스로 그 저장소를 신뢰로 기록하고, 그 뒤의 Codex 카드는 저장소의 `.codex/` 설정·MCP·훅을 싣는다(Git 저장소가 아닌 폴더는 기록되지 않음, ADR-0017 개정 2).
-- Devin은 설정 폴더를 옮길 수 없어 project_O 프로필을 켠 계획에서 거부한다. 평소 프로필에서 카드만 지원하며 총괄은 아직 지원하지 않는다(ADR-0016).
+- Devin은 설정 폴더를 옮길 수 없어 project_O 프로필을 켠 계획에서도 Devin 카드만 평소 프로필로 실행하며 개인 훅·설정이 적용된다고 알린다. 총괄은 아직 지원하지 않는다(ADR-0016, ADR-0042 §5).
+- Antigravity 터미널 카드는 project_O 프로필 선택과 관계없이 시스템 로그인과 평소 환경을 쓴다. 작업 에이전트 설정이 켜져 있어야 하며, 터미널 안의 권한 확인에는 사람이 답한다(ADR-0042).
 - 확인: `o agents doctor` — 로그인 상태와 프로필 오염 검사. 수동 테스트: `o agents shell <cli>`. 카드 실행: `o dispatch plan.json`(기본 `--profile project-o`, `--clean`과 같음). 평소 CLI 설정으로는 `--profile own`. 앱의 "project_O 프로필 사용"이 같은 선택이다(ADR-0013).
 - Windows에서 project_O 프로필의 Codex는 샌드박스 점검을 통과해야 카드를 맡는다. 설정 줄(`config.toml`의 `[windows] sandbox`)이나 Codex의 준비 상태만으로는 부족하다(첫 명령에서 멈추는 Codex 버그 openai/codex#50725). 점검은 설정 → 에이전트의 "Codex 샌드박스 점검"이나 `o agents setup codex`로 사람이 돌린다: 창 없이 `codex app-server`로 공식 샌드박스 설정을 마치고, 카드와 같은 `codex exec`로 명령 하나를 실제로 실행해 본다(모델 호출 1번, 최대 약 7분). 결과는 `<에이전트 루트>/codex/sandbox-check.json`에 남고, 통과 기록의 Codex 버전·`config.toml` 해시가 지금과 같을 때만 준비됨이다. 그 전에는 YOLO가 아닌 Codex 카드를 `profile-not-ready`로 거부하고(계획 검사·카드 시작 직전), 총괄에게 매 턴 알려 다른 에이전트로 계획하게 한다(ADR-0040 개정 1). project_O 프로필의 Codex는 사람의 `TEMP` 대신 프로필 옆의 `<에이전트 루트>/codex/tmp`를 임시 폴더로 쓴다(항목이 많은 `TEMP`에 샌드박스 권한을 적용하다 첫 명령 전에 멈추던 원인, 개정 2).
 - 테스트 프로젝트는 홈 폴더 밖에 둔다(Claude는 시작 폴더 위의 지시 파일을 읽는다. 홈 폴더의 것만 프로필이 뺀다).
@@ -103,7 +104,9 @@
 
 - Tauri 2 셸. 크레이트 `project-o`, 실행 파일 `project_O.exe`, 창 제목 "Project O". 빌드: `cd app && npm run tauri build -- --no-bundle` → `target/release/project_O.exe`. 개발: `npm run tauri dev`(Vite 1430 포트, `tauri.conf.json`의 `devUrl`·`devCsp`와 같이 고친다).
 - 미리보기: `cd app && npm run preview:app`. 설치한 앱을 그대로 둔 채 "Project O 미리보기" 창을 따로 띄운다(`tauri.preview.conf.json`이 식별자를 바꿔 단일 실행 잠금이 겹치지 않는다. 상태 폴더는 같은 것을 쓴다). 화면 코드는 저장하면 바로 바뀌고, `app/src-tauri`·`o-core`를 고치면 셸을 다시 빌드해 창을 다시 연다. `o.exe`(o-cli)는 미리보기를 다시 시작할 때만 새로 빌드된다. 수정할 때마다 설치 파일을 만들지 않고 여기서 확인한다.
-- 화면은 프로세스를 직접 띄우지 않는다. 셸의 정해진 Tauri 명령(`app/src-tauri/src/commands/`)만 부르고, 그 명령은 `o-core`를 쓴다. 명령을 더하면 개발 서버 `/api`(`app/dev/liveRuns.ts`)와 `o` 명령에도 같은 동작을 둔다.
+- 총괄 터미널 세션은 별도 `o _term` 호스트가, 카드 터미널은 카드 러너가 유지하며 `o term open|list|read|write|resize|paste|close`로 다룬다. 총괄 대화에 연결된 터미널은 `project_O-lead/<threadId>/plans/`의 계획을 검사해 실행 대기 카드로 보인다. 터미널 카드의 과제·전달 기록·완료 문서는 상태와 프로젝트 밖 `%LOCALAPPDATA%/project_O-term/<runId>/<cardId>/`에 남는다(ADR-0042).
+- 총괄 터미널 자식도 총괄 표식을 가져 사람 전용 설정·터미널 명령을 실행하지 못한다. 입력은 세션별 순서로 전달하고 한 번에 최대 64 KiB를 받는다. 계획 파일은 1.5초, 완료 문서는 500ms 안정돼야 받으며 완료 문서는 임시 파일을 완성한 뒤 이름을 바꿔 전달하고 첫 줄 `O-DONE`과 마지막 줄 `O-END`에 일회용 값을 적는다. 계획은 이름과 내용 해시로 중복을 판별한다.
+- 화면은 프로세스를 직접 띄우지 않는다. 셸의 정해진 Tauri 명령(`app/src-tauri/src/commands/`)만 부르고, 그 명령은 `o-core`를 쓴다. 명령을 더하면 개발 서버 `/api`(`app/dev/liveRuns.ts`)와 `o` 명령에도 같은 동작을 두되, 사람 전용 agy 설정 변경과 터미널 열기·입력·붙여넣기·닫기는 개발 서버에 두지 않는다.
 - 자원 예약 점검에서 실행기와 작업 프로세스만 종료된 `unknown` 예약을 복구하려면 사람이 관련 자손 프로세스의 종료를 직접 확인해야 한다. 앱의 확인 단계 또는 `o resources recover <id> --confirm-exited`를 쓰며, 코어는 두 프로세스의 신원을 복구 직전에 다시 검사한다(ADR-0039 개정 3).
 - 에이전트 설치는 공식 npm 패키지만 앱에서 실행하고, 나머지는 공식 안내를 연다. 로그인은 새 콘솔 창의 공식 명령으로 한다.
 - 설치 파일(NSIS, 사용자별, `o.exe` 사이드카 포함): `pwsh scripts/build-installer.ps1`, `test_1` push마다 `release.yml`이 전체 검사·설치 연기 시험 뒤 프리릴리스로 올린다. 코드 서명은 `PROJECT_O_SIGN_*` 설정이 있을 때만 하고, 없으면 미서명 안내를 내고 계속한다(ADR-0038). 설치 폴더·상태 폴더 구분과 안내는 [docs/INSTALL.md](docs/INSTALL.md).
@@ -113,7 +116,9 @@
 
 ## 프로바이더 정책 자동 차단
 
-Antigravity는 공급자 정책에 따라 총괄·카드·예약 실행과 자동 계정·모델·사용량 조회를 보류한다(ADR-0020). 아래의 Antigravity 실행 설명은 재개 전 역사적 기록이다.
+Antigravity 총괄은 사람이 직접 쓰는 터미널이다. 작업 에이전트는 기본 꺼짐이며 사람이 안내와 약관을 읽고 `o agy --workers on --ack`로 켜면 터미널 카드로 실행된다. `o agy --confirm-paste on|off`의 기본값은 확인함이고, 작업·완료 파일로 주고받으며 후속 지시는 받지 않는다. 창 없는 총괄·예약 실행과 자동 계정·모델·사용량 조회는 계속 보류한다(ADR-0020 개정 1, ADR-0042 §3). 아래의 Antigravity 헤드리스 실행 설명은 역사적 기록이다.
+
+터미널 카드는 `model`·`effort` 대신 CLI의 현재 설정을 쓰며 계획 검사에서 이를 안내한다.
 
 사람이 매번 약관을 확인하지 않도록 아래 지점에서 자동으로 막는다. 규칙 원문은 `crates/o-guard/src/rules.rs`, 근거는 `docs/DESIGN.md` §8.
 

@@ -1,6 +1,7 @@
-import type { AgentId, Backend, BillingReport, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, RamReport, TokenCounts, TokenGroup, DreamDoc, DreamChange, DreamGraph, DreamPage } from "./types.ts";
+import type { AgentId, AgyReport, Backend, BillingReport, BudgetReport, BudgetState, GraphDeepResult, GraphLink, GraphNode, GraphSettings, GraphView, LeadModel, LeadProvider, ListedProject, ProjectList, ProviderBudget, RamReport, TermChunk, TermSession, TokenCounts, TokenGroup, DreamDoc, DreamChange, DreamGraph, DreamPage } from "./types.ts";
 import { LEAD_TAB_MAX, type LeadShow, type LeadTab } from "../../../../src/core/lead.ts";
 import { folderKey, sameFolder } from "../../../../src/core/projects.ts";
+import { agyApply, b64ToBytes, bytesToB64, type AgyState } from "../../../../src/core/terminal.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS } from "../updates.ts";
 
 /** The preview's budget: Codex a little ahead of the day, Antigravity spending fast, Claude unread; all "off" while switched off. */
@@ -45,6 +46,32 @@ let demoPercent = 13;
 let demoEnabled = true;
 const demoRam: RamReport = { enabled: true, percent: 70, used: 58 };
 const demoBilling: BillingReport = { mode: "warn" };
+
+/** The preview's Antigravity consent (ADR-0042): the policy text the contract fixes, and the same ack rule `o agy` applies. */
+const AGY_NOTICE: AgyReport["notice"] = {
+  quotes: [
+    "Using third-party software, tools, or services to access Antigravity is a violation of our Terms of Service and severely degrades the experience for legitimate product users.",
+    "Such actions can result in suspension or termination of your account.",
+    "Wrapping `agy` inside third-party coding agents or applications, or automating account rotation, is not supported under consumer plans.",
+  ],
+  links: [
+    { label: "Antigravity FAQ", url: "https://antigravity.google/docs/faq" },
+    { label: "Antigravity 약관", url: "https://antigravity.google/terms" },
+  ],
+  warning: "O가 agy 터미널에 글을 자동으로 넣는 것은 제3자 앱이 agy를 다루는 것으로 볼 수 있습니다. 계정 정지·해지의 위험은 이 PC에 로그인한 Google 계정이 집니다. 기업 계약은 조건이 다를 수 있습니다.",
+};
+let demoAgy: AgyState = { workers: false, acknowledgedAt: null, confirmPaste: true };
+const agyReport = (): AgyReport => ({ ...demoAgy, notice: AGY_NOTICE });
+
+/** A fake terminal session for the preview: it prints a short banner and echoes what is typed. */
+interface DemoTerm {
+  session: TermSession;
+  bytes: number[];
+}
+const demoTerms = new Map<string, DemoTerm>();
+let demoTermSeq = 0;
+const UTF8 = new TextEncoder();
+const demoTerm = (id: string): DemoTerm | undefined => demoTerms.get(id);
 
 export const LEAD_REFUSED = "미리보기에서는 총괄에 보내지 않습니다";
 
@@ -309,6 +336,7 @@ function demoProjectGraph(project: string): GraphView {
 /** The recorded demo: every agent installed and signed in, nothing really runs. */
 export const demoBackend: Backend = {
   kind: "demo",
+  canDriveTerminals: true,
   resources: () => Promise.resolve([]),
   recoverResource: () => Promise.reject(new Error("미리보기에서는 예약을 복구하지 않습니다")),
   imageRead: async () => { throw new Error("미리보기에서는 로컬 이미지를 열 수 없습니다"); },
@@ -329,7 +357,7 @@ export const demoBackend: Backend = {
   setup: async () => ({ ok: false, message: "미리보기에서는 에이전트를 설정하거나 점검하지 않습니다" }),
   openTerminal: async () => ({ ok: false, message: "미리보기에서는 터미널을 열 수 없습니다" }),
   openExternal: async (url) => void window.open(url, "_blank", "noopener"),
-  about: async () => ({ version: "preview", home: "", agentsHome: "", commit: "", builtAt: "" }),
+  about: async () => ({ version: "preview", home: "%LOCALAPPDATA%\\project_O", agentsHome: "%LOCALAPPDATA%\\project_O-agents", commit: "", builtAt: "" }),
   checkUpdate: async () => ({ release: null, message: DESKTOP_UPDATES_ONLY }),
   pendingUpdate: async () => null,
   installUpdate: async () => { throw new Error(DESKTOP_UPDATES_ONLY); },
@@ -411,6 +439,56 @@ export const demoBackend: Backend = {
   leadAnswerApproval: async () => { throw new Error("미리보기에서는 답변을 보낼 수 없습니다"); },
   leadStopAll: async () => ({ stopped: 0 }),
   leadModels: async (provider) => ({ provider, models: DEMO_MODELS[provider] }),
+  agyGet: async () => agyReport(),
+  agySet: async (change) => {
+    const next = agyApply(demoAgy, change, new Date().toISOString());
+    if (typeof next === "string") throw new Error(next);
+    demoAgy = next;
+    return agyReport();
+  },
+  termOpen: async (request) => {
+    const session: TermSession = {
+      id: `t-demo-${String(++demoTermSeq).padStart(4, "0")}`,
+      provider: request.provider,
+      project: request.project,
+      purpose: "lead",
+      threadId: request.thread,
+      state: "running",
+      exitCode: null,
+      cols: request.cols ?? 120,
+      rows: request.rows ?? 32,
+      startedAt: new Date().toISOString(),
+    };
+    const banner = `\x1b[1m${request.provider} (미리보기)\x1b[0m\r\n미리보기 터미널입니다. 입력한 글자가 그대로 돌아옵니다.\r\n$ `;
+    demoTerms.set(session.id, { session, bytes: [...UTF8.encode(banner)] });
+    return session;
+  },
+  termList: async () => [...demoTerms.values()].map((t) => t.session),
+  termRead: async (id, offset): Promise<TermChunk> => {
+    const term = demoTerm(id);
+    if (!term) throw new Error("없는 터미널 세션입니다");
+    const from = Math.min(offset, term.bytes.length);
+    return { offset: term.bytes.length, data: bytesToB64(Uint8Array.from(term.bytes.slice(from))), state: term.session.state, exitCode: term.session.exitCode, start: 0 };
+  },
+  termWrite: async (id, dataBase64) => {
+    const term = demoTerm(id);
+    if (!term || term.session.state === "exited") return;
+    for (const byte of b64ToBytes(dataBase64)) {
+      if (byte === 13) term.bytes.push(13, 10, ...UTF8.encode("$ "));
+      else term.bytes.push(byte);
+    }
+  },
+  termResize: async (id, cols, rows) => {
+    const term = demoTerm(id);
+    if (term) Object.assign(term.session, { cols, rows });
+  },
+  termPaste: async (id) => {
+    const term = demoTerm(id);
+    if (term?.session.state === "awaiting-paste") term.session.state = "running";
+  },
+  termClose: async (id) => {
+    demoTerms.delete(id);
+  },
   graphView: async (project) => (project ? demoProjectGraph(project) : DEMO_OVERALL),
   graphBuild: async (project) => ({ ok: true, output: `미리보기용 인덱스입니다: ${project}` }),
   graphDeep: async (project, provider, model): Promise<GraphDeepResult> => ({

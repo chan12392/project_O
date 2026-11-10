@@ -116,7 +116,7 @@ export type LeadEvent =
   | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
   /** Questions in place of an answer (an `o-ask` block); the next lead.user carries the picks. */
   | { t: "lead.ask"; at: string; askId: string; provider: ProviderId; intro?: string; questions: AskQuestion[] }
-  | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
+  | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[]; notices?: string[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
@@ -259,6 +259,8 @@ export type LeadItem =
       cards: PlanCard[];
       ok: boolean;
       violations: LeadViolation[];
+      /** What the check wants said but does not block on (neutral information, not an error). */
+      notices: string[];
       /** What was wrong with the stored plan's shape (left out of what is drawn); a plan with any never runs from here. */
       problems: string[];
       runId?: string;
@@ -445,6 +447,7 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     cards,
     ok: e.ok === true && problems.length === 0,
     violations,
+    notices: (Array.isArray(e.notices) ? e.notices : []).filter((n: unknown): n is string => typeof n === "string" && n.length > 0),
     problems,
   };
 }

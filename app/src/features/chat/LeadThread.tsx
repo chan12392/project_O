@@ -366,8 +366,14 @@ export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }
                   </th>
                   <td className="px-2 py-2.5 whitespace-nowrap">{PROVIDER_NAME[card.provider as keyof typeof PROVIDER_NAME] ?? card.provider}</td>
                   <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground @max-md:hidden">
-                    {card.model || "기본 모델"}
-                    {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
+                    {card.provider === "agy" ? (
+                      "터미널 실행 · 지정 없음"
+                    ) : (
+                      <>
+                        {card.model || "기본 모델"}
+                        {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
+                      </>
+                    )}
                   </td>
                   <td className="px-2 py-2.5 pr-4">
                     <CardTask task={card.task} />
@@ -403,6 +409,13 @@ export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }
                 {v.message}
               </span>
             </li>
+          ))}
+        </ul>
+      )}
+      {plan.notices.length > 0 && (
+        <ul className="space-y-1 border-t px-4 py-3 text-xs text-muted-foreground" aria-label="계획 안내">
+          {plan.notices.map((notice, i) => (
+            <li key={i}>{notice}</li>
           ))}
         </ul>
       )}

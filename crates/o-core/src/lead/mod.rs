@@ -35,6 +35,7 @@ mod turn_process;
 mod turn;
 mod answer;
 mod worker_reply;
+mod terminal_plan;
 mod event;
 mod dispatch;
 mod view;
@@ -82,6 +83,7 @@ pub use view::{active_count, session_ids, show, stop, stop_all, tokens, LeadProj
 pub use approvals::decide;
 pub use files::Attachment;
 pub use tabs::{attachment_thread, close, is_open, open_threads, run_thread, select_thread, set_writer, MAX_OPEN};
+pub(crate) use terminal_plan::pickup;
 type StartRun<'a> = dyn Fn(&str) -> io::Result<()> + 'a;
 
 fn leads_dir(home: &Path) -> PathBuf {

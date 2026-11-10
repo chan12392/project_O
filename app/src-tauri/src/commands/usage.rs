@@ -173,7 +173,7 @@ mod tests {
         assert_eq!(on["enabled"], true);
         let off: Value = serde_json::from_str(&set_budget_enabled(&home, false).unwrap()).unwrap();
         assert_eq!(off["enabled"], false);
-        assert!(off["providers"].as_array().unwrap().iter().all(|p| if p["provider"] == "opencode" || p["provider"] == "devin" { p["state"] == "notApplied" } else { p["state"] == "off" }));
+        assert!(off["providers"].as_array().unwrap().iter().all(|p| if p["provider"] == "agy" || p["provider"] == "opencode" || p["provider"] == "devin" { p["state"] == "notApplied" } else { p["state"] == "off" }));
         let again: Value = serde_json::from_str(&budget_json(&home).unwrap()).unwrap();
         assert_eq!((again["enabled"].clone(), again["percent"].clone()), (json!(false), json!(13)));
     }

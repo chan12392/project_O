@@ -1,5 +1,6 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport, DreamDoc, DreamChange, DreamGraph, DreamInput, DreamList, DreamPage } from "./types.ts";
+import type { ActionResult, AgentStatus, AgyChange, AgyReport, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TermChunk, TermOpenRequest, TermSession, TokenReport, DreamDoc, DreamChange, DreamGraph, DreamInput, DreamList, DreamPage } from "./types.ts";
 import { DESKTOP_UPDATES_ONLY, NO_UPDATE_STATUS, type About, type UpdateCheck } from "../updates.ts";
+import { TERM_DESKTOP_ONLY } from "../../../../src/core/terminal.ts";
 
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
@@ -19,6 +20,7 @@ async function json<T>(res: Response): Promise<T> {
 /** The dev server: the /api routes of app/dev/liveRuns.ts, each answered by `o`. */
 export const devBackend: Backend = {
   kind: "dev",
+  canDriveTerminals: false,
   resources: () => fetch("/api/resources").then((r) => json<{ leases: Awaited<ReturnType<Backend["resources"]>> }>(r)).then((r) => r.leases),
   recoverResource: (id, confirmExited = false) => fetch(`/api/resources/recover?id=${encodeURIComponent(String(id))}${confirmExited ? "&confirmExited=1" : ""}`, { method: "POST" }).then((r) => json<unknown>(r)).then(() => {}),
   followup: (run, card, text) => fetch(`/api/lead/followup?${new URLSearchParams({ run, card })}`, { method: "POST", body: text }).then((r) => json<{ runId: string }>(r)),
@@ -96,6 +98,17 @@ export const devBackend: Backend = {
   leadRetry: (runId, messageId) => fetch(`/api/lead/retry?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST" }).then((r) => json<{ state: "queued" | "acknowledged" }>(r)),
   leadAnswerApproval: (runId, messageId, text) => fetch(`/api/lead/answer-approval?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST", body: text }).then((r) => json<{ id: string }>(r)),
   leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
+  agyGet: () => fetch("/api/agy").then((r) => json<AgyReport>(r)),
+  // Human-only operations are not offered by the dev server (ADR-0042 구현 메모):
+  // a local process can forge Origin, so it cannot tell a person from an agent.
+  agySet: () => Promise.reject(new Error(TERM_DESKTOP_ONLY)),
+  termOpen: () => Promise.reject(new Error(TERM_DESKTOP_ONLY)),
+  termList: () => fetch("/api/term").then((r) => json<TermSession[]>(r)),
+  termRead: (id, offset) => fetch(`/api/term/read?${new URLSearchParams({ id, offset: String(offset) })}`).then((r) => json<TermChunk>(r)),
+  termWrite: () => Promise.reject(new Error(TERM_DESKTOP_ONLY)),
+  termResize: (id, cols, rows) => fetch("/api/term/resize", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ id, cols, rows }) }).then((r) => json<unknown>(r)).then(() => {}),
+  termPaste: () => Promise.reject(new Error(TERM_DESKTOP_ONLY)),
+  termClose: () => Promise.reject(new Error(TERM_DESKTOP_ONLY)),
   graphView: (project) => fetch(`/api/graph/view${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<GraphView>(r)),
   graphOverallPart: (project) => fetch(`/api/graph/part?project=${encodeURIComponent(project)}`).then((r) => json<GraphView>(r)),
   graphBuild: (project) => fetch(`/api/graph/build?${new URLSearchParams({ project })}`, { method: "POST" }).then((r) => json<{ ok: boolean; output: string }>(r)),

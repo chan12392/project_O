@@ -22,7 +22,7 @@ fn empty_path() -> PathBuf {
 
 #[test]
 fn missing_clis_show_the_official_installers() {
-    let root = empty_path().join("profiles");
+    let root = empty_path().join("status-profiles");
     let list = status(&root, false);
     let value = json!(list);
     let ids: Vec<&str> = value.as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();

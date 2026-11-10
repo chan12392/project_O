@@ -175,6 +175,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
         text: &user_text,
         attachments: &attachments,
         budget: &budget,
+        agy_workers_allowed: crate::agents::agy::workers_allowed(home),
         unready: &unready,
         runs: &runs,
         runs_file: status_path.as_deref(),

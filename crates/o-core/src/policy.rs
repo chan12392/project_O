@@ -53,6 +53,7 @@ pub const LIMITS: Limits = Limits {
 /// The effort ladder, lowest first (the daily budget lowers along it, see `budget`).
 pub const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 pub const AGY_UNAVAILABLE: &str = "Antigravity는 제3자 앱을 통한 사용에 관한 Google 정책 때문에 Project O에서 실행할 수 없습니다. Claude 또는 Codex를 선택하세요";
+pub const AGY_WORKERS_DISABLED: &str = "Antigravity 작업 에이전트가 꺼져 있습니다. 설정 → 에이전트 → Antigravity 또는 o agy --workers on --ack에서 켜세요";
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
 /// Team-channel names a card must not take: its messages would read as the lead's or as a broadcast.
@@ -98,11 +99,13 @@ pub struct PolicyContext {
     /// Why a provider's project_O profile cannot do a sandboxed card's work yet
     /// (`agents::clean::profile_not_ready`, ADR-0040); `None` when it can.
     pub profile_not_ready: Box<dyn Fn(ProviderId) -> Option<String>>,
+    pub agy_workers_allowed: bool,
 }
 
 pub struct Checked {
     pub plan: Option<Plan>,
     pub violations: Vec<Violation>,
+    pub notices: Vec<String>,
 }
 
 /// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any
@@ -160,7 +163,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     let mut found = Found::default();
     let Some(object) = input.as_object() else {
         found.add("plan-shape", "계획은 JSON 객체여야 합니다", None);
-        return Checked { plan: None, violations: found.0 };
+        return Checked { plan: None, violations: found.0, notices: Vec::new() };
     };
     for key in object.keys() {
         if !PLAN_FIELDS.contains(&key.as_str()) {
@@ -177,7 +180,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
         Some(cards) if !cards.is_empty() => cards,
         _ => {
             found.add("plan-shape", "cards가 1개 이상 필요합니다", None);
-            return Checked { plan: None, violations: found.0 };
+            return Checked { plan: None, violations: found.0, notices: Vec::new() };
         }
     };
     if cards.len() > LIMITS.max_cards_per_plan {
@@ -260,16 +263,13 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     }
 
     if !found.0.is_empty() {
-        return Checked { plan: None, violations: found.0 };
+        return Checked { plan: None, violations: found.0, notices: Vec::new() };
     }
     let plan = Plan { title: title.unwrap_or_default().trim().to_string(), project: project.unwrap_or_default().to_string(), cards: valid };
-    Checked { plan: Some(plan), violations: Vec::new() }
+    Checked { plan: Some(plan), violations: Vec::new(), notices: Vec::new() }
 }
 
-/// `check_plan` for a run on `profile` (ADR-0013): a card whose CLI cannot run on the
-/// project_O profile (`Provider::profile_unsupported`, Devin) is refused while it is on —
-/// never quietly run with the person's own setup instead. Cards are taken to run sandboxed
-/// (YOLO off); a caller that knows the run's mode uses [`check_plan_in`].
+/// `check_plan` for a sandboxed run on `profile`.
 pub fn check_plan_for(input: &Value, ctx: &PolicyContext, profile: Profile) -> Checked {
     check_plan_in(input, ctx, RunMode::of(profile))
 }
@@ -283,12 +283,18 @@ pub fn check_plan_in(input: &Value, ctx: &PolicyContext, mode: RunMode) -> Check
     let mut checked = check_plan(input, ctx);
     let cards = input.get("cards").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     for card in cards {
-        if card.get("provider").and_then(Value::as_str) == Some("agy") {
+        if !ctx.agy_workers_allowed && card.get("provider").and_then(Value::as_str) == Some("agy") {
             checked.plan = None;
-            checked.violations.push(Violation { rule: "provider-terms".into(), message: AGY_UNAVAILABLE.into(), card_id: card.get("id").and_then(Value::as_str).map(str::to_string) });
+            checked.violations.push(Violation { rule: "provider-terms".into(), message: AGY_WORKERS_DISABLED.into(), card_id: card.get("id").and_then(Value::as_str).map(str::to_string) });
         }
     }
     let named: Vec<_> = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?))).collect();
+    if cards.iter().any(|card| card.get("provider").and_then(Value::as_str).and_then(ProviderId::parse).is_some_and(|provider| crate::providers::get(provider).terminal_card()) && (card.get("model").is_some_and(|v| !v.is_null()) || card.get("effort").is_some_and(|v| !v.is_null()))) {
+        checked.notices.push("터미널 카드는 model·effort를 적용하지 않습니다(CLI의 현재 설정으로 실행)".into());
+    }
+    if profile.is_clean() && named.iter().any(|(_, provider)| *provider == ProviderId::Devin) {
+        checked.notices.push(crate::providers::devin::OWN_PROFILE_NOTICE.into());
+    }
     let mut refused = profile_violations(named.iter().copied(), profile);
     if profile.is_clean() && !mode.yolo {
         let mut asked: HashMap<ProviderId, Option<String>> = HashMap::new();
@@ -312,6 +318,7 @@ pub fn profile_violations<'a>(cards: impl IntoIterator<Item = (&'a str, Provider
     }
     let mut found = Found::default();
     for (id, provider) in cards {
+        if provider == ProviderId::Devin { continue; }
         if let Some(why) = crate::providers::get(provider).profile_unsupported() {
             found.add("profile-unsupported", why, Some(id));
         }

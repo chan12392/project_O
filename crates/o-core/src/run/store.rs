@@ -653,6 +653,7 @@ pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyConte
         user_home: user_home().to_string_lossy().into_owned(),
         resolve: Box::new(resolved_path),
         profile_not_ready: Box::new(|provider| crate::agents::clean::profile_not_ready(&crate::agents::clean::default_root(), provider)),
+        agy_workers_allowed: crate::agents::agy::workers_allowed(home),
     })
 }
 

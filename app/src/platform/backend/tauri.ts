@@ -1,4 +1,4 @@
-import type { ActionResult, AgentStatus, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TokenReport, DreamDoc, DreamChange, DreamGraph, DreamInput, DreamList, DreamPage } from "./types.ts";
+import type { ActionResult, AgentStatus, AgyReport, Backend, BudgetReport, GraphDeepResult, GraphSettings, GraphView, Invoke, LeadAttachment, LeadDispatched, LeadEvent, LeadModel, LeadProvider, LeadShow, ProjectCheck, ProjectList, ReviewStarted, TermChunk, TermSession, TokenReport, DreamDoc, DreamChange, DreamGraph, DreamInput, DreamList, DreamPage } from "./types.ts";
 import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
 /** Raised when the desktop app did not open a link; `shell/LinkNotice.tsx` shows it (also raised by app/src-tauri/src/commands/window.rs). */
@@ -14,6 +14,7 @@ export function linkRefusal(error: unknown): string {
 export function tauriBackend(invoke: Invoke): Backend {
   return {
     kind: "tauri",
+    canDriveTerminals: true,
     resources: () => invoke("resource_leases") as ReturnType<Backend["resources"]>,
     recoverResource: (id, confirmExited = false) => invoke("resource_recover", { id, confirmExited }) as Promise<void>,
     followup: (run, card, text) => invoke("run_followup", { run, card, text }) as Promise<{ runId: string }>,
@@ -93,6 +94,15 @@ export function tauriBackend(invoke: Invoke): Backend {
   leadAnswerApproval: (runId, messageId, text) => invoke("lead_answer_approval", { runId, messageId, text }) as Promise<{ id: string }>,
     leadStopAll: (project) => invoke("lead_stop_all", { project }) as Promise<{ stopped: number }>,
     leadModels: (provider) => invoke("lead_models", { provider }) as Promise<{ provider: LeadProvider; models: LeadModel[] }>,
+    agyGet: () => invoke("agy_get") as Promise<AgyReport>,
+    agySet: (change) => invoke("agy_set", { workers: change.workers ?? null, ack: change.ack ?? null, confirmPaste: change.confirmPaste ?? null }) as Promise<AgyReport>,
+    termOpen: (request) => invoke("term_open", { provider: request.provider, project: request.project, thread: request.thread ?? null, cols: request.cols ?? null, rows: request.rows ?? null }) as Promise<TermSession>,
+    termList: () => invoke("term_list") as Promise<TermSession[]>,
+    termRead: (id, offset) => invoke("term_read", { id, offset }) as Promise<TermChunk>,
+    termWrite: (id, dataBase64) => invoke("term_write", { id, data: dataBase64 }) as Promise<void>,
+    termResize: (id, cols, rows) => invoke("term_resize", { id, cols, rows }) as Promise<void>,
+    termPaste: (id) => invoke("term_paste", { id }) as Promise<void>,
+    termClose: (id) => invoke("term_close", { id }) as Promise<void>,
     graphView: (project) => invoke("graph_view", { project: project ?? null }) as Promise<GraphView>,
     graphOverallPart: (project) => invoke("graph_overall_part", { project }) as Promise<GraphView>,
     graphBuild: (project) => invoke("graph_build", { project }) as Promise<{ ok: boolean; output: string }>,
