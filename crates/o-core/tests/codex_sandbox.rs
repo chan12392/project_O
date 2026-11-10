@@ -23,11 +23,12 @@ fn main() {
         fake_codex(&scenario);
         return;
     }
-    let tests: [(&str, fn()); 4] = [
+    let tests: [(&str, fn()); 5] = [
         ("an unset sandbox is set up, the probe runs its command, and the record makes Codex ready", setup_then_probe_passes),
         ("a probe that hangs is stopped with its whole tree by the deadline and recorded as the known bug", hanging_probe_is_stopped),
         ("a probe whose command is refused records what Codex said", refused_probe_is_recorded),
         ("a Codex that cannot say its version is not asked anything else", no_version_no_check),
+        ("a model call refused after the setup is not made and leaves no record", refused_model_call_is_not_made),
     ];
     let mut failed = 0;
     for (name, test) in tests {
@@ -148,7 +149,24 @@ impl Fixture {
             command.env(FAKE, scenario).env(FAKE_ARGS, json!(args).to_string()).env(FAKE_DIR, &notes).env(FAKE_CONFIG, &config);
             Ok(command)
         };
-        codex_sandbox::check(&self.home, &make, deadlines).unwrap()
+        codex_sandbox::check(&self.home, &make, &|_| Ok(()), deadlines).unwrap().unwrap()
+    }
+
+    /// The check with a gate that answers `refusal` once the setup is done.
+    fn check_refusing(&self, scenario: &'static str, refusal: &str) -> Result<codex_sandbox::Record, String> {
+        let (notes, config) = (self.notes.clone(), self.config());
+        let make = move |args: &[&str]| -> std::io::Result<Command> {
+            let mut command = Command::new(std::env::current_exe()?);
+            command.env(FAKE, scenario).env(FAKE_ARGS, json!(args).to_string()).env(FAKE_DIR, &notes).env(FAKE_CONFIG, &config);
+            Ok(command)
+        };
+        // Asked of the model command only, and only after Codex's setup answered.
+        let gate = |command: &Command| -> Result<(), String> {
+            assert!(self.note("app-server.json").is_some(), "the gate was asked before the setup");
+            assert!(command.get_envs().any(|(name, value)| name == FAKE_ARGS && value.is_some_and(|v| v.to_string_lossy().contains("exec"))));
+            Err(refusal.to_string())
+        };
+        codex_sandbox::check(&self.home, &make, &gate, &QUICK).unwrap()
     }
 
     fn note(&self, name: &str) -> Option<String> {
@@ -199,6 +217,18 @@ fn setup_then_probe_passes() {
     let fixture = Fixture::new("ready");
     assert!(fixture.check("ready", &QUICK).ok);
     assert_eq!(serde_json::from_str::<Value>(&fixture.note("app-server.json").unwrap()).unwrap(), json!(["initialize", "initialized", "windowsSandbox/readiness"]));
+}
+
+fn refused_model_call_is_not_made() {
+    let fixture = Fixture::new("gate");
+    assert_eq!(fixture.check_refusing("unset", "구독만 모드").unwrap_err(), "구독만 모드");
+    assert_eq!(fixture.note("exec.json"), None, "the model call started");
+    assert_eq!(codex_sandbox::read_record(&fixture.home), None);
+    assert_eq!(fixture.probe_folders(), Vec::<String>::new());
+    // A record from an earlier check stays as it was.
+    let passed = fixture.check("ready", &QUICK);
+    assert!(fixture.check_refusing("ready", "구독만 모드").is_err());
+    assert_eq!(codex_sandbox::read_record(&fixture.home), Some(passed));
 }
 
 fn wait_gone(pid: u32) {

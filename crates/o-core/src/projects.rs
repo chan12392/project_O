@@ -107,6 +107,20 @@ fn save(home: &Path, saved: &Saved) -> Result<(), String> {
     write().map_err(|e| format!("프로젝트 목록을 저장하지 못했습니다: {e}"))
 }
 
+/// The list is read, changed and written whole by the app, the preview window and `o`, which
+/// share one state folder: whoever changes it holds this lock from the read to the write, so a
+/// change another process saved in between is not written over. The lock is a file of its own
+/// (the list file is replaced by every save).
+fn locked(home: &Path) -> Result<fs::File, String> {
+    let open = || -> io::Result<fs::File> {
+        fs::create_dir_all(home)?;
+        let lock = fs::OpenOptions::new().create(true).truncate(false).write(true).open(home.join(format!("{FILE}.lock")))?;
+        lock.lock()?;
+        Ok(lock)
+    };
+    open().map_err(|e| format!("프로젝트 목록을 잠그지 못했습니다: {e}"))
+}
+
 fn root_of(saved: &Saved, user_home: &Path) -> String {
     saved.root.clone().unwrap_or_else(|| normalize_project(&default_root(user_home).to_string_lossy()))
 }
@@ -225,6 +239,7 @@ pub fn open(home: &Path, user_home: &Path, path: &str) -> Result<(), String> {
 pub fn add(home: &Path, user_home: &Path, path: &str) -> Result<Listing, String> {
     let path = normalize_project(path.trim());
     check(home, user_home, &path)?;
+    let _lock = locked(home)?;
     let mut saved = load(home)?;
     let root = root_of(&saved, user_home);
     if same(&path, &root) || same(&path, &format!("{root}/{TEST_GROUP}")) {
@@ -240,6 +255,7 @@ pub fn add(home: &Path, user_home: &Path, path: &str) -> Result<Listing, String>
 
 /// Takes a registered folder off the list. The folder and its history stay.
 pub fn remove(home: &Path, user_home: &Path, path: &str) -> Result<Listing, String> {
+    let _lock = locked(home)?;
     let mut saved = load(home)?;
     let before = saved.registered.len();
     saved.registered.retain(|p| !same(p, path.trim()));
@@ -257,6 +273,7 @@ pub fn remove(home: &Path, user_home: &Path, path: &str) -> Result<Listing, Stri
 
 /// Settings → 프로젝트: another root (`None`: back to the default). It need not exist yet.
 pub fn set_root(home: &Path, user_home: &Path, path: Option<&str>) -> Result<Listing, String> {
+    let _lock = locked(home)?;
     let mut saved = load(home)?;
     saved.root = match path.map(|p| normalize_project(p.trim())) {
         None => None,

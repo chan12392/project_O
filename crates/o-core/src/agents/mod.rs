@@ -267,13 +267,17 @@ pub fn check_setup(home: &Path, root: &Path, provider: ProviderId) -> ActionResu
         return ActionResult::new(false, format!("{}가 설치되어 있지 않습니다.", o.name));
     }
     let make = |args: &[&str]| clean::command(root, provider, args);
-    // The probe is agent work: the subscription billing mode refuses it as it would a card.
-    if let Err(why) = make(&[]).map_err(|e| e.to_string()).and_then(|c| billing::check_command(home, provider, &c, true)) {
+    // The probe is agent work: the subscription billing mode refuses it as it would a card. Asked
+    // here so nothing starts, and again of the model command itself right before it runs: the mode
+    // may be changed while Codex's setup is waited for.
+    let billing = |command: &std::process::Command| billing::check_command(home, provider, command, true);
+    if let Err(why) = make(&[]).map_err(|e| e.to_string()).and_then(|c| billing(&c)) {
         return ActionResult::new(false, why);
     }
     let profile = clean::profile_home(root, provider);
-    match providers::codex_sandbox::check(&profile, &make, &providers::codex_sandbox::DEADLINES) {
-        Ok(record) => {
+    match providers::codex_sandbox::check(&profile, &make, &billing, &providers::codex_sandbox::DEADLINES) {
+        Ok(Err(why)) => ActionResult::new(false, why),
+        Ok(Ok(record)) => {
             if !record.version.is_empty() {
                 providers::codex_sandbox::remember_version(&record.version);
             }

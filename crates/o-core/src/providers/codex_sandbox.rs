@@ -362,19 +362,29 @@ pub fn hang_detail(deadline: Duration) -> String {
 /// Makes the official CLI with these arguments: the clean environment a card uses, in production.
 pub type MakeCommand<'a> = &'a dyn Fn(&[&str]) -> io::Result<Command>;
 
+/// Whether the model call may start, asked of the finished command right before it runs
+/// (`agents::check_setup`: the API billing mode as it is then, not as it was when the check began —
+/// the setup before it can take minutes).
+pub type Gate<'a> = &'a dyn Fn(&Command) -> Result<(), String>;
+
 /// Runs the whole check for the profile at `home` and keeps its record. `make` builds the Codex
 /// command (`agents::check_setup`: `clean::command`, the CLI and environment a real card gets).
-pub fn check(home: &Path, make: MakeCommand<'_>, deadlines: &Deadlines) -> io::Result<Record> {
+/// A model call `gate` refuses is not made and nothing is recorded: the inner `Err` says why.
+pub fn check(home: &Path, make: MakeCommand<'_>, gate: Gate<'_>, deadlines: &Deadlines) -> io::Result<Result<Record, String>> {
     let version = make(&["--version"]).ok().and_then(|mut c| version_of(&mut c, deadlines.reply)).unwrap_or_default();
     let probe_dir = home.parent().unwrap_or(home).join(format!("sandbox-probe-{}", crate::run::store::new_run_id(Utc::now())));
     fs::create_dir_all(&probe_dir)?;
+    let mut refused = None;
     let outcome = if version.is_empty() {
         Err("Codex 버전을 확인하지 못했습니다(codex --version이 답하지 않음)".to_string())
     } else {
-        sandbox_setup(make, &probe_dir, deadlines).and_then(|_| probe(make, &probe_dir, deadlines))
+        sandbox_setup(make, &probe_dir, deadlines).and_then(|_| probe(make, gate, &mut refused, &probe_dir, deadlines))
     };
     // The sandbox may have changed the folder's access rules; a folder left behind is harmless.
     let _ = fs::remove_dir_all(&probe_dir);
+    if let Some(why) = refused {
+        return Ok(Err(why));
+    }
     let record = Record {
         ok: outcome.is_ok(),
         version,
@@ -383,7 +393,7 @@ pub fn check(home: &Path, make: MakeCommand<'_>, deadlines: &Deadlines) -> io::R
         detail: outcome.err().unwrap_or_else(|| "Codex가 샌드박스 안에서 명령을 실행하고 파일을 썼습니다.".into()),
     };
     write_record(home, &record)?;
-    Ok(record)
+    Ok(Ok(record))
 }
 
 /// Codex's own setup through a short-lived `codex app-server` in `cwd`.
@@ -409,12 +419,16 @@ fn sandbox_setup(make: MakeCommand<'_>, cwd: &Path, deadlines: &Deadlines) -> Re
 }
 
 /// One card-like `codex exec` in `dir`: the fixed card arguments, the project folder, the prompt on stdin.
-fn probe(make: MakeCommand<'_>, dir: &Path, deadlines: &Deadlines) -> Result<(), String> {
+fn probe(make: MakeCommand<'_>, gate: Gate<'_>, refused: &mut Option<String>, dir: &Path, deadlines: &Deadlines) -> Result<(), String> {
     let folder = dir.to_string_lossy().into_owned();
     let mut args: Vec<&str> = connection("codex").headless.fixed.to_vec();
     args.extend(["-C", folder.as_str(), "--skip-git-repo-check", "-"]);
     let mut command = make(&args).map_err(|e| format!("codex exec를 시작하지 못했습니다: {e}"))?;
     command.current_dir(dir);
+    if let Err(why) = gate(&command) {
+        *refused = Some(why.clone());
+        return Err(why);
+    }
     match proc::capture_input(&mut command, Some(&probe_prompt()), deadlines.probe) {
         Ok((status, stdout, _)) => {
             let file = fs::read_to_string(dir.join(PROBE_FILE)).ok();
