@@ -9,11 +9,12 @@
 | A (대표) | `younchan` | `chan12392` |
 | B | `yongwoo` (임시 이름 — 합류 시 본인이 정하면 바꾼다) | |
 | 은미 | `eunmi` | `yuneunmi814-cmyk` |
+| yeeun | `yeeun` | `oneonone2` |
 
 ## 브랜치
 
 - 보호 브랜치는 5개다: `test_2`, `test_1_hotfix`, `test_1`, `main_hotfix`, `main`. 직접 커밋·push하지 않고 PR 병합으로만 바뀐다.
-- 고정 브랜치는 8개다: `main`, `main_hotfix`, `test_1`, `test_1_hotfix`, `test_2`, `younchan`, `yongwoo`, `eunmi`. 이 외의 최상위 브랜치를 만들지 않는다.
+- 고정 브랜치는 9개다: `main`, `main_hotfix`, `test_1`, `test_1_hotfix`, `test_2`, `younchan`, `yongwoo`, `eunmi`, `yeeun`. 이 외의 최상위 브랜치를 만들지 않는다.
 - 각자 자기 개인 브랜치에서 작업한다. 개인 브랜치에서 한 단계 더 갈라진 작업 브랜치(브랜치의 브랜치)를 허용한다.
   - 이름: `<개인 브랜치>-<주제>` (예: `yongwoo-session-resume`). 작업 브랜치에서 다시 가지를 치지 않는다.
   - `/`로 나누지 않는 이유: git은 `younchan` 브랜치가 있으면 `younchan/<주제>`를 만들 수 없다.
@@ -31,7 +32,7 @@
 
 | PR | 올릴 수 있는 브랜치 | 병합하는 사람 |
 |---|---|---|
-| → `test_2` | 개인 브랜치(`younchan`, `yongwoo`, `eunmi`)와 그 작업 브랜치(`<개인>-<주제>`) | 누구나 (자유 통합) |
+| → `test_2` | 개인 브랜치(`younchan`, `yongwoo`, `eunmi`, `yeeun`)와 그 작업 브랜치(`<개인>-<주제>`) | 누구나 (자유 통합) |
 | → `test_1_hotfix` | 개인·작업 브랜치(`test_1`에서 갈라 만든 급한 수정), `test_1` 동기화 | 대표(A)와 대표의 에이전트만 |
 | → `test_1` | `test_2`(`test_2`에서 문제없이 돌아간 것), `test_1_hotfix` | 대표, 또는 다른 팀원 1명 승인 후 누구나 (ADR-0031) |
 | → `main_hotfix` | 개인·작업 브랜치(`main`에서 갈라 만든 정식 릴리스의 급한 수정), `main` 동기화 | 대표(A)와 대표의 에이전트만 |

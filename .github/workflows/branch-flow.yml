@@ -18,7 +18,7 @@ jobs:
           HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
           BASE_REPOSITORY: ${{ github.repository }}
           # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
-          PERSONAL: "younchan yongwoo eunmi"
+          PERSONAL: "younchan yongwoo eunmi yeeun"
         run: |
           # 개인·작업 브랜치 ──PR──▶ test_2 ──PR──▶ test_1 ──PR──▶ main
           # 핫픽스: 개인·작업 브랜치 ──PR──▶ test_1_hotfix ──PR──▶ test_1 (ADR-0021)
