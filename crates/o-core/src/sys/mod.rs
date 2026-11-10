@@ -9,6 +9,7 @@ pub mod launch;
 pub mod memory;
 pub mod mirror;
 pub mod proc;
+pub mod pty;
 pub mod resolve;
 pub mod worker;
 #[cfg(windows)]

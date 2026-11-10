@@ -5,15 +5,15 @@ use super::*;
 /// A plan from the lead with its project forced to the thread's, and what the policy says
 /// of it now (`o dispatch`'s check: shape, providers, caps, cooldowns, today's budget, and
 /// the profile the lead ran on, which the app dispatches the plan with).
-pub fn check_lead_plan(home: &Path, project: &str, mut plan: Value, mode: RunMode) -> (Value, Vec<Violation>) {
+pub fn check_lead_plan(home: &Path, project: &str, mut plan: Value, mode: RunMode) -> (Value, Vec<Violation>, Vec<String>) {
     if let Some(object) = plan.as_object_mut() {
         object.insert("project".into(), Value::String(project.to_string()));
     }
-    let violations = match policy_context(home, Utc::now()) {
-        Ok(ctx) => check_plan_in(&plan, &ctx, mode).violations,
-        Err(error) => vec![Violation { rule: "policy-context".into(), message: error.to_string(), card_id: None }],
+    let (violations, notices) = match policy_context(home, Utc::now()) {
+        Ok(ctx) => { let checked = check_plan_in(&plan, &ctx, mode); (checked.violations, checked.notices) },
+        Err(error) => (vec![Violation { rule: "policy-context".into(), message: error.to_string(), card_id: None }], Vec::new()),
     };
-    (plan, violations)
+    (plan, violations, notices)
 }
 
 /// `<threadId>-p<n>` → the thread id.
@@ -209,7 +209,9 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
             return Ok(added);
         }
     };
-    let wait = (!req.yolo && !scheduled).then(|| "YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string());
+    let scheduled_agy = scheduled && plan.get("cards").and_then(Value::as_array).is_some_and(|cards| cards.iter().any(|card| card.get("provider").and_then(Value::as_str) == Some("agy")));
+    let wait = if scheduled_agy { Some("예약에서는 Antigravity를 실행할 수 없습니다".to_string()) }
+        else { (!req.yolo && !scheduled).then(|| "YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) };
     let mode = RunMode { yolo: req.yolo, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
     added.extend(auto_dispatch(home, &plan_id, &plan, ok, mode, turn_started, wait, start)?);
     Ok(added)

@@ -53,7 +53,7 @@ type Entries = BTreeMap<PathBuf, (bool, u64, SystemTime)>;
 type SnapshotEntry = Option<(Vec<u8>, fs::Permissions)>;
 type Snapshot = BTreeMap<PathBuf, SnapshotEntry>;
 
-pub(super) fn open_plain(path: &Path) -> io::Result<fs::File> {
+pub(crate) fn open_plain(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]

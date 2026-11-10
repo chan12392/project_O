@@ -34,8 +34,9 @@ const SUBAGENTS: [&str; 2] = ["--enable", "multi_agent"];
 
 impl Provider for Codex {
     /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
-    /// O never marks a project trusted (#35): Codex then skips the project's `.codex/` layers
-    /// (config, MCP servers, hooks), and `--skip-git-repo-check` lets it run outside a Git repository.
+    /// O never marks a project trusted (#35), and `--skip-git-repo-check` lets Codex run outside a
+    /// Git repository. Inside one, Codex records the repository as trusted itself on the first
+    /// card and loads its `.codex/` layers (config, MCP servers, hooks) from then on (ADR-0017 개정 2).
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
@@ -142,8 +143,21 @@ impl Provider for Codex {
         ("CODEX_HOME", home.join(".codex").to_string_lossy().into_owned())
     }
 
-    /// Codex needs its CODEX_HOME folder to exist.
+    /// On Windows the sandbox grants each CODEX_HOME's own identity write access to TEMP before
+    /// the first command, and Windows applies that to everything already in the folder. On the
+    /// person's temp folder (95,000 entries on the PC where this was found) that never finished
+    /// inside a card's time, which is the hang recorded as openai/codex#50725: the profile ran
+    /// its first command in 11 seconds once TEMP was an empty folder. So the profile gets a temp
+    /// folder next to its home (ADR-0040 개정 2).
+    fn clean_temp(&self, home: &Path) -> Option<std::path::PathBuf> {
+        cfg!(windows).then(|| home.parent().unwrap_or(home).join("tmp"))
+    }
+
+    /// Codex needs its CODEX_HOME folder, and its temp folder, to exist.
     fn prepare_profile(&self, home: &Path, _real_home: &Path) -> io::Result<()> {
+        if let Some(temp) = self.clean_temp(home) {
+            fs::create_dir_all(temp)?;
+        }
         fs::create_dir_all(home.join(".codex"))
     }
 

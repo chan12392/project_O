@@ -101,7 +101,7 @@ pub enum LeadEvent {
     Ask { at: String, ask_id: String, provider: ProviderId, #[serde(default, skip_serializing_if = "String::is_empty")] intro: String, questions: Vec<prompt::AskQuestion> },
     /// A proposed plan with the project forced to the thread's and the policy check's result.
     #[serde(rename = "lead.plan")]
-    Plan { at: String, plan_id: String, plan: Value, ok: bool, violations: Vec<Violation> },
+    Plan { at: String, plan_id: String, plan: Value, ok: bool, violations: Vec<Violation>, #[serde(default)] notices: Vec<String> },
     #[serde(rename = "lead.dispatch")]
     Dispatch {
         at: String,

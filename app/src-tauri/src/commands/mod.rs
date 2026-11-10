@@ -8,6 +8,7 @@
 
 mod about;
 mod agents;
+mod agy;
 mod graph;
 mod lead;
 mod images;
@@ -16,6 +17,7 @@ mod projects;
 mod review;
 mod runs;
 mod schedule;
+mod term;
 mod tokens;
 mod usage;
 mod dream;
@@ -26,6 +28,13 @@ pub(crate) mod window;
 pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static {
     tauri::generate_handler![
         runs::runs,
+        term::term_open,
+        term::term_list,
+        term::term_read,
+        term::term_write,
+        term::term_resize,
+        term::term_paste,
+        term::term_close,
         runs::run_changes,
         runs::run_followup,
         runs::run_reply,
@@ -40,6 +49,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         usage::ram_set,
         usage::billing_get,
         usage::billing_set,
+        agy::agy_get,
+        agy::agy_set,
         usage::yolo_get,
         usage::yolo_set,
         agents::agents_status,

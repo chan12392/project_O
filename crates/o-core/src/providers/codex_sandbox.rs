@@ -92,10 +92,30 @@ pub fn write_record(home: &Path, record: &Record) -> io::Result<()> {
     })
 }
 
-/// SHA-256 (hex) of the profile's `.codex/config.toml`; a missing file hashes as empty.
+/// SHA-256 (hex) of the profile's `.codex/config.toml` without its `[projects…]` tables; a
+/// missing file hashes as empty. Codex adds a `[projects.'<folder>']` table itself when a card
+/// runs in a new project (run 20261110-131428-sqm9), which says nothing about the sandbox: with
+/// those tables hashed, every first card in a project would ask for the check again.
 pub fn config_hash(home: &Path) -> String {
-    let bytes = fs::read(home.join(".codex").join("config.toml")).unwrap_or_default();
-    Sha256::digest(&bytes).iter().map(|b| format!("{b:02x}")).collect()
+    let text = String::from_utf8_lossy(&fs::read(home.join(".codex").join("config.toml")).unwrap_or_default()).into_owned();
+    Sha256::digest(without_projects(&text).as_bytes()).iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// `toml` without its `[projects]` and `[projects.…]` tables (header to the next table header)
+/// and without the blank lines around them.
+fn without_projects(toml: &str) -> String {
+    let mut kept = Vec::new();
+    let mut skipping = false;
+    for line in toml.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') {
+            skipping = trimmed.starts_with("[projects.") || trimmed.starts_with("[projects]");
+        }
+        if !skipping && !trimmed.is_empty() {
+            kept.push(trimmed);
+        }
+    }
+    kept.join("\n")
 }
 
 /// `sandbox = …` inside `[windows]`, or the dotted `windows.sandbox = …`.
@@ -423,6 +443,17 @@ mod tests {
         assert_eq!(decide(Some(&record(true)), "abd", || panic!("a changed config needs no version")).as_deref(), Some(CHANGED));
         assert_eq!(decide(Some(&record(true)), "abc", || Some("codex-cli 1.2.4".into())).as_deref(), Some(CHANGED));
         assert_eq!(decide(Some(&record(true)), "abc", || None).as_deref(), Some(CHANGED));
+    }
+
+    #[test]
+    fn project_tables_codex_adds_do_not_change_the_config_hash() {
+        let base = "[windows]\nsandbox = \"unelevated\"\n";
+        let trusted = "[windows]\r\nsandbox = \"unelevated\"\r\n\r\n[projects.'c:\\work\\app']\r\ntrust_level = \"trusted\"\r\n";
+        assert_eq!(without_projects(trusted), without_projects(base));
+        // What follows a projects table is kept, and any other change still shows.
+        assert_eq!(without_projects("[projects.'a']\ntrust_level = \"trusted\"\n[features]\nhooks = true\n"), "[features]\nhooks = true");
+        assert_ne!(without_projects("[windows]\nsandbox = \"elevated\"\n"), without_projects(base));
+        assert_ne!(without_projects("[windows]\nsandbox = \"unelevated\"\n[projects_extra]\nx = 1\n"), without_projects(base));
     }
 
     #[test]

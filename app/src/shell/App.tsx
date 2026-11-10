@@ -17,10 +17,11 @@ import {
   type Project,
 } from "../data/projects.ts";
 import { rememberedThread, rememberThread } from "../data/leadThreads.ts";
-import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow } from "../data/settings.ts";
+import { lastProject, markOnboardingDone, onboardingDone, rememberProject, settingsNow, useSettings } from "../data/settings.ts";
 import { useLead } from "../data/useLead.ts";
 import { useRunSource } from "../data/useLiveRuns.ts";
 import { readParams, writeParam, type PanelView, type ScreenState } from "../data/useRun.ts";
+import { sessionForThread } from "../../../src/core/terminal.ts";
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadTabs } from "../features/chat/LeadTabs.tsx";
@@ -29,6 +30,8 @@ import { LeadApprovalCard, useApprovalAlert } from "../features/chat/LeadApprova
 import { QuestionDialog } from "../features/chat/QuestionDialog.tsx";
 import { Thread } from "../features/chat/Thread.tsx";
 import { DreamingScreen } from "../features/dreaming/DreamingScreen.tsx";
+import { LeadTerminal } from "../features/terminal/LeadTerminal.tsx";
+import { useTermSessions } from "../features/terminal/useTermSessions.ts";
 import { WhoIsWorking } from "../features/office/WhoIsWorking.tsx";
 import { ImportCard, useImportOffer } from "../features/projects/ImportCard.tsx";
 import { NewRequest } from "../features/projects/NewRequest.tsx";
@@ -176,6 +179,16 @@ function MainWindow() {
     : undefined;
   const lead = useLead(api, project?.path, leadThread, leadEnabled);
   useApprovalAlert(lead, api);
+  const settings = useSettings();
+  // Terminal leads (ADR-0042): the thread's running session plus each tab's "Antigravity · 터미널" pick.
+  const { sessions: termSessions, refresh: refreshTerms } = useTermSessions(api, leadEnabled && Boolean(project?.path));
+  const [terminalPicks, setTerminalPicks] = useState<Readonly<Record<string, boolean>>>({});
+  const leadTermSession = sessionForThread(termSessions, lead.selected);
+  const terminalOn = Boolean(project?.path && lead.selected && (terminalPicks[lead.selected] ?? (leadTermSession !== undefined || settings.leadAgent === "agy")));
+  const setTerminalOn = (on: boolean) => {
+    const thread = lead.selected;
+    if (thread) setTerminalPicks((p) => ({ ...p, [thread]: on }));
+  };
   // A picked tab that closed (or a backend that fell back to the project's current thread) makes
   // the answer's thread the pick; the correction then lands in selection, memory and URL at once.
   useEffect(() => {
@@ -471,7 +484,21 @@ function MainWindow() {
               }}
             />
           )}
-          {live && state !== "error" ? (
+          {terminalOn && project?.path && lead.selected ? (
+            <div key={project.path} className="bloom flex min-h-0 flex-1 flex-col">
+              <LeadTerminal
+                api={api}
+                project={project.path}
+                thread={lead.selected}
+                lead={lead}
+                session={leadTermSession}
+                sessionsReady={termSessions !== undefined}
+                runs={runViews}
+                onOpenCard={openCard}
+                refresh={refreshTerms}
+              />
+            </div>
+          ) : live && state !== "error" ? (
             <div key={project?.path ?? "none"} className="bloom flex min-h-0 flex-1 flex-col">
               <LeadThread
                 project={project?.path}
@@ -500,7 +527,7 @@ function MainWindow() {
             </div>
           )}
           {live && state !== "error" && <div className="shrink-0 bg-chat-canvas px-6"><LeadApprovalCard lead={lead} api={api} /></div>}
-          <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} onAgents={() => setScreen("onboarding")} />
+          <Composer inputRef={askRef} api={api} project={project?.path} lead={lead} terminal={terminalOn} onTerminal={setTerminalOn} onAgents={() => setScreen("onboarding")} />
         </section>
         )}
         {showPanel && (

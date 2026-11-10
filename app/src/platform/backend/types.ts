@@ -1,9 +1,10 @@
 /** The machine side's contract (`Backend`) and the JSON shapes it answers with, as the `o` commands print them. */
 import type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow } from "../../../../src/core/lead.ts";
 import type { ListedProject, ProjectCheck, ProjectList } from "../../../../src/core/projects.ts";
+import type { TermChunk, TermSession } from "../../../../src/core/terminal.ts";
 import type { About, UpdateCheck, UpdateRelease, UpdateStatus } from "../updates.ts";
 
-export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList };
+export type { LeadAttachment, LeadEvent, LeadModel, LeadProvider, LeadShow, ListedProject, ProjectCheck, ProjectList, TermChunk, TermSession };
 
 export type AgentId = "claude" | "codex" | "agy" | "opencode" | "devin";
 
@@ -173,6 +174,12 @@ export type WorkspaceChanges = { workspace: string; note: string; baselineRunId?
 
 export interface Backend {
   kind: "tauri" | "dev" | "demo";
+  /**
+   * Whether this backend can run the human-only terminal and `o agy` operations
+   * (ADR-0042): the Tauri commands and the demo can; the dev server cannot — a
+   * local process can forge Origin, so it cannot tell a person from an agent.
+   */
+  canDriveTerminals: boolean;
   resources(): Promise<ResourceLease[]>;
   recoverResource(id: string, confirmExited?: boolean): Promise<void>;
   followup(run: string, card: string, text: string): Promise<{ runId: string }>;
@@ -266,6 +273,26 @@ export interface Backend {
   leadStopAll(project: string): Promise<{ stopped: number }>;
   /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
   leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
+
+  // Terminal agents (ADR-0042): `o agy` consent and `o term` sessions.
+  // The screen shows the terminal's raw output; it never re-renders it as chat.
+
+  /** Antigravity worker consent and the always-shown policy notice (`o agy --json`). */
+  agyGet(): Promise<AgyReport>;
+  /** One consent change (`o agy --workers on --ack …`); enabling workers without `ack` rejects. */
+  agySet(change: AgyChange): Promise<AgyReport>;
+  /** Opens a lead terminal for `provider` in `project` (and `thread`); the person types in it (`o term open`). */
+  termOpen(request: TermOpenRequest): Promise<TermSession>;
+  /** Every terminal session the host knows (`o term list --json`). */
+  termList(): Promise<TermSession[]>;
+  /** The output bytes since `offset`; `start` is where the buffer now begins (`o term read`). */
+  termRead(id: string, offset: number): Promise<TermChunk>;
+  /** Writes the person's keystrokes, base64-encoded, to a session (`o term write ID -`). */
+  termWrite(id: string, dataBase64: string): Promise<void>;
+  termResize(id: string, cols: number, rows: number): Promise<void>;
+  /** Approves a card task paste the session is holding (`state` "awaiting-paste"). */
+  termPaste(id: string): Promise<void>;
+  termClose(id: string): Promise<void>;
 
   // The Graph tab (ADR-0033). `graphDeep` spends the person's subscription once, only after a click.
 
@@ -373,6 +400,34 @@ export interface LeadDispatched {
   events: string;
   cards: string[];
   clean: boolean;
+  /** What the plan check wants said but does not block on (`o dispatch --json`; absent in older answers). */
+  notices?: string[];
+}
+
+/** Antigravity worker consent as `o agy --json` reports it; `notice` is always shown with the switch (ADR-0042 §6). */
+export interface AgyReport {
+  workers: boolean;
+  /** When consent was last given; null while workers are off (the report drops it then). */
+  acknowledgedAt: string | null;
+  /** A card's task paste waits for the person's "붙여넣기 승인" before it goes in (on by default). */
+  confirmPaste: boolean;
+  notice: { quotes: string[]; links: { label: string; url: string }[]; warning: string };
+}
+
+/** One `o agy` change; `--workers on` is refused without `ack: true` in the same call. */
+export interface AgyChange {
+  workers?: boolean;
+  ack?: boolean;
+  confirmPaste?: boolean;
+}
+
+/** `o term open`: the CLI to run, the folder it runs in, and the lead thread it answers to. */
+export interface TermOpenRequest {
+  provider: string;
+  project: string;
+  thread?: string;
+  cols?: number;
+  rows?: number;
 }
 
 /** `o graph view --json`: the whole workspace (root → projects → areas) or one project (project → folders → files). */

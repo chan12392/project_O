@@ -176,6 +176,7 @@ fn ctx() -> PolicyContext {
         user_home: "C:/Users/me".into(),
         resolve: Box::new(|p: &str| p.to_string()),
         profile_not_ready: Box::new(|_| None),
+        agy_workers_allowed: false,
     }
 }
 

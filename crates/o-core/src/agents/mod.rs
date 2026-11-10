@@ -4,6 +4,7 @@
 //! vendors' install scripts are shown to the person, never fetched and run here.
 //! Sign-in opens the CLI's own login in a console window the person drives.
 
+pub mod agy;
 pub mod billing;
 pub mod catalog;
 pub mod clean;

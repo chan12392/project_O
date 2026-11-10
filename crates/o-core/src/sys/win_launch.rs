@@ -261,7 +261,7 @@ impl Launch {
 /// name first. `Global\` and not `Local\`: a reader in another logon session (a remote shell)
 /// finds no `Local\` object of this session and would misread the job as gone. `None` when the
 /// random suffix cannot be made; the job is then unnamed.
-fn card_job_name(label: &str) -> Option<String> {
+pub(crate) fn card_job_name(label: &str) -> Option<String> {
     let mut random = [0u8; 16];
     if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), random.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) } < 0 { return None; }
     let label: String = label.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(100).collect();
@@ -273,7 +273,7 @@ fn card_job_name(label: &str) -> Option<String> {
 /// `JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK`) is set, so no process the worker starts can leave the
 /// job; a nested job a CLI makes stays inside this one. A name that is already taken or cannot be
 /// created is never used and the job is made unnamed instead: someone else's job is never adopted.
-fn kill_on_close_job(name: Option<String>) -> io::Result<(OwnedHandle, Option<String>)> {
+pub(crate) fn kill_on_close_job(name: Option<String>) -> io::Result<(OwnedHandle, Option<String>)> {
     let named = name.and_then(|name| {
         let mut wide_name: Vec<u16> = name.encode_utf16().collect();
         if wide_name.contains(&0) { return None; }

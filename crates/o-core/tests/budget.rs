@@ -269,7 +269,7 @@ fn an_exhausted_day_blocks_only_while_the_budget_is_on() {
     assert_eq!(off.spent, Some(14.0));
     assert!(off.message.contains("예산 꺼짐"), "{}", off.message);
     let r = report(&home, now).unwrap();
-    assert!(!r.enabled && r.providers.iter().all(|p| p.state == Pace::Off || ([ProviderId::OpenCode, ProviderId::Devin].contains(&p.provider) && p.state == Pace::NotApplied)));
+    assert!(!r.enabled && r.providers.iter().all(|p| p.state == Pace::Off || ([ProviderId::Agy, ProviderId::OpenCode, ProviderId::Devin].contains(&p.provider) && p.state == Pace::NotApplied)));
 }
 
 #[test]

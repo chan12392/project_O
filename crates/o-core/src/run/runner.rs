@@ -4,6 +4,7 @@
 //! provider instead of retrying them.
 
 mod card;
+mod terminal_card;
 
 use card::{run_card, Slot, Start};
 use std::collections::{HashMap, HashSet};
@@ -518,8 +519,8 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
         let plan = read_plan(home, run_id).map_err(|e| e.to_string())?;
         raw = Some(plan.clone());
         let _queued = wait_for_followup(home, run_id, &plan)?;
-        // Codex and Antigravity report usage only when asked: a stale reading is read again before the budget check.
-        let probed = |c: &Value| matches!(c.get("provider").and_then(Value::as_str), Some("codex" | "agy"));
+        // Codex reports usage only when asked: refresh a stale reading before the budget check.
+        let probed = |c: &Value| c.get("provider").and_then(Value::as_str) == Some("codex");
         if plan.get("cards").and_then(Value::as_array).is_some_and(|cards| cards.iter().any(probed)) {
             budget::refresh_if_stale(home, Utc::now(), Some(Profile::of_clean(is_clean(home, run_id))));
         }
@@ -538,7 +539,8 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
         // project_O 프로필 사용 (ADR-0015): each CLI's profile is made if missing, and one that cannot
         // have a profile or is signed out there starts no card.
         let providers: Vec<ProviderId> = plan.cards.iter().map(|c| c.provider).collect();
-        let mut not_ready = clean.as_deref().map(|root| clean::not_ready(root, &providers)).unwrap_or_default();
+        let clean_providers: Vec<_> = providers.iter().copied().filter(|p| *p != ProviderId::Devin && *p != ProviderId::Agy).collect();
+        let mut not_ready = clean.as_deref().map(|root| clean::not_ready(root, &clean_providers)).unwrap_or_default();
         if providers.contains(&ProviderId::OpenCode) && !not_ready.contains_key(&ProviderId::OpenCode) {
             if let Err(reason) = crate::providers::opencode::check_auth(clean.as_deref()) {
                 not_ready.insert(ProviderId::OpenCode, reason);

@@ -9,6 +9,7 @@ use o_core::run::store::is_run_id;
 
 mod about;
 mod agents;
+mod agy;
 mod billing;
 mod budget;
 mod context;
@@ -33,6 +34,7 @@ mod schedule;
 mod sessions;
 mod status;
 mod stop;
+mod term;
 mod tokens;
 mod usage;
 mod dream;
@@ -66,9 +68,11 @@ pub const COMMANDS: &[Command] = &[
     budget::BUDGET,
     ram::RAM,
     billing::BILLING,
+    agy::AGY,
     yolo::YOLO,
     runs::RUNS,
     sessions::SESSIONS,
+    term::TERM,
     schedule::SCHEDULE,
     projects::PROJECTS,
     graph::GRAPH,
@@ -79,6 +83,7 @@ pub const COMMANDS: &[Command] = &[
     agents::AGENTS,
     about::ABOUT,
     dispatch::RUN,
+    term::HOST,
     #[cfg(windows)]
     job_watch::WATCH,
     lead::WATCH,

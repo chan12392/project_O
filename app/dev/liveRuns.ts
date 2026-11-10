@@ -139,6 +139,8 @@ const PLAN_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-p\d{1,4}$/;
 const PROPOSAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-f\d{1,4}$/;
 /** A waiting approval's id (`<threadId>-a<n>`, crates/o-core/src/lead/approvals.rs); `o lead decide` checks it again. */
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
+/** Terminal session ids as `o term` makes them (crates/o-core/src/term `is_session_id`); it checks them again. */
+const TERM_ID = /^t-\d{8}-\d{6}-[A-Za-z0-9]{4}$/;
 /** How long a lead model list is reused before the CLI is asked again (the Tauri `lead_models` keeps it as long). */
 const MODELS_TTL_MS = 10 * 60_000;
 const leadModels = new Map<string, { at: number; out: string }>();
@@ -532,6 +534,50 @@ async function projects(req: IncomingMessage, res: ServerResponse, path: string,
 }
 
 /**
+ * The terminal sessions' twins of the Tauri term_* commands (app/src-tauri/src/commands/term.rs, ADR-0042).
+ * Only the read routes and resize are offered: a local process can forge Origin, so
+ * the dev server cannot tell a person from an agent (ADR-0042 구현 메모) — the
+ * human-only operations (open, write, paste, close, `agy` changes) live in the
+ * Tauri commands and `o` itself instead.
+ */
+export async function term(req: IncomingMessage, res: ServerResponse, path: string, query: URLSearchParams): Promise<boolean> {
+  const fail = (status: number, message: string) => {
+    send(res, status, JSON.stringify({ error: message }));
+    return true;
+  };
+  const run = (p: Promise<string>) => {
+    void p.then((out) => send(res, 200, out || "{}"), (e: Error & { code?: number }) => fail(e.code === 2 ? 409 : 500, e.message));
+    return true;
+  };
+  const jsonBody = async () => {
+    try {
+      const data: unknown = JSON.parse((await body(req, 65_536)).toString("utf8"));
+      return data && typeof data === "object" ? (data as Record<string, unknown>) : undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const idOf = (data: Record<string, unknown> | undefined): string | undefined => (typeof data?.id === "string" && TERM_ID.test(data.id) ? data.id : undefined);
+  if (req.method === "GET" && path === "/term") return run(o(["term", "list", "--json"]));
+  if (req.method === "GET" && path === "/term/read") {
+    const id = query.get("id") ?? "";
+    const offset = query.get("offset") ?? "";
+    if (!TERM_ID.test(id) || !/^\d{1,20}$/.test(offset)) return fail(400, "터미널 ID나 위치가 올바르지 않습니다");
+    return run(o(["term", "read", id, "--offset", offset, "--json"]));
+  }
+  if (req.method !== "POST") return false;
+  // Human-only mutations are deliberately absent (see the comment above `term`).
+  if (path === "/term/resize") {
+    const input = await jsonBody();
+    const id = idOf(input);
+    const dim = (v: unknown): v is number => Number.isInteger(v) && (v as number) >= 1 && (v as number) <= 32767;
+    if (!id || !dim(input?.cols) || !dim(input?.rows)) return fail(400, "터미널 크기가 올바르지 않습니다");
+    return run(o(["term", "resize", id, String(input.cols), String(input.rows)]));
+  }
+  return false;
+}
+
+/**
  * Dev-server stand-in for the desktop shell (src/platform/backend, src/data/useLiveRuns.ts): runs, usage,
  * agent CLI status, the official install and sign-in, and About, each through `o`.
  */
@@ -629,6 +675,13 @@ export function liveRuns(): Plugin {
             })();
             return;
           }
+        // Antigravity state is read-only here: a local process can forge Origin, so the
+        // dev server cannot tell a person from an agent (ADR-0042 구현 메모). `o agy`
+        // changes run through the Tauri command or `o` itself.
+        if (req.method === "GET" && path === "/agy") return void o(["agy", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (path === "/term" || path?.startsWith("/term/")) {
+          return void term(req, res, path, query).then((handled) => (handled ? undefined : next()), error(res));
+        }
         const clean = query.get("clean") === "1" ? ["--clean"] : [];
         if (req.method === "GET" && path === "/agents") return void o(["agents", "status", "--json", ...clean]).then((out) => send(res, 200, out), error(res));
         if (req.method === "GET" && path === "/agents/catalog") return void o(["agents", "list", "--all", "--json"]).then((out) => send(res, 200, out), error(res));

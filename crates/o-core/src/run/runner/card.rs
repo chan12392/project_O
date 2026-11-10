@@ -162,6 +162,12 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         emit(end(CardStatus::Failed, Some(why), None))?;
         return Ok(CardStatus::Failed);
     }
+    if crate::providers::get(card.provider).terminal_card() {
+        return super::terminal_card::run(home, run_id, plan, card, cwd, context, spawner, dependencies, slot);
+    }
+    if clean.is_some() && card.provider == ProviderId::Devin {
+        emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "프로필".into(), summary: crate::providers::devin::OWN_PROFILE_NOTICE.into() })?;
+    }
     let checked_plan = Plan { project: cwd.to_string(), ..plan.clone() };
     let mut spec = launch_spec_for(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context, yolo);
     if let Some(target) = &followup {
@@ -201,7 +207,7 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
     let mut watcher_executable = None;
     let spawned = spawner(&spec, cwd).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
-        if let Some(root) = clean {
+        if let Some(root) = clean.filter(|_| card.provider != ProviderId::Devin) {
             let env = clean::environment(root, card.provider)?;
             command.env_clear().envs(env);
         }

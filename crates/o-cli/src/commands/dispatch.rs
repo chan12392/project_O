@@ -16,9 +16,9 @@ use super::{fail, print_violations, run_id_arg, Command};
 
 pub const CHECK: Command = Command {
     name: "check",
-    usage: "  o check [plan.json|-]      정책 검사만 (실행 안 함)",
+    usage: "  o check [--json] [plan.json|-]  정책 검사만 (실행 안 함)",
     run: |home, args| match plan_flags(home, args) {
-        Ok((mode, plan)) => check(home, plan.as_deref(), false, mode),
+        Ok((mode, plan, as_json)) => check(home, plan.as_deref(), false, mode, as_json),
         Err(error) => fail(&error),
     },
 };
@@ -35,21 +35,23 @@ pub const DISPATCH: Command = Command {
                              --mode yolo|normal: 이 실행만 YOLO 모드 켜기·끄기 (주지 않으면 o yolo 설정, ADR-0014)
                              하루 사용 예산(차단·effort 낮춤)은 o budget --on|--off로 따로 정함",
     run: |home, args| match plan_flags(home, args) {
-        Ok((mode, plan)) => check(home, plan.as_deref(), true, mode),
+        Ok((mode, plan, as_json)) => check(home, plan.as_deref(), true, mode, as_json),
         Err(error) => fail(&error),
     },
 };
 
 /// The run mode and the plan file among `check`/`dispatch` arguments; any other flag is refused
 /// (a removed or misspelled one included, so it never reads as a plan file name).
-fn plan_flags(home: &Path, args: &[String]) -> Result<(RunMode, Option<String>), String> {
-    let (mut mode, rest) = take_flags(args)?;
+fn plan_flags(home: &Path, args: &[String]) -> Result<(RunMode, Option<String>, bool), String> {
+    let as_json = args.iter().any(|arg| arg == "--json");
+    let args: Vec<String> = args.iter().filter(|arg| *arg != "--json").cloned().collect();
+    let (mut mode, rest) = take_flags(&args)?;
     let (yolo, rest) = yolo::take_flag(rest)?;
     mode.yolo = yolo::resolve(home, yolo);
     if let Some(flag) = rest.iter().find(|a| a.starts_with("--")) {
         return Err(format!("알 수 없는 인자: {flag}"));
     }
-    Ok((mode, rest.into_iter().next()))
+    Ok((mode, rest.into_iter().next(), as_json))
 }
 
 /// `o _run <runId>`: the runner `o dispatch` starts in the background.
@@ -80,7 +82,7 @@ fn read_input(path: Option<&str>) -> Result<Value, String> {
     Ok(serde_json::from_str(&text).unwrap_or(Value::String(text)))
 }
 
-fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 {
+fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode, as_json: bool) -> i32 {
     let input = match read_input(path) {
         Ok(input) => input,
         Err(error) => return fail(&error),
@@ -91,6 +93,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
         Err(error) => return fail(&error.to_string()),
     };
     let checked = check_plan_in(&input, &ctx, mode);
+    for notice in &checked.notices { eprintln!("{notice}"); }
     let Some(plan) = checked.plan else {
         if dispatch {
             let title = input.as_object().and_then(|o| o.get("title"));
@@ -98,10 +101,12 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
                 eprintln!("{error}");
             }
         }
-        print_violations(&checked.violations);
+        if as_json { println!("{}", json!({ "ok": false, "violations": checked.violations, "notices": checked.notices })); }
+        else { print_violations(&checked.violations); }
         return 2;
     };
     if !dispatch {
+        if as_json { println!("{}", json!({ "ok": true, "plan": plan, "violations": checked.violations, "notices": checked.notices })); return 0; }
         let cards: Vec<String> = plan.cards.iter().map(|c| format!("{}→{}", c.id, c.provider)).collect();
         println!("정책 통과: 카드 {}개 ({})", plan.cards.len(), cards.join(", "));
         for card in &plan.cards {
@@ -123,7 +128,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode) -> i32 
     let cards: Vec<&str> = plan.cards.iter().map(|c| c.id.as_str()).collect();
     println!(
         "{}",
-        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "isolated": true, "profile": mode.profile, "clean": mode.clean(), "context": mode.context, "yolo": mode.yolo })
+        json!({ "runId": run_id, "events": events.to_string_lossy(), "cards": cards, "isolated": true, "profile": mode.profile, "clean": mode.clean(), "context": mode.context, "yolo": mode.yolo, "notices": checked.notices })
     );
     0
 }

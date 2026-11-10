@@ -31,7 +31,7 @@ description: Split a multi-part request into work cards and hand them to agent C
 }
 ```
 
-- `provider`: `claude` | `codex` | `opencode` | `devin`. Antigravity는 공급자 정책 때문에 실행하지 않는다. **카드마다 어느 에이전트·모델·노력 수준(`effort`)으로 할지는 총괄이 일에 맞게 정한다.**
+- `provider`: `claude` | `codex` | `opencode` | `devin` | `agy`. `agy`는 사람이 약관 안내에 동의해 작업 에이전트를 켰을 때만 터미널 카드로 배정한다. 터미널 카드는 후속 지시를 받지 않으며 완료 문서의 첫 `O-DONE`과 마지막 `O-END`에 같은 일회용 값을 써서 보고하고 `model`·`effort` 대신 CLI의 현재 설정을 쓴다. **다른 카드는 에이전트·모델·노력 수준(`effort`)을 총괄이 일에 맞게 정한다.**
   - 사용자가 특정 에이전트나 모델을 말한 카드는 그대로 따른다.
   - 고르기 전에 `o usage`로 구독 한도를 보고, 한도에 가까운(90% 이상) 서비스는 피한다. 동시 실행 상한을 넘지 않게 나눈다.
   - 모델 이름은 그 CLI가 받는 것만 쓴다. 확실하지 않으면 `model`을 비워 CLI 기본 모델에 맡기고 `effort`로만 조절한다.

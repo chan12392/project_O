@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use chrono::Utc;
 
 use crate::run::events::{CardInfo, CardStatus, OEvent};
-use crate::run::plan::{Card, Plan, ProviderId};
+use crate::run::plan::{Card, Plan};
 use crate::run::mode::{Profile, RunMode};
 use crate::run::store::{self, is_clean, is_run_id, read_events, read_plan, run_dir, run_is_live};
 
@@ -36,7 +36,7 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
     let plan: Plan = serde_json::from_value(read_plan(home, run).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let index = plan.cards.iter().position(|item| item.id == card).ok_or("해당 작업을 찾지 못했습니다")?;
     let card = plan.cards[index].clone();
-    if card.provider == ProviderId::Agy { return Err(crate::policy::AGY_UNAVAILABLE.into()); }
+    if crate::providers::get(card.provider).terminal_card() { return Err("터미널 카드는 후속 지시를 받지 않습니다".into()); }
     let events = read_events(home, run);
     let last_end = events.iter().rev().find_map(|event| match event {
         OEvent::CardEnd { card_id, status, result, exit_code, .. } if card_id == &card.id => Some((*status, result.as_deref(), *exit_code)),
@@ -113,7 +113,7 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
     if !is_run_id(run) { return Err("실행 ID가 올바르지 않습니다".into()); }
     let source: Plan = serde_json::from_value(read_plan(home, run).map_err(|_| "이 작업의 실행 정보를 찾지 못했습니다")?).map_err(|_| "이 작업의 실행 정보가 올바르지 않습니다")?;
     let mut next_card = source.cards.into_iter().find(|item| item.id == card).ok_or("해당 작업을 찾지 못했습니다")?;
-    if next_card.provider == ProviderId::Agy { return Err(crate::policy::AGY_UNAVAILABLE.into()); }
+    if crate::providers::get(next_card.provider).terminal_card() { return Err("터미널 카드는 후속 지시를 받지 않습니다".into()); }
     let running = run_is_live(home, run) && !read_events(home, run).iter().any(|event| matches!(event, OEvent::CardEnd { card_id, .. } if card_id == card));
     if !running { target(home, run, card)?; }
     next_card.task = text.to_string();

@@ -74,6 +74,15 @@ fn clean_env_keeps_system_variables_and_points_home_at_the_profile() {
     let codex = clean_env_from(parent.clone(), home, ProviderId::Codex);
     assert_eq!(codex["CODEX_HOME"], home.join(".codex").to_string_lossy());
     assert!(!codex.contains_key("CLAUDE_CONFIG_DIR"));
+    // Windows: Codex gets the profile's own temp folder, never the person's (ADR-0040 개정 2).
+    let with_temp = parent.clone().into_iter().chain([("Temp".to_string(), r"C:\Users\someone\AppData\Local\Temp".to_string())]);
+    let codex = clean_env_from(with_temp.clone(), home, ProviderId::Codex);
+    if cfg!(windows) {
+        assert_eq!(codex["TEMP"], r"D:\profiles\claude\tmp");
+        assert_eq!(codex["TMP"], r"D:\profiles\claude\tmp");
+        assert!(!codex.contains_key("Temp"));
+    }
+    assert_eq!(clean_env_from(with_temp, home, ProviderId::Claude)["Temp"], r"C:\Users\someone\AppData\Local\Temp");
     let agy = clean_env_from(parent, home, ProviderId::Agy);
     assert_eq!(agy["AGY_CLI_DISABLE_AUTO_UPDATE"], "true");
 }
@@ -293,12 +302,12 @@ fn every_connected_cli_can_have_a_profile_and_unsupported_ones_are_named() {
     assert!(o_core::agents::clean::login_needed(ProviderId::OpenCode).starts_with("로그인 필요(opencode):"));
 }
 
-/// Devin's config folder cannot be moved: no clean environment is made, and nothing runs it with the person's own.
+/// Devin's config folder cannot be moved: no clean environment is made for profile commands.
 #[test]
 fn devin_gets_no_clean_profile_and_says_why() {
     use o_core::agents::clean::{environment, login_state};
     let root = temp("devin");
-    let why = "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요";
+    let why = o_core::providers::devin::PROFILE_UNSUPPORTED;
     assert_eq!(environment(&root, ProviderId::Devin).unwrap_err().to_string(), why);
     let state = login_state(&root, ProviderId::Devin);
     assert_eq!((state.logged_in, state.detail.as_str()), (None, why));

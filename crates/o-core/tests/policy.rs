@@ -21,6 +21,7 @@ fn ctx() -> PolicyContext {
         user_home: "C:/Users/me".into(),
         resolve: Box::new(|p: &str| p.to_string()),
         profile_not_ready: Box::new(|_| None),
+        agy_workers_allowed: false,
     }
 }
 
@@ -157,13 +158,16 @@ fn unknown_providers_are_refused() {
 }
 
 #[test]
-fn antigravity_cannot_be_dispatched_with_either_profile() {
+fn antigravity_requires_the_worker_setting_with_either_profile() {
     use o_core::policy::check_plan_for;
     use o_core::run::mode::Profile;
     for profile in [Profile::Own, Profile::ProjectO] {
         let checked = check_plan_for(&plan(vec![code_card(), design_card()]), &ctx(), profile);
         assert!(checked.plan.is_none());
-        assert!(checked.violations.iter().any(|v| v.rule == "provider-terms" && v.card_id.as_deref() == Some("design")));
+        assert!(checked.violations.iter().any(|v| v.rule == "provider-terms" && v.card_id.as_deref() == Some("design") && v.message.contains("o agy --workers on --ack")));
+        let mut enabled = ctx();
+        enabled.agy_workers_allowed = true;
+        assert!(check_plan_for(&plan(vec![code_card(), design_card()]), &enabled, profile).plan.is_some());
     }
 }
 
@@ -282,18 +286,26 @@ fn devin_card() -> Value {
 }
 
 #[test]
-fn devin_cards_are_refused_on_the_project_o_profile_and_run_on_the_persons_own() {
+fn terminal_model_and_effort_are_notices() {
     use o_core::policy::check_plan_for;
     use o_core::run::mode::Profile;
-    let refused = check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::ProjectO);
-    assert!(refused.plan.is_none());
-    let v: Vec<_> = refused.violations.iter().filter(|v| v.rule == "profile-unsupported").collect();
-    assert_eq!(v.len(), 1);
-    assert_eq!(v[0].card_id.as_deref(), Some("fix"));
-    assert_eq!(v[0].message, "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요");
+    let mut context = ctx();
+    context.agy_workers_allowed = true;
+    let checked = check_plan_for(&plan(vec![design_card()]), &context, Profile::Own);
+    assert!(checked.plan.is_some(), "{:?}", checked.violations);
+    assert_eq!(checked.notices, ["터미널 카드는 model·effort를 적용하지 않습니다(CLI의 현재 설정으로 실행)"]);
+}
+
+#[test]
+fn devin_cards_use_the_persons_own_profile_with_a_notice() {
+    use o_core::policy::check_plan_for;
+    use o_core::run::mode::Profile;
+    let checked = check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::ProjectO);
+    assert!(checked.plan.is_some());
+    assert_eq!(checked.notices, [o_core::providers::devin::OWN_PROFILE_NOTICE]);
     // Listed beside the plan's other problems, not only once the rest passes.
     let both = check_plan_for(&plan(vec![with(devin_card(), "effort", json!("ultra"))]), &ctx(), Profile::ProjectO);
-    assert!(has(&both, "plan-shape") && has(&both, "profile-unsupported"));
+    assert!(has(&both, "plan-shape") && !both.notices.is_empty());
     assert!(check_plan_for(&plan(vec![code_card(), devin_card()]), &ctx(), Profile::Own).plan.is_some());
     assert!(check_plan_for(&plan(vec![code_card(), with(design_card(), "provider", json!("claude"))]), &ctx(), Profile::ProjectO).plan.is_some());
     assert!(check_plan(&plan(vec![devin_card()]), &ctx()).plan.is_some());

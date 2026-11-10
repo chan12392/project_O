@@ -28,6 +28,7 @@ pub struct PromptInput<'a> {
     pub attachments: &'a [Attachment],
     /// One line per provider from today's usage budget (`usage::budget`).
     pub budget: &'a [String],
+    pub agy_workers_allowed: bool,
     /// Providers whose project_O profile cannot do a sandboxed card's work yet, each with its
     /// reason (`agents::clean::profile_not_ready`, ADR-0040); empty with the person's own setup or YOLO.
     pub unready: &'a [String],
@@ -107,8 +108,8 @@ const APPROVAL_ROLE: &str = "[O 모드] 일반: 읽기·검색은 바로 할 수
 pub const UNREADY_NOTE: &str = "[O 에이전트 상태] 아래 에이전트는 project_O 프로필의 설정이 끝나지 않아 지금은 작업카드를 맡을 수 없습니다(O가 거부합니다). 이 provider에는 카드를 배정하지 말고 다른 provider(예: claude)로 계획하세요:";
 
 /// The role, rules and plan format, sent once per CLI session.
-fn role(yolo: bool, approvals: bool) -> String {
-    let available: Vec<_> = ProviderId::ALL.into_iter().filter(|p| *p != ProviderId::Agy).collect();
+fn role(yolo: bool, approvals: bool, agy_workers_allowed: bool) -> String {
+    let available: Vec<_> = ProviderId::ALL.into_iter().filter(|p| *p != ProviderId::Agy || agy_workers_allowed).collect();
     let providers = available.iter().map(|p| p.as_str()).collect::<Vec<_>>().join("|");
     let caps: Vec<String> = available.iter().map(|p| format!("{p} {}", LIMITS.max_active_per_provider(*p))).collect();
     let mut lines = vec![
@@ -190,13 +191,14 @@ fn build_with_origin(input: &PromptInput, worker: bool) -> String {
     if let Some(overview) = input.overview.filter(|_| !worker) { return build_overall(input, overview); }
     let mut parts = Vec::new();
     if !input.resumed {
-        parts.push(role(input.yolo, input.approvals));
+        parts.push(role(input.yolo, input.approvals, input.agy_workers_allowed));
     } else if input.yolo {
         parts.push(YOLO_ROLE.to_string());
     } else if input.approvals {
         parts.push(APPROVAL_ROLE.to_string());
     }
-    parts.push("Antigravity(agy)는 공급자 정책으로 사용할 수 없으니 작업에 배정하지 않습니다. 일반 질문과 단순 조사는 단일 총괄에서 답합니다. 설계가 바뀌면 합의된 전체 상태를 별도의 ```o-design 블록에 JSON {\"goal\":\"목표\",\"decisions\":[\"결정\"],\"questions\":[\"미결정\"]}으로 기록합니다. 분배할 작업이 구체화되면 o-plan으로 현재 작업 전체를 제안합니다. JSON 대신 o-plan 블록에 첫 줄 title: 제목, 다음 줄부터 [[codex]] id=작업id after=선행id 형식의 머리줄과 그 아래 작업 내용을 쓸 수도 있습니다. after는 선택입니다.".to_string());
+    parts.push(if input.agy_workers_allowed { "Antigravity(agy) 카드는 터미널에서 실행되고 후속 지시를 받지 않으며 완료 파일로 보고합니다." } else { "Antigravity(agy) 작업 에이전트가 꺼져 있으니 작업에 배정하지 않습니다." }.to_string());
+    parts.push("일반 질문과 단순 조사는 단일 총괄에서 답합니다. 설계가 바뀌면 합의된 전체 상태를 별도의 ```o-design 블록에 JSON {\"goal\":\"목표\",\"decisions\":[\"결정\"],\"questions\":[\"미결정\"]}으로 기록합니다. 분배할 작업이 구체화되면 o-plan으로 현재 작업 전체를 제안합니다. JSON 대신 o-plan 블록에 첫 줄 title: 제목, 다음 줄부터 [[codex]] id=작업id after=선행id 형식의 머리줄과 그 아래 작업 내용을 쓸 수도 있습니다. after는 선택입니다.".to_string());
     parts.push(ASK_NOTE.to_string());
     if !input.resumed {
         parts.push(format!("프로젝트: {}", input.project));
@@ -261,7 +263,7 @@ mod tests {
         let mut history: Vec<_> = (0..8).map(|n| ("사용자".to_string(), format!("기록-{n}"))).collect();
         history[7].1 = format!("{}끝표식", "가".repeat(501));
         let missed: Vec<_> = (0..14).map(|n| ("총괄".to_string(), format!("다른-{n}"))).collect();
-        let input = PromptInput { project: "C:/p", text: "질문", attachments: &[], budget: &[], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &history, missed: &missed, design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
+        let input = PromptInput { project: "C:/p", text: "질문", attachments: &[], agy_workers_allowed: false, budget: &[], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &history, missed: &missed, design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
         let fresh = build(&input);
         assert!(fresh.contains("앞선 2개 생략, 1개 메시지 일부 생략"));
         assert!(!fresh.contains("기록-0") && fresh.contains("기록-2") && !fresh.contains("끝표식"));
@@ -272,7 +274,7 @@ mod tests {
 
     #[test]
     fn fixed_instructions_precede_project_budget_and_history() {
-        let first = PromptInput { project: "C:/one", text: "first", attachments: &[], budget: &["one".into()], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
+        let first = PromptInput { project: "C:/one", text: "first", attachments: &[], agy_workers_allowed: false, budget: &["one".into()], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
         let other = PromptInput { project: "C:/two", text: "second", budget: &["two".into()], ..first };
         let first_text = build(&first);
         let other_text = build(&other);
