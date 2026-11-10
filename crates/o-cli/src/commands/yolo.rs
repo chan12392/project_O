@@ -38,6 +38,10 @@ fn yolo_main(home: &Path, args: &[String]) -> i32 {
             other => return fail(&format!("알 수 없는 인자: {other}\n\n{}", help())),
         }
     }
+    // A lead turn or a card may read the mode but not switch it on or widen its limits.
+    if (enabled.is_some() || max_cards.is_some() || per_hour.is_some() || dedupe.is_some()) && super::inside_agent() {
+        return fail("에이전트 안에서는 YOLO 설정을 바꿀 수 없습니다. 사용자가 실행해 주세요.");
+    }
     if max_cards.is_some() || per_hour.is_some() || dedupe.is_some() {
         if let Err(error) = yolo::write_limits(home, max_cards.as_ref(), per_hour.as_ref(), dedupe.as_ref()) {
             return fail(&error);

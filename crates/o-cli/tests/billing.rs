@@ -44,3 +44,17 @@ fn a_card_reads_the_mode_but_cannot_change_it() {
     let read = o(&base, &["billing", "--json"], "card-a");
     assert!(read.status.success());
 }
+
+#[test]
+fn a_card_reads_yolo_and_the_budget_but_cannot_change_them() {
+    let (base, home) = setup("agent-switches");
+    for args in [&["yolo", "--on"][..], &["yolo", "--max-cards", "6"], &["budget", "--cached", "--off"], &["budget", "--cached", "--percent", "14"]] {
+        let refused = o(&base, args, "card-a");
+        assert_eq!(refused.status.code(), Some(1), "{args:?}");
+        assert!(String::from_utf8_lossy(&refused.stderr).contains("에이전트 안에서는"), "{args:?}");
+    }
+    assert!(!home.join("settings.json").exists());
+    assert!(o(&base, &["yolo", "--json"], "card-a").status.success());
+    assert!(o(&base, &["budget", "--cached", "--json"], "card-a").status.success());
+    assert_eq!(json(&base, &["yolo", "--json", "--on"])["enabled"], true);
+}

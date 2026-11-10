@@ -122,8 +122,7 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
             Some(session) => session.clone(),
             None => {
                 locks.push("fresh");
-                use sha2::Digest;
-                let hash = |text: &str| format!("{:x}", sha2::Sha256::digest(text));
+                let hash = crate::run::result::digest;
                 format!("{}.{}", hash(&reference.0), hash(&reference.1))
             }
         };

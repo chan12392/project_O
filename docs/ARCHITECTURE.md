@@ -31,7 +31,7 @@
 
 | 모듈 | 파일 | 하는 일 |
 |---|---|---|
-| `run/` | `plan` `events` `runner` (`runner/card`, 실행기 테스트) `store` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기와 카드 실행·자원 예약, 상태 폴더, SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
+| `run/` | `plan` `events` `runner` (`runner/card`, 실행기 테스트) `store` `leases` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기와 카드 실행·자원 예약, 상태 폴더, 자원 예약 기록과 복구(`store::…`로 부른다), SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
 | `policy.rs` | | 계획·팀 메시지 허용 여부와 `LIMITS`. 공용 경계라 맨 위에 둔다 |
 | `providers/` | `mod.rs` `claude.rs` `codex.rs` `codex_app_server.rs` `codex_sandbox.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필(지원 여부 `profile_unsupported`, 카드 전에 필요한 설정·점검 `profile_not_ready` — Codex Windows 샌드박스는 `codex_sandbox`의 점검 기록(app-server 설정 + 실제 명령 한 번, Codex 버전·config 해시가 맞을 때만 준비됨), ADR-0040 개정 1), 사용량 조회. YOLO가 아닌 Codex 총괄은 `codex app-server`(읽기 전용 샌드박스, 승인 `on-request`를 사람에게, 훅 끔, ADR-0023 개정, app-server가 없는 CLI는 읽기 전용 `codex exec`), 카드와 YOLO 총괄은 `codex exec` |
 | `agents/` | `mod.rs` `clean.rs` `billing.rs` `agy.rs` | CLI 설치·로그인과 테스트 프로필, API 과금 검사, Antigravity 작업 에이전트 동의와 붙여넣기 설정(ADR-0042) |

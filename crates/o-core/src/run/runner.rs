@@ -129,16 +129,7 @@ impl Workdir {
     }
 }
 
-/// The same folder, spelled as Windows compares it (any slash; any case on Windows).
-fn same_folder(a: &str, b: &str) -> bool {
-    let plain = |p: &str| p.replace('\\', "/").trim_end_matches('/').to_string();
-    let (a, b) = (plain(a), plain(b));
-    if cfg!(windows) {
-        a.eq_ignore_ascii_case(&b)
-    } else {
-        a == b
-    }
-}
+use crate::projects::same as same_folder;
 
 /// `clean` is the profile root when the run uses clean agent profiles (`o dispatch --clean`).
 pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>) -> io::Result<CardStatus> {

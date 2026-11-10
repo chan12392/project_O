@@ -2,23 +2,13 @@
 //! The view and the settings are read from O's state; build runs grafly ($0) and Deep runs
 //! the official CLI the person chose, once per click.
 
-use std::path::Path;
-
 use o_core::agents::clean;
 use o_core::graph::{self, settings};
 use o_core::run::plan::ProviderId;
 use o_core::run::store;
 use serde_json::{json, Value};
 
-use super::blocking;
-
-/// An absolute folder that exists; o-core checks again whether it may be a project.
-fn project_arg(project: &str) -> Result<(), String> {
-    if !Path::new(project).is_absolute() || !Path::new(project).is_dir() {
-        return Err(format!("프로젝트 폴더가 없습니다: {project}"));
-    }
-    Ok(())
-}
+use super::{blocking, project_arg};
 
 /// The whole graph (no project) or one project's (`o graph view --json`).
 #[tauri::command]

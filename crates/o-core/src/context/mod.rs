@@ -73,14 +73,7 @@ pub fn normalize_project(path: &str) -> String {
 
 const COLLATE: &str = if cfg!(windows) { "COLLATE NOCASE" } else { "" };
 
-fn same_project(a: &str, b: &str) -> bool {
-    let (a, b) = (normalize_project(a), normalize_project(b));
-    if cfg!(windows) {
-        a.eq_ignore_ascii_case(&b)
-    } else {
-        a == b
-    }
-}
+use crate::projects::same as same_project;
 
 fn ensure(conn: &Connection) -> io::Result<()> {
     conn.execute_batch(SCHEMA).map_err(sql)?;

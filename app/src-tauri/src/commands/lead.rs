@@ -3,7 +3,7 @@
 //! dispatched by `o _run` in the background, as `o dispatch` does.
 
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -18,15 +18,7 @@ use o_core::run::store;
 use o_core::sys::proc;
 use serde_json::{json, Value};
 
-use super::{blocking, o_binary};
-
-/// An absolute folder that exists; o-core checks again whether it may be a project.
-fn project_arg(project: &str) -> Result<(), String> {
-    if !Path::new(project).is_absolute() || !Path::new(project).is_dir() {
-        return Err(format!("프로젝트 폴더가 없습니다: {project}"));
-    }
-    Ok(())
-}
+use super::{blocking, o_binary, project_arg};
 
 /// The selected lead thread, its project's open tabs, and every project with one (`o lead show --json`).
 #[tauri::command]

@@ -198,7 +198,8 @@ pub fn local_tree(cwd: &Path, head_oid: &str) -> LocalTree {
     if local_head(cwd).as_deref() != Some(head_oid) {
         return LocalTree::Other;
     }
-    match git_output(cwd, &["status", "--porcelain", "--untracked-files=normal"]) {
+    // `core.fsmonitor` may name a program in the project's own git config; a status must not run it.
+    match git_output(cwd, &["-c", "core.fsmonitor=false", "status", "--porcelain", "--untracked-files=normal"]) {
         Some(status) if status.is_empty() => LocalTree::Head,
         Some(_) => LocalTree::Dirty,
         None => LocalTree::Other,

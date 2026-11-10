@@ -15,7 +15,7 @@ pub const GRAPH: Command = Command {
 
 fn graph_main(home: &Path, args: &[String]) -> i32 {
     let Some((command, rest)) = args.split_first() else { return fail("graph 하위 명령이 필요합니다") };
-    let agent = ["O_AGENT_ROLE", "O_CARD_ID"].iter().any(|key| std::env::var_os(key).is_some_and(|v| !v.is_empty()));
+    let agent = super::inside_agent();
     if agent && (matches!(command.as_str(), "build" | "deep") || (command == "settings" && rest.iter().any(|a| a != "--json"))) {
         eprintln!("에이전트 안에서는 작업을 시작하거나 그래프 설정을 바꿀 수 없습니다. 사용자가 실행해 주세요.");
         return 2;
