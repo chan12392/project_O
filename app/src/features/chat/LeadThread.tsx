@@ -1,4 +1,4 @@
-import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, MessageCircleQuestion, OctagonX, Play, Wrench } from "lucide-react";
+import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, LoaderCircle, MessageCircleQuestion, OctagonX, Play, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
 import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, planOrderText, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
@@ -88,7 +88,17 @@ export function LeadThread({ project, lead, onCompose, onStartProject }: Props) 
               : (lead.thread?.progress ?? []).map((step, i) => (
                 <p key={`${step.name}-${step.summary}-${i}`} className="truncate" title={step.summary}>{leadToolLabel(step.name, step.summary)}</p>
               ))}
-            <p>{lead.thread?.busy === "unknown" ? "총괄 종료 확인 필요" : lead.thread?.busy === "starting" ? "총괄 시작 중…" : `총괄 ${LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…`}</p>
+            <div className="inline-flex flex-col gap-2 rounded-lg border border-chat-user-border bg-chat-user-surface px-3 py-2.5">
+              <p className="flex items-center gap-2 text-chat-foreground">
+                {lead.thread?.busy === "unknown"
+                  ? <CircleAlert className="size-4 shrink-0 text-status-warning-text" aria-hidden="true" />
+                  : <LoaderCircle className="size-4 shrink-0 animate-spin" aria-hidden="true" />}
+                <span>{lead.thread?.busy === "unknown" ? "총괄 종료 확인 필요" : lead.thread?.busy === "starting" ? "총괄 시작 중…" : `총괄 ${LEAD_NAME[lead.thread?.busy ?? ""] ?? ""} · 작업 중…`}</span>
+              </p>
+              {lead.thread?.busy !== "unknown" && <div className="relative h-0.5 overflow-hidden rounded-full bg-chat-user-border" aria-hidden="true">
+                <span className="progress-flow absolute inset-y-0 w-2/5 rounded-full bg-chat-foreground-faint" />
+              </div>}
+            </div>
           </div>
         )}
       </div>
