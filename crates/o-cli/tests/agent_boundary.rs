@@ -19,6 +19,8 @@ fn marked_agents_cannot_start_work_through_cli() {
             vec!["lead", "send"], vec!["lead", "dispatch", "plan"], vec!["lead", "note", "thread", "-"], vec!["lead", "wake", "run"], vec!["lead", "retry", "run", "message"],
             // An agent never approves its own action (ADR-0008 개정 3).
             vec!["lead", "decide", "20261104-000000-abcd-a1", "allow"],
+            // Stopping a run or a lead is the person's (ADR-0043).
+            vec!["stop", "run"], vec!["lead", "stop"], vec!["lead", "stop-all", "--project", "x"], vec!["lead", "forward", "20261109-x-f1"],
             vec!["resources", "recover", "3", "--confirm-exited"],
             vec!["schedule", "run", "test"], vec!["image", "read"], vec!["projects", "open", "x"],
             // The sandbox check makes a model call; only a person starts it (ADR-0040 개정 1).

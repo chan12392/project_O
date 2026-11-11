@@ -49,10 +49,9 @@ fn scan_files(files: &[String], read: impl Fn(&str) -> io::Result<Vec<u8>>) -> i
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(io::Error::new(error.kind(), format!("{file}: {error}"))),
         };
-        if bytes.contains(&0) {
-            continue; // binary
-        }
-        let text = String::from_utf8_lossy(&bytes);
+        // A NUL byte does not make a file exempt: it is read with the NULs dropped, which is
+        // also how UTF-16 text spells the same patterns.
+        let text = if bytes.contains(&0) { String::from_utf8_lossy(&bytes.iter().copied().filter(|b| *b != 0).collect::<Vec<u8>>()).into_owned() } else { String::from_utf8_lossy(&bytes).into_owned() };
         for hit in find_hits(&text, rules_for_paths(std::slice::from_ref(file))) {
             problems.push(format!("{file}:{} [{}] {}", hit.line, hit.rule, hit.reason));
         }
@@ -150,20 +149,24 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_allowed_missing_and_binary_files_but_not_other_errors() {
+    fn scan_skips_allowed_and_missing_files_but_not_files_with_nul_bytes_or_other_errors() {
         // Split so this file itself does not trip the scanner.
         const BYPASS: &str = concat!("--yo", "lo");
-        let files: Vec<String> = ["docs/a.md", "gone.rs", "bin.dat", "ok.rs"].map(String::from).to_vec();
+        let files: Vec<String> = ["docs/a.md", "gone.rs", "bin.dat", "wide.txt", "ok.rs"].map(String::from).to_vec();
         let problems = scan_files(&files, |path| match path {
             "gone.rs" => Err(io::Error::from(io::ErrorKind::NotFound)),
             "bin.dat" => Ok(format!("\0{BYPASS}").into_bytes()),
+            // UTF-16: a NUL after every letter.
+            "wide.txt" => Ok(BYPASS.bytes().flat_map(|b| [b, 0]).collect()),
             _ => Ok(format!("fn main() {{}}\n{BYPASS}\n").into_bytes()),
         })
         .unwrap();
-        assert_eq!(problems.len(), 1);
-        assert!(problems[0].starts_with("ok.rs:2 [permission-bypass]"), "{}", problems[0]);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].starts_with("bin.dat:1 [permission-bypass]"), "{}", problems[0]);
+        assert!(problems[1].starts_with("wide.txt:1 [permission-bypass]"), "{}", problems[1]);
+        assert!(problems[2].starts_with("ok.rs:2 [permission-bypass]"), "{}", problems[2]);
 
-        let denied = scan_files(&files[3..], |_| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
+        let denied = scan_files(&files[4..], |_| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
         assert!(denied.is_err());
     }
 

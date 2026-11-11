@@ -32,8 +32,14 @@ jobs:
     if: github.ref == 'refs/heads/test_1'
     runs-on: windows-latest
     timeout-minutes: 90
+    # The signing secrets belong to this environment. The owner restricts it to test_1 in the
+    # repository settings, so a workflow on any other branch cannot read them (ADR-0043).
+    environment: release
     permissions:
       contents: write
+      # For the build provenance attestation the updater verifies (ADR-0043).
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
@@ -130,6 +136,11 @@ jobs:
           name: project_O-setup
           path: ${{ steps.build.outputs.setup }}
           if-no-files-found: error
+      # Signed by GitHub for this workflow at this ref and commit. The updater installs nothing
+      # without it: a release made by another workflow or branch has no such attestation.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.build.outputs.setup }}
       - name: 프리릴리스 게시
         shell: pwsh
         env:

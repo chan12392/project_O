@@ -214,13 +214,27 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
             emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "프로젝트 설정".into(), summary: crate::providers::claude::PROJECT_SETTINGS_NOTICE.into() })?;
         }
     }
+    // ADR-0043: a card whose sandbox may not write the run folder talks through its mailbox. The
+    // runner answers as this card, whatever the request says, for as long as the card runs.
+    let _relay = match spec.env.get(crate::run::msg_relay::DIR_ENV) {
+        Some(mailbox) => {
+            let (home, run, me) = (home.to_path_buf(), run_id.to_string(), card.id.clone());
+            Some(crate::run::msg_relay::Relay::start(PathBuf::from(mailbox), move |args| {
+                let caller = crate::run::team::Caller { env_card: Some(me.clone()), env_run: Some(run.clone()), flag_run: None, flag_as: None };
+                let request = crate::run::team_command::Request { caller, agent: true, usage: "", answer: &mut || Err(io::Error::other("승인 요청에는 사용자가 직접 답해야 합니다")) };
+                crate::run::team_command::run(&home, request, args)
+            })?)
+        }
+        None => None,
+    };
     // A program that never started (not found, refused) gives its slot and start back (`slot` drops).
     #[cfg(windows)]
     let mut watcher_executable = None;
     let spawned = spawner(&spec, cwd).and_then(|mut command| {
         // A clean card sees nothing of this process's environment but the kept system variables.
-        if let Some(root) = clean.filter(|_| card.provider != ProviderId::Devin) {
-            let env = clean::environment(root, card.provider)?;
+        // Devin cannot move into a profile (ADR-0016): it keeps the person's home, not their tokens.
+        if let Some(root) = clean {
+            let env = if card.provider == ProviderId::Devin { clean::own_home_environment(card.provider) } else { clean::environment(root, card.provider)? };
             command.env_clear().envs(env);
         }
         command.envs(&spec.env);

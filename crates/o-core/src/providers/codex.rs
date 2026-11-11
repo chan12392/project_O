@@ -33,14 +33,18 @@ pub struct Codex;
 const SUBAGENTS: [&str; 2] = ["--enable", "multi_agent"];
 
 impl Provider for Codex {
-    /// The sandbox runs shell commands itself; the run folder is added so `o msg` can append.
+    /// The sandbox runs shell commands itself. Of the run folder it may write only the card's
+    /// mailbox, where `o msg` leaves requests the runner answers (`run::msg_relay`, ADR-0043): the
+    /// run's events, plan and the other cards' files are not the card's to change.
     /// O never marks a project trusted (#35), and `--skip-git-repo-check` lets Codex run outside a
     /// Git repository. Inside one, Codex records the repository as trusted itself on the first
     /// card and loads its `.codex/` layers (config, MCP servers, hooks) from then on (ADR-0017 개정 2).
-    fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
+    fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, mut env: BTreeMap<String, String>) -> LaunchSpec {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
-        args.extend(strings(&["-C", &plan.project, "--add-dir", team.run_dir, "--skip-git-repo-check"]));
+        let mailbox = crate::run::msg_relay::mailbox(team.run_dir, &card.id).to_string_lossy().into_owned();
+        args.extend(strings(&["-C", &plan.project, "--add-dir", &mailbox, "--skip-git-repo-check"]));
+        env.insert(crate::run::msg_relay::DIR_ENV.into(), mailbox);
         args.extend(strings(&SUBAGENTS));
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         let effort = card.effort.as_deref().filter(|e| !e.is_empty()).map(|e| format!("model_reasoning_effort={e}"));

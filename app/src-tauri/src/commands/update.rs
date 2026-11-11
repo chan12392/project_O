@@ -254,6 +254,30 @@ fn verify_download(dir: &Path, update: &Update) -> Result<std::path::PathBuf, St
     Ok(path)
 }
 
+/// The workflow whose attestation an installer must carry, and the ref it must have run on.
+const SIGNER_WORKFLOW: &str = "chan12392/project_O/.github/workflows/release.yml";
+const SOURCE_REF: &str = "refs/heads/test_1";
+
+/// `gh attestation verify` for the downloaded installer: built by the release workflow, on
+/// test_1, from the release's commit, on a GitHub-hosted runner (ADR-0043).
+fn attestation_args<'a>(setup: &'a str, commit: &'a str) -> [&'a str; 11] {
+    ["attestation", "verify", setup, "--repo", REPOSITORY, "--signer-workflow", SIGNER_WORKFLOW, "--source-ref", SOURCE_REF, "--source-digest", commit]
+}
+
+/// The release's author, tag and digest can all be produced by any workflow in the repository;
+/// the attestation cannot. Without one the installer is not started.
+fn verify_attestation(setup: &Path, update: &Update) -> Result<(), String> {
+    let refused = || format!("릴리스 {}의 설치 파일이 release 워크플로(test_1)에서 만들어졌다는 증명을 확인하지 못했습니다. 설치하지 않았습니다", update.tag);
+    if !COMMIT.is_match(&update.target) { return Err(refused()); }
+    let path = setup.to_str().ok_or_else(refused)?;
+    let mut command = gh_command(&attestation_args(path, &update.target))?;
+    command.arg("--deny-self-hosted-runners");
+    match proc::capture(&mut command, Duration::from_secs(120)) {
+        Ok((status, _, _)) if status.success() => Ok(()),
+        _ => Err(refused()),
+    }
+}
+
 fn file_sha256(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -274,6 +298,7 @@ pub async fn update_install(app: tauri::AppHandle, tag: String) -> Result<(), St
             let mut download = gh_command(&["release", "download", &update.tag, "--repo", REPOSITORY, "--pattern", &update.asset, "--dir", folder])?;
             run_cancellable(&mut download, Duration::from_secs(15 * 60), &CANCELLED)?;
             let setup = verify_download(&dir, &update)?;
+            verify_attestation(&setup, &update)?;
             if CANCELLED.load(Ordering::SeqCst) { return Err(CANCELLED_MESSAGE.into()); }
             // Interactive NSIS owns errors, cancellation and the final 'run app' checkbox.
             proc::spawn_detached(&mut Command::new(setup)).map_err(|e| format!("설치 프로그램을 열지 못했습니다: {e}"))?;
@@ -345,6 +370,22 @@ mod tests {
         let jobs = workflow.matches("\n    runs-on:").count();
         assert!(jobs > 0);
         assert_eq!(workflow.matches("\n    if: github.ref == 'refs/heads/test_1'\n").count(), jobs, "모든 job이 test_1에서만 돌아야 합니다");
+    }
+
+    /// The installer is tied to the release workflow, the test_1 ref and the release's commit,
+    /// and the workflow makes the attestation the updater asks for.
+    #[test]
+    fn an_installer_needs_the_release_workflows_attestation() {
+        let args = attestation_args("C:/t/setup.exe", "1234567890abcdef1234567890abcdef12345678");
+        assert_eq!(args[..5], ["attestation", "verify", "C:/t/setup.exe", "--repo", REPOSITORY]);
+        for pair in [["--signer-workflow", "chan12392/project_O/.github/workflows/release.yml"], ["--source-ref", "refs/heads/test_1"], ["--source-digest", "1234567890abcdef1234567890abcdef12345678"]] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?}");
+        }
+        let workflow = include_str!("../../../../.github/workflows/release.yml");
+        assert!(workflow.contains("actions/attest-build-provenance@"));
+        assert!(workflow.contains("attestations: write") && workflow.contains("id-token: write"));
+        let update = select_release(FIXTURE, "", "").unwrap().map(|mut u| { u.target = "test_1".into(); u }).unwrap();
+        assert!(verify_attestation(Path::new("C:/t/setup.exe"), &update).is_err());
     }
 
     #[test]

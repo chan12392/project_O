@@ -50,7 +50,8 @@ mod windows {
             let result = unsafe { CreatePseudoConsole(size(cols, rows)?, pty_read.as_raw_handle(), pty_write.as_raw_handle(), 0, &mut handle) };
             if result < 0 { return Err(io::Error::from_raw_os_error(result)); }
             let console = Console(handle);
-            let name = label.and_then(crate::sys::win_launch::card_job_name);
+            // A card's terminal is in a card's job, a lead's in a lead's (`agent_job`, ADR-0043).
+            let name = match label { Some(label) => crate::sys::win_launch::card_job_name(label), None => crate::sys::win_launch::lead_job_name() };
             let (job, job_name) = crate::sys::win_launch::kill_on_close_job(name)?;
             let mut bytes = 0;
             unsafe { InitializeProcThreadAttributeList(std::ptr::null_mut(), 2, 0, &mut bytes); }

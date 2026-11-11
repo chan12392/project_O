@@ -19,7 +19,8 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::rules::{
-    code_rules, find_hits, is_allowed_path, rules_for_paths, CREDENTIAL_RULES, OWNER, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
+    code_rules, find_hits, is_allowed_path, rules_for_paths, CREDENTIAL_RULES, GUARD_FILE, GUARD_FILE_NAMED, GUARD_FILE_REASON, OWNER, PROJECT_REMOTE,
+    READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
 };
 
 /// Keep in sync with .github/workflows/branch-flow.yml.
@@ -138,6 +139,12 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         reasons.extend(find_hits(&command, code_rules()).into_iter().map(|hit| hit.reason.to_string()));
         reasons.extend(git_reasons(&command, &current_branch));
         reasons.extend(merge_reasons(&command, &cwd, git));
+        // Reading a guard file is fine; anything else that names one may change it.
+        // Pointing git at the repository's hooks (what `npm install` does) names the folder, not a change to it.
+        static HOOKS_PATH_SET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)core\.hookspath(?:\s+|=)["']?\.githooks/?["']?(?:\s|$)"#).unwrap());
+        if GUARD_FILE_NAMED.is_match(&HOOKS_PATH_SET.replace_all(&command, " ")) && !read_only_shell_reasons(&command).is_empty() {
+            reasons.push(GUARD_FILE_REASON.into());
+        }
         // A mirror is read-only whether the command runs in it or names it from elsewhere.
         let targets = shell_targets(&command, &cwd);
         if git.is_mirror(&cwd) || targets.as_ref().is_ok_and(|found| found.iter().any(|p| git.is_mirror(p))) {
@@ -157,12 +164,21 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         return find_hits(&args.to_string(), CREDENTIAL_RULES.iter()).into_iter().map(|hit| hit.reason.to_string()).collect();
     }
 
+    // A page fetched by the CLI's own tool is a request like one made in a shell.
+    if tool == "WebFetch" {
+        return find_hits(&string_of(first_present(args, &["url", "uri"])), code_rules()).into_iter().map(|hit| hit.reason.to_string()).collect();
+    }
+
     let raw_paths = edited_paths(tool, args);
     for path in &raw_paths {
         // Forward slashes so dirname works the same for Windows and POSIX paths; `..` resolved lexically.
         let absolute = normalize(&if ROOTED.is_match(path) { path.clone() } else { format!("{cwd}/{path}") }.replace('\\', "/"));
         if git.is_mirror(dirname(&absolute)) {
             reasons.push(format!("{READ_ONLY_REASON} ({path})"));
+            return reasons;
+        }
+        if GUARD_FILE.is_match(&absolute) {
+            reasons.push(format!("{GUARD_FILE_REASON} ({path})"));
             return reasons;
         }
     }

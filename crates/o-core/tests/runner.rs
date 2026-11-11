@@ -1208,8 +1208,13 @@ fn clean_run() {
     assert!(get("PATH").is_some());
     assert!(get("ORCA_TERMINAL_ID").is_none() && get("BEAKHO_RELEASE").is_none());
     let devin_env: BTreeMap<String, String> = serde_json::from_str(&std::fs::read_to_string(devin_dump).unwrap()).unwrap();
-    assert_eq!(devin_env.get("ORCA_TERMINAL_ID").map(String::as_str), Some("t1"));
-    assert_eq!(devin_env.get("BEAKHO_RELEASE").map(String::as_str), Some("pinned"));
+    // Devin keeps the person's own home (it cannot move its settings), not the rest of the
+    // runner's environment (ADR-0043).
+    let devin = |name: &str| devin_env.iter().find(|(k, _)| k.eq_ignore_ascii_case(name)).map(|(_, v)| v.clone());
+    assert!(devin("ORCA_TERMINAL_ID").is_none() && devin("BEAKHO_RELEASE").is_none());
+    assert!(devin("PATH").is_some());
+    assert_ne!(devin("USERPROFILE"), Some(profile.to_string_lossy().into_owned()));
+    assert_eq!(devin("O_CARD_ID").as_deref(), Some("b"));
     assert!(read_events(&home, "r6").iter().any(|e| matches!(e, OEvent::CardTool { card_id, summary, .. } if card_id == "b" && summary == o_core::providers::devin::OWN_PROFILE_NOTICE)));
     assert!(profile.join(".claude").join("settings.json").is_file());
 }

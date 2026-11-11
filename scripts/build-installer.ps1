@@ -148,12 +148,14 @@ try {
     $signing = Enable-Signing
     $signTool = if ($signing) { Find-SignTool } else { $null }
 
-    Invoke-Step 'npm ci (app)' 'npm' @('ci') $app
+    # Like the CI checks: no package install scripts, and cargo takes only what Cargo.lock names.
+    Invoke-Step 'npm ci (app)' 'npm' @('ci', '--ignore-scripts') $app
+    $env:PROJECT_O_LOCKED = '1'
     Invoke-Step 'release o.exe -> sidecar' 'npm' @('run', 'sidecar') $app
     # beforeBuildCommand in the installer config prepares the sidecar again; cargo makes that a no-op.
     $tauriArgs = @('run', 'tauri', '--', 'build', '--config', '../scripts/installer/tauri.installer.json')
     if ($signing) { $tauriArgs += @('--config', $signing.Config) }
-    Invoke-Step 'tauri build (nsis)' 'npm' ($tauriArgs + @('--bundles', 'nsis')) $app
+    Invoke-Step 'tauri build (nsis)' 'npm' ($tauriArgs + @('--bundles', 'nsis', '--', '--locked')) $app
 
     $targetDir = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $root 'target' }
     $setup = Get-ChildItem (Join-Path $targetDir 'release/bundle/nsis') -Filter '*-setup.exe' -ErrorAction SilentlyContinue |

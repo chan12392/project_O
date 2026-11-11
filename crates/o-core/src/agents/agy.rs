@@ -49,8 +49,15 @@ pub fn report(home: &Path) -> AgyReport {
 
 pub fn workers_allowed(home: &Path) -> bool { report(home).workers }
 
+/// Whether a lead turn or a card runs this process: the runner's variables, or, when an agent
+/// cleared them, the job the runner started it in (`agent_job`, ADR-0043).
 pub fn inside_agent() -> bool {
-    ["O_AGENT_ROLE", "O_CARD_ID"].iter().any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty()))
+    ["O_AGENT_ROLE", "O_CARD_ID"].iter().any(|name| std::env::var_os(name).is_some_and(|value| !value.is_empty())) || crate::sys::agent_job::current().is_some()
+}
+
+/// Whether a card runs this process, by the same two signs.
+pub fn inside_card() -> bool {
+    std::env::var_os("O_CARD_ID").is_some_and(|value| !value.is_empty()) || matches!(crate::sys::agent_job::current(), Some(crate::sys::agent_job::AgentJob::Card(_)))
 }
 
 pub fn set(home: &Path, change: Change) -> Result<AgyReport, String> {

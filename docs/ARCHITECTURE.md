@@ -31,7 +31,7 @@
 
 | 모듈 | 파일 | 하는 일 |
 |---|---|---|
-| `run/` | `plan` `events` `runner` (`runner/card`, 실행기 테스트) `store` `leases` `index` `snapshot` `team` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기와 카드 실행·자원 예약, 상태 폴더, 자원 예약 기록과 복구(`store::…`로 부른다), SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화 |
+| `run/` | `plan` `events` `runner` (`runner/card`, 실행기 테스트) `store` `leases` `index` `snapshot` `team` `team_command` `msg_relay` | 계획 형식, 정규화 이벤트(`events.jsonl` 계약), 병렬 실행기와 카드 실행·자원 예약, 상태 폴더, 자원 예약 기록과 복구(`store::…`로 부른다), SQLite 색인 `o.db`, 화면용 스냅샷, 팀 대화, `o msg`의 동작(`team_command`)과 Codex 카드의 우편함 중계(`msg_relay` — 샌드박스 안의 `o msg`가 쓴 요청을 카드 실행기가 그 카드 이름으로 실행, ADR-0043) |
 | `policy.rs` | | 계획·팀 메시지 허용 여부와 `LIMITS`. 공용 경계라 맨 위에 둔다 |
 | `providers/` | `mod.rs` `claude.rs` `codex.rs` `codex_app_server.rs` `codex_sandbox.rs` `agy.rs` `opencode.rs` `devin.rs` `stream.rs` | `Provider` 트레이트와 등록부 `providers::get`. CLI마다 실행 인자·권한, 스트림 해석, 설치·로그인, 깨끗한 프로필(지원 여부 `profile_unsupported`, 카드 전에 필요한 설정·점검 `profile_not_ready` — Codex Windows 샌드박스는 `codex_sandbox`의 점검 기록(app-server 설정 + 실제 명령 한 번, Codex 버전·config 해시가 맞을 때만 준비됨), ADR-0040 개정 1), 사용량 조회. YOLO가 아닌 Codex 총괄은 `codex app-server`(읽기 전용 샌드박스, 승인 `on-request`를 사람에게, 훅 끔, ADR-0023 개정, app-server가 없는 CLI는 읽기 전용 `codex exec`), 카드와 YOLO 총괄은 `codex exec` |
 | `agents/` | `mod.rs` `clean.rs` `billing.rs` `agy.rs` | CLI 설치·로그인과 테스트 프로필, API 과금 검사, Antigravity 작업 에이전트 동의와 붙여넣기 설정(ADR-0042) |
@@ -45,7 +45,7 @@
 | `review.rs` | | `o review`: PR을 gh로 읽어 검토 카드 하나로 실행(ADR-0006) |
 | `sessions.rs` | | 이 PC의 Claude Code 세션을 실행처럼 읽기(읽기 전용) |
 | `projects.rs` | | 앱 왼쪽 목록의 프로젝트(ADR-0009): 프로젝트 루트(기본 `~/.project_o/project`)의 하위 폴더, 그 `test` 묶음, 등록한 폴더(`projects.json`). 등록은 `policy::check_project`와 같은 검사 |
-| `sys/` | `proc` `pty` `resolve` `js` `mirror` | 프로세스·Job Object·Windows ConPTY, 셸 없이 CLI 찾기, JS와 같은 시각·문자열 형식, 거울 동기화 |
+| `sys/` | `proc` `pty` `resolve` `js` `mirror` `agent_job` `win_launch` | 프로세스·Job Object·Windows ConPTY, 셸 없이 CLI 찾기, JS와 같은 시각·문자열 형식, 거울 동기화, 카드·총괄의 이름 있는 작업 개체와 그 안인지의 판정(`agent_job`, ADR-0043) |
 
 Devin 카드는 project_O 프로필 계획에서도 평소 프로필을 쓰고 안내한다. Antigravity 총괄은 사람이 쓰는 터미널이며, 기본 꺼짐인 작업 에이전트는 동의 후 터미널 카드로 실행한다. `o agy`로 설정하고 `o term`으로 세션을 다룬다(ADR-0042).
 
@@ -149,7 +149,7 @@ Devin 카드는 project_O 프로필 계획에서도 평소 프로필을 쓰고 �
 
 ## 바꿀 때 지키는 것
 
-- 프로바이더 보안 동작(허용 도구 `Bash(o msg *)`·`Bash(o context *)`, Codex `--add-dir`, agy의 인자 없는 터미널 카드, 깨끗한 환경 허용 목록, 권한 우회 옵션 없음)은 `crates/o-core/tests/{providers,clean,agents,runner}.rs`가 고정한다. 총괄의 읽기 전용 실행·한 번만 실행·첨부 규칙·인증 환경 전달는 `crates/o-core/tests/{providers,lead}.rs`가, 일반 모드 승인(허용·거부·시간 초과·중지·가드 거부·자기 승인 차단·Codex 응답 매핑)과 YOLO 불변은 `lead/approvals.rs`·`tests/lead_approvals.rs`·`providers.rs`(`yolo_leads_ignore_the_approver`)·`o-cli/tests/agent_boundary.rs`가 고정한다.
+- 프로바이더 보안 동작(허용 도구 `Bash(o msg *)`·`Bash(o context *)`, Codex `--add-dir`(카드 우편함만), agy의 인자 없는 터미널 카드, 깨끗한 환경 허용 목록, 권한 우회 옵션 없음)은 `crates/o-core/tests/{providers,clean,agents,runner}.rs`가 고정한다. 총괄의 읽기 전용 실행·한 번만 실행·첨부 규칙·인증 환경 전달는 `crates/o-core/tests/{providers,lead}.rs`가, 일반 모드 승인(허용·거부·시간 초과·중지·가드 거부·자기 승인 차단·Codex 응답 매핑)과 YOLO 불변은 `lead/approvals.rs`·`tests/lead_approvals.rs`·`providers.rs`(`yolo_leads_ignore_the_approver`)·`o-cli/tests/agent_boundary.rs`가 고정한다.
 - `policy.rs`의 `LIMITS`, `crates/o-guard/src/rules.rs`의 규칙·허용 경로는 공용 경계다(ADR + 두 사람 승인).
 - `events.jsonl`의 이벤트 형식은 화면 계약이다(`src/core/events.ts`). 새 이벤트는 모르는 화면이 무시할 수 있게 더한다.
 - `o help`·명령 출력·종료 코드는 총괄 에이전트와 개발 서버가 읽는다. 구조를 바꿔도 그대로 둔다.

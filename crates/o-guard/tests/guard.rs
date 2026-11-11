@@ -611,6 +611,45 @@ fn a_path_that_climbs_out_of_an_allowed_folder_is_not_allowed() {
     assert!(blocked(&edit, &OnBranch("younchan")));
 }
 
+/// ADR-0043: the files that switch the guard on are a person's to change. An agent may read them.
+#[test]
+fn an_agent_cannot_change_the_files_that_switch_the_guard_on() {
+    let git = OnBranch("younchan");
+    let edit = |tool: &str, file_path: &str| json!({ "tool_name": tool, "tool_input": { "file_path": file_path, "content": "{}", "new_string": "{}" }, "cwd": "C:/repo" });
+    for path in [".claude/settings.json", "C:/repo/.claude/settings.local.json", ".codex\\hooks.json", ".githooks/pre-commit", "docs/../.githooks/pre-push", "C:/other/.CLAUDE/Settings.json"] {
+        for tool in ["Write", "Edit"] {
+            let reasons = review(&edit(tool, path), &git);
+            assert!(reasons.iter().any(|reason| reason.contains("가드 설정 파일")), "{tool} {path}: {reasons:?}");
+        }
+    }
+    for path in [".claude/settings.json.md", "docs/.claude/settings.jsonl", "app/src/settings.json", ".claude/commands/x.md", "docs/githooks.md"] {
+        assert!(passes(&edit("Write", path), &git), "{path}");
+    }
+    for command in [
+        "echo {} > .claude/settings.json",
+        "cp x .codex/hooks.json",
+        "git checkout HEAD~1 -- .githooks",
+        "sed -i s/o/x/ .githooks/pre-commit",
+        "Set-Content .claude\\settings.json '{}'",
+        "git update-index --skip-worktree .claude/settings.json",
+    ] {
+        assert!(blocked(&bash(command), &git), "{command}");
+    }
+    for command in ["cat .claude/settings.json", "git diff -- .githooks", "git log --oneline -- .codex/hooks.json", "cargo test -p o-guard"] {
+        assert!(passes(&bash(command), &git), "{command}");
+    }
+}
+
+/// A page the CLI fetches with its own tool is checked like a request made in a shell.
+#[test]
+fn a_web_fetch_cannot_reach_a_provider_backend() {
+    let git = OnBranch("younchan");
+    let fetch = |url: &str| json!({ "tool_name": "WebFetch", "tool_input": { "url": url, "prompt": "요약" }, "cwd": "C:/repo" });
+    assert!(blocked(&fetch(concat!("https://api.anthro", "pic.com/v1/messages")), &git));
+    assert!(blocked(&fetch(concat!("https://chatgpt.com/backend", "-api/me")), &git));
+    assert!(passes(&fetch("https://docs.github.com/en/rest"), &git));
+}
+
 /// Worktrees share one config, so a mirror must stay a mirror when a personal checkout renames
 /// or removes `origin`; another repository on main is still ordinary work.
 #[test]

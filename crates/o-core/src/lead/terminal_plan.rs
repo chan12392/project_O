@@ -71,7 +71,11 @@ pub(crate) fn pickup(home: &Path, project: &str, thread_id: &str, session_dir: &
         let event = match parsed {
             Ok(plan) => {
                 let count = events.iter().filter(|event| matches!(event, LeadEvent::Plan { .. })).count();
-                let (plan, violations, notices) = check_lead_plan(home, project, plan, RunMode::default());
+                let (plan, violations, mut notices) = check_lead_plan(home, project, plan, RunMode::default());
+                // ADR-0043: any process of this user can leave a file here. The person who presses
+                // "실행" is told where the plan came from and that its author is not known.
+                let name: String = entry.file_name().to_string_lossy().chars().filter(|c| !c.is_control()).take(80).collect();
+                notices.insert(0, format!("계획 파일 {name}에서 읽은 계획입니다. 총괄 터미널이 쓴 것인지 O는 확인하지 못합니다. 카드와 작업 내용을 확인한 뒤 실행하세요."));
                 LeadEvent::Plan { at: now_iso(), plan_id: format!("{thread_id}-p{}", count + 1), plan, ok: violations.is_empty(), violations, notices }
             }
             Err(text) => LeadEvent::Error { at: now_iso(), text },
@@ -128,10 +132,11 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(1600));
         pickup(&home, &project, &id, &reopened, &mut restarted, &cancelled).unwrap();
         let events = read_thread(&home, &id);
-        let found: Vec<_> = events.iter().filter_map(|event| match event { LeadEvent::Plan { plan, ok, .. } => Some((plan, ok)), _ => None }).collect();
+        let found: Vec<_> = events.iter().filter_map(|event| match event { LeadEvent::Plan { plan, ok, notices, .. } => Some((plan, ok, notices)), _ => None }).collect();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].0["project"], project);
         assert!(*found[0].1);
+        assert!(found[0].2[0].starts_with("계획 파일 good.json에서 읽은 계획입니다"), "{:?}", found[0].2);
         assert_eq!(events.iter().filter(|event| matches!(event, LeadEvent::Error { .. })).count(), 1);
         fs::write(plans.join("bad.json"), br#"{"title":"fixed","cards":[]}"#).unwrap();
         pickup(&home, &project, &id, &session, &mut stability, &cancelled).unwrap();

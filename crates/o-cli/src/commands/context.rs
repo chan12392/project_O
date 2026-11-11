@@ -22,9 +22,9 @@ pub const CONTEXT: Command = Command {
 
 const DEFAULT_LIMIT: usize = 5;
 
-/// Inside a card (`O_CARD_ID` set by the runner) the context is read-only.
+/// Inside a card (`O_CARD_ID` set by the runner, or the card's job) the context is read-only.
 fn in_card() -> bool {
-    std::env::var("O_CARD_ID").is_ok_and(|v| !v.is_empty())
+    super::inside_card()
 }
 
 struct Args {

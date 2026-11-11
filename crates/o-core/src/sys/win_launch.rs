@@ -214,6 +214,11 @@ impl Launch {
         self.spawn_in_job(owner, card_job_name(label), || Ok(()), |_| {})
     }
 
+    /// A lead turn's launch: like `spawn`, in a job named as a lead's (`lead_job_name`).
+    pub fn spawn_in_lead_job(&self, owner: &impl AsRawHandle) -> io::Result<(Child, super::proc::KillOnClose)> {
+        self.spawn_in_job(owner, lead_job_name(), || Ok(()), |_| {})
+    }
+
     fn spawn_in_job(&self, owner: &impl AsRawHandle, job_name: Option<String>, before_create: impl FnOnce() -> io::Result<()>, after_create: impl FnOnce(u32)) -> io::Result<(Child, super::proc::KillOnClose)> {
         if !self.cwd.is_absolute() { return Err(io::Error::new(io::ErrorKind::InvalidInput, "absolute working directory required")); }
         let mut command = self.command_line()?;
@@ -262,10 +267,19 @@ impl Launch {
 /// finds no `Local\` object of this session and would misread the job as gone. `None` when the
 /// random suffix cannot be made; the job is then unnamed.
 pub(crate) fn card_job_name(label: &str) -> Option<String> {
+    Some(format!("Global\\{}{}-{}", super::agent_job::CARD_JOB, super::agent_job::label(label), random_hex()?))
+}
+
+/// `Global\project_O-lead-<random hex>`: the job of a lead's CLI. The name is how an `o` the
+/// lead starts learns it runs inside an agent (`agent_job`, ADR-0043).
+pub(crate) fn lead_job_name() -> Option<String> {
+    Some(format!("Global\\{}{}", super::agent_job::LEAD_JOB, random_hex()?))
+}
+
+fn random_hex() -> Option<String> {
     let mut random = [0u8; 16];
     if unsafe { BCryptGenRandom(std::ptr::null_mut(), random.as_mut_ptr(), random.len() as u32, BCRYPT_USE_SYSTEM_PREFERRED_RNG) } < 0 { return None; }
-    let label: String = label.chars().filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_').take(100).collect();
-    Some(format!("Global\\project_O-job-{label}-{}", random.iter().map(|b| format!("{b:02x}")).collect::<String>()))
+    Some(random.iter().map(|b| format!("{b:02x}")).collect())
 }
 
 /// A kill-on-close job: Windows ends every process in it when its last handle closes (the runner
