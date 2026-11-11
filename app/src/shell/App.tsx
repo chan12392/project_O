@@ -187,7 +187,7 @@ function MainWindow() {
   const terminalOn = Boolean(project?.path && lead.selected && (terminalPicks[lead.selected] ?? (leadTermSession !== undefined || settings.leadAgent === "agy")));
   const projectNow = useRef(project?.path);
   projectNow.current = project?.path;
-  const firstThread = useRef<{ project: string; made: Promise<string | undefined> }>();
+  const firstThread = useRef<{ project: string; made: Promise<string | undefined> } | undefined>(undefined);
   /**
    * A project with no lead tab yet gets its first one for the terminal pick, so the menu choice is
    * not lost. A second click while it is being made shares that tab; a project switched meanwhile
