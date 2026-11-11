@@ -16,6 +16,7 @@ import {
   fileSize,
   isLeadProvider,
   modelLabel,
+  moveDraft,
   restoreDraft,
   takeDraft,
   uploadDone,
@@ -101,17 +102,12 @@ export function Composer({
   // A notice is about the project it was raised in.
   useEffect(() => setNotice(undefined), [key]);
   // A draft typed before the answer named the project's thread moves to the key that answer
-  // gives; drafts between open tabs stay where they were typed.
+  // gives; drafts between open tabs or projects stay where they were typed (#86).
   const prevKey = useRef(key);
   useEffect(() => {
     const from = prevKey.current;
     prevKey.current = key;
-    if (from === key || from.includes("#") || !key.includes("#")) return;
-    setDrafts((d) => {
-      const gone = draftOf(d, from);
-      if (!gone.text && !gone.files.length) return d;
-      return restoreDraft(takeDraft(d, from).drafts, key, gone);
-    });
+    setDrafts((d) => moveDraft(d, from, key));
   }, [key]);
   /** `model` "" is the CLI's default (no `--model`). */
   const [picked, setPicked] = useState<{ agent: LeadProvider; model: string; effort: string }>();
