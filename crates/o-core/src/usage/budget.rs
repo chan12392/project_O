@@ -108,6 +108,12 @@ pub fn read_enabled_for_autorun(home: &Path) -> bool {
 
 /// Saves one setting, keeping the file's others.
 pub(crate) fn write_setting(home: &Path, key: &str, value: Value) -> Result<(), String> {
+    update_setting(home, key, |_| value)
+}
+
+/// Saves one setting worked out from the value the file holds now, read under the same lock as
+/// the write: a save that started earlier cannot put back what another one changed meanwhile.
+pub(crate) fn update_setting(home: &Path, key: &str, next: impl FnOnce(Option<&Value>) -> Value) -> Result<(), String> {
     let write = || -> io::Result<()> {
         fs::create_dir_all(home)?;
         let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(home.join("settings.lock"))?;
@@ -118,6 +124,7 @@ pub(crate) fn write_setting(home: &Path, key: &str, value: Value) -> Result<(), 
             Err(e) => return Err(e),
             Ok(bytes) => serde_json::from_slice::<Map<String, Value>>(&bytes).map_err(io::Error::other)?,
         };
+        let value = next(settings.get(key));
         settings.insert(key.into(), value);
         let temp = path.with_extension(format!("{}.tmp", crate::run::store::new_run_id(Utc::now())));
         fs::write(&temp, to_pretty(&Value::Object(settings))?)?;

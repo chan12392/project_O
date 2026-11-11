@@ -5,6 +5,7 @@ import { isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type { Plugin } from "vite";
+import { keyedRefresh } from "../../src/core/keyedRefresh.ts";
 import { MODEL_ID } from "../../src/core/lead.ts";
 import { DESKTOP_UPDATES_ONLY } from "../src/platform/updates.ts";
 
@@ -585,7 +586,8 @@ export async function term(req: IncomingMessage, res: ServerResponse, path: stri
  * agent CLI status, the official install and sign-in, and About, each through `o`.
  */
 export function liveRuns(): Plugin {
-  let refreshing: Promise<string> | undefined;
+  // One usage probe at a time; another profile's refresh is read after it, not answered with it.
+  const refreshUsage = keyedRefresh((profile) => o(["usage", "--json", ...(profile === "project-o" || profile === "own" ? ["--profile", profile] : [])]));
   const error = (res: ServerResponse) => (e: Error) => send(res, 500, JSON.stringify({ error: e.message }));
   return {
     name: "project-o-live-runs",
@@ -617,8 +619,7 @@ export function liveRuns(): Plugin {
         if (req.method === "POST" && path === "/usage/refresh") {
           // Whose login to ask (`o usage --profile`); anything else leaves the choice to `o`.
           const profile = new URLSearchParams(req.url?.split("?")[1] ?? "").get("profile") ?? "";
-          refreshing ??= o(["usage", "--json", ...(profile === "project-o" || profile === "own" ? ["--profile", profile] : [])]).finally(() => (refreshing = undefined));
-          return void refreshing.then((out) => send(res, 200, out), error(res));
+          return void refreshUsage(profile).then((out) => send(res, 200, out), error(res));
         }
         const query = new URLSearchParams(req.url?.split("?")[1] ?? "");
         if (req.method === "GET" && path === "/changes") {

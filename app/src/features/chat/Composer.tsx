@@ -74,7 +74,7 @@ export function Composer({
   lead: LeadState;
   /** This tab's agent menu picked the Antigravity terminal (ADR-0042): its pane, not this box, takes the turn. */
   terminal?: boolean;
-  onTerminal?: (on: boolean) => void;
+  onTerminal?: (on: boolean) => void | Promise<void>;
   onAgents: () => void;
 }) {
   const settings = useSettings();
@@ -416,8 +416,9 @@ export function Composer({
                     value: terminal ? "agy" : (agent ?? ""),
                     onChoose: (v) => {
                       // "agy" is the terminal lead, not a chat provider (ADR-0042); the pane swaps in.
-                      if (v === "agy") return onTerminal?.(true);
-                      onTerminal?.(false);
+                      // Choosing it may open the project's first tab; a failure shows here.
+                      if (v === "agy") return void Promise.resolve(onTerminal?.(true)).catch((e) => setNotice(errorText(e)));
+                      void onTerminal?.(false);
                       if (isLeadProvider(v)) setPicked({ agent: v, model: settings.leadModels[v] ?? "", effort: effortFor(v, effort) });
                     },
                     // Every agent that can lead is listed; one that cannot be used now says why.

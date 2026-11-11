@@ -53,14 +53,22 @@ export interface TermChunk {
 /** The session a lead thread's terminal shows: the newest live one, else the newest (ADR-0042 §6). */
 export function sessionForThread(sessions: readonly TermSession[] | undefined, threadId: string | undefined): TermSession | undefined {
   if (!threadId || !sessions) return undefined;
-  const mine = sessions.filter((s) => s.purpose === "lead" && s.threadId === threadId);
-  return mine.find((s) => s.state !== "exited") ?? mine.at(-1);
+  return newestSession(sessions.filter((s) => s.purpose === "lead" && s.threadId === threadId));
+}
+
+/**
+ * The newest live session, else the newest. Sessions are ordered by when they started (ids carry
+ * the start time), so a terminal opened while an older one still runs is the one shown, not
+ * hidden behind it.
+ */
+function newestSession(mine: readonly TermSession[]): TermSession | undefined {
+  const ordered = [...mine].sort((a, b) => a.startedAt.localeCompare(b.startedAt) || a.id.localeCompare(b.id));
+  return ordered.findLast((s) => s.state !== "exited") ?? ordered.at(-1);
 }
 
 /** The session a card's terminal shows: the newest live one for that card, else the newest. */
 export function sessionForCard(sessions: readonly TermSession[] | undefined, runId: string, cardId: string): TermSession | undefined {
-  const mine = sessions?.filter((s) => s.purpose === "card" && s.runId === runId && s.cardId === cardId) ?? [];
-  return mine.find((s) => s.state !== "exited") ?? mine.at(-1);
+  return newestSession(sessions?.filter((s) => s.purpose === "card" && s.runId === runId && s.cardId === cardId) ?? []);
 }
 
 /**

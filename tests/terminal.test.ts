@@ -52,6 +52,15 @@ test("sessionForThread picks the thread's live lead session, else its newest one
   assert.equal(sessionForThread([session({ id: "a", threadId: "th", state: "exited" }), session({ id: "b", threadId: "th", state: "exited" })], "th")?.id, "b");
 });
 
+test("sessionForThread shows the newest of two live sessions, whatever order the list is in", () => {
+  const older = session({ id: "t-20260101-000000-aa", threadId: "th", startedAt: "2026-01-01T00:00:00.000Z" });
+  const newer = session({ id: "t-20260101-000005-bb", threadId: "th", state: "awaiting-paste", startedAt: "2026-01-01T00:00:05.000Z" });
+  assert.equal(sessionForThread([older, newer], "th")?.id, newer.id);
+  assert.equal(sessionForThread([newer, older], "th")?.id, newer.id);
+  // The older one is still there once the newer exits.
+  assert.equal(sessionForThread([older, { ...newer, state: "exited" }], "th")?.id, older.id);
+});
+
 test("sessionForThread after close and reopen: closed sessions drop out, a new live one wins", () => {
   const exited = session({ id: "a", threadId: "th", state: "exited", exitCode: 0 });
   // termClose removes the session from `o term list`: nothing to reopen.
