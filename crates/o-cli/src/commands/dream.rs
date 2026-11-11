@@ -32,10 +32,10 @@ fn dream_main(home: &Path, args: &[String]) -> i32 {
     }
 }
 
-/// Inside a card (`O_CARD_ID` set by the runner) nothing is added or removed: a card
-/// must not plant what later reads as something a person filed.
+/// Inside a card (`O_CARD_ID` set by the runner, or the card's job) nothing is added or
+/// removed: a card must not plant what later reads as something a person filed.
 fn in_card() -> bool {
-    std::env::var("O_CARD_ID").is_ok_and(|v| !v.is_empty())
+    super::inside_card()
 }
 
 /// `find`'s and `tags`' arguments: `--tag` as often as wanted (a bare word is a tag too), `--kind`, `--project`, `--limit`.

@@ -23,13 +23,14 @@ project_O 데스크톱 앱(`project_O.exe`)과 `o` CLI(`o.exe`)를 설치 파일
 
 | 환경변수 | 쓰는 경우 |
 |---|---|
-| `PROJECT_O_SIGN_PFX_BASE64` + `PROJECT_O_SIGN_PFX_PASSWORD` | PFX 파일(base64). 빌드 동안 `Cert:\CurrentUser\My`에 내보낼 수 없는 키로 넣었다가 끝나면 뺀다. `release.yml`은 같은 이름의 저장소 비밀을 쓴다 |
+| `PROJECT_O_SIGN_PFX_BASE64` + `PROJECT_O_SIGN_PFX_PASSWORD` | PFX 파일(base64). 빌드 동안 `Cert:\CurrentUser\My`에 내보낼 수 없는 키로 넣었다가 끝나면 뺀다. `release.yml`은 `release` 환경(Environment)의 같은 이름 비밀을 쓴다. 대표가 저장소 설정에서 이 환경을 `test_1` 브랜치로 제한하고 비밀을 저장소 비밀이 아닌 환경 비밀로 둔다(다른 브랜치의 워크플로가 읽지 못하게, ADR-0043) |
 | `PROJECT_O_SIGN_THUMBPRINT` | `Cert:\CurrentUser\My`에 이미 있는 인증서(하드웨어 토큰 등)의 SHA-1 지문 |
 | `PROJECT_O_SIGN_COMMAND` | Tauri `bundle.windows.signCommand`(`%1`이 파일 경로). 클라우드 서명 도구용이며, 도구 설치와 그 인증은 쓰는 사람이 맡는다 |
 
 - `PROJECT_O_SIGN_TIMESTAMP_URL`로 RFC 3161 타임스탬프 서버를 바꾼다(기본 `http://timestamp.digicert.com`).
 - Tauri가 `project_O.exe`, `o-uninstall-data.exe`, 사이드카 `o.exe`, 설치 파일, 제거 파일에 서명한다.
 - 빌드 끝에 `signtool verify /pa`로 `project_O.exe`·`o.exe`·설치 파일을 확인하고, 실패하면 빌드가 실패한다. Windows SDK의 `signtool.exe`가 필요하다.
+- 빌드는 `npm ci --ignore-scripts`와 `cargo --locked`로 잠금 파일에 적힌 의존성만, 설치 스크립트 없이 받는다.
 - 비밀 값은 출력하지 않는다. PFX 비밀은 가져온 직후 환경변수에서 지워 이후 npm·cargo 빌드 스크립트에 넘기지 않는다.
 - 2023년 6월 이후 발급되는 공인 코드 서명 인증서는 키가 하드웨어에 있어야 해 PFX로 내보낼 수 없는 경우가 많다. 이때는 지문이나 서명 명령 방식을 쓴다.
 
@@ -81,9 +82,9 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 
 `gh`가 없거나 로그인·권한·네트워크 문제면 자동 확인은 팝업 없이 끝나고, **설정 → 정보 → 앱 업데이트**에 gh 필요 안내와 마지막 자동 확인 시각·실패 이유가 남는다(`update_status`). 수동 **업데이트 확인**은 [릴리스 다운로드 페이지](https://github.com/chan12392/project_O/releases)와 `gh auth login --hostname github.com` 안내를 보여 준다. 저장소가 공개라 릴리스 페이지에서는 로그인 없이 설치 파일을 직접 받을 수 있다. 앱 안의 자동 확인과 **지금 업데이트**는 지금처럼 로그인한 `gh`가 있어야 한다. 개발 서버와 데모는 데스크톱 앱에서만 확인 가능하다고 안내한다.
 
-**지금 업데이트**를 눌러야 다운로드한다. `gh release download`가 새 임시 폴더에 받은 설치 파일의 이름·크기와 릴리스 자산의 SHA-256 digest를 검증한 후 대화형 설치기를 열고 앱을 종료한다. 설치 완료 화면에서 앱을 다시 열 수 있다. 기존 설치 위치와 데이터는 유지된다. 다운로드 중 나중에/Esc를 누르면 다운로드(`gh`)를 바로 멈추고 설치하지 않는다. 다운로드 중에 다시 누른 "지금 업데이트"는 앞선 취소를 되돌리지 않는다. 오류는 팝업에 표시하고 재시도할 수 있다. **이 버전 건너뛰기**는 이 PC의 앱 설정에 태그를 기억하며, 수동 확인은 건너뛴 버전도 보여 준다.
+**지금 업데이트**를 눌러야 다운로드한다. `gh release download`가 새 임시 폴더에 받은 설치 파일의 이름·크기와 릴리스 자산의 SHA-256 digest를 검증하고, GitHub 빌드 증명(`gh attestation verify`)으로 그 파일이 `release.yml` 워크플로가 `test_1`에서 릴리스의 커밋으로 만든 것인지 확인한 후(ADR-0043) 대화형 설치기를 열고 앱을 종료한다. 설치 완료 화면에서 앱을 다시 열 수 있다. 기존 설치 위치와 데이터는 유지된다. 다운로드 중 나중에/Esc를 누르면 다운로드(`gh`)를 바로 멈추고 설치하지 않는다. 다운로드 중에 다시 누른 "지금 업데이트"는 앞선 취소를 되돌리지 않는다. 오류는 팝업에 표시하고 재시도할 수 있다. **이 버전 건너뛰기**는 이 PC의 앱 설정에 태그를 기억하며, 수동 확인은 건너뛴 버전도 보여 준다.
 
-다운로드는 셸 없이 고정 인자로 `gh`를 호출한다. O가 인증 파일·토큰을 읽거나 전달하거나 사용자 이메일을 전송하지 않는다. 업데이터는 코드 서명을 확인하지 않는다(서명은 선택 사항이고 지금 릴리스는 미서명, ADR-0038). 크기·digest 검증은 받은 파일이 GitHub에 올라간 자산과 같은지만 확인할 뿐, 서명 검증을 대신하지 않는다. 실행한 설치 파일은 `%TEMP%\project_O-update-*`에 남고 Windows 임시 파일 정리 대상이 된다.
+다운로드는 셸 없이 고정 인자로 `gh`를 호출한다. O가 인증 파일·토큰을 읽거나 전달하거나 사용자 이메일을 전송하지 않는다. 업데이터는 코드 서명을 확인하지 않는다(서명은 선택 사항이고 지금 릴리스는 미서명, ADR-0038). 크기·digest 검증은 받은 파일이 GitHub에 올라간 자산과 같은지만 확인한다. 누가 만들었는지는 빌드 증명이 확인한다: 증명이 없거나, 다른 워크플로·다른 브랜치·다른 커밋의 것이면 설치하지 않는다(릴리스 작성자·태그·digest는 저장소의 다른 워크플로도 만들 수 있지만 이 증명은 만들 수 없다). ADR-0043 이전에 게시된 릴리스는 증명이 없어 이 버전부터는 설치되지 않는다. 증명 확인은 사용자 PC의 `gh`가 하므로 같은 Windows 사용자 권한으로 `gh`를 바꿔치기한 경우는 막지 못한다. 실행한 설치 파일은 `%TEMP%\project_O-update-*`에 남고 Windows 임시 파일 정리 대상이 된다.
 
 ## 제거 검증 (개발자)
 
@@ -99,7 +100,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 - `o stop` → `stopped`
 - `o followup` → `done`
 - 자원 예약 회수(`o resources --json`)
-- 업데이트 경로(읽기 전용: 제안될 릴리스, `test_1` 포함 여부, 받은 파일의 크기·SHA-256, 설치하지 않음)
+- 업데이트 경로(읽기 전용: 제안될 릴리스, `test_1` 포함 여부, 받은 파일의 크기·SHA-256·빌드 증명, 설치하지 않음)
 
 총괄 승인·계획 "실행"·업데이트 화면은 사람이 확인하는 항목으로 묻는다. 결과는 PASS/FAIL 표와 종료 코드(0 통과, 1 실패, 2 사람 확인 미완료)로 나온다. 기본 대상은 설치된 앱의 `o.exe`이고, `-O <o.exe>`로 바꾼다.
 
@@ -114,7 +115,7 @@ Start-Process -FilePath ((Get-ItemProperty 'HKCU:\Software\Microsoft\Windows\Cur
 | 제거 레지스트리 | `HKCU\Software\Microsoft\Windows\CurrentVersion\Uninstall\project_O` — `UninstallString` = `"<설치 폴더>\uninstall.exe"`, `InstallLocation`, `DisplayVersion` |
 | 설치 위치 기억 | `HKCU\Software\Project O\project_O`의 기본값. 다음 설치가 이 폴더를 쓴다. 일반 제거는 남기고 "앱 데이터 삭제"를 고를 때만 지운다 |
 | 상태 폴더 | `%LOCALAPPDATA%\project_O`(`store::default_home()`), `%LOCALAPPDATA%\project_O-agents`(깨끗한 에이전트), `%LOCALAPPDATA%\project_O-lead`(총괄 첨부·계획), `%LOCALAPPDATA%\project_O-term`(터미널 카드), `%LOCALAPPDATA%\local.project-o.desktop`(WebView2, 식별자 이름) |
-| 릴리스 | `.github/workflows/release.yml`: `test_1` push·`test_1`에서의 수동 실행(다른 ref에서 실행하면 job이 건너뛰어 아무것도 게시하지 않음) → `guard.yml` 전체 검사 → 빌드(서명 비밀이 있으면 서명) → 설치 연기 시험 → 태그 `test_1-<yyyyMMdd(UTC)>-<sha7>` 프리릴리스, 첨부 `project_O_<앱 버전>_x64-setup.exe`, 아티팩트 `project_O-setup`. 같은 날 같은 커밋을 다시 돌리면 파일만 바꾼다 |
+| 릴리스 | `.github/workflows/release.yml`: `test_1` push·`test_1`에서의 수동 실행(다른 ref에서 실행하면 job이 건너뛰어 아무것도 게시하지 않음) → `guard.yml` 전체 검사 → 빌드(서명 비밀이 있으면 서명) → 설치 연기 시험 → 빌드 증명(`actions/attest-build-provenance`) → 태그 `test_1-<yyyyMMdd(UTC)>-<sha7>` 프리릴리스, 첨부 `project_O_<앱 버전>_x64-setup.exe`, 아티팩트 `project_O-setup`. 같은 날 같은 커밋을 다시 돌리면 파일만 바꾼다 |
 | 버전 | 앱 버전은 `app/src-tauri/Cargo.toml`의 `version`(현재 0.3.0)과 `app/package.json`. 크레이트는 워크스페이스 버전을 따른다 |
 
 ## 문제 알리기

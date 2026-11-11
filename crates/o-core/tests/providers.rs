@@ -67,14 +67,17 @@ fn the_only_opening_each_cli_gets_is_the_runs_team_channel() {
     let p = plan();
     let [codex, claude, agy] = <[LaunchSpec; 3]>::try_from(specs(&p)).unwrap();
     assert_eq!(after(&claude.args, "--allowedTools"), "Bash(o msg *)");
-    assert_eq!(after(&codex.args, "--add-dir"), "C:/o/runs/r1");
+    // Of the run folder Codex may write only its own mailbox (ADR-0043); the runner answers there.
+    let mailbox = o_core::run::msg_relay::mailbox("C:/o/runs/r1", "code").to_string_lossy().into_owned();
+    assert_eq!(after(&codex.args, "--add-dir"), mailbox);
     // agy matches whole commands only: two fixed ones, and its outbox lives in the run folder.
     let settings: Value = serde_json::from_str(after(&agy.args, "--settings")).unwrap();
     assert_eq!(settings, json!({ "permissions": { "allow": ["command(o msg read)", "command(o msg post)"] } }));
     assert_eq!(after(&agy.args, "--add-dir"), "C:/o/runs/r1");
     assert!(agy.args.last().unwrap().contains("C:/o/runs/r1/outbox/design.txt"));
     let env: Vec<(&str, &str)> = codex.env.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-    assert_eq!(env, [("O_CARD_ID", "code"), ("O_RUN_ID", "r1")]);
+    assert_eq!(env, [("O_CARD_ID", "code"), ("O_MSG_DIR", mailbox.as_str()), ("O_RUN_ID", "r1")]);
+    assert!(!claude.env.contains_key("O_MSG_DIR") && !agy.env.contains_key("O_MSG_DIR"));
 }
 
 #[test]
@@ -276,7 +279,8 @@ fn card_prompt_keeps_the_common_prefix_ahead_of_task_details() {
     let second = card_prompt(&other.cards[0], &other, &other_team);
     assert_eq!(first.split("\n작업: ").next(), second.split("\n작업: ").next());
     let codex = launch_spec(&p.cards[0], &p, &TEAM);
-    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", "C:/o/runs/r1", "--skip-git-repo-check", "--enable", "multi_agent", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
+    let mailbox = o_core::run::msg_relay::mailbox("C:/o/runs/r1", "code").to_string_lossy().into_owned();
+    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", mailbox.as_str(), "--skip-git-repo-check", "--enable", "multi_agent", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
     assert_eq!(codex.args, expected_args);
     let claude = launch_spec(&p.cards[1], &p, &TEAM);
     let expected_args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "Bash(o context *)", "--effort", "high"];
@@ -289,7 +293,7 @@ fn cards_inherit_api_key_variables() {
     let p = plan();
     let [codex, claude, agy] = <[LaunchSpec; 3]>::try_from(specs(&p)).unwrap();
     for spec in [&codex, &claude, &agy] {
-        assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID"), "{:?}", spec.env);
+        assert!(spec.env.keys().all(|k| k == "O_RUN_ID" || k == "O_CARD_ID" || k == "O_MSG_DIR"), "{:?}", spec.env);
     }
 }
 

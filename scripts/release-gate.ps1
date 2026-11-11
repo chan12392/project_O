@@ -276,10 +276,13 @@ Invoke-Check '업데이트 경로 (읽기 전용)' {
     if ($file.Length -ne $pick.Asset.size) { throw "size $($file.Length) differs from the release ($($pick.Asset.size))" }
     $hash = (Get-FileHash -LiteralPath $file.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
     if ("sha256:$hash" -ne $pick.Asset.digest) { throw "SHA-256 $hash differs from the release digest" }
+    # The updater's own check (ADR-0043): built by the release workflow, on test_1, from this commit.
+    & gh attestation verify $file.FullName --repo $Repository --signer-workflow "$Repository/.github/workflows/release.yml" --source-ref refs/heads/test_1 --source-digest $pick.Target --deny-self-hosted-runners | Out-Null
+    if ($LASTEXITCODE) { throw "release $($pick.Tag) has no attestation by the release workflow on test_1; the updater would refuse it" }
     $sig = (Get-AuthenticodeSignature -LiteralPath $file.FullName).Status
     $signed = if ($sig -eq 'Valid') { 'signed' } else { "unsigned ($sig) — SmartScreen warns, see docs/INSTALL.md" }
     $state.UpdateTag = $pick.Tag
-    "$($pick.Tag) $($pick.Asset.name): size and SHA-256 match, test_1 $status, $signed; kept at $($file.FullName) (not installed)"
+    "$($pick.Tag) $($pick.Asset.name): size, SHA-256 and attestation match, test_1 $status, $signed; kept at $($file.FullName) (not installed)"
 } | Out-Null
 
 # A failed or timed-out check must not leave a real agent spending usage.

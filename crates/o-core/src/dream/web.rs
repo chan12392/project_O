@@ -1,6 +1,7 @@
 //! Web materials for `o dream add`: which addresses may be fetched, the fetch itself
 //! (curl, redirects checked one by one), and the page turned into text.
 
+use std::net::{IpAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::process::Command;
 use std::time::Duration;
@@ -33,26 +34,63 @@ pub(super) fn refuse_address(address: &str) -> Option<String> {
     if !host.chars().all(plain) || !port.chars().all(|c| c.is_ascii_digit()) { return Some("주소의 호스트는 영문·숫자·점·하이픈으로만 적습니다(한글 도메인은 xn-- 표기)".into()); }
     // "localhost." is localhost.
     let host = host.trim_end_matches('.');
-    let local = "이 PC나 내부 네트워크의 주소는 넣을 수 없습니다";
-    let inside = |ip: std::net::Ipv4Addr| {
-        let [a, b, ..] = ip.octets();
-        // Also "this network" (0/8) and carrier-grade NAT (100.64/10).
-        a == 0 || (a == 100 && b & 0xc0 == 64) || ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_broadcast()
-    };
-    if let Ok(ip) = host.parse::<std::net::Ipv4Addr>() {
+    let local = LOCAL;
+    if let Ok(ip) = host.parse::<IpAddr>() {
         return inside(ip).then(|| local.into());
-    }
-    if let Ok(ip) = host.parse::<std::net::Ipv6Addr>() {
-        let first = ip.segments()[0];
-        // An IPv4 address written as IPv6 is judged as the IPv4 address it is.
-        let mapped = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()).is_some_and(inside);
-        return (mapped || ip.is_loopback() || ip.is_unspecified() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80).then(|| local.into());
     }
     if bracketed { return Some("주소가 올바르지 않습니다".into()); }
     // Not four plain numbers, yet read as an address by the fetcher: 127.1, 0x7f.0.0.1, 2130706433.
     let numeric = host.split('.').all(|part| part.chars().next().is_some_and(|c| c.is_ascii_digit()) && part.chars().all(|c| c.is_ascii_hexdigit() || c == 'x'));
     if host.is_empty() || numeric || !host.contains('.') || host == "localhost" || [".localhost", ".local", ".internal"].iter().any(|end| host.ends_with(end)) { return Some(local.into()); }
     o_guard::rules::find_hits(address, o_guard::rules::code_rules()).first().map(|hit| hit.reason.to_string())
+}
+
+const LOCAL: &str = "이 PC나 내부 네트워크의 주소는 넣을 수 없습니다";
+
+/// Whether an address is this PC or its network.
+fn inside(ip: IpAddr) -> bool {
+    let v4 = |ip: std::net::Ipv4Addr| {
+        let [a, b, ..] = ip.octets();
+        // Also "this network" (0/8) and carrier-grade NAT (100.64/10).
+        a == 0 || (a == 100 && b & 0xc0 == 64) || ip.is_loopback() || ip.is_private() || ip.is_link_local() || ip.is_broadcast()
+    };
+    match ip {
+        IpAddr::V4(ip) => v4(ip),
+        IpAddr::V6(ip) => {
+            let first = ip.segments()[0];
+            // An IPv4 address written as IPv6 is judged as the IPv4 address it is.
+            let mapped = ip.to_ipv4_mapped().or_else(|| ip.to_ipv4()).is_some_and(v4);
+            mapped || ip.is_loopback() || ip.is_unspecified() || first & 0xfe00 == 0xfc00 || first & 0xffc0 == 0xfe80
+        }
+    }
+}
+
+/// The host and port of an address `refuse_address` let through.
+fn host_port(address: &str) -> Option<(String, u16)> {
+    let (rest, default) = match address.strip_prefix("https://") { Some(rest) => (rest, 443), None => (address.strip_prefix("http://")?, 80) };
+    let authority = rest.split(['/', '?', '#']).next()?;
+    let (host, port) = match authority.strip_prefix('[') {
+        Some(v6) => { let (host, after) = v6.split_once(']')?; (host, after.strip_prefix(':')) }
+        None => authority.rsplit_once(':').map_or((authority, None), |(host, port)| (host, Some(port))),
+    };
+    let port = match port.filter(|port| !port.is_empty()) { Some(port) => port.parse().ok()?, None => default };
+    Some((host.to_string(), port))
+}
+
+/// A name is judged by where it leads, not only by how it is written: a public name may
+/// answer with an address of this PC or its network. Every address it answers with must be
+/// outside, and the fetch is tied to one of those (curl's `--resolve`), so a second lookup
+/// cannot answer differently. `None` for an address written as numbers, already judged.
+pub(super) fn pin(host: &str, port: u16, answers: &[IpAddr]) -> Result<Option<String>, String> {
+    if host.parse::<IpAddr>().is_ok() { return Ok(None); }
+    if answers.iter().any(|ip| inside(*ip)) { return Err(LOCAL.into()); }
+    let ip = answers.first().ok_or("주소를 찾지 못했습니다")?;
+    Ok(Some(match ip { IpAddr::V4(ip) => format!("{host}:{port}:{ip}"), IpAddr::V6(ip) => format!("{host}:{port}:[{ip}]") }))
+}
+
+fn resolve(host: &str, port: u16) -> Vec<IpAddr> {
+    if host.parse::<IpAddr>().is_ok() { return Vec::new(); }
+    (host, port).to_socket_addrs().map(|found| found.map(|address| address.ip()).collect()).unwrap_or_default()
 }
 
 /// The system's curl: Windows ships it beside the system tools, elsewhere it is on PATH.
@@ -67,8 +105,11 @@ pub(super) fn fetch(address: &str) -> Result<String, String> {
     // "-q" first: the person's own curl settings (a proxy, headers) stay out of it.
     let mut address = address.to_string();
     for _ in 0..=MAX_REDIRECTS {
+        let (host, port) = host_port(&address).ok_or("주소가 올바르지 않습니다")?;
+        let pinned = pin(&host, port, &resolve(&host, port)).map_err(|reason| format!("주소를 읽지 못했습니다: {reason}"))?;
         let mut command = Command::new(curl());
         command.args(["-q", "-sS", "--globoff", "--compressed", "--proto", "=http,https", "--max-time", "20"]);
+        if let Some(pinned) = &pinned { command.args(["--resolve", pinned]); }
         command.args(["--max-filesize", &MAX_FETCH_BYTES.to_string(), "-A", "project_O", "-w", FETCH_MARK, "--", &address]);
         let (status, out, err) = proc::capture(&mut command, FETCH_TIMEOUT).map_err(|e| format!("주소를 읽지 못했습니다: {e}"))?;
         if !status.success() { return Err(format!("주소를 읽지 못했습니다: {}", one_line(&err))); }
@@ -132,4 +173,26 @@ pub(super) fn page_text(raw: &str) -> (Option<String>, String) {
         }
     }
     (title, out.trim_end().to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_public_name_that_answers_with_an_inside_address_is_not_fetched() {
+        let ip = |text: &str| text.parse::<IpAddr>().unwrap();
+        assert_eq!(pin("example.org", 443, &[ip("93.184.215.14")]), Ok(Some("example.org:443:93.184.215.14".into())));
+        assert_eq!(pin("example.org", 8080, &[ip("2606:2800:21f:cb07:6820:80da:af6b:8b2c")]), Ok(Some("example.org:8080:[2606:2800:21f:cb07:6820:80da:af6b:8b2c]".into())));
+        for inside in ["127.0.0.1", "10.0.0.5", "192.168.0.1", "169.254.169.254", "100.64.0.1", "::1", "fd00::1", "::ffff:127.0.0.1"] {
+            assert_eq!(pin("example.org", 443, &[ip("93.184.215.14"), ip(inside)]), Err(LOCAL.into()), "{inside}");
+        }
+        assert!(pin("example.org", 443, &[]).is_err());
+        // Written as numbers: judged by `refuse_address`, nothing to look up.
+        assert_eq!(pin("93.184.215.14", 80, &[]), Ok(None));
+        assert_eq!(host_port("https://example.org/a?b"), Some(("example.org".into(), 443)));
+        assert_eq!(host_port("http://example.org:8080"), Some(("example.org".into(), 8080)));
+        assert_eq!(host_port("http://[2606:2800::1]:81/x"), Some(("2606:2800::1".into(), 81)));
+        assert_eq!(host_port("https://example.org:/x"), Some(("example.org".into(), 443)));
+    }
 }

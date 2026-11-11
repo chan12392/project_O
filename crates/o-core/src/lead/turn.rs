@@ -261,7 +261,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
             slot.marker.unresolved = Some(true);
             slot.keep_marker = true;
             if let Err(error) = slot.write() { slot.keep_marker = false; return Err(error); }
-            match native.spawn(&owner) {
+            match native.spawn_in_lead_job(&owner) {
                 Ok((child, tree)) => Ok((crate::sys::worker::Child::native(child), Some(Arc::new(Mutex::new(tree))))),
                 Err(error) => { slot.keep_marker = false; Err(error) }
             }

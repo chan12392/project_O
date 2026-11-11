@@ -32,7 +32,7 @@ pub struct Devin;
 
 /// Devin has no separate project_O profile, including for clean-profile commands.
 pub const PROFILE_UNSUPPORTED: &str = "Devin은 project_O 프로필을 지원하지 않습니다. Devin 카드는 평소 프로필로 실행합니다(개인 훅·설정이 적용됨)";
-pub const OWN_PROFILE_NOTICE: &str = "Devin은 평소 프로필로 실행합니다(개인 훅·설정이 적용됨)";
+pub const OWN_PROFILE_NOTICE: &str = "Devin은 평소 프로필로 실행합니다(개인 훅·설정이 적용됨). 환경 변수는 시스템·홈 폴더·Devin 것만 넘깁니다";
 
 /// The permission mode a card runs in: workspace edits approved, every other tool asked
 /// (and so refused, headless). `smart` is not used: a model judges what runs there.

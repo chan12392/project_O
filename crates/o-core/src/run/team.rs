@@ -31,8 +31,18 @@ pub struct Caller {
 }
 
 impl Caller {
-    pub fn from_env(flag_run: Option<String>, flag_as: Option<String>) -> Self {
-        Caller { env_card: std::env::var("O_CARD_ID").ok(), env_run: std::env::var("O_RUN_ID").ok(), flag_run, flag_as }
+    /// A process in a card's job (`agent_job`, ADR-0043) speaks only as that card: with the
+    /// variables cleared or changed it would otherwise pass for the lead or another card.
+    pub fn from_env(flag_run: Option<String>, flag_as: Option<String>) -> Result<Self, String> {
+        use crate::sys::agent_job::{card_label, current, AgentJob};
+        let caller = Caller { env_card: std::env::var("O_CARD_ID").ok(), env_run: std::env::var("O_RUN_ID").ok(), flag_run, flag_as };
+        if let Some(AgentJob::Card(job)) = current() {
+            let named = caller.env_run.as_deref().zip(caller.env_card.as_deref()).map(|(run, card)| card_label(run, card));
+            if named.as_deref() != Some(job.as_str()) {
+                return Err("이 카드의 실행·카드 표식(O_RUN_ID, O_CARD_ID)이 바뀌어 팀 대화를 쓸 수 없습니다".into());
+            }
+        }
+        Ok(caller)
     }
 }
 

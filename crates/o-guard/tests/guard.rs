@@ -492,6 +492,206 @@ fn merge_checks_see_every_line_of_a_command() {
     }
 }
 
+/// Quotes, another spelling of the program or a string handed to a shell must not hide where a push goes.
+#[test]
+fn quoting_and_spelling_cannot_hide_a_push_to_a_protected_branch() {
+    for command in [
+        "git push origin \"main\"",
+        "git push origin 'test_2'",
+        "g\"\"it push origin main",
+        "g''it push origin HEAD:main",
+        "git.exe push origin \"main\"",
+        "\"C:/Program Files/Git/bin/git.exe\" push origin '+younchan:refs/heads/test_1'",
+        "bash -c \"git push origin 'main'\"",
+        "git push origin :",
+        "git push --all origin",
+        "git push --mirror",
+        "git push origin 'refs/heads/*:refs/heads/*'",
+    ] {
+        assert!(blocked(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+    for branch in READ_ONLY_BRANCHES {
+        assert!(blocked(&bash("git push -u origin"), &OnBranch(branch)), "{branch}");
+        assert!(blocked(&bash("git push origin HEAD"), &OnBranch(branch)), "{branch}");
+    }
+    for command in ["git push origin \"younchan\"", "git push -u origin younchan-guard", "git push origin HEAD", "git push -u origin"] {
+        assert!(passes(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+}
+
+/// The branch is read before the command runs, so one command must not move onto a protected
+/// branch (and commit there), nor move the branch itself.
+#[test]
+fn a_command_cannot_switch_onto_or_move_a_protected_branch() {
+    for command in [
+        "git checkout main && git commit -m x",
+        "git switch test_2",
+        "git checkout -f \"main\"",
+        "git branch -f main HEAD",
+        "git branch -D test_2",
+        "git update-ref refs/heads/main HEAD",
+        "git symbolic-ref HEAD refs/heads/main",
+        "git fetch . younchan:main",
+        "git pull origin younchan:refs/heads/test_1",
+        "git worktree add ../mirror main",
+    ] {
+        assert!(blocked(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+    for command in [
+        "git checkout main -- docs/DESIGN.md",
+        "git switch -c younchan-fix main",
+        "git checkout -b younchan-hotfix origin/test_1",
+        "git checkout --detach main",
+        "git switch younchan",
+        "git branch -d younchan-old",
+        "git branch younchan-next main",
+        "git fetch origin main",
+        "git symbolic-ref HEAD",
+        "git worktree add -b younchan-next ../next main",
+    ] {
+        assert!(passes(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+    for command in ["git pull", "git revert HEAD", "git reset --hard HEAD~1", "git am fix.patch", "g\"\"it commit -m x"] {
+        assert!(blocked(&bash(command), &OnBranch("main")), "{command}");
+        assert!(passes(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+}
+
+/// The git hooks run the same checks as this hook: a command may not skip them or point git elsewhere.
+#[test]
+fn a_command_cannot_turn_the_git_hooks_off() {
+    for command in [
+        "git commit --no-verify -m x",
+        "git commit -nm x",
+        "git commit -an",
+        "git push --no-verify origin younchan",
+        "git -c core.hooksPath=/dev/null commit -m x",
+        "git config core.hooksPath /tmp/none",
+        "git config --unset core.hooksPath",
+        "git config unset core.hooksPath",
+    ] {
+        assert!(blocked(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+    for command in ["git config core.hooksPath .githooks", "git config core.hooksPath", "git commit -am wip", "git commit --amend -m x", "git commit -m x -q", "git log -n 3"] {
+        assert!(passes(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+}
+
+#[test]
+fn another_spelling_of_gh_or_the_endpoint_is_still_a_merge() {
+    for command in [
+        "gh.exe pr merge 1",
+        "g\"\"h pr merge 1",
+        "\"gh\" pr merge 1",
+        "gh api -X PUT 'repos/chan12392/project_O/pulls/1/merge?x=1'",
+        "gh api -X PUT https://api.github.com/repos/chan12392/project_O/pulls/1/merge",
+        "gh api graphql --input merge.json",
+        "gh api graphql -F query=@merge.graphql",
+    ] {
+        assert!(blocked(&bash(command), &MEMBER_GH), "{command}");
+        assert!(passes(&bash(command), &OWNER_GH), "{command}");
+    }
+    // An unconfirmed base is refused for the owner too, however the call is spelled.
+    for command in ["g\"\"h pr merge 99", "\"gh\" pr merge 99", "gh.exe pr merge 99"] {
+        assert!(blocked(&bash(command), &OWNER_GH), "{command}");
+    }
+    for command in ["gh.exe pr merge 2", "\"gh\" pr merge 2", "gh api graphql -f query='query { viewer { login } }'", "gh api 'repos/chan12392/project_O/pulls/1?x=1'"] {
+        assert!(passes(&bash(command), &MEMBER_GH), "{command}");
+    }
+}
+
+/// `docs/../` names a file outside docs/, so it gets every rule.
+#[test]
+fn a_path_that_climbs_out_of_an_allowed_folder_is_not_allowed() {
+    assert!(!is_allowed_path("docs/../crates/o-core/src/x.rs"));
+    assert!(!is_allowed_path("docs\\..\\crates\\o-core\\src\\x.rs"));
+    assert!(is_allowed_path("./docs/decisions/0001.md"));
+    let bad = format!("let t = std::env::var(\"{OAUTH_TOKEN}\")");
+    let edit = json!({ "tool_name": "Write", "tool_input": { "file_path": "C:/repo/docs/../crates/o-core/src/x.rs", "content": bad }, "cwd": "C:/repo" });
+    assert!(blocked(&edit, &OnBranch("younchan")));
+}
+
+/// ADR-0043: the files that switch the guard on are a person's to change. An agent may read them.
+#[test]
+fn an_agent_cannot_change_the_files_that_switch_the_guard_on() {
+    let git = OnBranch("younchan");
+    let edit = |tool: &str, file_path: &str| json!({ "tool_name": tool, "tool_input": { "file_path": file_path, "content": "{}", "new_string": "{}" }, "cwd": "C:/repo" });
+    for path in [".claude/settings.json", "C:/repo/.claude/settings.local.json", ".codex\\hooks.json", ".githooks/pre-commit", "docs/../.githooks/pre-push", "C:/other/.CLAUDE/Settings.json"] {
+        for tool in ["Write", "Edit"] {
+            let reasons = review(&edit(tool, path), &git);
+            assert!(reasons.iter().any(|reason| reason.contains("가드 설정 파일")), "{tool} {path}: {reasons:?}");
+        }
+    }
+    for path in [".claude/settings.json.md", "docs/.claude/settings.jsonl", "app/src/settings.json", ".claude/commands/x.md", "docs/githooks.md"] {
+        assert!(passes(&edit("Write", path), &git), "{path}");
+    }
+    for command in [
+        "echo {} > .claude/settings.json",
+        "cp x .codex/hooks.json",
+        "git checkout HEAD~1 -- .githooks",
+        "sed -i s/o/x/ .githooks/pre-commit",
+        "Set-Content .claude\\settings.json '{}'",
+        "git update-index --skip-worktree .claude/settings.json",
+    ] {
+        assert!(blocked(&bash(command), &git), "{command}");
+    }
+    for command in ["cat .claude/settings.json", "git diff -- .githooks", "git log --oneline -- .codex/hooks.json", "cargo test -p o-guard"] {
+        assert!(passes(&bash(command), &git), "{command}");
+    }
+}
+
+/// A page the CLI fetches with its own tool is checked like a request made in a shell.
+#[test]
+fn a_web_fetch_cannot_reach_a_provider_backend() {
+    let git = OnBranch("younchan");
+    let fetch = |url: &str| json!({ "tool_name": "WebFetch", "tool_input": { "url": url, "prompt": "요약" }, "cwd": "C:/repo" });
+    assert!(blocked(&fetch(concat!("https://api.anthro", "pic.com/v1/messages")), &git));
+    assert!(blocked(&fetch(concat!("https://chatgpt.com/backend", "-api/me")), &git));
+    assert!(passes(&fetch("https://docs.github.com/en/rest"), &git));
+}
+
+/// Worktrees share one config, so a mirror must stay a mirror when a personal checkout renames
+/// or removes `origin`; another repository on main is still ordinary work.
+#[test]
+fn a_mirror_stays_one_when_its_remote_is_renamed_or_removed() {
+    let root = std::env::temp_dir().join(format!("o-guard-mirror-{}", std::process::id()));
+    let git = |dir: &std::path::Path, args: &[&str]| {
+        let out = std::process::Command::new("git")
+            .current_dir(dir)
+            .args(["-c", "user.name=t", "-c", "user.email=t@example.invalid", "-c", "commit.gpgsign=false", "-c", "core.hooksPath=no-hooks"])
+            .args(args)
+            .output()
+            .unwrap();
+        assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+    };
+    let repository = |name: &str, file: &str| {
+        let dir = root.join(name);
+        let path = dir.join(file);
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(&path, "x").unwrap();
+        git(&dir, &["init", "-q", "-b", "main"]);
+        git(&dir, &["add", "."]);
+        git(&dir, &["commit", "-q", "-m", "x"]);
+        dir
+    };
+    let mirror = |dir: &std::path::Path| o_guard::is_mirror(&dir.to_string_lossy());
+
+    let project = repository("project", "crates/o-guard/src/rules.rs");
+    assert!(mirror(&project), "no remote at all");
+    git(&project, &["remote", "add", "upstream", "https://github.com/chan12392/project_O.git"]);
+    assert!(mirror(&project), "a remote under another name");
+    git(&project, &["switch", "-q", "-c", "younchan"]);
+    assert!(!mirror(&project), "a personal branch");
+
+    let other = repository("other", "README.md");
+    assert!(!mirror(&other));
+    git(&other, &["remote", "add", "origin", "https://github.com/someone/else.git"]);
+    assert!(!mirror(&other));
+    git(&other, &["remote", "add", "fork", "https://github.com/someone/project_O.git"]);
+    assert!(mirror(&other), "a project_O remote under any name");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 fn project_hooks(path: &str) -> Vec<Value> {
     let file = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..").join(path);
     let config: Value = serde_json::from_str(&std::fs::read_to_string(&file).unwrap()).unwrap();

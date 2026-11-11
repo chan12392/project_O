@@ -329,3 +329,28 @@ fn new_clean_codex_profile_never_trusts_a_project() {
     assert!(environment(&root, ProviderId::Codex).is_ok());
     assert_eq!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(), "# user configuration\n");
 }
+
+/// ADR-0043: Devin runs on the person's own home in a project_O profile run (it has no
+/// profile), but another tool's token in the person's environment does not reach the card.
+#[test]
+fn a_cli_without_a_profile_keeps_the_persons_home_but_not_their_tokens() {
+    use o_core::agents::clean::own_home_env_from;
+    let parent = [
+        ("Path", r"C:\Windows\system32"),
+        ("USERPROFILE", r"C:\Users\someone"),
+        ("HOMEDRIVE", "C:"),
+        ("HomePath", r"\Users\someone"),
+        ("XDG_CONFIG_HOME", r"C:\Users\someone\.config"),
+        ("WINDSURF_API_KEY", "placeholder"),
+        ("GH_TOKEN", "placeholder"),
+        ("AWS_SECRET_ACCESS_KEY", "placeholder"),
+        ("OPENAI_API_KEY", "placeholder"),
+        ("ORCA_TERMINAL_ID", "x"),
+    ]
+    .map(|(k, v)| (k.to_string(), v.to_string()));
+    let env = own_home_env_from(parent, ProviderId::Devin);
+    let mut names: Vec<&str> = env.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["HOMEDRIVE", "HomePath", "Path", "USERPROFILE", "WINDSURF_API_KEY", "XDG_CONFIG_HOME"]);
+    assert_eq!(env["USERPROFILE"], r"C:\Users\someone");
+}

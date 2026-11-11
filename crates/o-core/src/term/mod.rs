@@ -30,6 +30,8 @@ use crate::sys::{js, launch::Launch, proc, resolve};
 
 #[cfg(any(windows, test))]
 const MAX_OUTPUT: u64 = 8 * 1024 * 1024;
+/// The most one write hands the terminal; the host drops anything larger left in its folders.
+const MAX_INPUT: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -230,7 +232,7 @@ fn request(home: &Path, id: &str, kind: &str, bytes: &[u8]) -> io::Result<()> {
 }
 
 pub fn write(home: &Path, id: &str, bytes: &[u8]) -> io::Result<()> {
-    if bytes.len() > 64 * 1024 { return Err(io::Error::new(io::ErrorKind::InvalidInput, "터미널 입력은 한 번에 64 KiB까지 가능합니다")); }
+    if bytes.len() > MAX_INPUT { return Err(io::Error::new(io::ErrorKind::InvalidInput, "터미널 입력은 한 번에 64 KiB까지 가능합니다")); }
     if get(home, id)?.state == "exited" { return Err(io::Error::other("종료된 터미널입니다")); }
     if bytes.is_empty() { return Ok(()); }
     let mut queue = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir(home, id)?.join("input.queue"))?;
@@ -339,6 +341,18 @@ pub fn wait(home: &Path, id: &str, timeout: Duration) -> io::Result<Session> {
     }
 }
 
+/// What a queued input or request file holds. A file over the write limit or anything that is
+/// not a plain file is removed unread; one that cannot be read yet stays for the next pass.
+#[cfg(windows)]
+fn queued_bytes(entry: &fs::DirEntry) -> Option<Vec<u8>> {
+    let plain = fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_INPUT as u64);
+    if !plain {
+        let _ = fs::remove_file(entry.path()).or_else(|_| fs::remove_dir(entry.path()));
+        return None;
+    }
+    fs::read(entry.path()).ok().filter(|bytes| bytes.len() <= MAX_INPUT)
+}
+
 #[cfg(not(windows))]
 fn run_host(_: &Path, _: Session, _: Launch, _: Option<(String, bool)>, no_process: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>, #[cfg(test)] _: Duration) -> io::Result<()> {
     if let Some(flag) = no_process { flag.store(true, std::sync::atomic::Ordering::Release); }
@@ -408,7 +422,8 @@ fn run_host(home: &Path, mut s: Session, launch: Launch, mut queued: Option<(Str
                 inputs.sort_by_key(|entry| entry.file_name());
                 for entry in inputs {
                     if entry.file_name().to_string_lossy().starts_with('.') { fs::remove_file(entry.path())?; continue; }
-                    match input_tx.try_send((fs::read(entry.path())?, false)) {
+                    let Some(bytes) = queued_bytes(&entry) else { continue };
+                    match input_tx.try_send((bytes, false)) {
                         Ok(()) => fs::remove_file(entry.path())?,
                         Err(std::sync::mpsc::TrySendError::Full(_)) => { input_backlog = true; break; },
                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return Err(io::Error::other("터미널 입력이 종료됐습니다")),
@@ -421,7 +436,8 @@ fn run_host(home: &Path, mut s: Session, launch: Launch, mut queued: Option<(Str
             let mut stopping = false;
             for entry in requests {
                 let name = entry.file_name().to_string_lossy().into_owned();
-                let bytes = fs::read(entry.path())?;
+                // Any process of this user can drop a file here: one that is no request must not end the host.
+                let Some(bytes) = queued_bytes(&entry) else { continue };
                 if name.ends_with("-input") {
                     match input_tx.try_send((bytes, false)) {
                         Ok(()) => {},
@@ -429,7 +445,10 @@ fn run_host(home: &Path, mut s: Session, launch: Launch, mut queued: Option<(Str
                         Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return Err(io::Error::other("터미널 입력이 종료됐습니다")),
                     }
                 }
-                else if name.ends_with("-resize") { let (cols, rows) = serde_json::from_slice::<(u16, u16)>(&bytes).map_err(io::Error::other)?; pty.resize(cols, rows)?; s.cols = cols; s.rows = rows; save_json(&folder.join("session.json"), &s)?; }
+                else if name.ends_with("-resize") {
+                    let size = serde_json::from_slice::<(u16, u16)>(&bytes).ok().filter(|(cols, rows)| dimensions(Some(*cols), Some(*rows)).is_ok());
+                    if let Some((cols, rows)) = size.filter(|(cols, rows)| pty.resize(*cols, *rows).is_ok()) { s.cols = cols; s.rows = rows; save_json(&folder.join("session.json"), &s)?; }
+                }
                 else if name.ends_with("-paste") { if let Some((_, confirm)) = queued.as_mut() { *confirm = false; deadline = Some(Instant::now() + Duration::from_secs(60)); s.state = "running".into(); save_json(&folder.join("session.json"), &s)?; } }
                 else if name.ends_with("-close") { pty.kill()?; stopping = true; }
                 fs::remove_file(entry.path())?;

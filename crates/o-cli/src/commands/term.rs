@@ -13,7 +13,8 @@ fn host(home: &Path, args: &[String]) -> i32 {
 }
 fn command(home: &Path, args: &[String]) -> i32 {
     let Some((verb, rest)) = args.split_first() else { return fail("터미널 명령이 필요합니다") };
-    if matches!(verb.as_str(), "open" | "write" | "paste" | "close") && inside_agent() { return fail("에이전트 안에서는 이 터미널 동작을 할 수 없습니다. 사용자가 실행해 주세요."); }
+    // Reading is refused too: a terminal's scrollback is what a person typed and saw (ADR-0043).
+    if inside_agent() { return fail("에이전트 안에서는 이 터미널 동작을 할 수 없습니다. 사용자가 실행해 주세요."); }
     let result: io::Result<serde_json::Value> = (|| {
         let invalid = || io::Error::new(io::ErrorKind::InvalidInput, "잘못된 터미널 인자");
         match verb.as_str() {

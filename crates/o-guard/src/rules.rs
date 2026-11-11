@@ -118,6 +118,15 @@ pub static READ_ONLY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .collect()
 });
 
+/// The files that switch the guard itself on: the agent hooks' settings and the git hooks.
+/// An agent does not change them, in any repository; a person does (ADR-0043). The first
+/// pattern is a path an edit tool names (its end), the second a mention in a shell command.
+pub static GUARD_FILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:^|/)(?:\.claude/settings(?:\.local)?\.json|\.codex/hooks\.json|\.githooks/[^/]+)$").unwrap());
+pub static GUARD_FILE_NAMED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\.claude[\\/]+settings(?:\.local)?\.json|\.codex[\\/]+hooks\.json|\.githooks\b").unwrap());
+pub const GUARD_FILE_REASON: &str = "가드 설정 파일(.claude/settings.json·.codex/hooks.json·.githooks)은 에이전트가 바꿀 수 없습니다. 사람이 고쳐 주세요";
+
 /// Paths that must mention the patterns to do their job. Changing this list is
 /// a shared-boundary change (ADR).
 static ALLOWED_PATHS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
@@ -148,9 +157,10 @@ fn normalized(repo_relative: &str) -> String {
     slashes.strip_prefix("./").unwrap_or(&slashes).to_string()
 }
 
+/// A path that climbs with `..` is never allowed: `docs/../crates/x.rs` is not a file in `docs/`.
 pub fn is_allowed_path(repo_relative: &str) -> bool {
     let normalized = normalized(repo_relative);
-    ALLOWED_PATHS.iter().any(|p| p.is_match(&normalized))
+    !normalized.split('/').any(|step| step == "..") && ALLOWED_PATHS.iter().any(|p| p.is_match(&normalized))
 }
 
 /// Whether `rule` does not apply to the file: an allowed path skips every rule, a bypass path

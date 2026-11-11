@@ -1,12 +1,13 @@
 //! `o msg send|read|post`: the run's team channel.
 
-use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
-use o_core::run::team::{self, Caller, Refused};
+use o_core::run::msg_relay;
+use o_core::run::team::Caller;
+use o_core::run::team_command::{self, Output, Request};
 
-use super::{fail, help, print_violations, Command};
+use super::{fail, help, Command};
 
 pub const MSG: Command = Command {
     name: "msg",
@@ -24,120 +25,27 @@ pub const MSG: Command = Command {
 };
 
 fn message(home: &Path, args: &[String]) -> i32 {
-    let (verb, rest) = match args.split_first() {
-        Some((verb, rest)) => (verb.as_str(), rest),
-        None => ("", &[][..]),
-    };
-    let mut flags: HashMap<String, String> = HashMap::new();
-    let mut words: Vec<&str> = Vec::new();
-    let mut items = rest.iter();
-    while let Some(arg) = items.next() {
-        if arg == "--all" || arg == "--question" || arg == "--approval" {
-            flags.insert(arg[2..].into(), "1".into());
-        } else if let Some(name) = arg.strip_prefix("--") {
-            flags.insert(name.into(), items.next().cloned().unwrap_or_default());
-        } else {
-            words.push(arg);
-        }
-    }
-    let speaker = match team::speaker(home, Caller::from_env(flags.get("run").cloned(), flags.get("as").cloned())) {
-        Ok(speaker) => speaker,
-        Err(message) => return fail(&message),
-    };
-    if verb == "wait" && flags.contains_key("all") { return fail("wait에는 --all을 사용할 수 없습니다"); }
-    if flags.contains_key("approval") && (verb != "send" || flags.contains_key("question") || flags.contains_key("reply-to") || flags.get("to").is_some_and(|to| to != "lead")) {
-        return fail("승인 요청은 --approval만 사용해 lead에 보내세요");
-    }
-    let send = |to: &str, text: &str| {
-        let approval = if let Some(id) = flags.get("reply-to") {
-            match team::read(home, &speaker, true) {
-                Ok(messages) => messages.iter().any(|m| m.id == *id && m.kind == "approval"),
-                Err(error) => return fail(&error.to_string()),
-            }
-        } else { false };
-        if approval && super::inside_agent() {
-            return fail("승인 요청에는 사용자가 직접 답해야 합니다");
-        }
-        let result = if flags.contains_key("approval") {
-            team::send_approval(home, &speaker, text, flags.get("id").map(String::as_str))
-        } else {
-            team::send_reply(home, &speaker, to, text, flags.contains_key("question"), flags.get("id").map(String::as_str), flags.get("reply-to").map(String::as_str))
-        };
-        match result {
-        Ok(id) => {
-            if approval {
-                if let Err(error) = team::transition(home, &speaker, flags.get("reply-to").unwrap(), "acknowledged") {
-                    return fail(&format!("답변은 저장됐지만 승인 요청의 상태를 확인하지 못했습니다: {error}"));
-                }
-            }
-            println!("저장됨: {} → {to} (id: {id})", speaker.me);
-            if flags.contains_key("question") && speaker.cards.iter().any(|card| card == to) {
-                let state = team::recipient_state(home, &speaker, to).ok().flatten().unwrap_or("불명");
-                if state != "실행" {
-                    println!("상대 카드의 마지막 기록: {state}. 답을 기다리며 자원을 점유하면 진행이 막힐 수 있습니다. 총괄에 알리고 가능한 독립 작업을 진행하세요.");
-                }
-            }
-            0
-        }
-        Err(Refused::Policy(violations)) => {
-            print_violations(&violations);
-            2
-        }
-        Err(Refused::Io(error)) => fail(&format!("접수 결과가 불명일 수 있습니다. 같은 --id로 다시 확인해 주세요: {error}")),
-    }};
-    match verb {
-        "answer-approval" => {
-            if super::inside_agent() {
-                return fail("승인 요청에는 사용자가 직접 답해야 합니다");
-            }
-            let Some(id) = flags.get("id") else { return fail("--id가 필요합니다") };
-            if words != ["-"] { return fail("답변은 표준 입력으로 보내세요") }
-            let mut text = String::new();
-            if let Err(error) = std::io::stdin().take(65_537).read_to_string(&mut text) { return fail(&error.to_string()); }
-            if text.len() > 65_536 { return fail("답변이 너무 깁니다") }
-            match team::answer_approval(home, &speaker, id, &text) {
-                Ok(id) => { println!("{}", serde_json::json!({"id": id})); 0 }
-                Err(Refused::Policy(violations)) => { print_violations(&violations); 2 }
-                Err(Refused::Io(error)) => fail(&error.to_string()),
-            }
-        }
-        "send" => send(flags.get("to").map_or(if flags.contains_key("approval") { "lead" } else { "all" }, String::as_str), &words.join(" ")),
-        "post" => {
-            match team::post(home, &speaker) {
-                Ok((to, id)) => { println!("저장됨: {} → {to} (id: {id})", speaker.me); 0 }
-                Err(Refused::Policy(violations)) => { print_violations(&violations); 2 }
-                Err(Refused::Io(error)) => fail(&format!("접수 결과가 불명일 수 있습니다. 같은 요청으로 다시 확인해 주세요: {error}")),
-            }
-        }
-        "read" | "wait" => match if verb == "read" && flags.contains_key("all") { team::read(home, &speaker, true) } else if verb == "wait" {
-            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
-            loop {
-                match team::claim(home, &speaker) {
-                    Ok(None) if std::time::Instant::now() < deadline => std::thread::sleep(std::time::Duration::from_millis(250)),
-                    result => break result.map(|m| m.into_iter().collect()),
-                }
-            }
-        } else { team::claim(home, &speaker).map(|m| m.into_iter().collect()) } {
-            Ok(fresh) => {
-                if fresh.is_empty() {
-                    println!("새 메시지가 없습니다.");
-                }
-                for m in fresh {
-                    println!("{}", m.line());
-                    if verb == "wait" || !flags.contains_key("all") { println!("처리 후 o msg ack --id {} (불명이면 확인 후 retry)", m.id); }
-                }
-                0
-            }
-            Err(error) => fail(&error.to_string()),
+    // ADR-0043: a card whose sandbox may not write the run folder asks the runner that started it.
+    let output = match msg_relay::from_env().filter(|_| super::inside_card()) {
+        Some(mailbox) => match msg_relay::ask(&mailbox, args) {
+            Ok(output) => output,
+            Err(error) => return fail(&error.to_string()),
         },
-        "ack" | "delivered" | "unknown" | "retry" | "cancel" => {
-            let Some(id) = flags.get("id") else { return fail("--id가 필요합니다") };
-            let state = match verb { "ack" => "acknowledged", "cancel" => "cancelled", "retry" => "stored", other => other };
-            match team::transition(home, &speaker, id, state) {
-                Ok(()) => { println!("{id}: {state}"); 0 }
-                Err(error) => fail(&error.to_string()),
-            }
+        None => {
+            let caller = match Caller::from_env(None, None) {
+                Ok(caller) => caller,
+                Err(message) => return fail(&message),
+            };
+            let mut answer = || {
+                let mut text = String::new();
+                std::io::stdin().take(65_537).read_to_string(&mut text)?;
+                Ok(text)
+            };
+            team_command::run(home, Request { caller, agent: super::inside_agent(), usage: help(), answer: &mut answer }, args)
         }
-        _ => fail(help()),
-    }
+    };
+    let Output { code, out, err } = output;
+    print!("{out}");
+    eprint!("{err}");
+    code
 }

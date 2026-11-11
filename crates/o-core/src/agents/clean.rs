@@ -85,6 +85,28 @@ pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: 
     env
 }
 
+/// The person's home and what points a CLI at its own config, kept for a CLI that cannot move
+/// into a profile.
+const OWN_HOME: &[&str] = &["USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH"];
+const OWN_HOME_PREFIX: &[&str] = &["XDG_", "DEVIN_", "WINDSURF_"];
+
+/// The environment of a CLI whose config cannot move into a profile (Devin, ADR-0016) in a
+/// project_O profile run. It keeps the person's home, so it runs on their own login and
+/// settings, but nothing else of their environment: another tool's token (`GH_TOKEN`, a cloud
+/// key) is not the card's to use (ADR-0043).
+pub fn own_home_env_from(parent: impl IntoIterator<Item = (String, String)>, provider: ProviderId) -> BTreeMap<String, String> {
+    parent.into_iter().filter(|(name, _)| {
+        let upper = name.to_ascii_uppercase();
+        keeps(name) || OWN_HOME.contains(&upper.as_str()) || OWN_HOME_PREFIX.iter().any(|p| upper.starts_with(p))
+            || super::auth_env_names(provider).iter().any(|auth| name.eq_ignore_ascii_case(auth))
+    }).collect()
+}
+
+/// `own_home_env_from` this process's environment.
+pub fn own_home_environment(provider: ProviderId) -> BTreeMap<String, String> {
+    own_home_env_from(std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))), provider)
+}
+
 /// The clean environment for a provider, its profile made first if missing. A CLI that
 /// cannot run on the profile (`Provider::profile_unsupported`) gets none: never its own setup instead.
 pub fn environment(root: &Path, provider: ProviderId) -> io::Result<BTreeMap<String, String>> {

@@ -1,15 +1,19 @@
 name: branch-flow
 
-# The event contains everything this job needs.
+# pull_request_target: the job runs this file as it is on the PR's base branch, so a PR cannot
+# rewrite its own check (ADR-0043). It never checks out or runs the PR's code; it reads the
+# event and the PR's file list only.
 permissions: {}
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, edited, synchronize]
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
     steps:
       - name: PR 방향 검사
         env:
@@ -19,6 +23,11 @@ jobs:
           BASE_REPOSITORY: ${{ github.repository }}
           # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
           PERSONAL: "younchan yongwoo eunmi yeeun"
+          # Keep in sync with OWNER in crates/o-guard/src/rules.rs.
+          OWNER: chan12392
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # 개인·작업 브랜치 ──PR──▶ test_2 ──PR──▶ test_1 ──PR──▶ main
           # 핫픽스: 개인·작업 브랜치 ──PR──▶ test_1_hotfix ──PR──▶ test_1 (ADR-0021)
@@ -55,5 +64,13 @@ jobs:
             esac
           else
             fail "PR 대상은 main, main_hotfix, test_1, test_1_hotfix, test_2, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
+          fi
+          # The other required checks (guard.yml) run the PR's own copy of the workflows, so a
+          # change under .github/ comes in only through a PR the owner opened (ADR-0043).
+          if is_member_branch "$HEAD" && [ "$AUTHOR" != "$OWNER" ]; then
+            files=$(gh api --paginate "repos/$BASE_REPOSITORY/pulls/$NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)') || fail "PR의 변경 파일 목록을 확인하지 못했습니다"
+            if echo "$files" | grep -q '^\.github/'; then
+              fail ".github/ 아래(워크플로·검사 설정)를 바꾸는 PR은 대표($OWNER)가 열어야 합니다"
+            fi
           fi
           echo "ok: $HEAD -> $BASE"

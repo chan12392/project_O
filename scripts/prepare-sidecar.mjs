@@ -15,6 +15,8 @@ const triple = target || host;
 const exe = triple.includes("-windows-") ? ".exe" : "";
 const args = ["build", "--release", "-p", "o-cli"];
 if (target) args.push("--target", target);
+// The installer build takes exactly the dependency versions in Cargo.lock.
+if (process.env.PROJECT_O_LOCKED) args.push("--locked");
 execFileSync("cargo", args, { cwd: root, stdio: "inherit", windowsHide: true });
 
 const targetDir = process.env.CARGO_TARGET_DIR ? resolve(root, process.env.CARGO_TARGET_DIR) : join(root, "target");
