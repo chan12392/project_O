@@ -344,13 +344,47 @@ pub fn wait(home: &Path, id: &str, timeout: Duration) -> io::Result<Session> {
 /// What a queued input or request file holds. A file over the write limit or anything that is
 /// not a plain file is removed unread; one that cannot be read yet stays for the next pass.
 #[cfg(windows)]
-fn queued_bytes(entry: &fs::DirEntry) -> Option<Vec<u8>> {
+fn queued_bytes(entry: &fs::DirEntry) -> Queued {
     let plain = fs::symlink_metadata(entry.path()).is_ok_and(|meta| meta.is_file() && meta.len() <= MAX_INPUT as u64);
     if !plain {
         let _ = fs::remove_file(entry.path()).or_else(|_| fs::remove_dir(entry.path()));
-        return None;
+        return Queued::Discarded;
     }
-    fs::read(entry.path()).ok().filter(|bytes| bytes.len() <= MAX_INPUT)
+    match fs::read(entry.path()) {
+        Ok(bytes) if bytes.len() <= MAX_INPUT => Queued::Ready(bytes),
+        Ok(_) => { let _ = fs::remove_file(entry.path()); Queued::Discarded }
+        Err(_) => Queued::Later,
+    }
+}
+
+#[cfg(windows)]
+enum Queued {
+    Ready(Vec<u8>),
+    /// Not an input: removed.
+    Discarded,
+    /// A plain file that could not be read this time (another process holds it).
+    Later,
+}
+
+/// Hands the queued inputs to `send` in their order and removes each one it took. `send`
+/// answers false when it has no room. Returns whether inputs are still waiting: one that cannot
+/// be read yet holds back every input after it, so the order the person typed in is kept.
+#[cfg(windows)]
+fn drain_inputs(folder: &Path, mut send: impl FnMut(Vec<u8>) -> io::Result<bool>) -> io::Result<bool> {
+    let mut inputs: Vec<_> = fs::read_dir(folder.join("inputs"))?.flatten().collect();
+    inputs.sort_by_key(|entry| entry.file_name());
+    for entry in inputs {
+        if entry.file_name().to_string_lossy().starts_with('.') { fs::remove_file(entry.path())?; continue; }
+        match queued_bytes(&entry) {
+            Queued::Discarded => continue,
+            Queued::Later => return Ok(true),
+            Queued::Ready(bytes) => {
+                if !send(bytes)? { return Ok(true); }
+                fs::remove_file(entry.path())?;
+            }
+        }
+    }
+    Ok(false)
 }
 
 #[cfg(not(windows))]
@@ -417,18 +451,11 @@ fn run_host(home: &Path, mut s: Session, launch: Launch, mut queued: Option<(Str
             let queue = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(folder.join("input.queue"))?;
             let mut input_backlog = true;
             if queue.try_lock().is_ok() {
-                input_backlog = false;
-                let mut inputs: Vec<_> = fs::read_dir(folder.join("inputs"))?.flatten().collect();
-                inputs.sort_by_key(|entry| entry.file_name());
-                for entry in inputs {
-                    if entry.file_name().to_string_lossy().starts_with('.') { fs::remove_file(entry.path())?; continue; }
-                    let Some(bytes) = queued_bytes(&entry) else { continue };
-                    match input_tx.try_send((bytes, false)) {
-                        Ok(()) => fs::remove_file(entry.path())?,
-                        Err(std::sync::mpsc::TrySendError::Full(_)) => { input_backlog = true; break; },
-                        Err(std::sync::mpsc::TrySendError::Disconnected(_)) => return Err(io::Error::other("터미널 입력이 종료됐습니다")),
-                    }
-                }
+                input_backlog = drain_inputs(&folder, |bytes| match input_tx.try_send((bytes, false)) {
+                    Ok(()) => Ok(true),
+                    Err(std::sync::mpsc::TrySendError::Full(_)) => Ok(false),
+                    Err(std::sync::mpsc::TrySendError::Disconnected(_)) => Err(io::Error::other("터미널 입력이 종료됐습니다")),
+                })?;
             }
             drop(queue);
             let mut requests: Vec<_> = fs::read_dir(folder.join("requests"))?.flatten().filter(|e| !e.file_name().to_string_lossy().starts_with('.')).collect();
@@ -437,7 +464,7 @@ fn run_host(home: &Path, mut s: Session, launch: Launch, mut queued: Option<(Str
             for entry in requests {
                 let name = entry.file_name().to_string_lossy().into_owned();
                 // Any process of this user can drop a file here: one that is no request must not end the host.
-                let Some(bytes) = queued_bytes(&entry) else { continue };
+                let Queued::Ready(bytes) = queued_bytes(&entry) else { continue };
                 if name.ends_with("-input") {
                     match input_tx.try_send((bytes, false)) {
                         Ok(()) => {},
@@ -488,6 +515,30 @@ mod tests {
     fn session_ids_never_escape() {
         assert!(is_session_id("t-20261111-093000-ab12"));
         for id in ["../x", "t-20261111-093000-a/12", "t-20261111-093000-ab12/..", "t-20261111-093000"] { assert!(!is_session_id(id)); }
+    }
+
+    /// An input another process holds is tried again later, and the inputs after it wait for it.
+    #[cfg(windows)]
+    #[test]
+    fn an_input_that_cannot_be_read_yet_holds_back_the_ones_after_it() {
+        use std::os::windows::fs::OpenOptionsExt;
+        let folder = std::env::temp_dir().join(format!("project-o-term-order-{}", crate::run::store::new_run_id(Utc::now())));
+        let inputs = folder.join("inputs");
+        fs::create_dir_all(&inputs).unwrap();
+        fs::write(inputs.join(format!("{:020}", 0)), b"A").unwrap();
+        fs::write(inputs.join(format!("{:020}", 1)), b"B").unwrap();
+        fs::create_dir(inputs.join(format!("{:020}", 2))).unwrap();
+        let mut sent = Vec::new();
+        let held = OpenOptions::new().read(true).share_mode(0).open(inputs.join(format!("{:020}", 0))).unwrap();
+        assert!(drain_inputs(&folder, |bytes| { sent.push(bytes); Ok(true) }).unwrap());
+        assert!(sent.is_empty(), "B went ahead of A");
+        drop(held);
+        // No room for the second one: it stays, and what is no input is dropped without blocking.
+        assert!(drain_inputs(&folder, |bytes| { let room = sent.is_empty(); if room { sent.push(bytes); } Ok(room) }).unwrap());
+        assert!(!drain_inputs(&folder, |bytes| { sent.push(bytes); Ok(true) }).unwrap());
+        assert_eq!(sent, [b"A".to_vec(), b"B".to_vec()]);
+        assert_eq!(fs::read_dir(&inputs).unwrap().count(), 0);
+        let _ = fs::remove_dir_all(folder);
     }
 
     #[test]

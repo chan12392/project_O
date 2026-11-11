@@ -3,7 +3,7 @@
 use std::path::Path;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
-use crate::usage::budget::{read_settings, write_setting};
+use crate::usage::budget::{read_settings, update_setting};
 
 const KEY: &str = "agyWorkers";
 const QUOTES: [&str; 3] = [
@@ -30,16 +30,32 @@ pub struct AgyReport {
     pub notice: Value,
 }
 
-pub fn report(home: &Path) -> AgyReport {
-    let settings = read_settings(home);
-    let value = settings.get(KEY);
+/// What the saved setting says: (workers, when it was acknowledged, confirm paste).
+fn saved(value: Option<&Value>) -> (bool, Option<String>, bool) {
     let acknowledged_at = value.and_then(|v| v.get("acknowledgedAt")).and_then(Value::as_str)
         .filter(|at| chrono::DateTime::parse_from_rfc3339(at).is_ok()).map(str::to_string);
     let workers = value.and_then(|v| v.get("workers")).and_then(Value::as_bool).unwrap_or(false) && acknowledged_at.is_some();
+    (workers, if workers { acknowledged_at } else { None }, value.and_then(|v| v.get("confirmPaste")).and_then(Value::as_bool).unwrap_or(true))
+}
+
+/// The setting after a change, from what is saved at that moment: only the fields the change
+/// names move, so a paste-only change never turns workers back on.
+fn changed(value: Option<&Value>, change: &Change) -> Value {
+    let (mut workers, mut acknowledged_at, mut confirm_paste) = saved(value);
+    if let Some(on) = change.workers {
+        workers = on;
+        acknowledged_at = on.then(crate::sys::js::now_iso);
+    }
+    if let Some(confirm) = change.confirm_paste { confirm_paste = confirm; }
+    json!({ "workers": workers, "acknowledgedAt": acknowledged_at, "confirmPaste": confirm_paste })
+}
+
+pub fn report(home: &Path) -> AgyReport {
+    let (workers, acknowledged_at, confirm_paste) = saved(read_settings(home).get(KEY));
     AgyReport {
         workers,
-        acknowledged_at: if workers { acknowledged_at } else { None },
-        confirm_paste: value.and_then(|v| v.get("confirmPaste")).and_then(Value::as_bool).unwrap_or(true),
+        acknowledged_at,
+        confirm_paste,
         notice: json!({ "quotes": QUOTES, "links": [
             { "label": "Antigravity FAQ", "url": "https://antigravity.google/docs/faq" },
             { "label": "Antigravity 약관", "url": "https://antigravity.google/terms" }
@@ -65,13 +81,7 @@ pub fn set(home: &Path, change: Change) -> Result<AgyReport, String> {
     if change.workers == Some(true) && change.ack != Some(true) {
         return Err("안내와 약관을 읽고 동의 확인을 해 주세요 (--ack).".into());
     }
-    let mut current = report(home);
-    if let Some(workers) = change.workers {
-        current.workers = workers;
-        current.acknowledged_at = workers.then(crate::sys::js::now_iso);
-    }
-    if let Some(confirm) = change.confirm_paste { current.confirm_paste = confirm; }
-    write_setting(home, KEY, json!({ "workers": current.workers, "acknowledgedAt": current.acknowledged_at, "confirmPaste": current.confirm_paste }))?;
+    update_setting(home, KEY, |value| changed(value, &change))?;
     Ok(report(home))
 }
 
@@ -91,6 +101,15 @@ mod tests {
         assert!(enabled.workers && enabled.acknowledged_at.is_some() && !enabled.confirm_paste);
         let disabled = set(home, Change { workers: Some(false), ..Default::default() }).unwrap();
         assert!(!disabled.workers && disabled.acknowledged_at.is_none());
+        // A paste-only change that read the setting before workers were turned off is applied
+        // to what is saved when it writes: workers stay off (#110).
+        set(home, Change { workers: Some(true), ack: Some(true), confirm_paste: Some(true) }).unwrap();
+        let before = read_settings(home).get(KEY).cloned();
+        set(home, Change { workers: Some(false), ..Default::default() }).unwrap();
+        let paste_only = Change { confirm_paste: Some(false), ..Default::default() };
+        assert_eq!(changed(before.as_ref(), &paste_only)["workers"], true, "the stale value is what would bring workers back");
+        let after = set(home, paste_only).unwrap();
+        assert!(!after.workers && after.acknowledged_at.is_none() && !after.confirm_paste);
         std::fs::write(home.join("settings.json"), r#"{"agyWorkers":{"workers":"invalid","confirmPaste":3}}"#).unwrap();
         assert!(!workers_allowed(home) && report(home).confirm_paste);
     }

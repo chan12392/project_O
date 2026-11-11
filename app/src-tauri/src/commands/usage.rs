@@ -33,17 +33,35 @@ pub fn usage_json(home: &Path) -> Result<String, String> {
     Ok(saved.unwrap_or_else(|| json!(UsageReading::empty())).to_string())
 }
 
-/// One usage probe at a time; a refresh asked for meanwhile gets that probe's reading.
+/// One usage probe at a time, and whose login the one in flight asks.
 static REFRESH: Mutex<()> = Mutex::new(());
+static PROBING: Mutex<Option<Option<Profile>>> = Mutex::new(None);
 
 fn refresh_usage(home: &Path, profile: Option<Profile>) -> Result<String, String> {
-    let Ok(_probing) = REFRESH.try_lock() else {
-        drop(REFRESH.lock());
-        return usage_json(home);
+    shared_refresh(profile, || {
+        let reading = probe::read_usage(home, profile);
+        probe::save_usage(home, &reading).map_err(|e| e.to_string())?;
+        Ok(json!(reading).to_string())
+    }, || usage_json(home))
+}
+
+/// A refresh asked for while the same profile is being probed gets that probe's saved reading.
+/// One for another profile waits and is then probed itself: the other login's numbers are not
+/// its answer.
+fn shared_refresh(profile: Option<Profile>, probe: impl FnOnce() -> Result<String, String>, saved: impl FnOnce() -> Result<String, String>) -> Result<String, String> {
+    let _probing = match REFRESH.try_lock() {
+        Ok(probing) => probing,
+        Err(_) => {
+            let same = *PROBING.lock().unwrap_or_else(|e| e.into_inner()) == Some(profile);
+            let waited = REFRESH.lock().unwrap_or_else(|e| e.into_inner());
+            if same { return saved(); }
+            waited
+        }
     };
-    let reading = probe::read_usage(home, profile);
-    probe::save_usage(home, &reading).map_err(|e| e.to_string())?;
-    Ok(json!(reading).to_string())
+    *PROBING.lock().unwrap_or_else(|e| e.into_inner()) = Some(profile);
+    let result = probe();
+    *PROBING.lock().unwrap_or_else(|e| e.into_inner()) = None;
+    result
 }
 
 /// The text `o budget --json --cached` prints: today's usage budget per provider (ADR-0004).
@@ -158,6 +176,26 @@ mod tests {
         let home = temp("usage");
         let body: Value = serde_json::from_str(&usage_json(&home).unwrap()).unwrap();
         assert_eq!(body, json!(UsageReading::empty()));
+    }
+
+    /// While profile A is probed, a refresh for A shares it and one for B is probed itself (#112).
+    #[test]
+    fn a_refresh_for_another_profile_is_probed_itself() {
+        use std::sync::mpsc::channel;
+        let (started, on_start) = channel();
+        let (release, on_release) = channel::<()>();
+        std::thread::scope(|scope| {
+            let first = scope.spawn(move || shared_refresh(Some(Profile::ProjectO), || { started.send(()).unwrap(); on_release.recv().unwrap(); Ok("A".into()) }, || panic!("the first probes")));
+            on_start.recv().unwrap();
+            let same = scope.spawn(|| shared_refresh(Some(Profile::ProjectO), || Ok("A again".into()), || Ok("saved A".into())));
+            let other = scope.spawn(|| shared_refresh(Some(Profile::Own), || Ok("B".into()), || Ok("saved A".into())));
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            release.send(()).unwrap();
+            assert_eq!(first.join().unwrap().unwrap(), "A");
+            assert_eq!(same.join().unwrap().unwrap(), "saved A");
+            assert_eq!(other.join().unwrap().unwrap(), "B");
+        });
+        assert_eq!(shared_refresh(None, || Ok("later".into()), || panic!("nothing in flight")).unwrap(), "later");
     }
 
     #[test]

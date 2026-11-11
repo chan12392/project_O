@@ -51,8 +51,7 @@ async function readRuns(sessions: boolean): Promise<{ runsText: string; usageTex
 }
 
 /** Asks the official CLIs again, with the login the app's runs use ("project_O 프로필 사용"); undefined when the reading failed. */
-async function readFreshUsage(): Promise<UsageReading | undefined> {
-  const profile = settingsNow().clean ? "project-o" : "own";
+async function readFreshUsage(profile: string): Promise<UsageReading | undefined> {
   const tauri = window.__TAURI_INTERNALS__;
   if (tauri) return JSON.parse((await tauri.invoke("usage_refresh", { profile })) as string) as UsageReading;
   const res = await fetch(`/api/usage/refresh?profile=${profile}`, { method: "POST" });
@@ -141,8 +140,16 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
   const refreshUsage = useCallback(async () => {
     setRefreshing(true);
     try {
-      const fresh = await readFreshUsage();
-      if (fresh) setUsage(fresh);
+      // The profile switch can change while a reading is on its way: that reading is the other
+      // profile's, so the profile chosen now is read instead of showing it.
+      const chosen = () => (settingsNow().clean ? "project-o" : "own");
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const profile = chosen();
+        const fresh = await readFreshUsage(profile);
+        if (profile !== chosen()) continue;
+        if (fresh) setUsage(fresh);
+        break;
+      }
     } catch {
       // The status bar keeps the last reading and its time.
     } finally {

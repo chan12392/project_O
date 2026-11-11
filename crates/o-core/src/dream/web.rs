@@ -99,18 +99,26 @@ fn curl() -> PathBuf {
     system.filter(|path| path.is_file()).unwrap_or_else(|| PathBuf::from("curl"))
 }
 
+/// One hop's curl arguments. "-q" first: the person's own curl settings file (headers, a proxy
+/// named there) stays out of it. `--noproxy "*"`: a proxy from the environment would look the
+/// name up itself and connect where it likes, past the address that was checked, so the fetch
+/// connects directly or fails.
+pub(super) fn curl_args(pinned: Option<&str>, address: &str) -> Vec<String> {
+    let mut args: Vec<String> = ["-q", "-sS", "--globoff", "--compressed", "--noproxy", "*", "--proto", "=http,https", "--max-time", "20"].map(String::from).to_vec();
+    if let Some(pinned) = pinned { args.extend(["--resolve".to_string(), pinned.to_string()]); }
+    args.extend(["--max-filesize", &MAX_FETCH_BYTES.to_string(), "-A", "project_O", "-w", FETCH_MARK, "--", address].map(String::from));
+    args
+}
+
 pub(super) fn fetch(address: &str) -> Result<String, String> {
     // One hop per request and no curl of ours follows on its own: every address a page sends
     // on to is checked like the first, so a public page cannot lead to this PC or its network.
-    // "-q" first: the person's own curl settings (a proxy, headers) stay out of it.
     let mut address = address.to_string();
     for _ in 0..=MAX_REDIRECTS {
         let (host, port) = host_port(&address).ok_or("주소가 올바르지 않습니다")?;
         let pinned = pin(&host, port, &resolve(&host, port)).map_err(|reason| format!("주소를 읽지 못했습니다: {reason}"))?;
         let mut command = Command::new(curl());
-        command.args(["-q", "-sS", "--globoff", "--compressed", "--proto", "=http,https", "--max-time", "20"]);
-        if let Some(pinned) = &pinned { command.args(["--resolve", pinned]); }
-        command.args(["--max-filesize", &MAX_FETCH_BYTES.to_string(), "-A", "project_O", "-w", FETCH_MARK, "--", &address]);
+        command.args(curl_args(pinned.as_deref(), &address));
         let (status, out, err) = proc::capture(&mut command, FETCH_TIMEOUT).map_err(|e| format!("주소를 읽지 못했습니다: {e}"))?;
         if !status.success() { return Err(format!("주소를 읽지 못했습니다: {}", one_line(&err))); }
         let (body, code, next) = fetched(&out).ok_or("주소를 읽지 못했습니다: 응답을 읽을 수 없습니다")?;
@@ -190,6 +198,14 @@ mod tests {
         assert!(pin("example.org", 443, &[]).is_err());
         // Written as numbers: judged by `refuse_address`, nothing to look up.
         assert_eq!(pin("93.184.215.14", 80, &[]), Ok(None));
+        // Every hop goes direct: a proxy from the environment would look the name up again.
+        for pinned in [Some("example.org:80:93.184.215.14"), None] {
+            let args = curl_args(pinned, "http://example.org/");
+            assert_eq!(args[0], "-q");
+            assert!(args.windows(2).any(|pair| pair == ["--noproxy", "*"]), "{args:?}");
+            assert_eq!(args.windows(2).any(|pair| pair[0] == "--resolve" && Some(pair[1].as_str()) == pinned), pinned.is_some());
+            assert_eq!(args[args.len() - 2..], ["--", "http://example.org/"]);
+        }
         assert_eq!(host_port("https://example.org/a?b"), Some(("example.org".into(), 443)));
         assert_eq!(host_port("http://example.org:8080"), Some(("example.org".into(), 8080)));
         assert_eq!(host_port("http://[2606:2800::1]:81/x"), Some(("2606:2800::1".into(), 81)));

@@ -54,6 +54,14 @@ mod web;
 use web::fetched;
 use web::{fetch, page_text, refuse_address};
 
+/// A project as the Wiki compares it: the same rule as `projects::same`. Letter case is ignored
+/// only on Windows, where it names the same folder; elsewhere `/work/Alpha` and `/work/alpha`
+/// are two projects and a card of one does not read the other's documents.
+fn project_key(path: &str) -> String {
+    let path = normalize_project(path);
+    if cfg!(windows) { path.to_ascii_lowercase() } else { path }
+}
+
 /// The top folders of the list.
 pub const EXTERNAL: &str = "외부 자료";
 pub const DONE: &str = "작업 성공";
@@ -598,7 +606,7 @@ fn load(home: &Path, scope: Scope) -> Result<Loaded, String> {
             };
             let project = crate::context::card_project(&conn, run_id, None)?;
             let has_index = conn.query_row("SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE name = 'dream_index')", [], |r| r.get::<_, bool>(0)).unwrap_or(false);
-            (conn, has_index, Some(normalize_project(&project).to_lowercase()))
+            (conn, has_index, Some(project_key(&project)))
         }
     };
     let write = matches!(scope, Scope::Person);
@@ -635,7 +643,7 @@ fn load(home: &Path, scope: Scope) -> Result<Loaded, String> {
     named.sort_by(|a, b| a.doc.at.cmp(&b.doc.at));
     for entry in named {
         let project = entry.doc.project.clone().unwrap_or_default();
-        let dir = project_dirs.entry(project.to_lowercase()).or_insert_with(|| {
+        let dir = project_dirs.entry(project_key(&project)).or_insert_with(|| {
             let base = if project.is_empty() { "프로젝트 없음".to_string() } else { name(&project).to_string() };
             let mut dir = base.clone();
             let mut n = 2;
@@ -675,7 +683,7 @@ fn load(home: &Path, scope: Scope) -> Result<Loaded, String> {
 /// and the materials filed under it or under none.
 fn for_project(doc: &DreamDoc, project: &str) -> bool {
     match &doc.project {
-        Some(of) => normalize_project(of).to_lowercase() == project,
+        Some(of) => project_key(of) == project,
         None => doc.kind == "external",
     }
 }
@@ -724,7 +732,7 @@ fn edges(loaded: &Loaded) -> Vec<BTreeMap<usize, usize>> {
         let Some(record) = &entries[i].record else { continue };
         by_card.insert((&record.run_id, &record.card_id), i);
         by_run.entry(&record.run_id).or_default().push(i);
-        let project = entries[i].doc.project.as_deref().unwrap_or_default().to_lowercase();
+        let project = project_key(entries[i].doc.project.as_deref().unwrap_or_default());
         for file in &record.files { by_file.entry((project.clone(), file)).or_default().push(i); }
     }
     // A note to the record of the card that left it.
@@ -737,7 +745,7 @@ fn edges(loaded: &Loaded) -> Vec<BTreeMap<usize, usize>> {
     for &i in &by_time {
         let Some(tool) = &entries[i].tool else { continue };
         if let Some(&record) = by_card.get(&(tool.run_id.as_str(), tool.card_id.as_str())) { wire(i, record); }
-        let project = entries[i].doc.project.as_deref().unwrap_or_default().to_lowercase();
+        let project = project_key(entries[i].doc.project.as_deref().unwrap_or_default());
         for failure in tool.failures.iter().filter(|f| !f.summary.is_empty()).take(MAX_SHARED_FAILURES) {
             by_failure.entry((project.clone(), &failure.name, &failure.summary)).or_default().push(i);
         }
@@ -783,12 +791,12 @@ pub struct DreamQuery {
 pub fn find(home: &Path, scope: Scope, query: &DreamQuery) -> Result<DreamList, String> {
     let wanted: Vec<String> = query.tags.iter().map(|tag| tag_name(tag).ok_or_else(|| format!("태그로 쓸 수 없습니다: {tag}"))).collect::<Result<_, _>>()?;
     if let Some(kind) = query.kind.as_deref().filter(|kind| !KINDS.contains(kind)) { return Err(format!("kind는 {} 중 하나입니다: {kind}", KINDS.join(", "))); }
-    let project = query.project.as_deref().map(|p| normalize_project(p).to_lowercase());
+    let project = query.project.as_deref().map(project_key);
     let loaded = load(home, scope)?;
     let mut docs: Vec<DreamDoc> = loaded.entries.into_iter().map(|e| e.doc).filter(|doc| {
         wanted.iter().all(|tag| doc.tags.contains(tag))
             && query.kind.as_deref().is_none_or(|kind| doc.kind == kind)
-            && project.as_deref().is_none_or(|project| doc.project.as_deref().is_some_and(|of| normalize_project(of).to_lowercase() == project))
+            && project.as_deref().is_none_or(|project| doc.project.as_deref().is_some_and(|of| project_key(of) == project))
     }).collect();
     docs.sort_by(|a, b| b.at.cmp(&a.at));
     let more = query.limit.is_some_and(|limit| docs.len() > limit);
@@ -820,7 +828,7 @@ pub const HINT_HEADER: &str = "[Wiki — 이전 작업이 남긴 문서]";
 /// the tags most used, and how to open only the documents it needs. `None` when there is nothing
 /// to find; a failure to read is nothing to say, never a card that cannot start.
 pub fn hint(home: &Path, project: &str) -> Option<String> {
-    let project = normalize_project(project).to_lowercase();
+    let project = project_key(project);
     let loaded = load(home, Scope::Person).ok()?;
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for entry in loaded.entries.iter().filter(|e| for_project(&e.doc, &project)) {
@@ -1011,7 +1019,7 @@ pub fn graph(home: &Path) -> Result<DreamGraph, String> {
     for &i in &shown {
         let entry = &entries[i];
         let ("external", Some(project)) = (entry.doc.kind.as_str(), &entry.doc.project) else { continue };
-        let Some(dir) = loaded.project_dirs.get(&normalize_project(project).to_lowercase()) else { continue };
+        let Some(dir) = loaded.project_dirs.get(&project_key(project)) else { continue };
         for kind in [NOTES, DONE, FAILED, TOOLS] {
             let folder = format!("{kind}/{dir}");
             if placed.contains(&folder) { links.push(link(&format!("f:{}", entry.doc.path), &format!("d:{folder}"), "references", 1, fresh[i])); }
@@ -1353,6 +1361,30 @@ mod tests {
         let told = hint(&home, "C:\\work\\blog").unwrap();
         assert!(told.contains("태그: #배포\n") && told.contains("o context --wiki <태그>"), "{told}");
         assert_eq!(hint(&home, "E:/nothing/here").map(|t| t.contains("#배포")), Some(true));
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    /// Projects are told apart as `projects::same` does: by letter case too, except on Windows (#111).
+    #[test]
+    fn projects_differ_by_letter_case_except_on_windows() {
+        assert_eq!(project_key("C:\\work\\Blog\\"), project_key("C:/work/Blog"));
+        assert_eq!(project_key("/work/Alpha") == project_key("/work/alpha"), cfg!(windows));
+        assert_eq!(project_key("/work/Alpha") == project_key("/work/alpha"), crate::projects::same("/work/Alpha", "/work/alpha"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn a_card_does_not_read_a_project_whose_path_differs_only_by_case() {
+        let home = home("case");
+        run(&home, "20260101-000000-aaaa", "/work/Alpha", "build", (CardStatus::Done, Some("ok")), "src/a.rs", 30);
+        note(&home, "20260101-000000-aaaa", "build", "알파 메모 #배포");
+        run(&home, "20260102-000000-bbbb", "/work/alpha", "x", (CardStatus::Done, Some("ok")), "b.rs", 2);
+        note(&home, "20260102-000000-bbbb", "x", "다른 프로젝트 메모 #배포");
+        crate::context::refresh(&home).unwrap();
+        let card = Scope::Card { run_id: "20260101-000000-aaaa" };
+        let found = find(&home, card, &DreamQuery { tags: vec!["배포".into()], ..DreamQuery::default() }).unwrap().docs;
+        assert!(!found.is_empty());
+        assert!(found.iter().all(|doc| doc.project.as_deref() == Some("/work/Alpha")), "{:?}", found.iter().map(|d| &d.path).collect::<Vec<_>>());
         fs::remove_dir_all(home).unwrap();
     }
 

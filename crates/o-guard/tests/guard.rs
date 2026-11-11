@@ -121,6 +121,21 @@ fn hook_enforces_branch_names() {
     assert!(blocked(&bash("git switch -c a/x"), &OnBranch("younchan")));
     assert!(passes(&bash("git switch -c yongwoo-session-resume"), &OnBranch("yongwoo")));
     assert!(passes(&bash("git switch -c younchan"), &OnBranch("yongwoo")));
+    // The created name is read from the call's words: another spelling of git does not hide it,
+    // and a forced create cannot move a protected branch (#115).
+    for command in [
+        "git.exe checkout -B main HEAD",
+        "git.exe switch -C main HEAD",
+        "\"C:/Program Files/Git/cmd/git.exe\" switch --force-create test_1",
+        "git.exe branch feature-x",
+        "git.exe checkout -b feature-x main",
+        "git checkout -B main HEAD",
+    ] {
+        assert!(blocked(&bash(command), &OnBranch("younchan")), "{command}");
+    }
+    for command in ["git.exe switch -c younchan-topic main", "git.exe branch younchan-topic", "git.exe checkout main -- README.md", "git.exe branch --list"] {
+        assert!(passes(&bash(command), &OnBranch("younchan")), "{command}");
+    }
     assert!(passes(&bash("git branch -d younchan-old"), &OnBranch("younchan")));
 }
 

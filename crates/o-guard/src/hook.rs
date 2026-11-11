@@ -365,6 +365,24 @@ fn git_call_reasons(call: &GitCall, current_branch: &dyn Fn() -> String) -> Vec<
             ));
         }
     }
+    // The branch a call creates or re-creates, read from the call's words so `git.exe`, a path or
+    // quotes do not hide it: it follows the naming rule, and `-B main` would move a protected branch.
+    let created = match sub {
+        "checkout" | "switch" => {
+            let create = ["-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan"];
+            call.args.iter().position(|arg| create.contains(&arg.as_str())).and_then(|at| call.args.get(at + 1)).map(String::as_str)
+        }
+        "branch" if call.args.iter().all(|arg| !arg.starts_with('-') || matches!(arg.as_str(), "-f" | "--force")) => positional.first().copied(),
+        _ => None,
+    };
+    if let Some(name) = created.filter(|name| !name.starts_with('-')) {
+        if is_protected(name) {
+            reasons.push(moved(name));
+        }
+        if !BRANCH_NAME.is_match(name) {
+            reasons.push(format!("브랜치 이름 {name}은 규칙({} 또는 <개인 브랜치>-<주제>)에 맞지 않습니다", PERSONAL_BRANCHES.join(", ")));
+        }
+    }
     if sub == "worktree" && positional.first() == Some(&"add") && !flag(&["-b", "-B", "--detach", "-d", "--orphan"]) {
         if let Some(branch) = positional.get(2).filter(|branch| is_protected(branch)) {
             reasons.push(format!("보호 브랜치 {branch}의 작업 폴더(거울)는 사람이 설정합니다. 에이전트는 만들지 않습니다"));
