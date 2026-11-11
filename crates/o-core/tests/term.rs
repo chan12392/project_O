@@ -71,6 +71,44 @@ fn interactive_session_round_trip() {
     assert_eq!((ended.cols, ended.rows), (90, 27));
 }
 
+/// Files another process leaves in the session's folders are not requests: a malformed resize,
+/// an input over the write limit or a folder must neither end the host nor reach the terminal.
+#[cfg(windows)]
+#[test]
+fn stray_request_files_neither_end_the_host_nor_reach_the_terminal() {
+    use std::{path::PathBuf, thread, time::{Duration, Instant}};
+    use o_core::{sys::launch::Launch, term};
+    let home = std::env::temp_dir().join(format!("project-o-term-{}", o_core::run::store::new_run_id(chrono::Utc::now())));
+    std::fs::create_dir_all(&home).unwrap();
+    let mut launch = Launch::new(PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32").join("cmd.exe"));
+    launch.arg("/K");
+    launch.current_dir(&home);
+    let session = term::open_card(&home, "test".into(), home.to_string_lossy().into(), "run".into(), "card".into(), launch, "echo READYMARK".into(), false).unwrap();
+    let folder = home.join("terminals").join(&session.id);
+    let mut oversized = b"echo STRAYMARK\r".to_vec();
+    oversized.resize(64 * 1024 + 1, b' ');
+    std::fs::write(folder.join("requests").join("0-a-resize"), b"not json").unwrap();
+    std::fs::write(folder.join("requests").join("0-b-resize"), b"[0,0]").unwrap();
+    std::fs::write(folder.join("requests").join("0-c-input"), &oversized).unwrap();
+    std::fs::create_dir(folder.join("requests").join("0-d-resize")).unwrap();
+    std::fs::write(folder.join("inputs").join("zz-oversized"), &oversized).unwrap();
+    std::fs::create_dir(folder.join("inputs").join("zz-folder")).unwrap();
+    term::write(&home, &session.id, b"echo AFTER^MARK\r").unwrap();
+    let deadline = Instant::now() + Duration::from_secs(20);
+    let shown = loop {
+        let text = String::from_utf8_lossy(&term::decode_data(&term::read(&home, &session.id, 0).unwrap().data).unwrap()).into_owned();
+        if text.contains("AFTERMARK") { break text; }
+        assert!(Instant::now() < deadline, "the host stopped taking input: {text:?}");
+        thread::sleep(Duration::from_millis(30));
+    };
+    assert!(!shown.contains("STRAYMARK"), "{shown:?}");
+    assert_eq!(term::get(&home, &session.id).unwrap().state, "running");
+    assert!(std::fs::read_dir(folder.join("requests")).unwrap().next().is_none());
+    assert!(!folder.join("inputs").join("zz-oversized").exists() && !folder.join("inputs").join("zz-folder").exists());
+    term::close(&home, &session.id).unwrap();
+    assert_eq!(term::wait(&home, &session.id, Duration::from_secs(10)).unwrap().state, "exited");
+}
+
 #[cfg(windows)]
 #[test]
 fn terminal_close_remains_responsive_when_child_does_not_read() {

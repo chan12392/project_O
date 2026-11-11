@@ -148,9 +148,10 @@ fn normalized(repo_relative: &str) -> String {
     slashes.strip_prefix("./").unwrap_or(&slashes).to_string()
 }
 
+/// A path that climbs with `..` is never allowed: `docs/../crates/x.rs` is not a file in `docs/`.
 pub fn is_allowed_path(repo_relative: &str) -> bool {
     let normalized = normalized(repo_relative);
-    ALLOWED_PATHS.iter().any(|p| p.is_match(&normalized))
+    !normalized.split('/').any(|step| step == "..") && ALLOWED_PATHS.iter().any(|p| p.is_match(&normalized))
 }
 
 /// Whether `rule` does not apply to the file: an allowed path skips every rule, a bypass path

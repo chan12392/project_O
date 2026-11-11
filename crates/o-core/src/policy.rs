@@ -139,11 +139,27 @@ fn lexical(path: &str) -> String {
 /// A card may write inside its project: O's own state and the home folder (CLI
 /// settings) must stay out of reach, however either path is spelled.
 fn reaches_protected(project: &str, ctx: &PolicyContext) -> bool {
-    let o_homes = [ctx.o_home.clone(), (ctx.resolve)(&ctx.o_home)];
+    let mut o_homes = vec![ctx.o_home.clone(), (ctx.resolve)(&ctx.o_home)];
+    for sibling in o_siblings(&ctx.o_home) {
+        o_homes.push((ctx.resolve)(&sibling));
+        o_homes.push(sibling);
+    }
     let user_homes = [ctx.user_home.clone(), (ctx.resolve)(&ctx.user_home)];
     [project.to_string(), (ctx.resolve)(project)]
         .iter()
         .any(|p| o_homes.iter().any(|h| within(p, h) || within(h, p)) || user_homes.iter().any(|u| within(u, p)))
+}
+
+/// The folders O keeps beside its state folder, as off-limits as the state folder itself: the
+/// agent profiles (each CLI's sign-in), lead attachments and plans, terminal card tasks and
+/// card worktrees. A card whose project is one of them would be handed a copy of it.
+fn o_siblings(o_home: &str) -> Vec<String> {
+    let home = o_home.replace('\\', "/");
+    let Some((parent, name)) = home.trim_end_matches('/').rsplit_once('/') else { return Vec::new() };
+    let mut names = vec!["project_O-agents".to_string()];
+    names.extend(["agents", "lead", "term", "worktrees"].map(|kind| format!("{name}-{kind}")));
+    names.dedup();
+    names.into_iter().map(|name| format!("{parent}/{name}")).collect()
 }
 
 fn is_absolute(path: &str) -> bool {
@@ -344,7 +360,7 @@ pub fn check_project(project: Option<&str>, ctx: &PolicyContext) -> Vec<Violatio
             } else if reaches_protected(project, ctx) {
                 found.add(
                     "protected-project",
-                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
+                    format!("{project}는 O의 상태 폴더(와 그 옆의 프로필·총괄·터미널·작업 사본 폴더)나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
                     None,
                 );
             }

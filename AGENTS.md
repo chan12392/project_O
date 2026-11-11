@@ -125,10 +125,10 @@ Antigravity 총괄은 사람이 직접 쓰는 터미널이다. 작업 에이전�
 
 | 지점 | 무엇을 막나 |
 |---|---|
-| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `o hook`, `crates/o-guard`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / 보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main) 커밋·push / 대표 외 test_1_hotfix·main_hotfix·main 병합(`gh pr merge`·`gh api`) / 규칙 밖 브랜치 이름. 훅이나 gh 확인이 실패하면 막는다. `o`가 PATH에 없거나 훅이 오류로 끝나도 막는다: Claude는 `"onFailure": "block"`(Claude Code 2.1.295 이상, 시간 초과도 막음), Codex는 `o hook \|\| exit 2`(Codex는 시간 초과를 통과시킨다) |
+| 에이전트 훅 (`.claude/settings.json`, `.codex/hooks.json` → `o hook`, `crates/o-guard`) | 인증 파일·토큰 접근(Read·Grep 포함), 프로바이더 서버 직접 호출, 권한 확인 끄는 옵션이 들어간 명령·코드 수정 / 보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main) 커밋·push, 보호 브랜치로의 전환(`git checkout main`)과 보호 브랜치 옮기기·지우기(`branch -f`, `update-ref`), 여러 브랜치를 한꺼번에 올리는 push(`--all`, `--mirror`) / git 훅을 건너뛰거나 끄는 옵션(`--no-verify`, `core.hooksPath` 변경) / 대표 외 test_1_hotfix·main_hotfix·main 병합(`gh pr merge`·`gh api`) / 규칙 밖 브랜치 이름. 명령은 단어로 읽어 따옴표나 `git.exe`·`gh.exe` 표기로 숨기지 못한다. 훅이나 gh 확인이 실패하면 막는다. `o`가 PATH에 없거나 훅이 오류로 끝나도 막는다: Claude는 `"onFailure": "block"`(Claude Code 2.1.295 이상, 시간 초과도 막음), Codex는 `o hook \|\| exit 2`(Codex는 시간 초과를 통과시킨다) |
 | git 훅 (`.githooks/` → `o scan`, `npm install` 시 자동 설정) | 같은 코드 규칙으로 커밋 검사, 보호 브랜치 커밋·push |
 | CI (`.github/workflows/guard.yml`, `branch-flow.yml`, `merge-guard.yml`) | 전체 파일 정책 검사 + 테스트 + 타입 검사(Linux·Windows), PR 방향 검사, 대표 외 test_1_hotfix·main_hotfix·main 병합 경보 (읽기 전용 토큰) |
-| O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002), 오늘 사용 예산을 다 쓴 서비스(`daily-budget`, 하루 사용 예산이 켜져 있을 때만 — 기본 켜짐, `o budget --on\|--off`. 카드 시작 직전에도 확인 — ADR-0004, ADR-0013), 현재 설계 대화에서 분배하지 않은 실행으로의 총괄 후속 지시(ADR-0022) |
+| O CLI (`crates/o-core/src/policy.rs`) | 카드에 실행 파일·인자·환경변수·계정 지정, 허용 외 프로바이더, 한도에 걸린 서비스 재사용(다른 계정 포함), 동시 실행·하루 실행 상한 초과(카드 시작 직전에도 확인), O 상태 폴더·홈 폴더를 품는 작업 폴더와 상태 폴더 옆의 O 폴더(`project_O-agents`·`-lead`·`-term`·`-worktrees`) 안의 작업 폴더, 정책 위반 내용의 팀 메시지, 카드의 총괄·다른 실행 사칭 (ADR-0002), 오늘 사용 예산을 다 쓴 서비스(`daily-budget`, 하루 사용 예산이 켜져 있을 때만 — 기본 켜짐, `o budget --on\|--off`. 카드 시작 직전에도 확인 — ADR-0004, ADR-0013), 현재 설계 대화에서 분배하지 않은 실행으로의 총괄 후속 지시(ADR-0022) |
 
 - 에이전트 훅은 사람 전용 `o resources recover <id> --confirm-exited`도 차단한다(ADR-0039 개정 3).
 

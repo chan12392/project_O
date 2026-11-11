@@ -55,6 +55,26 @@ fn a_project_may_not_hold_o_state_or_the_home_folder() {
     assert!(check_plan(&with(plan(vec![code_card()]), "project", json!("C:/Users/me/projects/app")), &ctx()).plan.is_some());
 }
 
+/// The folders beside the state folder hold sign-ins, lead plans, card tasks and card copies.
+#[test]
+fn a_project_may_not_be_a_folder_o_keeps_beside_its_state() {
+    for bad in [
+        "C:/Users/me/AppData/Local/project_O-agents",
+        "C:\\Users\\me\\AppData\\Local\\project_O-agents\\codex\\home",
+        "C:/Users/me/AppData/Local/project_O-lead/th-1/plans",
+        "C:/Users/me/AppData/Local/project_O-term/run/card",
+        "C:/Users/me/AppData/Local/PROJECT_O-worktrees/run/1",
+        "C:/Users/me/AppData/Local/x/../project_O-agents/claude",
+    ] {
+        let checked = check_plan(&with(plan(vec![code_card()]), "project", json!(bad)), &ctx());
+        assert!(has(&checked, "protected-project"), "{bad}");
+    }
+    assert!(check_plan(&with(plan(vec![code_card()]), "project", json!("C:/Users/me/AppData/Local/project_O-agents-notes")), &ctx()).plan.is_some());
+    let mut linked = ctx();
+    linked.resolve = Box::new(|p: &str| if p == "C:/work/profiles" { "C:/Users/me/AppData/Local/project_O-agents".to_string() } else { p.to_string() });
+    assert!(has(&check_plan(&with(plan(vec![code_card()]), "project", json!("C:/work/profiles")), &linked), "protected-project"));
+}
+
 /// `.`, `..` and links that land on the home folder or O's state are the same
 /// folder, so they must not slip past the check above.
 #[test]
