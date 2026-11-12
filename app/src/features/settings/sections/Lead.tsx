@@ -20,6 +20,9 @@ const FIELD = "h-8 w-56 rounded-md border bg-background/50 px-2 text-xs focus-ri
 function LeadSection({ api }: { api: Backend }) {
   const settings = useSettings();
   const agent = settings.leadAgent;
+  const catalog = useLeadModels(api, agent === "agy" ? undefined : agent);
+  const supported = catalog.models.find((m) => m.id === settings.leadModels[agent])?.efforts;
+  const efforts = supported?.length ? supported : LEAD_EFFORTS[agent];
   return (
     <Section title="총괄" description="총괄 대화에서 새 메시지가 처음 쓰는 에이전트·모델·노력 수준입니다. 보낼 때마다 입력창에서 바꿀 수 있습니다.">
       <Rows>
@@ -44,7 +47,7 @@ function LeadSection({ api }: { api: Backend }) {
                 label="기본 노력 수준"
                 value={settings.leadEffort}
                 onChange={(leadEffort) => updateSettings({ leadEffort })}
-                options={LEAD_EFFORTS[agent].map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e }))}
+                options={efforts.map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e }))}
               />
             }
           />
@@ -65,7 +68,7 @@ function LeadSection({ api }: { api: Backend }) {
 
 /** Where each agent's model list comes from, in the row's description. */
 const MODEL_SOURCE: Record<LeadProvider, string> = {
-  claude: "Claude Code가 문서화한 모델 별칭(최신 Opus·Sonnet 등)입니다. 이름 뒤 버전은 지금 그 별칭이 가리키는 모델입니다. 기본 모델은 Claude Code 설정을 따릅니다.",
+  claude: "실행 프로필의 Claude Code가 알려 주는 모델 목록입니다. 조회하지 못한 별칭은 버전 미확인으로 표시하며 저장된 선택은 유지합니다.",
   codex: "codex debug models가 알려 주는 모델 목록입니다. 기본 모델은 Codex 설정을 따릅니다.",
   agy: "agy models가 알려 주는 모델 목록입니다. 기본 모델은 Antigravity 설정을 따릅니다.",
 };
@@ -74,7 +77,7 @@ const MODEL_SOURCE: Record<LeadProvider, string> = {
 function DefaultModel({ api, agent }: { api: Backend; agent: LeadProvider }) {
   const settings = useSettings();
   const saved = settings.leadModels[agent] ?? "";
-  const { loading, models, failed } = useLeadModels(api, agent);
+  const { loading, models, failed, stale, checkedAt } = useLeadModels(api, agent);
   const [error, setError] = useState<string>();
   const save = (id: string) => {
     const next = { ...settings.leadModels };
@@ -84,7 +87,7 @@ function DefaultModel({ api, agent }: { api: Backend; agent: LeadProvider }) {
   };
   const label = `${LEAD_NAME[agent]} 기본 모델`;
 
-  if (failed) {
+  if (failed && models.length === 0) {
     const commit = (value: string) => {
       const id = value.trim();
       if (id && !MODEL_ID.test(id)) return setError("영문·숫자로 시작하는 80자 이내의 모델 id만 받습니다");
@@ -113,7 +116,8 @@ function DefaultModel({ api, agent }: { api: Backend; agent: LeadProvider }) {
     );
   }
   return (
-    <select aria-label={label} value={saved} disabled={loading} onChange={(e) => save(e.target.value)} className={FIELD}>
+    <div className="flex w-56 max-w-full flex-col gap-1">
+    <select aria-label={label} aria-describedby={`lead-model-${agent}-status`} value={saved} disabled={loading} onChange={(e) => save(e.target.value)} className={FIELD}>
       <option value="">{loading ? "목록을 불러오는 중…" : "기본 모델"}</option>
       {models.map((m) => (
         <option key={m.id} value={m.id}>
@@ -122,5 +126,7 @@ function DefaultModel({ api, agent }: { api: Backend; agent: LeadProvider }) {
       ))}
       {saved && !models.some((m) => m.id === saved) && <option value={saved}>{saved}</option>}
     </select>
+    <span id={`lead-model-${agent}-status`} role="status" className="text-2xs text-muted-foreground">{failed ?? (stale ? "오래된 목록 · 저장된 선택 유지" : checkedAt ? `확인: ${new Date(checkedAt).toLocaleString()}` : "목록 확인 시각 미확인")}</span>
+    </div>
   );
 }

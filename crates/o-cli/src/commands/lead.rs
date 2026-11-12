@@ -100,7 +100,7 @@ fn lead_main(home: &Path, args: &[String]) -> i32 {
         Some("decide") => decide(home, rest),
         Some("stop") => stop(home, rest),
         Some("stop-all") => stop_all(home, rest),
-        Some("models") => models(rest),
+        Some("models") => models(home, rest),
         _ => fail(LEAD.usage),
     }
 }
@@ -143,15 +143,17 @@ fn note(home: &Path, args: &[String]) -> i32 {
     }
 }
 
-fn models(args: &[String]) -> i32 {
+fn models(home: &Path, args: &[String]) -> i32 {
     let a = match parse(args) {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
     let Some(provider) = a.provider.as_deref().and_then(ProviderId::parse) else { return fail("--provider claude|codex|agy가 필요합니다") };
-    match o_core::providers::lead_models(provider) {
-        Ok(models) => {
-            println!("{}", json!({ "provider": provider, "models": models }));
+    let root = o_core::agents::clean::default_root();
+    let cwd = a.project.as_deref().map(std::path::PathBuf::from).or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+    match o_core::providers::models::catalog(home, provider, a.mode.profile.is_clean().then_some(root.as_path()), &cwd, a.refresh) {
+        Ok(catalog) => {
+            println!("{}", json!(catalog));
             0
         }
         Err(e) => fail(&e),
@@ -177,6 +179,7 @@ struct Args {
     /// `--mode yolo|normal` (ADR-0014); none: the saved switch.
     yolo: Option<bool>,
     json: bool,
+    refresh: bool,
     words: Vec<String>,
 }
 
@@ -199,6 +202,7 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--manual-dispatch" => out.manual_dispatch = true,
             "--overall" => out.overall = true,
             "--json" => out.json = true,
+            "--refresh" => out.refresh = true,
             other if other.starts_with("--") => return Err(format!("알 수 없는 인자: {other}")),
             other => out.words.push(other.to_string()),
         }
@@ -301,6 +305,7 @@ fn send(home: &Path, args: &[String]) -> i32 {
         yolo: yolo::resolve(home, a.yolo),
     };
     if let Err(e) = lead::check_request(home, &req) { return fail(&e); }
+    o_core::providers::models::refresh_workers(home, req.clean, Path::new(project));
     let thread = match lead::select_thread(home, project, req.thread, req.fresh) {
         Ok(thread) => thread,
         Err(e) => return fail(&e),

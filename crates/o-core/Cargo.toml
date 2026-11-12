@@ -48,6 +48,11 @@ name = "runner"
 harness = false
 
 [[test]]
+name = "fallback_runner"
+# This binary answers fixture metadata requests without calling real provider CLIs.
+harness = false
+
+[[test]]
 name = "windows_native_launch"
 harness = false
 

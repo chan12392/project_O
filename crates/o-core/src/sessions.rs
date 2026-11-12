@@ -821,7 +821,9 @@ fn at_of(event: &OEvent) -> &str {
         | OEvent::CardGuides { at, .. }
         | OEvent::RunContext { at, .. }
         | OEvent::RunBlocked { at, .. }
-        | OEvent::RunMode { at, .. } => at,
+        | OEvent::RunMode { at, .. }
+        | OEvent::CardUsageSettled { at, .. }
+        | OEvent::CardFallback { at, .. } => at,
     }
 }
 

@@ -6,6 +6,7 @@
  * `providers.ts`; screens only ever see these shapes.
  */
 import type { ProviderId } from "./plan.ts";
+import type { UsageSettlement } from "./usageAccounting.ts";
 
 export type CardStatus = "done" | "failed" | "stopped";
 
@@ -20,6 +21,8 @@ export interface CardInfo {
 }
 
 export type OEvent =
+  | ({ t: "card.usage.settled"; at: string; cardId: string } & UsageSettlement)
+  | { t: "card.fallback"; at: string; cardId: string; from: ProviderId; fromModel?: string | null; target: { provider: ProviderId; model: string }; reason: string }
   | { t: "run.start"; at: string; runId: string; title: string; project: string; cards: CardInfo[] }
   | { t: "run.followup"; at: string; sourceRunId: string; cardId: string }
   | { t: "card.queued"; at: string; cardId: string; reason: string }

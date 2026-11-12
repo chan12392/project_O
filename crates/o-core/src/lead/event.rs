@@ -5,6 +5,12 @@ use super::*;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all_fields = "camelCase")]
 pub enum LeadEvent {
+    #[serde(rename = "lead.subscription_limit")]
+    SubscriptionLimit { at: String, provider: ProviderId, until: String, safe_handoff: bool },
+    #[serde(rename = "lead.fallback")]
+    Fallback { at: String, from: ProviderId, from_model: Option<String>, target: crate::usage::fallback::Target, reason: String },
+    #[serde(rename = "lead.usage.settled")]
+    UsageSettled { at: String, #[serde(flatten)] usage: crate::usage::accounting::Settlement },
     /// A new thread for a project ("새 대화" starts another).
     #[serde(rename = "lead.start")]
     Start { at: String, thread_id: String, project: String },

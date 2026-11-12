@@ -11,6 +11,7 @@ mod about;
 mod agents;
 mod agy;
 mod billing;
+mod fallback;
 mod budget;
 mod context;
 mod dispatch;
@@ -68,6 +69,7 @@ pub const COMMANDS: &[Command] = &[
     budget::BUDGET,
     ram::RAM,
     billing::BILLING,
+    fallback::FALLBACK,
     agy::AGY,
     yolo::YOLO,
     runs::RUNS,

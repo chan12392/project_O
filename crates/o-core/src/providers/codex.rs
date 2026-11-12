@@ -516,6 +516,7 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
                 return out;
             }
             Some("web_search") => return tool("web_search", short_value(item.get("query"))),
+            Some(kind) if kind.contains("tool") => return tool(kind, "작업 재시도 전 결과 확인이 필요한 도구".into()),
             // item.type === "error" items are config warnings; the turn still runs.
             _ => {}
         }
@@ -545,6 +546,9 @@ fn read_stream(data: &Map<String, Value>) -> Vec<StreamSignal> {
         // Codex reports each reconnect attempt as an "error" and the turn goes on; the 429 such a
         // notice may quote is not a usage limit, and must not rest the service for other cards.
         let mut out = if kind == Some("error") && RETRY_NOTICE.is_match(&text) { Vec::new() } else { limit_from_text(&text, false) };
+        if data.get("error").and_then(|e| e.get("type").or_else(|| e.get("code"))).and_then(Value::as_str) == Some("usage_limit_reached") && !out.iter().any(|s| matches!(s, StreamSignal::SubscriptionLimit { .. })) {
+            out.push(StreamSignal::SubscriptionLimit { until: String::new() });
+        }
         out.push(StreamSignal::Final { ok: false, text });
         return out;
     }

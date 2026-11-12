@@ -112,12 +112,7 @@ fn yolo_head() -> Vec<String> {
 /// command), so this table is kept by hand. **Update it when Claude Code's aliases move to
 /// a new model** (code.claude.com/docs/en/model-config). `--model` still gets the alias, so
 /// a stale version here only mislabels the menu; it never picks another model.
-const LEAD_MODELS: [(&str, &str, &str, &str); 4] = [
-    ("fable", "Fable", "5.1", "claude-fable-5-1"),
-    ("opus", "Opus", "5.5", "claude-opus-5-5"),
-    ("sonnet", "Sonnet", "5.5", "claude-sonnet-5-5"),
-    ("haiku", "Haiku", "5.5", "claude-haiku-5-5"),
-];
+const LEAD_MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
 
 impl Provider for Claude {
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
@@ -216,7 +211,7 @@ impl Provider for Claude {
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
         Ok(LEAD_MODELS
             .iter()
-            .map(|(alias, family, version, model)| ModelChoice { id: alias.to_string(), label: format!("{family} {version}"), hint: Some(model.to_string()) })
+            .map(|alias| ModelChoice { id: alias.to_string(), label: format!("{alias} (버전 미확인)"), hint: None })
             .collect())
     }
 
@@ -391,9 +386,14 @@ fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, Stri
                 .unwrap_or_default();
             // "allowed_warning" is a heads-up while work still runs; only "rejected" blocks the provider.
             if info.get("status").and_then(Value::as_str) == Some("rejected") {
+                let subscription = info.get("rateLimitType").or_else(|| info.get("rate_limit_type")).and_then(Value::as_str).is_some_and(|kind| kind == "five_hour" || kind.starts_with("seven_day"));
                 if let Some(resets) = info.get("resetsAt").and_then(Value::as_f64) {
                     out.push(StreamSignal::Limit { until: iso_from_secs(resets) });
+                    if subscription { out.push(StreamSignal::SubscriptionLimit { until: iso_from_secs(resets) }); }
                     *reset_given = true;
+                } else {
+                    out.push(StreamSignal::Limit { until: String::new() });
+                    if subscription { out.push(StreamSignal::SubscriptionLimit { until: String::new() }); }
                 }
             }
             return out;

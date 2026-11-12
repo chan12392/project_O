@@ -122,7 +122,10 @@ export type LeadEvent =
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
-  | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
+  | ({ t: "lead.usage.settled"; at: string } & import("./usageAccounting.ts").UsageSettlement)
+  | { t: "lead.subscription_limit"; at: string; provider: ProviderId; until: string; safeHandoff: boolean }
+  | { t: "lead.fallback"; at: string; from: ProviderId; fromModel?: string | null; target: { provider: ProviderId; model: string }; reason: string }
+  | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number; complete?: boolean }
   | { t: "lead.warning" | "lead.error"; at: string; text: string }
   /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
   | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number }
@@ -368,6 +371,9 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
       case "lead.warning":
         items.push({ kind: "warning", at: e.at, text: e.text });
         break;
+      case "lead.fallback":
+        items.push({ kind: "warning", at: e.at, text: `${e.reason}: ${e.from} ${e.fromModel ?? "기본 모델"} → ${e.target.provider} ${e.target.model}. 같은 승인 방식으로 한 번 이어갑니다.` });
+        break;
       default:
         // lead.start, lead.session, lead.usage, lead.seen and kinds this build does not know draw nothing.
         break;
@@ -505,7 +511,8 @@ export interface LeadModel {
   id: string;
   label: string;
   /** For an alias (`id`), the model it stands for now (Claude: `opus` → `claude-opus-5-5`). */
-  hint?: string;
+  hint?: string | null;
+  efforts?: string[];
 }
 
 /** The model id shape a card's `model` takes and `o lead send --model` checks (crates/o-core/src/policy.rs `MODEL`). */

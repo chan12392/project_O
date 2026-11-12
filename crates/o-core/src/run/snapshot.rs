@@ -59,6 +59,7 @@ pub enum LogKind {
     Budget,
     /// The project skills and O harness blocks the card's prompt got.
     Guides,
+    Fallback,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -106,6 +107,10 @@ pub struct CardView {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub actual_models: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub usage_complete: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub effort: Option<String>,
     pub state: CardState,
@@ -210,6 +215,13 @@ impl RunView {
 pub const BLOCKED_UNKNOWN: &str = "카드를 만들기 전에 실행기가 멈췄습니다. 실행 폴더의 runner.err.log를 확인하세요";
 
 pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
+    let original_events = events;
+    let projected;
+    let events = if events.iter().any(|e| matches!(e, OEvent::CardUsageSettled { .. })) {
+        let values: Vec<_> = events.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
+        projected = crate::usage::accounting::project(&values).into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect::<Vec<OEvent>>();
+        &projected[..]
+    } else { events };
     let mut run: Option<RunView> = None;
     for e in events {
         if let OEvent::RunStart { at, run_id, title, project, cards } = e {
@@ -232,6 +244,8 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                         label: c.label.clone().unwrap_or_else(|| card_label(&c.id, c.role.as_deref())),
                         role: c.role.clone(),
                         model: c.model.clone(),
+                        actual_models: Vec::new(),
+                        usage_complete: None,
                         effort: c.effort.clone(),
                         state: CardState::Waiting,
                         activity: String::new(),
@@ -302,6 +316,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
             | OEvent::CardLimit { card_id, .. }
             | OEvent::CardEnd { card_id, .. }
             | OEvent::CardUsage { card_id, .. }
+            | OEvent::CardFallback { card_id, .. }
             | OEvent::CardBudget { card_id, .. }
             | OEvent::CardGuides { card_id, .. } => card_id,
             _ => continue,
@@ -345,6 +360,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.log.push(entry(at, LogKind::Budget, card.activity.clone()));
             }
             OEvent::CardGuides { at, skills, harness, .. } => card.log.push(entry(at, LogKind::Guides, guides_text(skills, harness))),
+            OEvent::CardFallback { at, from, from_model, target, reason, .. } => card.log.push(entry(at, LogKind::Fallback, format!("{reason}: {from} {} → {} {}. 같은 승인 방식으로 한 번 이어갑니다.", from_model.as_deref().unwrap_or("기본 모델"), target.provider, target.model))),
             OEvent::CardUsage { input, cached, output, .. } => {
                 card.usage.input += input;
                 card.usage.cached += cached;
@@ -360,6 +376,22 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.log.push(entry(at, LogKind::End, result.clone().unwrap_or_else(|| end_word(*status).to_string())));
             }
             _ => {}
+        }
+    }
+    if let Some(run) = run.as_mut() {
+        let mut latest = std::collections::BTreeMap::new();
+        for event in original_events {
+            if let OEvent::CardUsageSettled { card_id, usage, .. } = event {
+                let old = latest.entry(&usage.usage_id).or_insert((card_id, usage));
+                if old.1.revision < usage.revision { *old = (card_id, usage); }
+            }
+        }
+        for (id, usage) in latest.values() {
+            if let Some(card) = run.cards.iter_mut().find(|c| &c.id == *id) {
+                card.actual_models.extend(usage.models.iter().cloned());
+                card.actual_models.sort(); card.actual_models.dedup();
+                card.usage_complete = Some(card.usage_complete.unwrap_or(true) && usage.complete && usage.reported);
+            }
         }
     }
     run

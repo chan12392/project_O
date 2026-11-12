@@ -1,5 +1,6 @@
 import type { CardStatus, OEvent, Violation } from "./events.ts";
 import { cardLabel, type ProviderId } from "./plan.ts";
+import { projectUsage } from "./usageAccounting.ts";
 
 /**
  * Folds a run's event stream into what a screen shows. Pure: the CLI's
@@ -10,7 +11,7 @@ export type CardState = "waiting" | "queued" | "running" | CardStatus;
 export interface CardLogEntry {
   at: string;
   /** "budget": the runner lowered the card's effort for the daily usage budget. */
-  kind: "queued" | "tool" | "message" | "input" | "limit" | "end" | "team" | "budget" | "guides";
+  kind: "queued" | "tool" | "message" | "input" | "limit" | "end" | "team" | "budget" | "guides" | "fallback";
   text: string;
   /** For tool entries: the act in words and the raw detail the CLI reported. */
   tool?: { word: string; detail: string };
@@ -35,6 +36,8 @@ export interface CardView {
   label: string;
   role?: string;
   model?: string;
+  actualModels?: string[];
+  usageComplete?: boolean;
   effort?: string;
   state: CardState;
   /** The latest thing the card did, one line. */
@@ -123,6 +126,8 @@ export function foldRuns(runs: readonly { runId: string; events: OEvent[] }[], k
 }
 
 export function snapshot(events: OEvent[]): RunView | undefined {
+  const original = events;
+  events = projectUsage(events);
   let run: RunView | undefined;
   const byId = new Map<string, CardView>();
   for (const e of events) {
@@ -216,6 +221,9 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       case "card.guides":
         card.log.push({ at: e.at, kind: "guides", text: guidesText(e.skills, e.harness) });
         break;
+      case "card.fallback":
+        card.log.push({ at: e.at, kind: "fallback", text: `${e.reason}: ${e.from} ${e.fromModel ?? "기본 모델"} → ${e.target.provider} ${e.target.model}. 같은 승인 방식으로 한 번 이어갑니다.` });
+        break;
       case "card.usage":
         card.usage = { input: card.usage.input + e.input, cached: card.usage.cached + e.cached, output: card.usage.output + e.output };
         break;
@@ -227,6 +235,15 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.log.push({ at: e.at, kind: "end", text: e.result ?? endWord(e.status) });
         break;
     }
+  }
+  const latest = new Map<string, Extract<OEvent, { t: "card.usage.settled" }>>();
+  for (const e of original) if (e.t === "card.usage.settled" && (!latest.has(e.usageId) || latest.get(e.usageId)!.revision < e.revision)) latest.set(e.usageId, e);
+  for (const e of latest.values()) {
+    const card = byId.get(e.cardId);
+    if (!card) continue;
+    const observed = [...new Set([...(card.actualModels ?? []), ...e.models])].sort();
+    if (observed.length) card.actualModels = observed;
+    card.usageComplete = (card.usageComplete ?? true) && e.complete && e.reported !== false;
   }
   return run;
 }

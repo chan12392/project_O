@@ -80,6 +80,8 @@ pub(super) struct Start<'a> {
 }
 
 pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -> io::Result<CardStatus> {
+    let attempt_started = now_iso();
+    let attempt = read_events(home, run_id).iter().filter(|event| matches!(event, OEvent::CardStart { card_id, .. } if card_id == &card.id)).count() + 1;
     let Start { mut slot, workdir, workspace, context, clean, spawner, yolo, dependencies } = start;
     let emit = |event: OEvent| append_event(home, run_id, &event);
     let dir = run_dir(home, run_id);
@@ -109,8 +111,9 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         return Ok(CardStatus::Failed);
     }
     let followup_path = dir.join("followup.json");
+    let fallback_attempt = plan.cards.iter().find(|c| c.id == card.id).is_some_and(|original| original.provider != card.provider);
     let mut followup_lock = None;
-    let followup = if followup_path.exists() {
+    let followup = if followup_path.exists() && !fallback_attempt {
         let reference: (String, String) = serde_json::from_slice(&fs::read(&followup_path)?).map_err(io::Error::other)?;
         let target = crate::run::followup::target(home, &reference.0, &reference.1).map_err(io::Error::other)?;
         if plan.cards.len() != 1 || target.card.id != card.id || target.card.provider != card.provider || target.card.model != card.model || target.project != plan.project || target.clean != clean.is_some() || yolo {
@@ -239,6 +242,7 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         }
         command.envs(&spec.env);
         crate::agents::billing::check(home, card.provider, &command).map_err(io::Error::other)?;
+        if fallback_attempt { crate::usage::fallback::check_enabled(home, &crate::usage::fallback::Target { provider: card.provider, model: card.model.clone().unwrap_or_default() }).map_err(io::Error::other)?; }
         #[cfg(windows)]
         {
             let native = command.native(std::env::vars_os())?;
@@ -408,7 +412,8 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         });
     }
 
-    let err_log: PathBuf = cards_dir.join(format!("{}.err.log", card.id));
+    let log_id = if fallback_attempt { format!("{}.{}", card.id, card.provider) } else { card.id.clone() };
+    let err_log: PathBuf = cards_dir.join(format!("{log_id}.err.log"));
     let mut err_file = OpenOptions::new().create(true).append(true).open(err_log)?;
     let stderr = child.stderr.take().map(|mut stderr| {
         thread::spawn(move || {
@@ -434,12 +439,19 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
     let mut reader = StreamReader::new(card.provider);
     let mut last: Option<(bool, String)> = None;
     let mut last_message = String::new();
+    let mut subscription_limit = None;
+    let mut safe_handoff = true;
     // The session this card runs in: the resumed one, or the one the stream names.
     let mut session = followup.as_ref().and_then(|target| target.session.clone());
+    let mut accounting = crate::usage::accounting::Collector::new(card.provider, session.clone(), false, attempt_started);
     let mut take = |signal: StreamSignal| -> io::Result<()> {
         let at = now_iso();
         let card_id = card.id.clone();
         match signal {
+            StreamSignal::SubscriptionLimit { until } => {
+                crate::usage::fallback::record_limit(home, card.provider, &until)?;
+                subscription_limit = Some(until);
+            }
             StreamSignal::Session { session_id } => {
                 session = Some(session_id.clone());
                 emit(OEvent::CardSession { at, card_id, session_id })?
@@ -448,19 +460,19 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
                 last_message = text.clone();
                 emit(OEvent::CardMessage { at, card_id, text })?;
             }
-            StreamSignal::Tool { name, summary } => emit(OEvent::CardTool { at, card_id, name, summary })?,
+            StreamSignal::Tool { name, summary } => {
+                safe_handoff &= crate::usage::fallback::safe_tool(&name);
+                emit(OEvent::CardTool { at, card_id, name, summary })?;
+            }
             StreamSignal::ToolError { name, summary, error } => emit(OEvent::CardToolError { at, card_id, name, summary, error })?,
             StreamSignal::Limit { until } => {
                 let until = set_cooldown(home, card.provider, &until, Utc::now())?;
                 emit(OEvent::CardLimit { at: now_iso(), card_id, until })?;
             }
             StreamSignal::Usage { input, cached, output, complete } => {
-                // Codex reports its thread's total: a resumed card counts only what this turn added.
-                let [input, cached, output] = match session.as_deref().filter(|_| card.provider == ProviderId::Codex && complete) {
-                    Some(session) => crate::usage::thread_total::turn(home, session, [input, cached, output], Utc::now()),
-                    None => [input, cached, output],
-                };
-                emit(OEvent::CardUsage { at, card_id, input, cached, output, complete: Some(complete) })?
+                if !matches!(card.provider, ProviderId::Claude | ProviderId::Codex) {
+                    emit(OEvent::CardUsage { at, card_id, input, cached, output, complete: Some(complete) })?;
+                }
             }
             StreamSignal::Quota { window, used, resets_at } => {
                 // A snapshot for the daily budget; the event stays the record either way.
@@ -472,8 +484,9 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         }
         Ok(())
     };
-    let raw_log = cards_dir.join(format!("{}.raw.jsonl", card.id));
+    let raw_log = cards_dir.join(format!("{log_id}.raw.jsonl"));
     let mut raw_file = OpenOptions::new().create(true).append(true).open(raw_log)?;
+    accounting.source_start = raw_file.metadata()?.len();
     let mut pipes_incomplete = false;
     let mut ending_deadline = None;
     if let Some(stdout) = child.stdout.take() {
@@ -497,6 +510,7 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
                         let line = text.strip_suffix('\n').unwrap_or(&text);
                         let line = line.strip_suffix('\r').unwrap_or(line);
                         raw_file.write_all(&buf)?;
+                        accounting.observe(line);
                         for signal in reader.read(line) { take(signal)?; }
                     }
                     Ok(Err(error)) => return Err(error),
@@ -580,6 +594,14 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
     }
     if pipes_incomplete && !BEST_EFFORT_EXIT { slot.exited.store(false, Ordering::Release); }
     let exited = slot.exited.load(Ordering::Acquire);
+    if matches!(card.provider, ProviderId::Claude | ProviderId::Codex) {
+        accounting.source_end = raw_file.metadata()?.len();
+        let at = now_iso();
+        let source = format!("runs/{run_id}/cards/{log_id}.raw.jsonl");
+        if let Some(usage) = accounting.settle(home, &crate::usage::accounting::profile(card.provider, clean), &format!("run:{run_id}:{}:{}:{attempt}", card.id, card.provider), &source, &at, exited && !pipes_incomplete, Vec::new())? {
+            emit(OEvent::CardUsageSettled { at, card_id: card.id.clone(), usage: Box::new(usage) })?;
+        }
+    }
     drop(slot);
     let held = crate::run::store::resource_held(home, run_id, &card.id).unwrap_or(true);
     if status == CardStatus::Done && (!exited || held) {
@@ -589,6 +611,38 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
     }
     if held {
         emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "자원 예약".into(), summary: "작업 자손의 종료를 확인하지 못해 예약이 남았습니다. o resources --json으로 확인하세요.".into() })?;
+    }
+    if status == CardStatus::Failed && subscription_limit.is_some() && !fallback_attempt && crate::usage::fallback::read(home).enabled {
+        let attempt = (|| -> Result<Option<(Card, Reservation)>, String> {
+            if !exited || held || pipes_incomplete { return Err("원래 프로세스와 자원 예약의 종료를 확인하지 못했습니다".into()); }
+            if !safe_handoff { return Err("셸·외부 도구 실행 결과가 불명확해 자동으로 이어갈 수 없습니다".into()); }
+            let Some(target) = crate::usage::fallback::prepare(home, card.provider, card.effort.as_deref(), false, clean, Path::new(cwd))? else { return Ok(None) };
+            let next = crate::usage::fallback::card(card, &target, result.as_deref().unwrap_or_default());
+            let mut checked_card = next.clone();
+            checked_card.depends_on.clear();
+            let checked = Plan { project: workdir.checked.clone(), cards: vec![checked_card], ..plan.clone() };
+            let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
+            let validation = check_plan_in(&serde_json::to_value(&checked).map_err(|e| e.to_string())?, &ctx, RunMode { profile: Profile::of_clean(clean.is_some()), context: context.is_some(), yolo });
+            if !validation.violations.is_empty() { return Err(validation.violations.iter().map(|v| v.message.as_str()).collect::<Vec<_>>().join(" / ")); }
+            crate::usage::fallback::claim(home, &format!("run:{run_id}:{}", card.id), &target)?;
+            let reservation = match reserve_slot(home, run_id, &next, &workdir.checked, Utc::now()).map_err(|e| e.to_string())? {
+                Reserved::Granted(slot) => slot,
+                _ => return Err("대체 에이전트의 동시 실행·자원 예약을 확보하지 못했습니다".into()),
+            };
+            if let Err(error) = emit(OEvent::CardFallback { at: now_iso(), card_id: card.id.clone(), from: card.provider, from_model: card.model.clone(), target, reason: "확인된 구독 사용량 한도".into() }) {
+                let _ = release_slot(home, &reservation, false);
+                return Err(error.to_string());
+            }
+            Ok(Some((next, reservation)))
+        })();
+        match attempt {
+            Ok(Some((next, reservation))) => {
+                let slot = Slot { home, reservation, started: false, marked: false, exited: Arc::new(AtomicBool::new(false)), best_effort: BEST_EFFORT_EXIT };
+                return run_card(home, run_id, plan, &next, Start { slot, workdir, workspace: Some(cwd), context, clean, spawner, yolo, dependencies });
+            }
+            Ok(None) => {}
+            Err(why) => { result = Some(format!("{}\n자동 전환 중단: {why}", result.unwrap_or_default())); }
+        }
     }
     emit(end(status, result, exit_code))?;
     Ok(status)

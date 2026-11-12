@@ -49,6 +49,8 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
         usage::ram_set,
         usage::billing_get,
         usage::billing_set,
+        usage::fallback_get,
+        usage::fallback_set,
         agy::agy_get,
         agy::agy_set,
         usage::yolo_get,

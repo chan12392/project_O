@@ -1,0 +1,32 @@
+[
+  {
+    "name": "late revision replaces only its own legacy entry and keeps original time",
+    "events": [
+      {"t":"card.usage","at":"old","cardId":"a","input":10,"cached":0,"output":0,"complete":true},
+      {"t":"future.event","at":"ignored"},
+      {"t":"card.usage","at":"other","cardId":"b","input":7,"cached":0,"output":0,"complete":true},
+      {"t":"card.usage.settled","at":"recorded","occurredAt":"original","cardId":"a","usageId":"a1","revision":1,"version":1,"input":20,"cached":0,"output":0,"complete":true,"replaces":[0,2]},
+      {"t":"card.usage.settled","at":"later","occurredAt":"original","cardId":"a","usageId":"a1","revision":2,"version":1,"input":25,"cached":0,"output":0,"complete":false,"replaces":[0]},
+      {"t":"card.usage.settled","at":"duplicate","occurredAt":"original","cardId":"a","usageId":"a1","revision":2,"version":1,"input":25,"cached":0,"output":0,"complete":false,"replaces":[0]}
+    ],
+    "expected": [{"cardId":"b","input":7,"at":"other","complete":true},{"cardId":"a","input":25,"at":"original","complete":false}]
+  },
+  {
+    "name": "missing resume baseline preserves reported partial instead of replacing it by zero",
+    "events": [
+      {"t":"card.usage","at":"old","cardId":"a","input":10,"cached":0,"output":0,"complete":true},
+      {"t":"card.usage.settled","at":"recorded","occurredAt":"original","cardId":"a","usageId":"a1","revision":1,"version":1,"input":0,"cached":0,"output":0,"reported":false,"complete":false,"replaces":[0]}
+    ],
+    "expected": [{"cardId":"a","input":10,"at":"old","complete":false}]
+  },
+  {
+    "name": "conflicting revision is partial and a bad report cannot suppress evidence",
+    "events": [
+      {"t":"card.usage","at":"old","cardId":"a","input":10,"cached":0,"output":0,"complete":true},
+      {"t":"card.usage.settled","at":"recorded","occurredAt":"original","cardId":"a","usageId":"a1","revision":1,"version":1,"input":20,"cached":0,"output":0,"complete":true,"replaces":[0]},
+      {"t":"card.usage.settled","at":"duplicate","occurredAt":"original","cardId":"a","usageId":"a1","revision":1,"version":1,"input":25,"cached":0,"output":0,"complete":true,"replaces":[0]},
+      {"t":"card.usage.settled","at":"bad","occurredAt":"original","cardId":"a","usageId":"a1","revision":2,"version":1,"input":-1,"cached":0,"output":0,"complete":true,"replaces":[0]}
+    ],
+    "expected": [{"cardId":"a","input":20,"at":"original","complete":false}]
+  }
+]

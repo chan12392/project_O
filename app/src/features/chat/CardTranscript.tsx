@@ -77,9 +77,10 @@ export function CardTranscript({ card, run, names, api, onFollowup, composer }: 
         <AgentStateDot state={card.state} size="md" />
         <Avatar speaker={card.provider} look={lookOf(run, card.id)} size="sm" />
         <span className="min-w-0 truncate text-sm font-medium" title={card.label}>{card.label}</span>
-        <span className="min-w-0 truncate font-mono text-xs text-muted-foreground">
-          {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}
-        </span>
+        <div className="min-w-0 text-xs text-muted-foreground">
+          <p className="truncate">요청: {PROVIDER_NAME[card.provider]} {modelLine(card.model, card.effort)}</p>
+          <p className="truncate" title={card.actualModels?.join(", ")}>실제: {card.actualModels?.join(", ") || "모델 미확인"}{card.usageComplete === false && " · 사용량 일부 확인"}</p>
+        </div>
         <span className="ml-auto shrink-0 text-xs whitespace-nowrap text-muted-foreground">
           {STATE_WORD[card.state]}
           {card.startedAt && ` ${timeOf(card.startedAt)}`}
@@ -174,7 +175,7 @@ function Entry({
   }
   const failed = entry.kind === "end" && cardFailed;
   const Icon = entry.kind === "end" ? (failed ? CircleAlert : CircleCheck) : entry.kind === "queued" ? Hourglass : entry.kind === "budget" ? Gauge : entry.kind === "guides" ? BookOpen : CircleAlert;
-  const tone = entry.kind === "end" && !failed ? "text-emerald-500" : entry.kind === "queued" || entry.kind === "guides" ? "text-chat-foreground-faint" : entry.kind === "budget" ? "text-amber-500" : "text-destructive";
+  const tone = entry.kind === "end" && !failed ? "text-emerald-500" : entry.kind === "queued" || entry.kind === "guides" || entry.kind === "fallback" ? "text-chat-foreground-faint" : entry.kind === "budget" ? "text-amber-500" : "text-destructive";
   return (
     <li className="mt-3 flex items-start gap-2 rounded-lg border bg-card px-3 py-2.5 text-card-foreground">
       <Icon className={`mt-0.5 size-4 shrink-0 ${tone}`} aria-hidden="true" />

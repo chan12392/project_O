@@ -46,6 +46,7 @@ let demoPercent = 13;
 let demoEnabled = true;
 const demoRam: RamReport = { enabled: true, percent: 70, used: 58 };
 const demoBilling: BillingReport = { mode: "warn" };
+const demoFallback: import("./types.ts").FallbackSettings = { enabled: false, target: null };
 
 /** The preview's Antigravity consent (ADR-0042): the policy text the contract fixes, and the same ack rule `o agy` applies. */
 const AGY_NOTICE: AgyReport["notice"] = {
@@ -377,6 +378,12 @@ export const demoBackend: Backend = {
   setRam: async (change) => ({ ...Object.assign(demoRam, change) }),
   billing: async () => ({ ...demoBilling }),
   setBilling: async (mode) => ({ ...Object.assign(demoBilling, { mode }) }),
+  fallback: async () => ({ ...demoFallback }),
+  setFallback: async (settings) => {
+    if (settings.enabled && (!settings.target || !settings.target.model.trim())) throw new Error("대체 에이전트와 모델을 선택하세요");
+    Object.assign(demoFallback, settings);
+    return { ...demoFallback };
+  },
   yolo: async () => ({ enabled: false, budgetEnabled: true, autoRun: { maxCards: 3, perHour: 2, dedupeMinutes: 30 } }),
   setYolo: async () => { throw new Error("미리보기에서는 YOLO 설정을 바꾸지 않습니다"); },
   tokens: async () => ({
@@ -438,7 +445,7 @@ export const demoBackend: Backend = {
   leadRetry: async () => { throw new Error("미리보기에서는 메시지를 복구할 수 없습니다"); },
   leadAnswerApproval: async () => { throw new Error("미리보기에서는 답변을 보낼 수 없습니다"); },
   leadStopAll: async () => ({ stopped: 0 }),
-  leadModels: async (provider) => ({ provider, models: DEMO_MODELS[provider] }),
+  leadModels: async (provider) => ({ provider, models: provider in DEMO_MODELS ? DEMO_MODELS[provider as LeadProvider] : [], stale: true, error: "데모 목록입니다. 실제 CLI에서 조회하지 않았습니다." }),
   agyGet: async () => agyReport(),
   agySet: async (change) => {
     const next = agyApply(demoAgy, change, new Date().toISOString());
