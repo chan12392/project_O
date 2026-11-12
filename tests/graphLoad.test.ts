@@ -3,6 +3,7 @@ import { test } from "node:test";
 
 import type { GraphView } from "../app/src/platform/backend/types.ts";
 import {
+  capOverall,
   createViewLoader,
   levelsOf,
   markProjectError,
@@ -103,6 +104,7 @@ test("levelsOf walks the contains tree: root 0, each level one under its parent"
 interface FakeApi {
   graphView: (project?: string) => Promise<GraphView>;
   graphOverallPart?: (project: string) => Promise<GraphView>;
+  graphSettings?: () => Promise<{ maxNodes: number }>;
 }
 
 /** A loader wired like the hook: mutable scope/projects, emits applied to a state var. */
@@ -114,7 +116,7 @@ function rig(projects: ListedProject[], api: FakeApi, scope: GraphScope = { scop
     loader: undefined as unknown as ReturnType<typeof createViewLoader>,
   };
   r.loader = createViewLoader({
-    api,
+    api: { graphSettings: async () => ({ maxNodes: 1500 }), ...api },
     scope: () => r.scope,
     projects: () => projects,
     emit: (apply) => {
@@ -134,6 +136,9 @@ const deferred = <T>() => {
   });
   return { promise, resolve, reject };
 };
+
+/** Let requests and their async continuations settle without applying queued updaters. */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
 test("a project scope loads its one view and a stale answer is dropped", async () => {
   const calls: (string | undefined)[] = [];
@@ -196,8 +201,9 @@ test("the overall scope draws the skeleton at once and merges each part as it la
   };
   const r = rig(projects, api);
   const done = r.loader.refresh();
-  // The skeleton — root + six projects — is the first thing stored, synchronously.
   assert.equal(r.state.loading, true);
+  await settle();
+  // The skeleton uses the saved cap before any project answer lands.
   assert.equal(r.state.view?.nodes.length, 7);
   assert.equal(inFlight, 4, "at most four part requests in flight");
   /** Waits until a project's part request has been issued, then answers it. */
@@ -275,4 +281,236 @@ test("a project list that arrives after the overall graph opened grows into it w
   assert.deepEqual(later.nodes.map((n) => n.id), ["o:root", "p:C:/p/a", "a:C:/p/a|src", "p:C:/p/b"]);
   assert.ok(later.links.some((l) => l.source === "o:root" && l.target === "p:C:/p/b"));
   assert.equal(withSkeleton(later, [{ path: "C:/p/b", name: "b" }]), later, "nothing missing: the same view");
+});
+
+test("queued and replayed initial updaters preserve the first answered project (#101)", async () => {
+  let state: LoaderState = { loading: false };
+  const queue: ((s: LoaderState) => LoaderState)[] = [];
+  const pending = new Map<string, ReturnType<typeof deferred<GraphView>>>();
+  const loader = createViewLoader({
+    api: {
+      graphSettings: async () => ({ maxNodes: 1500 }),
+      graphView: async () => { throw new Error("parts must succeed"); },
+      graphOverallPart: (project) => {
+        const response = deferred<GraphView>();
+        pending.set(project, response);
+        return response.promise;
+      },
+    },
+    scope: () => ({ scope: "overall" }),
+    projects: () => PROJECTS,
+    emit: (apply) => queue.push(apply),
+  });
+  const flush = () => {
+    for (const apply of queue.splice(0)) {
+      const before = structuredClone(state);
+      const first = apply(state);
+      assert.deepEqual(state, before, "an updater must not mutate its previous state");
+      assert.deepEqual(apply(state), first, "StrictMode replay produces the same transition");
+      state = first;
+    }
+  };
+
+  // Repeat on a refresh with the opposite response order, retaining the raw state.
+  for (const order of [["/p/a", "/p/b"], ["/p/b", "/p/a"]]) {
+    pending.clear();
+    const done = loader.refresh();
+    await settle();
+    pending.get(order[0])!.resolve(partOf(order[0], ["first"]));
+    await settle();
+    assert.ok(queue.length >= 2, "the initial and first-answer updaters are still queued");
+    flush();
+    assert.ok(state.view?.nodes.some((n) => n.id === `a:${order[0]}|first`));
+    pending.get(order[1])!.resolve(partOf(order[1], ["second"]));
+    await done;
+    flush();
+    for (const [i, project] of order.entries()) {
+      const id = `a:${project}|${i === 0 ? "first" : "second"}`;
+      assert.ok(state.view?.nodes.some((n) => n.id === id), `${project}'s displayed area survives`);
+      assert.ok(state.raw?.nodes.some((n) => n.id === id), `${project}'s original area survives`);
+      assert.equal(state.raw?.nodes.find((n) => n.id === `p:${project}`)?.indexed, true);
+    }
+    assert.equal(state.loading, false);
+  }
+});
+
+const eightProjects = Array.from({ length: 8 }, (_, i) => ({ path: `/p/${i}`, name: `${i}` }));
+const twelveAreas = Array.from({ length: 12 }, (_, i) => `area-${i}`);
+const assertClosedLinks = (view: GraphView) => {
+  const ids = new Set(view.nodes.map((n) => n.id));
+  assert.ok(view.links.every((l) => ids.has(l.source) && ids.has(l.target)), "every link endpoint survives the cap");
+};
+
+test("8 × 13 project nodes obey maxNodes=100 throughout split loading (#84)", async () => {
+  const snapshots: LoaderState[] = [];
+  const pending = new Map<string, ReturnType<typeof deferred<GraphView>>>();
+  let state: LoaderState = { loading: false };
+  const loader = createViewLoader({
+    api: {
+      graphSettings: async () => ({ maxNodes: 100 }),
+      graphView: async () => { throw new Error("whole view must not be needed"); },
+      graphOverallPart: (project) => {
+        const response = deferred<GraphView>();
+        pending.set(project, response);
+        return response.promise;
+      },
+    },
+    scope: () => ({ scope: "overall" }),
+    projects: () => eightProjects,
+    emit: (apply) => { state = apply(state); snapshots.push(state); },
+  });
+  const done = loader.refresh();
+  // Answer each wave in reverse order rather than in the project-list order.
+  for (const i of [3, 2, 1, 0, 7, 6, 5, 4]) {
+    await settle();
+    const project = `/p/${i}`;
+    assert.ok(pending.has(project), `${project} is in flight`);
+    pending.get(project)!.resolve(partOf(project, twelveAreas));
+  }
+  await done;
+  assert.equal(state.raw?.nodes.length, 105, "all original parts remain available for recapping");
+  assert.equal(state.raw?.truncated, false, "display clipping does not contaminate the original graph");
+  assert.equal(state.view?.nodes.length, 100);
+  assert.equal(state.view?.truncated, true);
+  for (const s of snapshots) {
+    if (!s.view) continue;
+    assert.ok(s.view.nodes.length <= 100, "intermediate views obey the saved limit");
+    assertClosedLinks(s.view);
+  }
+});
+
+test("a refresh recaps retained originals with the newly saved limit before new parts answer", async () => {
+  let maxNodes = 100;
+  let hold = false;
+  const pending: ReturnType<typeof deferred<GraphView>>[] = [];
+  const r = rig(eightProjects, {
+    graphSettings: async () => ({ maxNodes }),
+    graphView: async () => { throw new Error("parts must succeed"); },
+    graphOverallPart: async (project) => {
+      if (hold) {
+        const response = deferred<GraphView>();
+        pending.push(response);
+        await response.promise;
+      }
+      return partOf(project, twelveAreas);
+    },
+  });
+  await r.loader.refresh();
+  assert.equal(r.state.view?.nodes.length, 100);
+
+  hold = true;
+  maxNodes = 200;
+  const raised = r.loader.refresh();
+  await settle();
+  assert.equal(r.state.raw?.nodes.length, 105);
+  assert.equal(r.state.view?.nodes.length, 105, "raising the cap restores clipped original nodes immediately");
+  assert.equal(r.state.view?.truncated, false);
+  hold = false;
+  for (const response of pending.splice(0)) response.resolve(partOf("unused"));
+  await raised;
+
+  maxNodes = 100;
+  await r.loader.refresh();
+  assert.equal(r.state.raw?.nodes.length, 105);
+  assert.equal(r.state.view?.nodes.length, 100);
+  assert.equal(r.state.view?.truncated, true);
+});
+
+test("a failed refresh part retains its original nodes while the display remains capped", async () => {
+  let fail = false;
+  const r = rig(eightProjects, {
+    graphSettings: async () => ({ maxNodes: 100 }),
+    graphView: async () => { throw new Error("partial success must not fall back"); },
+    graphOverallPart: async (project) => {
+      if (fail && project === "/p/7") throw new Error("temporarily unavailable");
+      return partOf(project, twelveAreas);
+    },
+  });
+  await r.loader.refresh();
+  fail = true;
+  await r.loader.refresh();
+  assert.equal(r.state.raw?.nodes.length, 105);
+  assert.equal(r.state.raw?.nodes.find((n) => n.id === "p:/p/7")?.error, "temporarily unavailable");
+  assert.equal(r.state.view?.nodes.length, 100);
+  assert.equal(r.state.view?.truncated, true);
+  assertClosedLinks(r.state.view!);
+});
+
+test("split loading and the capped whole-view fallback retain the same graph", async () => {
+  const original = eightProjects.reduce((view, project) => mergePart(view, partOf(project.path, twelveAreas), project.path), skeletonView(eightProjects));
+  const whole = capOverall(original, 100);
+  const split = rig(eightProjects, {
+    graphSettings: async () => ({ maxNodes: 100 }),
+    graphView: async () => { throw new Error("parts must succeed"); },
+    graphOverallPart: async (project) => partOf(project, twelveAreas),
+  });
+  await split.loader.refresh();
+  const fallback = rig(eightProjects, {
+    graphSettings: async () => ({ maxNodes: 100 }),
+    graphView: async () => whole,
+    graphOverallPart: async () => { throw new Error("part unavailable"); },
+  });
+  await fallback.loader.refresh();
+  assert.deepEqual(split.state.view, fallback.state.view);
+
+  // A failed settings read must use the backend's capped endpoint, rather than
+  // guessing a cap and rendering uncapped parts.
+  let parts = 0;
+  const failedSettings = rig(eightProjects, {
+    graphSettings: async () => { throw new Error("settings unavailable"); },
+    graphView: async () => whole,
+    graphOverallPart: async (project) => { parts++; return partOf(project, twelveAreas); },
+  });
+  await failedSettings.loader.refresh();
+  assert.equal(parts, 0);
+  assert.equal(failedSettings.state.view, whole);
+  assert.equal(failedSettings.state.loading, false);
+});
+
+test("capOverall matches the Rust cap_overall_matches_frontend_contract table", () => {
+  const view: GraphView = {
+    scope: "overall", grafly: { installed: true }, indexed: true, truncated: false,
+    nodes: [
+      { id: "o:root", label: "root", kind: "root", size: 1 },
+      { id: "a:orphan", label: "orphan", kind: "area", project: "/missing", size: 1 },
+      { id: "p:/cold", label: "cold", kind: "project", project: "/cold", size: 1 },
+      { id: "a:/cold|plain", label: "plain", kind: "area", project: "/cold", size: 1 },
+      { id: "a:/hot|active", label: "active", kind: "area", project: "/hot", glow: "active", size: 1 },
+      { id: "a:/hot|path", label: "path", kind: "area", project: "/hot", glow: "path", size: 1 },
+      { id: "p:/hot", label: "hot", kind: "project", project: "/hot", size: 1 },
+      { id: "a:/hot|plain", label: "plain", kind: "area", project: "/hot", size: 1 },
+      { id: "p:/last", label: "last", kind: "project", project: "/last", size: 1 },
+    ],
+    links: [
+      { source: "o:root", target: "p:/cold", kind: "contains", weight: 1 },
+      { source: "o:root", target: "p:/hot", kind: "contains", weight: 1 },
+      { source: "o:root", target: "p:/last", kind: "contains", weight: 1 },
+      { source: "p:/cold", target: "a:/cold|plain", kind: "contains", weight: 1 },
+      { source: "p:/hot", target: "a:/hot|active", kind: "contains", weight: 1 },
+      { source: "p:/hot", target: "a:/hot|path", kind: "contains", weight: 1 },
+      { source: "p:/hot", target: "a:/hot|plain", kind: "contains", weight: 1 },
+      { source: "p:/missing", target: "a:orphan", kind: "contains", weight: 1 },
+      { source: "a:/cold|plain", target: "a:/hot|active", kind: "calls", weight: 1 },
+    ],
+  };
+  const cases: [number, string[]][] = [
+    [2, ["o:root", "a:/hot|active", "a:/hot|path", "p:/hot"]],
+    [5, ["o:root", "p:/cold", "a:/hot|active", "a:/hot|path", "p:/hot"]],
+    [6, ["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot"]],
+    [7, ["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot", "a:/hot|plain"]],
+    [8, ["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot", "a:/hot|plain", "p:/last"]],
+    [100, ["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot", "a:/hot|plain", "p:/last"]],
+  ];
+  const original = structuredClone(view);
+  for (const [maxNodes, expected] of cases) {
+    const capped = capOverall(view, maxNodes);
+    assert.deepEqual(capped.nodes.map((n) => n.id), expected, `maxNodes=${maxNodes}`);
+    assert.equal(capped.truncated, true);
+    const ids = new Set(expected);
+    assert.deepEqual(capped.links, view.links.filter((l) => ids.has(l.source) && ids.has(l.target)));
+    assertClosedLinks(capped);
+  }
+  assert.deepEqual(view, original, "capping never mutates its original graph");
+  const rootOnly = { ...view, nodes: view.nodes.slice(0, 1), links: [], truncated: true };
+  assert.equal(capOverall(rootOnly, 100).truncated, true, "backend truncation remains visible");
 });

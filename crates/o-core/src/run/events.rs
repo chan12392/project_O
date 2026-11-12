@@ -173,6 +173,9 @@ pub enum OEvent {
         context: bool,
         #[serde(default)]
         yolo: bool,
+        /// Present only for runs started by a user-created schedule.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scheduled: Option<bool>,
     },
 }
 

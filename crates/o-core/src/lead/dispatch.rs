@@ -51,7 +51,7 @@ pub struct Dispatched {
 /// `mode` is the profile and context choice (ADR-0013), saved with the run like `o dispatch` does.
 pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
     let _locks = lock_latest(home, plan_id)?;
-    dispatch_locked(home, plan_id, mode, start, true)
+    dispatch_locked(home, plan_id, mode, start, true, false)
 }
 
 /// The locks every dispatch (by hand or automatic) holds while it checks and starts a plan.
@@ -94,7 +94,7 @@ pub(super) fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, S
     Ok(DispatchLocks { _current: current, _turn: turn, _dispatch: lock })
 }
 
-fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>, retry: bool) -> Result<Dispatched, DispatchError> {
+fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>, retry: bool, scheduled: bool) -> Result<Dispatched, DispatchError> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
     let events = read_thread(home, thread_id);
     let project = thread_project(&events).ok_or_else(|| format!("총괄 대화가 없습니다: {thread_id}"))?;
@@ -156,6 +156,7 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
     }
     let started = store::create_run(home, &run_id, &plan)
         .and_then(|()| store::mark_mode(home, &run_id, &mode))
+        .and_then(|()| if scheduled { store::mark_scheduled(home, &run_id) } else { Ok(()) })
         .and_then(|()| fs::write(run_dir(home, &run_id).join("isolated-worktrees"), ""))
         .and_then(|()| start(&run_id));
     if let Err(error) = started {
@@ -213,7 +214,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
     let wait = if scheduled_agy { Some("예약에서는 Antigravity를 실행할 수 없습니다".to_string()) }
         else { (!req.yolo && !scheduled).then(|| "YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) };
     let mode = RunMode { yolo: req.yolo, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
-    added.extend(auto_dispatch(home, &plan_id, &plan, ok, mode, turn_started, wait, start)?);
+    added.extend(auto_dispatch(home, &plan_id, &plan, ok, mode, turn_started, wait, start, scheduled)?);
     Ok(added)
 }
 
@@ -233,7 +234,7 @@ pub(super) fn apply_review(home: &Path, review: &LeadEvent, profile: Profile, si
         _ => None,
     }).ok_or("이 대화에 그런 계획이 없습니다")?;
     let mode = RunMode { yolo: yolo::read_enabled(home), ..RunMode::of(profile) };
-    added.extend(auto_dispatch(home, plan_id, &plan, ok, mode, since, None, start)?);
+    added.extend(auto_dispatch(home, plan_id, &plan, ok, mode, since, None, start, false)?);
     Ok(added)
 }
 
@@ -241,7 +242,7 @@ pub(super) fn apply_review(home: &Path, review: &LeadEvent, profile: Profile, si
 /// of its thread since `since`, `wait` (why it may not run by itself), the policy, or the
 /// auto-run limits (ADR-0014). Every outcome is a `lead.autorun` in the plan's thread.
 #[allow(clippy::too_many_arguments)]
-fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMode, since: DateTime<Utc>, wait: Option<String>, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMode, since: DateTime<Utc>, wait: Option<String>, start: &dyn Fn(&str) -> io::Result<()>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
     let thread = plan_thread(plan_id).ok_or("계획 id 형식이 아닙니다")?;
     let plan_id = plan_id.to_string();
     let mut added = Vec::new();
@@ -282,7 +283,7 @@ fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMo
     append(home, thread, &event).map_err(|e| e.to_string())?;
     added.push(event);
     if run {
-        match dispatch_locked(home, &plan_id, mode, start, false) {
+        match dispatch_locked(home, &plan_id, mode, start, false, scheduled) {
             Ok(_) => added.extend(read_thread(home, thread).into_iter().rev().find(|e| matches!(e, LeadEvent::Dispatch { plan_id: id, .. } if id == &plan_id))),
             Err(e) => {
                 let why = match e {

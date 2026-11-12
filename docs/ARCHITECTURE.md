@@ -75,7 +75,8 @@ Devin 카드는 project_O 프로필 계획에서도 평소 프로필을 쓰고 �
 | `features/chat/` | 총괄 대화: 실제 스레드 `LeadThread`(계획 카드), 진행 단계 `LeadWork`(진행 중 목록·답 위의 접힌 "작업 n단계"), 입력창 바로 위 승인 카드 `LeadApprovalCard`(거부가 기본 포커스, 항상 허용 없음), 데모 `Thread`·`LeadGate`, 입력창 `Composer`, 카드 기록 `CardTranscript`, `TeamChat`, 채팅 글 그리기 `Markdown`(GFM, `react-markdown`)과 허용 규칙 `markdown.ts`(원시 HTML은 글자로, 링크는 http(s)만, 프로젝트나 작업 폴더 안의 로컬 이미지만 별도 표시, `o-plan` 블록은 계획 카드에 맡김) — 모양은 `styles/chat-markdown.css` |
 | `features/office/` | 사무실 `Office`·`OfficeView`, `Person`, `Sprite`, `characters.ts`, `Avatar`, `WhoIsWorking` |
 | `features/work/` | 에이전트 작업 탭 `WorkTab`(설계·대시보드), 팀 에이전트 탭·분할 화면 `AgentPanes`(1·2·4칸, 칸 배정은 `src/core/panes.ts`), 전체 `WorkDashboard`·`AllNextUp`, 예약 `Automation`, `Ticket`, `ReviewRequest` |
-| `features/usage/` | `UsagePanel`, `TokenCard` |
+| `features/usage/` | `UsagePanel`, `TokenCard`, `statusUsage.ts`(패널·하단 칩의 최신 quota와 사용률·리셋 표시) |
+| `features/sidebar/` | `WorkspaceOptions`(그룹·정렬·예약 숨김·실행 표시 개수, ADR-0045) |
 | `features/terminal/` | 터미널 바이트를 xterm에 표시하는 `TerminalView`, Antigravity 총괄과 계획 카드를 잇는 `LeadTerminal`, 세션 목록 `useTermSessions`, 지연 로딩 `xtermLib` |
 | `features/graph/` | Graph 탭(ADR-0033): `GraphScreen`(조립), `GraphToolbar`(효과·흐름 스위치, 인덱스 만들기, Deep), `ScopeList`(전체 → 프로젝트), `CanvasState`(불러오기·오류·빈 상태), `NodeDetail`, `Graph3D`(3D 캔버스의 React 껍데기)와 `graphScene`(노드·링크·빛을 묶어 그리는 렌더러, ADR-0041 — `3d-force-graph`는 캔버스·카메라만 맡고 `three`와 함께 필요할 때만 불러온다), 배치 계산 `graphLayout`과 그것을 화면 밖에서 돌리는 `layoutWorker`, 첫 Deep 안내 `DeepConfirm`, 순수 모듈 `graphStyle`·`graphMotion`(등장 시점, 카메라 거리, 노드 고르기)·`graphText`(HTML 이스케이프, 숫자 표시)·`modelTier`, 불러오기 `useGraphView` |
 | `features/dreaming/` | Dreaming 화면(ADR-0041): `DreamingScreen`(Graph·Wiki·Dreaming 탭과 열린 문서), `DreamView`(외부 자료·작업 기록 그래프 — `Graph3D`를 같이 쓴다) |
@@ -83,7 +84,7 @@ Devin 카드는 project_O 프로필 계획에서도 평소 프로필을 쓰고 �
 | `features/projects/` | 새 요청 화면 `NewRequest`(맡길 프로젝트 고르기·새 프로젝트·폴더 등록), 첫 실행 `ImportCard`(기록에서 찾은 프로젝트), 공용 양식 `ProjectForms` (ADR-0009) |
 | `features/updates/` | `UpdatePrompt`(shell에 한 번 마운트), 정보 항목의 `UpdateSettings`. 공용 업데이트 타입·문구·제거 명령은 `platform/updates.ts` |
 | `features/settings/` | `Settings`(틀), `Section.tsx`(항목 계약·공용 배치), `sections/*.tsx`(항목별 파일, `sections/index.ts`가 순서), `AccountMenu`, `AgentSetup`, `Onboarding` |
-| `data/` | 실행 출처 `useLiveRuns.ts`(실제, 데스크톱 앱은 데모로 넘어가지 않음)·`useRun.ts`(데모·URL 상태), 총괄 스레드 `useLead.ts`, `projects.ts`, `settings.ts`(이 브라우저의 설정), 데모 기록 JSON |
+| `data/` | 실행 출처 `useLiveRuns.ts`(실제, 데스크톱 앱은 데모로 넘어가지 않음)·`useRun.ts`(데모·URL 상태), 총괄 스레드 `useLead.ts`, `projects.ts`, `sidebarView.ts`(보기 옵션 저장·정렬·필터·브랜치 묶음), `settings.ts`(이 브라우저의 설정), 데모 기록 JSON |
 | `platform/backend/` | `Backend` 계약 `types.ts`와 구현 셋: `tauri.ts`, `dev.ts`, `demo.ts`. `index.ts`의 `backend()`가 고른다 |
 | `lib/` | `format`, `storage`, `timeScale`, `dismiss` |
 | `ui/` | 여러 기능이 쓰는 컨트롤(`controls.tsx`), 위로 열리는 선택 메뉴 `Menu.tsx`, `AgentStateDot`, 바깥 링크 `ExternalAnchor`(데스크톱은 `open_external`, 브라우저는 noopener 새 탭 — 채팅 Markdown 밖의 모든 바깥 링크) |

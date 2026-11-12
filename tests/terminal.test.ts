@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
 import { term } from "../app/dev/liveRuns.ts";
@@ -20,6 +21,7 @@ import {
   termWriteQueue,
   termWriteQueueEnd,
   termWriteQueueFor,
+  terminalPicker,
   type AgyState,
   type TermSession,
 } from "../src/core/terminal.ts";
@@ -314,4 +316,124 @@ test("leadItems keeps a plan's notices as information, not violations", () => {
     assert.deepEqual(plan.violations, []);
     assert.equal(plan.ok, true);
   }
+});
+
+/**
+ * The app's `setTerminalOn` around the picker, with a backend whose `leadNew` answers when the
+ * test says so: `selected` is the tab on screen, `picks` each tab's terminal (true) or chat pick.
+ */
+function pickScreen(project: string) {
+  const waiting: { project: string; finish: (threadId: string) => void; fail: (error: Error) => void }[] = [];
+  const leadNew = (path: string) => new Promise<{ threadId: string }>((finish, fail) => waiting.push({ project: path, finish: (threadId) => finish({ threadId }), fail }));
+  const pickTab = terminalPicker();
+  const state = { project, loaded: true, selected: undefined as string | undefined, picks: {} as Record<string, boolean> };
+  const choose = async (on: boolean) => {
+    const path = state.project;
+    const selected = state.selected;
+    const startNew = async () => (await leadNew(path)).threadId;
+    const thread = await pickTab({ project: path, on, thread: selected, startNew: state.loaded ? startNew : undefined, shown: () => state.project === path });
+    if (!thread) return;
+    if (thread !== selected) state.selected = thread;
+    state.picks[thread] = on;
+  };
+  return { waiting, state, choose };
+}
+const settled = () => new Promise((resolve) => setTimeout(resolve, 0));
+
+test("a chat agent picked while the first tab is being opened is not replaced by the earlier terminal pick (#118)", async () => {
+  const { waiting, state, choose } = pickScreen("C:\\work\\A");
+  const terminal = choose(true);
+  const chat = choose(false);
+  await settled();
+  assert.equal(waiting.length, 1, "the terminal pick opens the project's first tab");
+  assert.deepEqual(state.picks, {}, "nothing lands before the tab is there");
+  waiting[0].finish("t1");
+  await Promise.all([terminal, chat]);
+  // The tab is kept; the pick on record for it is the last one made, so the terminal does not come back on.
+  assert.equal(state.selected, "t1");
+  assert.deepEqual(state.picks, { t1: false });
+  // However many times the menu went back and forth, the last pick is the one kept.
+  const again = pickScreen("C:\\work\\A");
+  const all = [again.choose(true), again.choose(false), again.choose(true)];
+  await settled();
+  assert.equal(again.waiting.length, 1, "picks made while the tab is being opened share it");
+  again.waiting[0].finish("t1");
+  await Promise.all(all);
+  assert.deepEqual([again.state.selected, again.state.picks], ["t1", { t1: true }]);
+});
+
+test("the terminal pick still opens one first tab, and a project left meanwhile is not moved onto it (#107)", async () => {
+  const twice = pickScreen("C:\\work\\A");
+  const both = [twice.choose(true), twice.choose(true)];
+  await settled();
+  assert.equal(twice.waiting.length, 1, "a second click shares the tab being opened");
+  twice.waiting[0].finish("t1");
+  await Promise.all(both);
+  assert.deepEqual([twice.state.selected, twice.state.picks], ["t1", { t1: true }]);
+  // A project with a tab: the pick is recorded on it at once, nothing is opened.
+  await twice.choose(false);
+  assert.deepEqual(twice.state.picks, { t1: false });
+  await twice.choose(true);
+  assert.deepEqual(twice.state.picks, { t1: true });
+  assert.equal(twice.waiting.length, 1);
+
+  // Switched to B while A's tab was being opened: B is not moved onto A's tab, and B's own picks do not count for A.
+  const left = pickScreen("C:\\work\\A");
+  const first = left.choose(true);
+  left.state.project = "C:\\work\\B";
+  await left.choose(false);
+  await settled();
+  left.waiting[0].finish("tA");
+  await first;
+  assert.deepEqual([left.state.selected, left.state.picks], [undefined, {}]);
+  // Back on A before the tab is there: A's last pick, the terminal, lands.
+  const back = pickScreen("C:\\work\\A");
+  const pending = back.choose(true);
+  back.state.project = "C:\\work\\B";
+  await back.choose(false);
+  back.state.project = "C:\\work\\A";
+  await settled();
+  back.waiting[0].finish("tA");
+  await pending;
+  assert.deepEqual([back.state.selected, back.state.picks], ["tA", { tA: true }]);
+  // Tabs not read yet: nothing is opened.
+  const unread = pickScreen("C:\\work\\A");
+  unread.state.loaded = false;
+  await unread.choose(true);
+  assert.deepEqual([unread.waiting.length, unread.state.picks], [0, {}]);
+});
+
+test("a first tab that cannot be opened is the newest terminal pick's failure, and the next pick tries again", async () => {
+  const { waiting, state, choose } = pickScreen("C:\\work\\A");
+  const first = choose(true);
+  const second = choose(true);
+  await settled();
+  waiting[0].fail(new Error("o lead new 실패"));
+  await first;
+  await assert.rejects(second, /o lead new 실패/);
+  assert.deepEqual(state.picks, {});
+  const retry = choose(true);
+  await settled();
+  assert.equal(waiting.length, 2);
+  waiting[1].finish("t1");
+  await retry;
+  assert.deepEqual(state.picks, { t1: true });
+  // A chat agent picked meanwhile: the terminal's failure is no longer the screen's to show.
+  const chat = pickScreen("C:\\work\\A");
+  const both = [chat.choose(true), chat.choose(false)];
+  await settled();
+  chat.waiting[0].fail(new Error("o lead new 실패"));
+  await Promise.all(both);
+  assert.deepEqual(chat.state.picks, {});
+});
+
+test("the app's agent menu goes through the picker for both the terminal and a chat agent (#118)", () => {
+  const source = (path: string) => readFileSync(new URL(`../app/src/${path}`, import.meta.url), "utf8");
+  const app = source("shell/App.tsx");
+  assert.match(app, /const \[pickTab\] = useState\(terminalPicker\)/);
+  assert.match(app, /await pickTab\(\{ project: path, on, thread: selected,/);
+  assert.match(app, /onTerminal=\{setTerminalOn\}/);
+  const composer = source("features/chat/Composer.tsx");
+  assert.match(composer, /onTerminal\?\.\(true\)/);
+  assert.match(composer, /onTerminal\?\.\(false\)/);
 });

@@ -21,6 +21,8 @@ export interface CardInfo {
 
 export type OEvent =
   | { t: "run.start"; at: string; runId: string; title: string; project: string; cards: CardInfo[] }
+  /** The named Git branch captured for this run; absent from older/non-Git runs. */
+  | { t: "run.branch"; at: string; branch: string }
   | { t: "run.followup"; at: string; sourceRunId: string; cardId: string }
   | { t: "card.queued"; at: string; cardId: string; reason: string }
   | { t: "card.start"; at: string; cardId: string; pid: number | undefined }
@@ -57,7 +59,7 @@ export type OEvent =
    */
   | { t: "run.blocked"; at: string; runId: string; violations: Violation[] }
   /** The profile the run's cards used (project_O 프로필 사용, ADR-0013) and whether the shared context was on. */
-  | { t: "run.mode"; at: string; runId: string; profile: "project-o" | "own"; context: boolean; yolo?: boolean };
+  | { t: "run.mode"; at: string; runId: string; profile: "project-o" | "own"; context: boolean; yolo?: boolean; scheduled?: boolean };
 
 /** One policy refusal, as crates/o-core/src/policy.rs `Violation` serializes it. */
 export interface Violation {

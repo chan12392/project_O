@@ -8,6 +8,7 @@
  * terminal view and the composer share.
  */
 import { canLead, LEAD_NAME, LEAD_PROVIDERS } from "./lead.ts";
+import { folderKey } from "./projects.ts";
 
 /** `o agents status` rows, reduced to what the terminal rules need. */
 export interface AgentStatusLike {
@@ -235,6 +236,56 @@ export function composerAgentChoices(agents: readonly AgentStatusLike[]): { valu
     ),
     { value: "devin", label: "Devin", disabled: true, hint: "총괄은 아직 지원하지 않음" },
   ];
+}
+
+/** One pick in the composer's agent menu: the Antigravity terminal (`on`) or a chat agent. */
+export interface TerminalPick {
+  project: string;
+  on: boolean;
+  /** The lead tab on screen; absent while the project has none. */
+  thread: string | undefined;
+  /** Opens the project's first lead tab; absent while its tabs are not read yet. */
+  startNew?: () => Promise<string | undefined>;
+  /** Whether the project is still the one on screen, asked once the tab is there. */
+  shown: () => boolean;
+}
+
+/**
+ * The tab each terminal/chat pick lands on, for projects that may have no lead tab yet (#107).
+ * A terminal pick there opens the project's first tab, and picks made while it is being opened
+ * share that one tab. Every pick, terminal or chat, is the project's newest: when the tab is
+ * there, only the newest pick gets it (and only while its project is still on screen), so a pick
+ * made earlier never lands over a later one (#118). A tab that could not be opened is the newest
+ * terminal pick's failure to show. The answer is the tab to record the pick on, if any.
+ */
+export function terminalPicker(): (pick: TerminalPick) => Promise<string | undefined> {
+  const newest = new Map<string, number>();
+  const opening = new Map<string, Promise<string | undefined>>();
+  return async ({ project, on, thread, startNew, shown }) => {
+    const key = folderKey(project);
+    const mine = (newest.get(key) ?? 0) + 1;
+    newest.set(key, mine);
+    if (thread) return thread;
+    let made = opening.get(key);
+    if (!made && on && startNew) {
+      const first = startNew();
+      made = first;
+      opening.set(key, first);
+      const done = () => {
+        if (opening.get(key) === first) opening.delete(key);
+      };
+      first.then(done, done);
+    }
+    if (!made) return undefined;
+    let opened: string | undefined;
+    try {
+      opened = await made;
+    } catch (e) {
+      if (on && newest.get(key) === mine) throw e;
+      return undefined;
+    }
+    return opened && newest.get(key) === mine && shown() ? opened : undefined;
+  };
 }
 
 /** The Antigravity settings a report keeps, beside the always-shown `notice`. */

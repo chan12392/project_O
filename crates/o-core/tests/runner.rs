@@ -115,13 +115,13 @@ fn main() {
         ("a project link pointed elsewhere after the check refuses the card", a_link_swapped_after_the_check_is_refused),
         ("a stop that comes while a card's CLI is starting still ends it", stop_while_starting),
         ("runs dispatched together never take more slots than the caps between them", runners_share_slots),
-        ("runs dispatched together never start more cards than the day allows", runners_share_the_days_last_start),
+        ("runs dispatched together start after more than sixty cards today", runners_start_after_many_daily_starts),
         ("a card whose CLI cannot start gives back its slot and its start", failed_start_gives_back),
         ("behind today's budget, cards start with lower effort and say so", budget_lowers_effort),
         ("a provider over today's budget starts no card", budget_over_refuses),
         ("runs cards in parallel, records a limit as a provider cooldown", parallel_and_limit),
         ("a card whose provider is cooling down ends without launching", cooling_down),
-        ("the day's cap is checked again when a card starts, not only at dispatch", daily_cap_at_start),
+        ("a card starts after more than sixty cards today", starts_after_many_daily_starts),
         ("a stop request ends the cards still waiting", stop_request),
         ("a card waits in the queue while its provider is full, then runs", queue_then_run),
         ("a clean run starts its cards with only the clean environment", clean_run),
@@ -1116,16 +1116,16 @@ fn cooling_down() {
     assert_eq!(ends_of(&home, "r2"), BTreeMap::from([("a".into(), CardStatus::Failed)]));
 }
 
-fn daily_cap_at_start() {
+fn starts_after_many_daily_starts() {
     let home = temp_home();
-    for i in 0..LIMITS.max_cards_per_day {
+    for i in 0..75 {
         record_start(&home, "earlier", &format!("c{i}"), ProviderId::Codex, Utc::now()).unwrap();
     }
     let p = plan(vec![card("a", ProviderId::Claude, "x")]);
     create_run(&home, "r3", &p).unwrap();
-    assert_eq!(run_plan(&home, "r3", &p, None, quiet()).unwrap(), CardStatus::Failed);
-    assert_eq!(ends_of(&home, "r3"), BTreeMap::from([("a".into(), CardStatus::Failed)]));
-    assert_eq!(started_on(&home, Utc::now()).unwrap(), LIMITS.max_cards_per_day);
+    assert_eq!(run_plan(&home, "r3", &p, None, quiet()).unwrap(), CardStatus::Done);
+    assert_eq!(ends_of(&home, "r3"), BTreeMap::from([("a".into(), CardStatus::Done)]));
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 76);
 }
 
 fn stop_request() {
@@ -1323,22 +1323,22 @@ fn runners_share_slots() {
     assert!(active_markers(&home).is_empty());
 }
 
-/// Two runs that each want the day's last start: one gets it, the other ends without starting.
-fn runners_share_the_days_last_start() {
+/// Earlier starts do not prevent either of two concurrent runs from starting.
+fn runners_start_after_many_daily_starts() {
     let home = temp_home();
-    for i in 0..LIMITS.max_cards_per_day - 1 {
+    for i in 0..75 {
         record_start(&home, "earlier", &format!("c{i}"), ProviderId::Codex, Utc::now()).unwrap();
     }
     let seen = Arc::new(Mutex::new(InFlight::default()));
     let one = || plan(vec![card("a", ProviderId::Claude, "x")]);
     run_together(&home, vec![("rc", one()), ("rd", one())], slow_counting_spawner(seen));
-    assert_eq!(started_on(&home, Utc::now()).unwrap(), LIMITS.max_cards_per_day);
+    assert_eq!(started_on(&home, Utc::now()).unwrap(), 77);
     let mut ends: Vec<CardStatus> = ends_of(&home, "rc").into_values().chain(ends_of(&home, "rd").into_values()).collect();
     ends.sort_by_key(|s| format!("{s:?}"));
-    assert_eq!(ends, [CardStatus::Done, CardStatus::Failed]);
+    assert_eq!(ends, [CardStatus::Done, CardStatus::Done]);
 }
 
-/// A card whose CLI cannot be started gives its slot and its start of the day back.
+/// A card whose CLI cannot be started releases its slot and removes its start record.
 fn failed_start_gives_back() {
     let home = temp_home();
     let p = plan(vec![card("a", ProviderId::Claude, "x")]);

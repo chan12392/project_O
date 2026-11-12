@@ -1,5 +1,5 @@
 //! The run index (o.db): incremental ingest of events.jsonl, the one-time
-//! import of the old ledger/cooldowns/blocked files, and the daily cap.
+//! import of the old ledger/cooldowns/blocked files, and daily start statistics.
 
 use std::fs::{self, OpenOptions};
 use std::io::Write;
@@ -254,7 +254,7 @@ fn old_ledger_cooldowns_and_blocked_files_are_imported_once_and_kept_renamed() {
 }
 
 #[test]
-fn the_daily_cap_counts_starts_of_the_local_day() {
+fn daily_start_statistics_count_starts_of_the_local_day() {
     let home = temp_home();
     let now = Utc::now();
     assert_eq!(started_on(&home, now).unwrap(), 0);

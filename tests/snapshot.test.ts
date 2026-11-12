@@ -174,3 +174,26 @@ test("a poll keeps a run's view only while its events are unchanged, not just as
 test("no run.start means nothing to show", () => {
   assert.equal(snapshot([]), undefined);
 });
+
+test("run.branch preserves the recorded branch and leaves legacy runs unknown", () => {
+  const start: OEvent = { t: "run.start", at: "1", runId: "r", title: "t", project: "p", cards: [] };
+  assert.equal(snapshot([start])?.branch, undefined);
+  assert.equal(snapshot([start, { t: "run.branch", at: "2", branch: "younchan-task" }])?.branch, "younchan-task");
+  assert.equal(snapshot([{ t: "run.branch", at: "0", branch: "ignored" }, start])?.branch, undefined);
+});
+
+test("only a scheduled run.mode marks a run as started by automation", () => {
+  const start: OEvent = { t: "run.start", at: "1", runId: "r", title: "t", project: "p", cards: [] };
+  const mode: OEvent = { t: "run.mode", at: "2", runId: "r", profile: "project-o", context: true };
+  for (const events of [[start], [start, mode]]) {
+    const run = snapshot(events);
+    assert.ok(run);
+    assert.equal(run.scheduled, undefined, "ordinary and older runs have no scheduled marker");
+    assert.equal(Object.hasOwn(run, "scheduled"), false);
+  }
+  const scheduled = snapshot([start, { ...mode, scheduled: true }]);
+  assert.equal(scheduled?.scheduled, true);
+  const ordinary = snapshot([start, { ...mode, scheduled: false }]);
+  assert.equal(ordinary?.scheduled === true, false, "only true enables the app's automation indicator");
+  assert.equal(ordinary?.scheduled, false);
+});
