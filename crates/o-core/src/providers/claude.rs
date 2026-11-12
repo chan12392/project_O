@@ -88,12 +88,8 @@ fn yolo_head() -> Vec<String> {
     args
 }
 
-/// The model aliases `claude --model` documents, with the version each stands for now:
-/// (alias, family, version, model id). Claude Code prints no alias→model mapping
-/// (`claude --help` and `claude --version` name the aliases only, there is no models
-/// command), so this table is kept by hand. **Update it when Claude Code's aliases move to
-/// a new model** (code.claude.com/docs/en/model-config). `--model` still gets the alias, so
-/// a stale version here only mislabels the menu; it never picks another model.
+/// Fallback aliases when CLI initialization metadata is unavailable. Resolved model
+/// names and versions come from the profile's model catalog.
 const LEAD_MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
 
 impl Provider for Claude {
@@ -125,7 +121,7 @@ impl Provider for Claude {
     }
 
     fn stream_reader(&self) -> ReadLine {
-        let mut reset_given = false;
+        let mut reset_given = None;
         let mut calls = HashMap::new();
         Box::new(move |data| read_stream(&mut reset_given, &mut calls, data))
     }
@@ -303,7 +299,7 @@ const MAX_OPEN_CALLS: usize = 256;
 ///
 /// `calls`: the tool calls still waiting for their result (id → name, summary), so a result
 /// that reports an error can say which call it was.
-fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, String)>, data: &Map<String, Value>) -> Vec<StreamSignal> {
+fn read_stream(reset_given: &mut Option<String>, calls: &mut HashMap<String, (String, String)>, data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
     if kind == Some("system") && data.get("subtype").and_then(Value::as_str) == Some("init") {
         if let Some(id) = data.get("session_id").and_then(Value::as_str) {
@@ -375,7 +371,7 @@ fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, Stri
                 if let Some(resets) = info.get("resetsAt").and_then(Value::as_f64) {
                     out.push(StreamSignal::Limit { until: iso_from_secs(resets) });
                     if subscription { out.push(StreamSignal::SubscriptionLimit { until: iso_from_secs(resets) }); }
-                    *reset_given = true;
+                    *reset_given = Some(iso_from_secs(resets));
                 } else {
                     out.push(StreamSignal::Limit { until: String::new() });
                     if subscription { out.push(StreamSignal::SubscriptionLimit { until: String::new() }); }
@@ -399,7 +395,11 @@ fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, Stri
         // Usually a rejected rate_limit_event comes first; the text still catches a limit without one.
         // After that event its reset time stands: a wait read from the wording ("try again in
         // 1 hour", rounded or repeated late) must not stretch it.
-        if !*reset_given {
+        if let Some(until) = reset_given.as_ref() {
+            if !ok && crate::usage::fallback::is_subscription_limit(&text) {
+                out.push(StreamSignal::SubscriptionLimit { until: until.clone() });
+            }
+        } else {
             out.extend(limit_from_text(&text, ok));
         }
         out.push(StreamSignal::Final { ok, text });

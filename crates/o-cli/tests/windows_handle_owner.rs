@@ -234,13 +234,15 @@ fn actual_cli_lead_normal_crash_stop_and_marker_failure() {
     std::fs::create_dir_all(&bin).unwrap();
     let source = base.join("fake.rs");
     std::fs::write(&source, r##"fn main() {
+        let args: Vec<_> = std::env::args().collect();
+        if !args.iter().any(|arg| arg == "-p") { return; }
         if std::env::var_os("ANTHROPIC_API_KEY").as_deref() != Some(std::ffi::OsStr::new("fake-only")) { std::process::exit(9); }
         std::fs::write(std::env::var_os("O_FAKE_MARKER").unwrap(), std::process::id().to_string()).unwrap();
         if std::env::var_os("O_FAKE_BLOCK").is_some() { std::thread::sleep(std::time::Duration::from_secs(30)); }
         println!(r#"{{"type":"result","subtype":"success","is_error":false,"result":"fake-lead-ok"}}"#);
     }"##).unwrap();
     assert!(Command::new("rustc").arg(&source).arg("-o").arg(bin.join("claude.exe")).creation_flags(0x08000000).status().unwrap().success());
-    let path = std::env::join_paths(std::iter::once(bin).chain(std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default()))).unwrap();
+    let path = bin.into_os_string();
     for mode in ["normal", "crash", "stop", "marker-fail"] {
         let root = base.join(mode);
         let project = root.join("project");

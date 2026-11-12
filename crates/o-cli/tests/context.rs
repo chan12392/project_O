@@ -263,7 +263,7 @@ fn tokens_report_and_compare() {
     assert_eq!(report["compare"]["shared"]["perCard"]["total"], 55);
     let run_keys: Vec<&str> = report["runs"][0].as_object().unwrap().keys().map(String::as_str).collect();
     assert_eq!(run_keys, ["runId", "title", "project", "startedAt", "clean", "context", "cards", "tokens", "unreportedCards", "incompleteCards"]);
-    assert_eq!(report["runs"][0]["cards"][0], json!({ "cardId": "ui", "provider": "codex", "context": true, "tokens": { "input": 40, "cached": 10, "output": 5, "total": 55 } }));
+    assert_eq!(report["runs"][0]["cards"][0], json!({ "cardId": "ui", "provider": "codex", "context": true, "tokens": { "input": 40, "cached": 10, "output": 5, "total": 55 }, "byProvider": { "codex": { "input": 40, "cached": 10, "output": 5, "total": 55 } } }));
 
     let since = ok_json(o_in(&base, &base, "", &["tokens", "--json", "--since", "2026-11-02"]));
     assert_eq!(since["runs"].as_array().unwrap().len(), 1);

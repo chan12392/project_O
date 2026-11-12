@@ -145,7 +145,7 @@ fn codex_stream_config_warnings_are_not_failures() {
         [StreamSignal::Usage { input: 14721.0, cached: 112384.0, output: 519.0, complete: true }, StreamSignal::Final { ok: true, text: String::new() }]
     );
     let failed = r.read(r#"{"type":"turn.failed","error":{"message":"You have hit your usage limit."}}"#);
-    assert!(matches!(failed.as_slice(), [StreamSignal::Limit { .. }, StreamSignal::Final { ok: false, .. }]));
+    assert!(matches!(failed.as_slice(), [StreamSignal::Limit { .. }, StreamSignal::SubscriptionLimit { .. }, StreamSignal::Final { ok: false, .. }]));
 }
 
 #[test]
@@ -519,13 +519,13 @@ fn only_plan_and_rate_limits_count_as_limits() {
 fn a_claude_limit_shows_in_its_error_text_too_but_one_limit_per_card_keeps_the_event_reset_time() {
     let failed = r#"{"type":"result","subtype":"error_during_execution","is_error":true,"result":"Claude AI usage limit reached"}"#;
     let alone = StreamReader::new(ProviderId::Claude).read(failed);
-    assert!(matches!(alone.as_slice(), [StreamSignal::Limit { until }, StreamSignal::Final { ok: false, .. }] if until.is_empty()));
+    assert!(matches!(alone.as_slice(), [StreamSignal::Limit { until }, StreamSignal::SubscriptionLimit { until: confirmed }, StreamSignal::Final { ok: false, .. }] if until.is_empty() && until == confirmed));
     let mut r = StreamReader::new(ProviderId::Claude);
     assert_eq!(
         r.read(r#"{"type":"rate_limit_event","rate_limit_info":{"status":"rejected","resetsAt":1793526000}}"#),
         [StreamSignal::Limit { until: "2026-11-01T09:40:00.000Z".into() }]
     );
-    assert!(matches!(r.read(failed).as_slice(), [StreamSignal::Final { ok: false, .. }]));
+    assert!(matches!(r.read(failed).as_slice(), [StreamSignal::SubscriptionLimit { until }, StreamSignal::Final { ok: false, .. }] if until == "2026-11-01T09:40:00.000Z"));
 }
 
 /// Issue #69: a wait in the failure text ("try again in 1 hour") must not stretch the reset
@@ -537,14 +537,15 @@ fn a_claude_failure_text_with_a_wait_keeps_the_event_reset_time() {
     let event = |at: i64| format!(r#"{{"type":"rate_limit_event","rate_limit_info":{{"status":"rejected","resetsAt":{at}}}}}"#);
     let mut r = StreamReader::new(ProviderId::Claude);
     assert_eq!(r.read(&event(soon)), [StreamSignal::Limit { until: iso_from_secs(soon as f64) }]);
-    assert!(matches!(r.read(failed).as_slice(), [StreamSignal::Final { ok: false, .. }]));
+    assert!(matches!(r.read(failed).as_slice(), [StreamSignal::SubscriptionLimit { until }, StreamSignal::Final { ok: false, .. }] if until == &iso_from_secs(soon as f64)));
     assert_eq!(r.read(&event(soon + 600)), [StreamSignal::Limit { until: iso_from_secs((soon + 600) as f64) }]);
 
     // With no limit event, the wording's wait is the reset time.
     let before = chrono::Utc::now();
     let alone = StreamReader::new(ProviderId::Claude).read(failed);
     let after = chrono::Utc::now();
-    let [StreamSignal::Limit { until }, StreamSignal::Final { ok: false, .. }] = alone.as_slice() else { panic!("{alone:?}") };
+    let [StreamSignal::Limit { until }, StreamSignal::SubscriptionLimit { until: confirmed }, StreamSignal::Final { ok: false, .. }] = alone.as_slice() else { panic!("{alone:?}") };
+    assert_eq!(until, confirmed);
     let until = chrono::DateTime::parse_from_rfc3339(until).unwrap().with_timezone(&chrono::Utc);
     let hour = chrono::Duration::hours(1);
     assert!(until >= before + hour - chrono::Duration::milliseconds(1) && until <= after + hour + chrono::Duration::milliseconds(1), "{until}");
@@ -799,7 +800,7 @@ fn a_devin_turn_ended_by_a_refused_tool_is_a_failure_that_names_it() {
     assert!(matches!(read_run("", warning, None).as_slice(), [StreamSignal::Final { ok: false, text }] if text.contains("권한 거부")));
     // An empty answer for another reason says the last stderr line, and a limit there rests the provider.
     let limited = read_run("", "Error: You have hit your usage limit.", None);
-    assert!(matches!(limited.as_slice(), [StreamSignal::Limit { .. }, StreamSignal::Final { ok: false, text }] if text.contains("usage limit")));
+    assert!(matches!(limited.as_slice(), [StreamSignal::Limit { .. }, StreamSignal::SubscriptionLimit { .. }, StreamSignal::Final { ok: false, text }] if text.contains("usage limit")));
 }
 
 #[test]
