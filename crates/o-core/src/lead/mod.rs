@@ -392,6 +392,11 @@ pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
     if req.provider == ProviderId::Agy && agy_hooks.exists() {
         return Err(format!("이 프로젝트에 {}이 있어 Antigravity를 총괄로 쓰지 않습니다 (계획 승인 전에 프로젝트 훅이 실행될 수 있음). Claude Code나 Codex를 고르세요", agy_hooks.to_string_lossy()));
     }
+    if req.provider == ProviderId::Codex && !req.yolo {
+        if let Some(found) = providers::codex::project_config(Path::new(req.project)) {
+            return Err(format!("{}이 있어 Codex 총괄을 시작하지 않았습니다. 프로젝트 설정·MCP가 승인 전에 실행될 수 있습니다", found.display()));
+        }
+    }
     check_folder(home, req.project)
 }
 

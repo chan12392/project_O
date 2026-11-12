@@ -6,8 +6,8 @@ name: merge-guard
 # The repository is on GitHub Pro with rulesets on main (PR, the policy and check CI,
 # no force push or delete) and test_1 (one approving review from someone other than
 # the author; the owner, as admin, may bypass). GitHub itself enforces test_1's
-# approval, so this job no longer watches test_1. No ruleset limits who merges into
-# the owner-only branches, so this job is their after-the-fact alarm: a merge or push
+# approval, so this job no longer watches test_1. In addition to the owner-only branch
+# restrictions documented in AGENTS.md, this job is an after-the-fact alarm: a merge or push
 # by anyone else turns red and names the actor, so the owner can see it and revert.
 # The agent hook (`o hook`) and the git hooks (`o scan`) stop it beforehand on members' PCs.
 

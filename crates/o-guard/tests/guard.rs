@@ -65,6 +65,56 @@ const SKIP_PERMISSIONS: &str = concat!("--dangerously-", "skip-permissions");
 const BYPASS_SANDBOX: &str = concat!("--dangerously-", "bypass-approvals-and-sandbox");
 
 #[test]
+fn escaped_commands_unknown_shell_tools_and_direct_repository_writes_are_refused() {
+    for command in [
+        r"g\h pr merge 1", "g^h pr merge 1", "g`h pr merge 1", r"g\it push origin main", "g^it push origin main", "g`it push origin main",
+        "gh api -XDELETE repos/chan12392/project_O/rulesets/1",
+        "gh api -XPATCH https://api.github.com/repos/chan12392/project_O -f archived=true",
+        "gh api -X PUT repos/chan12392/project_O/contents/AGENTS.md -f content=x",
+        "gh api repos/chan12392/project_O/git/refs -f ref=refs/heads/main",
+        "gh api -XDELETE repos/chan12392/project_O/branches/main/protection",
+        "gh workflow disable release.yml", "gh run rerun 1", "gh alias-name anything",
+        "git config alias.send push", "git -calias.send=push send origin main",
+        "git config branch.younchan.merge refs/heads/main", "git config push.default matching",
+        "git -c push.default=matching push", "git send origin main",
+        "GIT_CONFIG_COUNT=1 git push origin younchan", "git push origin HEAD:surprise",
+    ] {
+        assert!(blocked(&bash(command), &MEMBER_GH), "{command}");
+    }
+    for command in [
+        "gh api -XDELETE repos/chan12392/project_O/rulesets/1",
+        "gh api graphql -f query='mutation { createRef(input:{name: \"refs/heads/main\"}) { clientMutationId } }'",
+    ] { assert!(blocked(&bash(command), &OWNER_GH), "owner still uses PRs: {command}"); }
+    assert!(passes(&bash("git commit -m \"push main\""), &OnBranch("younchan")));
+    assert!(passes(&bash("gh api repos/chan12392/project_O/rulesets"), &MEMBER_GH));
+    assert!(passes(&bash("gh pr create --base test_2 --head younchan"), &MEMBER_GH));
+    assert!(blocked(&bash("cat ~/.codex/au\"\"th.json"), &MEMBER_GH));
+    let unknown = json!({"tool_name":"custom_shell", "cwd":"C:/repo", "tool_input":{"cmd":"git push origin main"}});
+    assert!(blocked(&unknown, &OnBranch("younchan")));
+    let marked = json!({"tool_name":"custom_shell", "cwd":"C:/repo", "inside_agent":true, "tool_input":{"cmd":"o resources recover r1\n --confirm-exited"}});
+    assert!(blocked(&marked, &OnBranch("younchan")));
+}
+
+#[test]
+fn verbatim_paths_still_reach_mirrors_and_state_folders() {
+    let input = json!({"tool_name":"Write", "cwd":"C:/repo", "tool_input":{"file_path":r"\\?\C:\ws\test_2\src\a.rs","content":"x"}});
+    assert!(blocked(&input, &ByFolder));
+    assert!(o_guard::hook::within_state(r"\\?\C:\State\runs\r1\plan.json", "C:/State"));
+    assert!(o_guard::hook::within_state(r"\\?\UNC\server\share\state\runs\r1", "//server/share/state"));
+    assert!(!o_guard::hook::within_state("C:/State-project/readme", "C:/State"));
+}
+
+#[test]
+fn official_remote_requires_github_and_the_owner() {
+    for remote in ["https://github.com/chan12392/project_O.git", "git@github.com:chan12392/project_O.git", "ssh://git@github.com/chan12392/project_O.git"] {
+        assert!(PROJECT_REMOTE.is_match(remote), "{remote}");
+    }
+    for remote in ["https://github.com/other/project_O.git", "https://example.invalid/chan12392/project_O.git", "https://github.com.evil.invalid/chan12392/project_O", "file:///tmp/chan12392/project_O.git"] {
+        assert!(!PROJECT_REMOTE.is_match(remote), "{remote}");
+    }
+}
+
+#[test]
 fn code_that_touches_credentials_backends_or_bypass_flags_is_found() {
     let samples = [
         format!("readFileSync(join(home, '.claude', '{CREDENTIALS_FILE}'))"),
@@ -494,7 +544,6 @@ fn merge_checks_see_every_line_of_a_command() {
         "gh api -X PUT repos/chan12392/project_O/pulls/1/merge\necho x",
         "gh api -X PUT repos/chan12392/project_O/pulls/1/merge\r\necho x",
         "echo start\r\ngh api repos/chan12392/project_O/merges -f base=main -f head=test_1\r\nexit 0",
-        "gh api graphql -f query='mutation {\n  mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId }\n}'",
     ];
     for command in into_protected {
         assert!(passes(&bash(command), &OWNER_GH), "{command:?}");
@@ -529,7 +578,8 @@ fn quoting_and_spelling_cannot_hide_a_push_to_a_protected_branch() {
         assert!(blocked(&bash("git push -u origin"), &OnBranch(branch)), "{branch}");
         assert!(blocked(&bash("git push origin HEAD"), &OnBranch(branch)), "{branch}");
     }
-    for command in ["git push origin \"younchan\"", "git push -u origin younchan-guard", "git push origin HEAD", "git push -u origin"] {
+    assert!(blocked(&bash("git push -u origin"), &OnBranch("younchan")));
+    for command in ["git push origin \"younchan\"", "git push -u origin younchan-guard", "git push origin HEAD"] {
         assert!(passes(&bash(command), &OnBranch("younchan")), "{command}");
     }
 }
@@ -600,12 +650,14 @@ fn another_spelling_of_gh_or_the_endpoint_is_still_a_merge() {
         "\"gh\" pr merge 1",
         "gh api -X PUT 'repos/chan12392/project_O/pulls/1/merge?x=1'",
         "gh api -X PUT https://api.github.com/repos/chan12392/project_O/pulls/1/merge",
-        "gh api graphql --input merge.json",
-        "gh api graphql -F query=@merge.graphql",
     ] {
         assert!(blocked(&bash(command), &MEMBER_GH), "{command}");
         assert!(passes(&bash(command), &OWNER_GH), "{command}");
     }
+    for command in ["gh api graphql --input merge.json", "gh api graphql -F query=@merge.graphql"] {
+        assert!(blocked(&bash(command), &OWNER_GH), "an opaque mutation cannot be approved by a login lookup");
+    }
+    assert!(blocked(&bash("gh api graphql -f query='mutation { mergePullRequest(input: {pullRequestId: \"x\"}) { clientMutationId } }'"), &OWNER_GH));
     // An unconfirmed base is refused for the owner too, however the call is spelled.
     for command in ["g\"\"h pr merge 99", "\"gh\" pr merge 99", "gh.exe pr merge 99"] {
         assert!(blocked(&bash(command), &OWNER_GH), "{command}");
@@ -703,7 +755,7 @@ fn a_mirror_stays_one_when_its_remote_is_renamed_or_removed() {
     git(&other, &["remote", "add", "origin", "https://github.com/someone/else.git"]);
     assert!(!mirror(&other));
     git(&other, &["remote", "add", "fork", "https://github.com/someone/project_O.git"]);
-    assert!(mirror(&other), "a project_O remote under any name");
+    assert!(!mirror(&other), "a fork with the same name is not the official mirror");
     let _ = std::fs::remove_dir_all(&root);
 }
 

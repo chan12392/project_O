@@ -1,6 +1,32 @@
 use std::process::Command;
 
 #[test]
+fn a_path_shadow_cannot_change_the_guards_branch_probe() {
+    use std::io::Write;
+    use std::process::Stdio;
+    let dir = std::env::temp_dir().join(format!("o-hook-path-{}", o_core::run::store::new_run_id(chrono::Utc::now())));
+    std::fs::create_dir_all(&dir).unwrap();
+    let git = o_core::sys::resolve::installed_program("git").unwrap();
+    assert!(o_core::sys::proc::hide_window(Command::new(git).args(["init", "-q", "-b", "main"]).current_dir(&dir)).status().unwrap().success());
+    let shadow = dir.join("bin");
+    std::fs::create_dir(&shadow).unwrap();
+    #[cfg(windows)]
+    std::fs::write(shadow.join("git.cmd"), "@echo younchan\r\n").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::write(shadow.join("git"), "#!/bin/sh\nprintf 'younchan\\n'\n").unwrap();
+        std::fs::set_permissions(shadow.join("git"), std::fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut child = o_core::sys::proc::hide_window(Command::new(env!("CARGO_BIN_EXE_o")).arg("hook").env("PATH", &shadow)
+        .stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::piped())).spawn().unwrap();
+    child.stdin.take().unwrap().write_all(serde_json::to_string(&serde_json::json!({"cwd":dir,"tool_name":"Bash","tool_input":{"command":"git commit -m harmless"}})).unwrap().as_bytes()).unwrap();
+    let output = child.wait_with_output().unwrap();
+    assert_eq!(output.status.code(), Some(2), "{}", String::from_utf8_lossy(&output.stdout));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("main"));
+}
+
+#[test]
 fn lead_monitor_stops_when_its_parent_closes_stdin() {
     let isolated = std::env::temp_dir().join(format!("o-monitor-test-{}", std::process::id()));
     let output = Command::new(env!("CARGO_BIN_EXE_o"))
@@ -23,6 +49,7 @@ fn marked_agents_cannot_start_work_through_cli() {
             vec!["stop", "run"], vec!["lead", "stop"], vec!["lead", "stop-all", "--project", "x"], vec!["lead", "forward", "20261109-x-f1"],
             vec!["resources", "recover", "3", "--confirm-exited"],
             vec!["schedule", "run", "test"], vec!["image", "read"], vec!["projects", "open", "x"],
+            vec!["lead", "new"], vec!["lead", "attach"], vec!["sync-mirror", "x"], vec!["events", "other-run"], vec!["runs"],
             // The sandbox check makes a model call; only a person starts it (ADR-0040 개정 1).
             vec!["agents", "setup", "codex"],
             vec!["issues", "record", "finding.json"], vec!["issues", "classify", "1", "external"], vec!["issues", "resolve", "1", "run", "card", "evidence"], vec!["issues", "reopen", "1"],
@@ -42,6 +69,15 @@ fn empty_agent_markers_do_not_hide_normal_argument_errors() {
 }
 
 #[test]
+fn a_card_cannot_start_the_approver_and_a_lead_cannot_speak_as_a_card() {
+    let output = Command::new(env!("CARGO_BIN_EXE_o")).arg("_lead-approve").env("O_CARD_ID", "card-1").output().unwrap();
+    assert_eq!(output.status.code(), Some(2));
+    let output = Command::new(env!("CARGO_BIN_EXE_o")).args(["msg", "read", "--run", "r1", "--as", "card-1"]).env("O_AGENT_ROLE", "lead").env_remove("O_CARD_ID").output().unwrap();
+    assert!(!output.status.success());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("총괄은 다른 카드"));
+}
+
+#[test]
 fn marked_agent_hook_blocks_dispatch_command() {
     use std::io::Write;
     use std::process::Stdio;
@@ -55,8 +91,7 @@ fn marked_agent_hook_blocks_dispatch_command() {
     }
 }
 
-/// The approval server refuses what O's guard rules refuse before anyone is asked, and an
-/// MCP tool of its own, and answers Claude Code's handshake (`o _lead-approve`).
+/// A directly started approval server answers the handshake but cannot create a fake turn.
 #[test]
 fn the_approval_server_refuses_guarded_calls_without_asking() {
     use std::io::{BufRead, BufReader, Write};
@@ -81,10 +116,10 @@ fn the_approval_server_refuses_guarded_calls_without_asking() {
         let reply = ask(id, "tools/call", serde_json::json!({"name":"decide","arguments":{"tool_name":tool,"input":input}}));
         let decision: serde_json::Value = serde_json::from_str(reply["result"]["content"][0]["text"].as_str().unwrap()).unwrap();
         assert_eq!(decision["behavior"], "deny", "{tool}");
-        assert!(decision["message"].as_str().unwrap().contains("O 정책"), "{decision}");
+        assert!(decision["message"].as_str().unwrap().contains("현재 총괄 턴"), "{decision}");
     }
     drop(stdin);
     assert!(child.wait().unwrap().success());
     let events: Vec<o_core::lead::LeadEvent> = o_core::lead::read_thread(&home, &thread);
-    assert_eq!(events.iter().filter(|e| matches!(e, o_core::lead::LeadEvent::Decision { by, .. } if by == "guard")).count(), 2);
+    assert!(!events.iter().any(|e| matches!(e, o_core::lead::LeadEvent::Decision { .. } | o_core::lead::LeadEvent::Approval { .. })));
 }

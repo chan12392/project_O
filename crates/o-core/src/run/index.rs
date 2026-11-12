@@ -231,8 +231,17 @@ impl Summary {
 /// Brings the index up to date with the runs folder. When nothing changed this
 /// is one query and one stat per run, and takes no write lock.
 pub fn ingest(conn: &mut Connection, home: &Path) -> io::Result<()> {
+    let root = home.join("runs");
+    if fs::symlink_metadata(&root).is_ok_and(|meta| !plain_directory(&meta)) {
+        return Err(io::Error::other("실행 기록 폴더가 일반 폴더가 아닙니다"));
+    }
     let names: Vec<String> = match fs::read_dir(home.join("runs")) {
-        Ok(entries) => entries.flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect(),
+        Ok(entries) => entries.flatten().filter(|e| fs::symlink_metadata(e.path()).is_ok_and(|meta| plain_directory(&meta)))
+            .map(|e| e.file_name().to_string_lossy().into_owned()).filter(|name| super::store::is_run_id(name))
+            .filter(|name| match fs::symlink_metadata(root.join(name).join("events.jsonl")) {
+                Ok(meta) => meta.is_file() && !is_link(&meta),
+                Err(e) => e.kind() == ErrorKind::NotFound,
+            }).collect(),
         Err(error) if error.kind() == ErrorKind::NotFound => Vec::new(),
         Err(error) => return Err(error),
     };
@@ -243,7 +252,7 @@ pub fn ingest(conn: &mut Connection, home: &Path) -> io::Result<()> {
     };
     for run_id in &names {
         let file = home.join("runs").join(run_id).join("events.jsonl");
-        let meta = fs::metadata(&file).ok();
+        let meta = fs::symlink_metadata(&file).ok();
         let size = meta.as_ref().map_or(0, |m| m.len());
         // Same size and same modification time: nothing was appended or rewritten since the last read.
         let (ingested, modified) = known.get(run_id).copied().unwrap_or((0, -1));
@@ -263,6 +272,43 @@ pub fn ingest(conn: &mut Connection, home: &Path) -> io::Result<()> {
         tx.commit().map_err(sql)?;
     }
     Ok(())
+}
+
+fn is_link(meta: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    { use std::os::windows::fs::MetadataExt; meta.file_attributes() & 0x400 != 0 }
+    #[cfg(not(windows))]
+    { meta.file_type().is_symlink() }
+}
+
+fn plain_directory(meta: &fs::Metadata) -> bool { meta.is_dir() && !is_link(meta) }
+
+fn open_events(path: &Path) -> io::Result<File> {
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(windows)]
+    { use std::os::windows::fs::OpenOptionsExt; options.custom_flags(windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT); }
+    #[cfg(unix)]
+    { use std::os::unix::fs::OpenOptionsExt; options.custom_flags(libc::O_NOFOLLOW); }
+    let file = options.open(path)?;
+    let meta = file.metadata()?;
+    if !meta.is_file() || is_link(&meta) { return Err(io::Error::other("실행 기록이 일반 파일이 아닙니다")); }
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{BY_HANDLE_FILE_INFORMATION, GetFileInformationByHandle};
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::uninit();
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0 {
+            return Err(io::Error::last_os_error());
+        }
+        if unsafe { info.assume_init() }.nNumberOfLinks != 1 { return Err(io::Error::other("링크된 실행 기록은 읽지 않습니다")); }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        if meta.nlink() != 1 { return Err(io::Error::other("링크된 실행 기록은 읽지 않습니다")); }
+    }
+    Ok(file)
 }
 
 /// Ingests one run's new lines in one transaction. The write lock is taken
@@ -297,7 +343,7 @@ fn ingest_run(conn: &mut Connection, path: &Path, run_id: &str) -> io::Result<()
         tx.query_row("SELECT prefix_hash FROM runs WHERE run_id = ?1", [run_id], |r| r.get(0)).optional().map_err(sql)?.unwrap_or(0);
     let mut all = Vec::new();
     let modified;
-    match File::open(path) {
+    match open_events(path) {
         Ok(mut file) => {
             // Taken before reading: a write after it changes the time again and brings the next ingest back here.
             modified = modified_ns(&file.metadata()?);

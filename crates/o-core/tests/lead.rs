@@ -1779,6 +1779,16 @@ fn refused_requests() {
     assert!(lead::start(&home, &home_text).is_err());
     assert!(lead::start(&home, &user_home.to_string_lossy()).is_err());
     assert!(lead::start(&home, &project).is_ok());
+    let config = Path::new(&project).join(".codex");
+    std::fs::create_dir_all(&config).unwrap();
+    std::fs::write(config.join("config.toml"), "[mcp_servers.fixture]\ncommand = \"never-run\"\n").unwrap();
+    let codex = SendRequest { provider: ProviderId::Codex, ..request(&project, "a") };
+    let error = lead::send(&home, &codex, spawner.as_ref()).unwrap_err();
+    assert!(error.contains("프로젝트 설정·MCP"));
+    assert!(seen.lock().unwrap().is_empty(), "even the app-server probe must not start");
+    assert!(lead::check_request(&home, &SendRequest { yolo: true, ..codex }).is_ok());
+    std::fs::write(config.join("config.toml"), "include_collaboration_mode_instructions=false\n[agents]\nenabled=false\n[features]\nmulti_agent=false\n").unwrap();
+    assert!(lead::check_request(&home, &codex).is_ok(), "collaboration settings do not prevent the representative's lead");
 }
 
 fn api_keys_inherited() {

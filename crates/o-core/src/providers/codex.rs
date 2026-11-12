@@ -3,7 +3,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
-use std::io::{self, BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 use std::sync::mpsc;
@@ -28,6 +28,50 @@ use crate::usage::UsageWindow;
 
 pub struct Codex;
 
+/// A project config that cannot be admitted before a normal run. Only the three inert
+/// collaboration/subagent booleans below are allowed; the selected profile owns user config.
+pub fn project_config(cwd: &Path) -> Option<std::path::PathBuf> {
+    let user_home = crate::run::store::user_home();
+    for dir in cwd.ancestors() {
+        if dir == user_home { break; }
+        let folder = dir.join(".codex");
+        if let Ok(meta) = fs::symlink_metadata(&folder) {
+            let linked = meta.file_type().is_symlink();
+            #[cfg(windows)]
+            let linked = { use std::os::windows::fs::MetadataExt; linked || meta.file_attributes() & 0x400 != 0 };
+            if linked || !meta.is_dir() { return Some(folder); }
+        }
+        let path = dir.join(".codex/config.toml");
+        match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {},
+            _ if !harmless_project_config(&path) => return Some(path),
+            _ => {},
+        }
+        if fs::symlink_metadata(dir.join(".git")).is_ok() { break; }
+    }
+    None
+}
+
+fn harmless_project_config(path: &Path) -> bool {
+    let Ok(file) = crate::run::workspaces::open_plain(path) else { return false };
+    let mut text = String::new();
+    if file.take(16_385).read_to_string(&mut text).is_err() || text.len() > 16_384 { return false; }
+    let mut section = "";
+    let mut seen = std::collections::HashSet::new();
+    for line in text.lines().map(|line| line.split('#').next().unwrap_or_default().trim()).filter(|line| !line.is_empty()) {
+        if ["[agents]", "[features]"].contains(&line) {
+            if !seen.insert((line, "")) { return false; }
+            section = line;
+            continue;
+        }
+        let Some((key, value)) = line.split_once('=') else { return false };
+        let key = key.trim();
+        if !matches!((section, key), ("", "include_collaboration_mode_instructions") | ("[agents]", "enabled") | ("[features]", "multi_agent"))
+            || !["true", "false"].contains(&value.trim()) || !seen.insert((section, key)) { return false; }
+    }
+    true
+}
+
 /// Codex's subagents (`codex features list`: `multi_agent`, stable, off by default). Spawned
 /// agents keep the card's sandbox and approval settings (ADR-0037).
 const SUBAGENTS: [&str; 2] = ["--enable", "multi_agent"];
@@ -38,12 +82,14 @@ impl Provider for Codex {
     /// run's events, plan and the other cards' files are not the card's to change.
     /// O never marks a project trusted (#35), and `--skip-git-repo-check` lets Codex run outside a
     /// Git repository. Inside one, Codex records the repository as trusted itself on the first
-    /// card and loads its `.codex/` layers (config, MCP servers, hooks) from then on (ADR-0017 개정 2).
+    /// card and loads its `.codex/` layers from then on. The runner now checks project settings
+    /// against the narrow allowlist and disables hooks (ADR-0046); this preflight is not OS isolation.
     fn launch(&self, card: &Card, plan: &Plan, team: &TeamChannel, prompt: String, mut env: BTreeMap<String, String>) -> LaunchSpec {
         let spec = connection("codex").headless;
         let mut args = strings(spec.fixed);
         let mailbox = crate::run::msg_relay::mailbox(team.run_dir, &card.id).to_string_lossy().into_owned();
         args.extend(strings(&["-C", &plan.project, "--add-dir", &mailbox, "--skip-git-repo-check"]));
+        args.extend(strings(&["--disable", "hooks"]));
         env.insert(crate::run::msg_relay::DIR_ENV.into(), mailbox);
         args.extend(strings(&SUBAGENTS));
         args.extend(opt(spec.model_flag, card.model.as_deref()));

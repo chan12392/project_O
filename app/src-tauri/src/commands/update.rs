@@ -175,7 +175,7 @@ fn select_release(json: &str, sha: &str, built_at: &str) -> Result<Option<Update
 }
 
 fn gh_command(args: &[&str]) -> Result<Command, String> {
-    let executable = resolve::which("gh").ok_or_else(|| HELP.to_string())?;
+    let executable = resolve::installed_program("gh").ok_or_else(|| HELP.to_string())?;
     if cfg!(windows) && executable.extension().is_none_or(|e| !e.eq_ignore_ascii_case("exe")) {
         return Err(HELP.into());
     }

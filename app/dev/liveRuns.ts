@@ -102,7 +102,7 @@ function send(res: ServerResponse, status: number, body: string) {
  * Only this machine's own address may ask. This middleware runs before Vite's host
  * check, so without it a site using DNS rebinding could read the run records.
  */
-function localHost(req: IncomingMessage): boolean {
+export function localHost(req: IncomingMessage): boolean {
   return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host ?? "");
 }
 
@@ -111,12 +111,14 @@ function localHost(req: IncomingMessage): boolean {
  * read the runs nor make this machine run the usage CLIs. Same-origin fetches
  * either send this page's own Origin or none.
  */
-function sameOrigin(req: IncomingMessage): boolean {
+export function sameOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   // A browser says where a request comes from even when it sends no Origin (an <img> on another site).
   const site = req.headers["sec-fetch-site"];
   if (site && site !== "same-origin" && site !== "none") return false;
-  return !origin || origin === `http://${req.headers.host}`;
+  if (origin) return origin === `http://${req.headers.host}`;
+  // A state change needs browser origin evidence; headerless local clients are read-only.
+  return req.method === "GET" || req.method === "HEAD" || site === "same-origin";
 }
 
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */

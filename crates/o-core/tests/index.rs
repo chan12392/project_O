@@ -47,6 +47,55 @@ fn event_count(home: &Path, run_id: &str) -> i64 {
 }
 
 #[test]
+fn invalid_run_names_are_not_ingested() {
+    let home = temp_home();
+    append(&home, "invalid name", &start("invalid name", "2026-11-01T10:00:00.000Z", "C:/p"));
+    append(&home, "r1", &start("r1", "2026-11-01T10:00:00.000Z", "C:/p"));
+    assert_eq!(all(&home).len(), 1);
+    assert_eq!(event_count(&home, "invalid name"), 0);
+}
+
+#[cfg(windows)]
+#[test]
+fn junction_run_folders_are_not_ingested() {
+    let home = temp_home();
+    let outside = temp_home();
+    fs::create_dir_all(home.join("runs")).unwrap();
+    fs::write(outside.join("events.jsonl"), start("r1", "2026-11-01T10:00:00.000Z", "C:/p")).unwrap();
+    let shell = PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+    let output = o_core::sys::proc::hide_window(std::process::Command::new(shell)
+        .args(["-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; New-Item -ItemType Junction -Path $env:O_TEST_LINK -Target $env:O_TEST_TARGET | Out-Null"])
+        .env("O_TEST_LINK", home.join("runs/r1")).env("O_TEST_TARGET", &outside)).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(all(&home).is_empty());
+}
+
+#[test]
+fn hardlinked_events_cannot_import_an_outside_file() {
+    let home = temp_home();
+    let dir = home.join("runs/r1");
+    fs::create_dir_all(&dir).unwrap();
+    let outside = home.join("outside.jsonl");
+    fs::write(&outside, start("r1", "2026-11-01T10:00:00.000Z", "C:/p")).unwrap();
+    fs::hard_link(&outside, dir.join("events.jsonl")).unwrap();
+    assert!(read_runs(&home, &RunQuery { limit: 50, project: None }).is_err());
+    assert_eq!(event_count(&home, "r1"), 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn symlinked_run_folders_and_events_are_not_ingested() {
+    use std::os::unix::fs::symlink;
+    let home = temp_home();
+    let outside = temp_home();
+    fs::create_dir_all(home.join("runs/r2")).unwrap();
+    fs::write(outside.join("events.jsonl"), start("r1", "2026-11-01T10:00:00.000Z", "C:/p")).unwrap();
+    symlink(&outside, home.join("runs/r1")).unwrap();
+    symlink(outside.join("events.jsonl"), home.join("runs/r2/events.jsonl")).unwrap();
+    assert!(all(&home).is_empty());
+}
+
+#[test]
 fn appended_lines_are_ingested_once_each() {
     let home = temp_home();
     append(&home, "r1", &start("r1", "2026-11-01T10:00:00.000Z", "C:/p"));

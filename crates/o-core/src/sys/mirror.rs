@@ -43,8 +43,15 @@ fn sync(home: &Path, mirror: Option<&str>) -> Result<Option<String>, String> {
     // test_2 would otherwise run here unseen. Pointing hooksPath at a missing folder disables them.
     let no_hooks = home.join("no-hooks");
     let git = |args: &[&str]| -> Result<String, String> {
-        let mut command = Command::new("git");
+        let executable = o_guard::hook::installed_program("git").ok_or("지원하는 설치 경로에서 Git을 찾지 못했습니다")?;
+        let mut command = Command::new(executable);
+        for (key, _) in std::env::vars_os() {
+            if key.to_string_lossy().to_ascii_uppercase().starts_with("GIT_") { command.env_remove(key); }
+        }
+        let empty = if cfg!(windows) { "NUL" } else { "/dev/null" };
         command
+            .env("GIT_CONFIG_GLOBAL", empty).env("GIT_CONFIG_SYSTEM", empty).env("GIT_CONFIG_NOSYSTEM", "1")
+            .env("GIT_TERMINAL_PROMPT", "0")
             .arg("-c")
             .arg(format!("core.hooksPath={}", no_hooks.to_string_lossy()))
             .args(["-C", mirror])
@@ -59,6 +66,12 @@ fn sync(home: &Path, mirror: Option<&str>) -> Result<Option<String>, String> {
         Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
     };
 
+    // Config is data here; reject options that make fetch/status/checkout execute a helper or
+    // rewrite the validated origin. Global settings and injected GIT_* settings are not loaded.
+    let keys = git(&["config", "--name-only", "--list"])?;
+    if let Some(key) = keys.lines().find(|key| unsafe_config(key)) {
+        return Err(format!("동기화 중 외부 명령·원격 변경을 일으킬 수 있는 Git 설정입니다: {key}"));
+    }
     let branch = git(&["branch", "--show-current"])?;
     if !MIRROR_BRANCHES.contains(&branch.as_str()) {
         return Err(format!("거울 브랜치({})가 아닙니다: {branch}", MIRROR_BRANCHES.join(", ")));
@@ -68,7 +81,7 @@ fn sync(home: &Path, mirror: Option<&str>) -> Result<Option<String>, String> {
     if !o_guard::rules::PROJECT_REMOTE.is_match(&origin) {
         return Err(format!("origin이 project_O 저장소가 아니어서 동기화하지 않았습니다: {origin}"));
     }
-    git(&["fetch", "--prune", "origin", &branch])?;
+    git(&["fetch", "--no-recurse-submodules", "--no-tags", "origin", &format!("+refs/heads/{branch}:refs/remotes/origin/{branch}")])?;
     let before = git(&["rev-parse", "--short", "HEAD"])?;
     let target = git(&["rev-parse", "--short", &format!("origin/{branch}")])?;
     if before == target {
@@ -79,6 +92,16 @@ fn sync(home: &Path, mirror: Option<&str>) -> Result<Option<String>, String> {
     }
     git(&["merge", "--ff-only", &format!("origin/{branch}")])?;
     Ok(Some(format!("updated {before} → {target}")))
+}
+
+fn unsafe_config(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key.starts_with("url.") || key.starts_with("filter.") || key.starts_with("credential.")
+        || key.starts_with("include.") || key.starts_with("includeif.") || key.starts_with("http.")
+        || key.starts_with("protocol.") || key.starts_with("submodule.")
+        || ["core.sshcommand", "core.gitproxy", "core.fsmonitor"].contains(&key.as_str())
+        || (key.starts_with("remote.") && [".uploadpack", ".receivepack", ".vcs", ".proxy"].iter().any(|suffix| key.ends_with(suffix)))
+        || ((key.starts_with("diff.") || key.starts_with("merge.")) && (key.ends_with(".command") || key.ends_with(".driver")))
 }
 
 #[cfg(test)]
@@ -114,5 +137,14 @@ mod tests {
         assert!(Command::new("git").args(["remote", "add", "origin", "https://example.invalid/someone/other.git"]).current_dir(&dir).status().unwrap().success());
         let error = sync(&home, Some(&dir.to_string_lossy())).unwrap_err();
         assert_eq!(error, "origin이 project_O 저장소가 아니어서 동기화하지 않았습니다: https://example.invalid/someone/other.git");
+        let git = o_guard::hook::installed_program("git").unwrap();
+        for (key, value) in [("url.https://example.invalid/.insteadOf", "https://github.com/"), ("core.sshCommand", "must-never-run"), ("remote.origin.uploadpack", "must-never-run"), ("filter.bad.smudge", "must-never-run")] {
+            let status = crate::sys::proc::hide_window(Command::new(&git).args(["config", key, value]).current_dir(&dir)).status().unwrap();
+            assert!(status.success());
+            let error = sync(&home, Some(&dir.to_string_lossy())).unwrap_err();
+            assert!(error.contains("Git 설정"), "{key}: {error}");
+            assert!(crate::sys::proc::hide_window(Command::new(&git).args(["config", "--unset", key]).current_dir(&dir)).status().unwrap().success());
+        }
     }
+
 }

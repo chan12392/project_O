@@ -38,6 +38,10 @@ project_O의 보안 문제는 공개 이슈로 올리지 말고 비공개로 알
 - YOLO를 켠 상태에서 에이전트가 승인 없이 파일과 명령을 다루는 것 (YOLO의 의도된 동작)
 - 각 공급자 CLI(Claude Code, Codex 등) 자체의 취약점 — 해당 공급자에 신고한다
 
+## 구현 경계의 미해결 항목
+
+[ADR-0046](docs/decisions/0046-security-remediation.md)의 보완은 OS 사용자 격리가 아니다. 같은 사용자 권한에서 승인 결정·실행 계획/모드·터미널·이벤트 파일을 직접 바꾸는 문제는 아직 해결하지 못했다. 실행 간 원시 로그 읽기와 Unix 상태 폴더의 다른 사용자 읽기 제한도 보장하지 않는다. 개별 발견의 해결/반증/미해결 구분은 [감사 조치표](security-audit/remediation.md)에 기록한다.
+
 ## English
 
 Please do not open public issues for security problems. Use the repository's **Security → Report a vulnerability** (GitHub private vulnerability reporting). Include the affected version (commit SHA or release tag), Windows version and reproduction steps, without real credentials. We aim to acknowledge reports within 7 days. Bypasses of the O guard or policy limits, unapproved lead edits in the default mode, impersonation of approvals, and update-verification bypasses are in scope; the documented limits above and bugs in the providers' own CLIs are not.

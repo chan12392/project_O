@@ -50,6 +50,10 @@ impl Caller {
 /// speak as the lead or reach another run. `me` names files (outbox, read
 /// cursor), so it must be a party of this run. Errors are the message to print.
 pub fn speaker(home: &Path, caller: Caller) -> Result<Speaker, String> {
+    if (crate::sys::agent_job::current() == Some(crate::sys::agent_job::AgentJob::Lead) || std::env::var("O_AGENT_ROLE").is_ok_and(|role| role == "lead"))
+        && (caller.env_card.as_deref().is_some_and(|card| !card.is_empty()) || caller.flag_as.as_deref().is_some_and(|name| name != "lead")) {
+        return Err("총괄은 다른 카드의 이름으로 팀 대화를 보낼 수 없습니다".into());
+    }
     let in_card = caller.env_card.as_deref().is_some_and(|c| !c.is_empty());
     let run_id = if in_card { caller.env_run } else { caller.flag_run.or(caller.env_run) };
     let me = if in_card { caller.env_card.unwrap_or_default() } else { caller.flag_as.unwrap_or_else(|| "lead".into()) };
@@ -245,6 +249,7 @@ impl Received {
     pub fn line(&self) -> String {
         let reply = self.reply_to.as_ref().map(|id| format!(", 답변 대상: {id}")).unwrap_or_default();
         format!("[{} → {}] {} (id: {}, {}, {}{})", self.from, self.to, self.text.replace("\r\n", " ⏎ ").replace('\n', " ⏎ "), self.id, self.kind, self.state, reply)
+            .chars().map(|c| if c.is_control() { '\u{fffd}' } else { c }).collect()
     }
 }
 

@@ -42,9 +42,8 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
-static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|review|_review|lead\s+(?:send|dispatch|forward|decide|stop-all|stop))\b"#).unwrap());
-static AGENT_CONFIRMED_RECOVERY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+resources\s+recover\s+[^\r\n;&|]*--confirm-exited\b"#).unwrap());
-static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|_lead-approve|review|_review|sync-mirror|events|runs|lead\s+(?:send|dispatch|forward|decide|stop-all|stop|attach|new))\b"#).unwrap());
+static AGENT_CONFIRMED_RECOVERY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+resources\s+recover\b"#).unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"(?:\s|:)(?:refs/heads/)?({})(?:\s|$)", READ_ONLY_BRANCHES.join("|"))).unwrap());
@@ -131,14 +130,19 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
     let current_branch = || branch.get_or_init(|| git.branch(&cwd)).clone();
     let mut reasons = Vec::new();
 
-    if matches!(tool, "Bash" | "shell" | "PowerShell") {
-        let command = string_of(args.get("command"));
-        if (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) && (AGENT_DISPATCH.is_match(&command) || AGENT_CONFIRMED_RECOVERY.is_match(&command)) {
+    if matches!(tool, "Bash" | "shell" | "PowerShell" | "exec_command") || (tool != "apply_patch" && first_present(args, &["command", "cmd"]).is_some()) {
+        let command = string_of(first_present(args, &["command", "cmd"]));
+        let plain = plain_command(&command);
+        if (input["inside_agent"].as_bool() == Some(true) || std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) && (AGENT_DISPATCH.is_match(&plain) || AGENT_CONFIRMED_RECOVERY.is_match(&plain)) {
             reasons.push("에이전트 안에서는 작업을 시작할 수 없습니다. 사용자가 실행해 주세요".into());
         }
         reasons.extend(find_hits(&command, code_rules()).into_iter().map(|hit| hit.reason.to_string()));
+        reasons.extend(find_hits(&plain, code_rules()).into_iter().map(|hit| hit.reason.to_string()));
         reasons.extend(git_reasons(&command, &current_branch));
+        if plain != command { reasons.extend(git_reasons(&plain, &current_branch)); }
         reasons.extend(merge_reasons(&command, &cwd, git));
+        reasons.extend(gh_write_reasons(&command));
+        if plain != command { reasons.extend(gh_write_reasons(&plain)); }
         // Reading a guard file is fine; anything else that names one may change it.
         // Pointing git at the repository's hooks (what `npm install` does) names the folder, not a change to it.
         static HOOKS_PATH_SET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)core\.hookspath(?:\s+|=)["']?\.githooks/?["']?(?:\s|$)"#).unwrap());
@@ -147,6 +151,9 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         }
         // A mirror is read-only whether the command runs in it or names it from elsewhere.
         let targets = shell_targets(&command, &cwd);
+        if (protected_state(&cwd) || targets.as_ref().is_ok_and(|found| found.iter().any(|p| protected_state(p)))) && !read_only_shell_reasons(&command).is_empty() {
+            reasons.push("O 상태·프로필 폴더는 도구로 직접 바꿀 수 없습니다. O의 정해진 명령을 사용하세요".into());
+        }
         if git.is_mirror(&cwd) || targets.as_ref().is_ok_and(|found| found.iter().any(|p| git.is_mirror(p))) {
             reasons.extend(read_only_shell_reasons(&command));
         } else if let Err(unknown) = &targets {
@@ -156,6 +163,8 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
                 ));
             }
         }
+        let mut seen = std::collections::HashSet::new();
+        reasons.retain(|reason| seen.insert(reason.clone()));
         return reasons;
     }
 
@@ -172,13 +181,17 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
     let raw_paths = edited_paths(tool, args);
     for path in &raw_paths {
         // Forward slashes so dirname works the same for Windows and POSIX paths; `..` resolved lexically.
-        let absolute = normalize(&if ROOTED.is_match(path) { path.clone() } else { format!("{cwd}/{path}") }.replace('\\', "/"));
+        let absolute = resolve(path, &cwd, None).unwrap_or_else(|| path.clone());
         if git.is_mirror(dirname(&absolute)) {
             reasons.push(format!("{READ_ONLY_REASON} ({path})"));
             return reasons;
         }
         if GUARD_FILE.is_match(&absolute) {
             reasons.push(format!("{GUARD_FILE_REASON} ({path})"));
+            return reasons;
+        }
+        if protected_state(&absolute) {
+            reasons.push(format!("O 상태·프로필 폴더는 직접 편집할 수 없습니다 ({path})"));
             return reasons;
         }
     }
@@ -205,6 +218,72 @@ fn string_of(value: Option<&Value>) -> String {
     }
 }
 
+/// Supplement literal checks; this is not a shell interpreter or an OS sandbox.
+fn plain_command(command: &str) -> String {
+    command.replace("`\r\n", "").replace("`\n", "").replace("\\\n", "").replace(['"', '\'', '\\', '^', '`'], "")
+}
+
+fn gh_write_reasons(command: &str) -> Vec<String> {
+    let mut reasons = Vec::new();
+    for segment in split_unquoted(command) {
+        let words = shell_words(segment);
+        for start in 0..words.len() {
+            let program = words[start].rsplit(['/', '\\']).next().unwrap_or_default();
+            if !matches!(program.to_ascii_lowercase().as_str(), "gh" | "gh.exe") { continue; }
+            let args = &words[start + 1..];
+            let Some(sub) = args.first().map(String::as_str) else { continue };
+            if !["api", "auth", "pr", "issue", "repo", "release", "run", "workflow", "search", "status", "browse", "attestation", "version", "help", "--version", "--help"].contains(&sub) {
+                reasons.push("gh 별칭·확장 명령은 검사할 수 없습니다. 공식 명령을 그대로 쓰세요".into());
+            }
+            if (sub == "workflow" && args.get(1).is_some_and(|arg| ["run", "enable", "disable"].contains(&arg.as_str())))
+                || (sub == "run" && args.get(1).is_some_and(|arg| arg == "rerun")) {
+                reasons.push("워크플로 실행·설정 변경은 사람이 직접 수행해야 합니다".into());
+            }
+            if sub != "api" { continue; }
+            let (positional, flags) = split_flags(&args[1..], &["-X", "--method", "-f", "--raw-field", "-F", "--field", "--input", "-H", "--header", "--jq", "-q", "--hostname"]);
+            let endpoint = positional.first().map(String::as_str).unwrap_or_default().split(['?', '#']).next().unwrap_or_default().trim_end_matches('/');
+            let fields = flag_values(&flags, &["-f", "--raw-field", "-F", "--field", "--input"]);
+            let method = flag_values(&flags, &["-X", "--method"]).first().map(|s| s.to_ascii_uppercase()).unwrap_or_else(|| if fields.is_empty() { "GET".into() } else { "POST".into() });
+            let write = !["GET", "HEAD"].contains(&method.as_str());
+            let repository_write = endpoint.rfind("repos/").is_some_and(|at| endpoint[at..].split('/').count() == 3);
+            let sensitive = endpoint.contains("/rulesets") || endpoint.contains("/protection") || endpoint.contains("/branches/") || endpoint.contains("/git/") || endpoint.contains("/contents/") || endpoint.ends_with("/contents") || endpoint.contains("/actions/") || endpoint.ends_with("/dispatches") || endpoint.contains('%') || repository_write;
+            let opaque_body = flags.iter().any(|(f, _)| f == "--input") || fields.iter().any(|f| f.contains("=@"));
+            let graphql = endpoint == "graphql" && (command.contains("mutation") || opaque_body);
+            if (write && sensitive) || graphql {
+                reasons.push("gh api로 저장소 보호·Git ref·파일·워크플로를 직접 변경할 수 없습니다. 정식 PR 경로를 사용하세요".into());
+            }
+        }
+    }
+    reasons
+}
+
+/// Lexical spelling plus the nearest existing parent's real path (junctions and short names).
+fn real_path(path: &str) -> String {
+    let path = Path::new(path);
+    for ancestor in path.ancestors() {
+        if let Ok(real) = ancestor.canonicalize() {
+            return normalize(&real.join(path.strip_prefix(ancestor).unwrap_or(Path::new(""))).to_string_lossy().replace('\\', "/"));
+        }
+    }
+    normalize(&path.to_string_lossy().replace('\\', "/"))
+}
+
+pub fn within_state(path: &str, state: &str) -> bool {
+    let state = real_path(state);
+    let path = real_path(path);
+    ["", "-agents", "-lead", "-term", "-worktrees"].iter().any(|suffix| {
+        let root = format!("{state}{suffix}");
+        path.eq_ignore_ascii_case(&root) || inside(&path, &root)
+    })
+}
+
+fn protected_state(path: &str) -> bool {
+    let base = std::env::var_os("LOCALAPPDATA").map(PathBuf::from).or_else(|| {
+        std::env::var_os(if cfg!(windows) { "USERPROFILE" } else { "HOME" }).map(|home| PathBuf::from(home).join(".local/state"))
+    });
+    base.is_some_and(|base| within_state(path, &base.join("project_O").to_string_lossy()))
+}
+
 /// The first of `keys` that is present and not null (`a ?? b ?? c`).
 fn first_present<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a Value> {
     keys.iter().filter_map(|k| args.get(*k)).find(|v| !v.is_null())
@@ -212,11 +291,14 @@ fn first_present<'a>(args: &'a Value, keys: &[&str]) -> Option<&'a Value> {
 
 fn git_reasons(command: &str, current_branch: &dyn Fn() -> String) -> Vec<String> {
     let mut reasons = Vec::new();
+    if command.to_ascii_uppercase().contains("GIT_CONFIG_") {
+        reasons.push("GIT_CONFIG_*로 git 설정을 주입할 수 없습니다".into());
+    }
     for segment in SEGMENT_SPLIT.split(command) {
         if !GIT_WORD.is_match(segment) {
             continue;
         }
-        if PUSH_WORD.is_match(segment) {
+        if git_calls(segment).iter().any(|call| call.sub == "push") {
             if let Some(target) = PUSH_TO_PROTECTED.captures(segment) {
                 reasons.push(format!(
                     "{}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main, 정식 핫픽스는 main_hotfix → main)",
@@ -294,6 +376,8 @@ fn git_calls(command: &str) -> Vec<GitCall> {
                         }
                     } else if let Some(value) = word.strip_prefix("--config-env=") {
                         config.push(value.to_string());
+                    } else if let Some(value) = word.strip_prefix("-c").filter(|value| !value.is_empty()) {
+                        config.push(value.to_string());
                     } else if !word.starts_with('-') {
                         sub = Some(word.to_ascii_lowercase());
                         break;
@@ -316,12 +400,24 @@ fn git_calls(command: &str) -> Vec<GitCall> {
 fn git_call_reasons(call: &GitCall, current_branch: &dyn Fn() -> String) -> Vec<String> {
     let mut reasons = Vec::new();
     let sub = call.sub.as_str();
+    // Aliases and external git-* programs can hide another command and its hook-bypass flags.
+    const BUILTINS: &str = "add am apply archive bisect blame branch bundle cat-file check-attr check-ignore check-mailmap check-ref-format checkout checkout-index cherry cherry-pick clean clone commit commit-tree config describe diff diff-files diff-index diff-tree fetch for-each-ref format-patch fsck gc grep hash-object help init log ls-files ls-remote ls-tree maintenance merge merge-base merge-tree mktree mv notes pull push range-diff read-tree rebase reflog remote repack replace reset restore revert rev-list rev-parse rm show show-ref sparse-checkout stash status submodule switch symbolic-ref tag update-index update-ref verify-commit verify-tag whatchanged worktree write-tree version";
+    if !BUILTINS.split_whitespace().any(|known| known == sub) {
+        reasons.push("git 별칭·외부 명령은 검사할 수 없습니다. 공식 명령을 그대로 쓰세요".into());
+    }
     let flag = |names: &[&str]| call.args.iter().any(|arg| names.contains(&arg.as_str()));
     let positional: Vec<&str> = call.args.iter().map(String::as_str).take_while(|arg| *arg != "--").filter(|arg| !arg.starts_with('-')).collect();
     let heads = |name: &str| name.strip_prefix("refs/heads/").unwrap_or(name).to_string();
     let moved = |branch: &str| format!("보호 브랜치 {branch}를 직접 옮기거나 지우거나 바꿀 수 없습니다. PR 병합으로만 바뀝니다");
 
     let hooks_path = |text: &str| text.to_ascii_lowercase().starts_with("core.hookspath");
+    let routing = |text: &str| {
+        let lower = text.to_ascii_lowercase();
+        lower.starts_with("alias.") || lower.starts_with("push.") || (lower.starts_with("branch.") && [".merge", ".remote", ".pushremote"].iter().any(|key| lower.split('=').next().unwrap_or_default().ends_with(key)))
+    };
+    if call.config.iter().any(|setting| routing(setting)) || (sub == "config" && positional.iter().position(|arg| routing(arg)).is_some_and(|at| positional.get(at + 1).is_some())) {
+        reasons.push("git 별칭·push 대상 설정은 에이전트가 바꿀 수 없습니다. 브랜치 이름을 명시하세요".into());
+    }
     let sets_hooks_path = sub == "config"
         && positional.iter().position(|arg| hooks_path(arg)).is_some_and(|at| {
             flag(&["--unset", "--unset-all"]) || positional.contains(&"unset") || positional.get(at + 1).is_some_and(|value| *value != ".githooks")
@@ -343,10 +439,12 @@ fn git_call_reasons(call: &GitCall, current_branch: &dyn Fn() -> String) -> Vec<
                 reasons.push(format!(
                     "{target}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main, 정식 핫픽스는 main_hotfix → main)"
                 ));
+            } else if !target.starts_with("refs/tags/") && !BRANCH_NAME.is_match(&target) {
+                reasons.push(format!("push 대상 브랜치 {target}은 개인·작업 브랜치 이름 규칙에 맞지 않습니다"));
             }
         }
-        if specs.is_empty() && is_protected(&current_branch()) {
-            reasons.push(format!("보호 브랜치 {}에서는 push할 수 없습니다. 자기 개인 브랜치에서 PR로 올리세요", current_branch()));
+        if specs.is_empty() {
+            reasons.push("push할 브랜치 이름을 명시하세요. 설정된 upstream은 보호 브랜치를 가리킬 수 있습니다".into());
         }
     }
     // The mirror's own `git pull --ff-only` only follows the remote.
@@ -423,7 +521,7 @@ fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
     let mut reasons = Vec::new();
     // Quotes inside the program name (`g""h`, `"gh"`) hide the call from the reading below:
     // when dropping the quotes shows more calls, the command is judged without them.
-    let plain = command.replace(['"', '\''], "");
+    let plain = plain_command(command);
     let command = if GH_MERGE_CALL.find_iter(&plain).count() > GH_MERGE_CALL.find_iter(command).count() { plain.as_str() } else { command };
     for (is_pr_merge, arguments, starts_command) in gh_calls(command) {
         let Some(target) = merge_target(is_pr_merge, arguments) else { continue };
@@ -572,6 +670,8 @@ fn split_flags(words: &[String], takes_value: &[&str]) -> (Vec<String>, Vec<(Str
             flags.push((flag.to_string(), value.to_string()));
         } else if takes_value.contains(&word.as_str()) {
             flags.push((word.clone(), iter.next().cloned().unwrap_or_default()));
+        } else if word.len() > 2 && word.is_ascii() && takes_value.contains(&&word[..2]) && !word.starts_with("--") {
+            flags.push((word[..2].to_string(), word[2..].to_string()));
         } else {
             flags.push((word.clone(), String::new()));
         }
@@ -727,11 +827,16 @@ pub fn resolve(word: &str, base: &str, home: Option<&str>) -> Option<String> {
 
 /// Drops `.`, empty steps and `..` (with the step before it) from a forward-slash path, keeping `C:/` or `/`.
 fn normalize(path: &str) -> String {
+    let unc;
+    let path = if let Some(rest) = path.strip_prefix("//?/UNC/").or_else(|| path.strip_prefix("//./UNC/")) {
+        unc = format!("//{rest}");
+        unc.as_str()
+    } else { path.strip_prefix("//?/").or_else(|| path.strip_prefix("//./")).unwrap_or(path) };
     let bytes = path.as_bytes();
     let root_len = if bytes.len() >= 3 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' && bytes[2] == b'/' {
         3
     } else {
-        usize::from(path.starts_with('/'))
+        if path.starts_with("//") { 2 } else { usize::from(path.starts_with('/')) }
     };
     let mut parts: Vec<&str> = Vec::new();
     for part in path[root_len..].split('/') {
@@ -848,9 +953,29 @@ pub(crate) fn git_command() -> Command {
     hidden_command("git")
 }
 
+/// Security probes never search the working directory or PATH. This does not authenticate a
+/// binary replaced by the same OS user in a supported user installation (ADR-0046).
+pub fn installed_program(program: &str) -> Option<PathBuf> {
+    let mut paths = Vec::new();
+    #[cfg(windows)]
+    {
+        for root in ["ProgramW6432", "ProgramFiles", "LOCALAPPDATA"] {
+            let Some(base) = std::env::var_os(root).map(PathBuf::from) else { continue };
+            let base = if root == "LOCALAPPDATA" { base.join("Programs") } else { base };
+            let relative = match program { "git" => "Git/cmd/git.exe", "gh" => "GitHub CLI/gh.exe", _ => return None };
+            paths.push(base.join(relative));
+        }
+    }
+    #[cfg(not(windows))]
+    if matches!(program, "git" | "gh") {
+        for dir in ["/usr/bin", "/usr/local/bin", "/opt/homebrew/bin"] { paths.push(Path::new(dir).join(program)); }
+    }
+    paths.into_iter().find(|path| path.is_absolute() && path.is_file())
+}
+
 fn hidden_command(program: &str) -> Command {
     #[cfg_attr(not(windows), allow(unused_mut))] // only Windows sets a creation flag
-    let mut command = Command::new(program);
+    let mut command = Command::new(installed_program(program).unwrap_or_default());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -918,23 +1043,24 @@ pub fn is_mirror(dir: &str) -> bool {
     RealGit.is_mirror(dir)
 }
 
-fn review_stdin() -> Result<Vec<String>, String> {
+fn review_stdin(inside_agent: bool) -> Result<Vec<String>, String> {
     let mut raw = Vec::new();
     std::io::stdin().read_to_end(&mut raw).map_err(|e| e.to_string())?;
-    let input: Value = serde_json::from_str(&String::from_utf8_lossy(&raw)).map_err(|e| e.to_string())?;
+    let mut input: Value = serde_json::from_str(&String::from_utf8_lossy(&raw)).map_err(|e| e.to_string())?;
     if !input.is_object() {
         return Err("입력이 JSON 객체가 아닙니다".to_string());
     }
+    input["inside_agent"] = Value::Bool(inside_agent);
     Ok(review(&input, &RealGit))
 }
 
 /// `o hook`: reads the tool call JSON on stdin, prints reasons, returns the exit code (2 blocks).
-pub fn hook_main() -> i32 {
+pub fn hook_main(inside_agent: bool) -> i32 {
     // Fail closed: a hook that cannot read its input or crashes blocks the call instead of waving it through.
     // (This relies on unwinding panics; the workspace must not set `panic = "abort"`.)
     let previous_hook = panic::take_hook();
     panic::set_hook(Box::new(|_| {}));
-    let outcome = panic::catch_unwind(AssertUnwindSafe(review_stdin));
+    let outcome = panic::catch_unwind(AssertUnwindSafe(|| review_stdin(inside_agent)));
     panic::set_hook(previous_hook);
     let reasons = match outcome {
         Ok(Ok(reasons)) => reasons,

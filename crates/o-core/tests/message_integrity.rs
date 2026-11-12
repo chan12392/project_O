@@ -3,6 +3,22 @@ use std::fs;
 use o_core::run::{store, team::{self, Speaker}};
 
 #[test]
+fn team_message_display_cannot_emit_terminal_control_sequences() {
+    let home = std::env::temp_dir().join(format!("o-msg-controls-{}", store::new_run_id(chrono::Utc::now())));
+    let dir = home.join("runs/r1");
+    fs::create_dir_all(&dir).unwrap();
+    let text = "answer\rforged\nnext\u{1b}[2J\u{1b}]52;c;fake\u{7}";
+    let event = serde_json::json!({"t":"msg", "id":"m1", "from":"lead", "to":"a", "text":text});
+    fs::write(dir.join("events.jsonl"), format!("{event}\n")).unwrap();
+    let card = Speaker { run_id: "r1".into(), me: "a".into(), cards: vec!["a".into()] };
+    let received = team::read(&home, &card, true).unwrap();
+    assert_eq!(received[0].text, text, "stored content is preserved");
+    let display = received[0].line();
+    assert!(!display.chars().any(char::is_control));
+    assert!(display.contains(" ⏎ "));
+}
+
+#[test]
 fn damaged_message_history_cannot_be_replayed_or_appended() {
     let home = std::env::temp_dir().join(format!("o-msg-integrity-{}", store::new_run_id(chrono::Utc::now())));
     let dir = home.join("runs/r1");
