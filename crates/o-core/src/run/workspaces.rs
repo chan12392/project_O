@@ -204,6 +204,38 @@ pub(super) struct Workspaces {
     git_base: Option<(PathBuf, PathBuf, String)>,
     copy_base: Option<Snapshot>,
     copy_git: HashMap<String, Snapshot>,
+    pub(super) branch: Option<String>,
+}
+
+pub(super) fn current_branch(project: &str) -> Option<String> {
+    git(Path::new(project), &["symbolic-ref", "--quiet", "--short", "HEAD"]).ok().filter(|name| !name.is_empty())
+}
+
+/// Only a personal/default branch starts a new task branch; a task branch stays the routing unit.
+fn task_branch(root: &Path, source: &str, title: &str, run_id: &str) -> io::Result<(String, bool)> {
+    let personal = o_guard::PERSONAL_BRANCHES.contains(&source);
+    if !personal && !matches!(source, "main" | "master" | "develop") {
+        return Ok((source.to_string(), false));
+    }
+    if personal {
+        let prefix = format!("{source}-");
+        let branches = git(root, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"])?;
+        if branches.lines().filter(|branch| branch.starts_with(&prefix)).count() >= 3 {
+            return Err(io::Error::other("개인별 작업 브랜치는 최대 3개입니다. 완료한 브랜치를 정리하거나 기존 작업 브랜치에서 실행하세요"));
+        }
+    }
+    let mut slug = String::new();
+    for ch in title.chars() {
+        if slug.len() >= 32 { break; }
+        if ch.is_ascii_alphanumeric() { slug.push(ch.to_ascii_lowercase()); }
+        else if !slug.is_empty() && !slug.ends_with('-') { slug.push('-'); }
+    }
+    let slug = slug.trim_end_matches('-');
+    let slug = if slug.is_empty() { "task" } else { slug };
+    let prefix = if personal { format!("{source}-") } else { String::new() };
+    let name = format!("{prefix}o-{slug}-{run_id}");
+    git(root, &["check-ref-format", "--branch", &name])?;
+    Ok((name, true))
 }
 
 impl Workspaces {
@@ -535,6 +567,15 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
     if run_id.is_empty() || !run_id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') {
         return Err(io::Error::other("올바르지 않은 실행 ID"));
     }
+    let source_branch = current_branch(project);
+    // Serialize the branch quota check and creation across O runs sharing a repository.
+    let branch_lock = if git_base.is_some() {
+        let common = git(&root, &["rev-parse", "--path-format=absolute", "--git-common-dir"])?;
+        let file = fs::OpenOptions::new().create(true).truncate(false).write(true).open(Path::new(&common).join("project-o-branches.lock"))?;
+        file.lock()?;
+        Some(file)
+    } else { None };
+    let branch = source_branch.as_deref().map(|source| task_branch(&root, source, &plan.title, run_id)).transpose()?;
     let name = home.file_name().ok_or_else(|| io::Error::other("O 상태 폴더가 올바르지 않습니다"))?.to_string_lossy();
     let parent = home.with_file_name(format!("{name}-worktrees"));
     fs::create_dir_all(&parent)?;
@@ -562,7 +603,11 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
         let path = run.join((i + 1).to_string());
         let path_text = path.to_string_lossy();
         let cwd = if let Some((_, relative, base_commit)) = &git_base {
-            git(&root, &["worktree", "add", "--detach", "--", &path_text, base_commit])
+            let added = match &branch {
+                Some((name, true)) if i == 0 => git(&root, &["worktree", "add", "-b", name, "--", &path_text, base_commit]),
+                _ => git(&root, &["worktree", "add", "--detach", "--", &path_text, base_commit]),
+            };
+            added
                 .map_err(|e| io::Error::other(format!("워크트리를 만들지 못했습니다: {e}. 만든 작업 폴더는 {}에 보존했습니다", run.display())))?;
             path.join(relative)
         } else {
@@ -582,7 +627,7 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
     }
     let current_base = base(project)
         .map_err(|e| io::Error::other(format!("워크트리 준비 중 프로젝트가 바뀌었습니다: {e}. 만든 폴더는 {}에 보존했습니다", run.display())))?;
-    if current_base != git_base || copy_snapshot.as_ref().is_some_and(|(_, entries)| inventory(&root).map_or(true, |current| current != *entries)) {
+    if current_base != git_base || current_branch(project) != source_branch || copy_snapshot.as_ref().is_some_and(|(_, entries)| inventory(&root).map_or(true, |current| current != *entries)) {
         return Err(io::Error::other(format!("워크트리 준비 중 프로젝트가 바뀌었습니다. 만든 폴더는 {}에 보존했습니다", run.display())));
     }
     let copy_base = if let Some((source, _)) = &copy_snapshot {
@@ -590,14 +635,15 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
         Some(original)
     } else { None };
     let baseline = match &git_base {
-        Some((_, _, commit)) => serde_json::json!({"gitCommit": commit}),
+        Some((_, _, commit)) => serde_json::json!({"gitCommit": commit, "branch": branch.as_ref().map(|(name, _)| name), "sourceBranch": source_branch}),
         None => serde_json::json!({"copyPath": run.join("base"), "copySha256": snapshot_hash(copy_base.as_ref().expect("non-Git snapshot"))}),
     };
     let mut baseline_file = fs::OpenOptions::new().write(true).create_new(true)
         .open(crate::run::store::run_dir(home, run_id).join("workspace-baseline.json"))?;
     serde_json::to_writer(&mut baseline_file, &baseline).map_err(io::Error::other)?;
     baseline_file.sync_all()?;
-    Ok(Workspaces { paths: result, project: project.to_string(), git_base, copy_base, copy_git })
+    drop(branch_lock);
+    Ok(Workspaces { paths: result, project: project.to_string(), git_base, copy_base, copy_git, branch: branch.map(|(name, _)| name) })
 }
 
 fn snapshot_copy_base(root: &Path, source: &Path) -> io::Result<Snapshot> {
@@ -726,6 +772,65 @@ fn review_changes_with_depth(home: &Path, run_id: &str, card_id: &str, depth: us
 #[cfg(test)]
 mod git_file_tests {
     use super::*;
+
+    fn branch_fixture(branch: &str) -> (PathBuf, PathBuf, Plan) {
+        let folder = std::env::temp_dir().join(format!("o-branch-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let project = folder.join("project");
+        fs::create_dir_all(&project).unwrap();
+        git(&project, &["init", "--quiet", "--initial-branch", branch]).unwrap();
+        fs::write(project.join("input.txt"), "original").unwrap();
+        git(&project, &["add", "input.txt"]).unwrap();
+        git(&project, &["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "commit", "--quiet", "-m", "initial"]).unwrap();
+        let plan = serde_json::from_value(serde_json::json!({"title":"Workspace grouping", "project":project, "cards":[
+            {"id":"one", "provider":"codex", "task":"read"}, {"id":"two", "provider":"codex", "task":"read"}
+        ]})).unwrap();
+        (folder.join("state"), project, plan)
+    }
+
+    #[test]
+    fn personal_branch_creates_one_named_branch_and_isolates_cards() {
+        let (home, project, plan) = branch_fixture("younchan");
+        crate::run::store::create_run(&home, "run-1", &plan).unwrap();
+        let spaces = create(&home, "run-1", &plan.project, &plan).unwrap();
+        let branch = spaces.branch.as_ref().unwrap();
+        assert!(branch.starts_with("younchan-o-workspace-grouping-"));
+        assert_eq!(current_branch(spaces.get("one").unwrap()).as_ref(), Some(branch));
+        assert_eq!(current_branch(spaces.get("two").unwrap()), None);
+        assert_eq!(current_branch(&plan.project).as_deref(), Some("younchan"));
+        fs::write(Path::new(spaces.get("one").unwrap()).join("input.txt"), "worker").unwrap();
+        assert_eq!(fs::read_to_string(project.join("input.txt")).unwrap(), "original");
+        assert_eq!(fs::read_to_string(Path::new(spaces.get("two").unwrap()).join("input.txt")).unwrap(), "original");
+        let baseline: serde_json::Value = serde_json::from_slice(&fs::read(crate::run::store::run_dir(&home, "run-1").join("workspace-baseline.json")).unwrap()).unwrap();
+        assert_eq!(baseline["branch"].as_str(), Some(branch.as_str()));
+        assert_eq!(git(&project, &["status", "--porcelain"]).unwrap(), "");
+        assert_eq!(git(&project, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"]).unwrap().lines().count(), 2);
+    }
+
+    #[test]
+    fn task_branch_reuses_branch_for_multiple_isolated_runs() {
+        let (home, project, plan) = branch_fixture("younchan-topic");
+        for run in ["run-1", "run-2"] {
+            crate::run::store::create_run(&home, run, &plan).unwrap();
+            let spaces = create(&home, run, &plan.project, &plan).unwrap();
+            assert_eq!(spaces.branch.as_deref(), Some("younchan-topic"));
+            assert_eq!(current_branch(spaces.get("one").unwrap()), None);
+            assert_eq!(current_branch(spaces.get("two").unwrap()), None);
+        }
+        assert_eq!(git(&project, &["for-each-ref", "--format=%(refname:short)", "refs/heads/"]).unwrap(), "younchan-topic");
+        assert_eq!(current_branch(&plan.project).as_deref(), Some("younchan-topic"));
+    }
+
+    #[test]
+    fn branch_cap_preserves_existing_work_and_does_not_add_worktrees() {
+        let (home, project, plan) = branch_fixture("younchan");
+        for name in ["younchan-a", "younchan-b", "younchan-c"] { git(&project, &["branch", name]).unwrap(); }
+        crate::run::store::create_run(&home, "run-1", &plan).unwrap();
+        let before = git(&project, &["worktree", "list", "--porcelain"]).unwrap();
+        let error = create(&home, "run-1", &plan.project, &plan).err().unwrap();
+        assert!(error.to_string().contains("최대 3개"));
+        assert_eq!(git(&project, &["worktree", "list", "--porcelain"]).unwrap(), before);
+        assert_eq!(fs::read_to_string(project.join("input.txt")).unwrap(), "original");
+    }
 
     #[test]
     fn refuses_git_hardlinks_and_keeps_regular_inputs_stable() {

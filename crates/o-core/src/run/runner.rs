@@ -211,6 +211,11 @@ pub fn run_plan_with(
         }
     } else { None };
 
+    if !read_events(home, run_id).iter().any(|event| matches!(event, OEvent::RunBranch { .. })) {
+        if let Some(branch) = workspaces.as_ref().and_then(|paths| paths.branch.clone()).or_else(|| super::workspaces::current_branch(&workdir.checked)) {
+            emit(OEvent::RunBranch { at: now_iso(), branch })?;
+        }
+    }
     let _lead_monitor = monitor_lead(home, run_id, plan, Arc::clone(&spawner));
 
     // What earlier work of the project each card gets (ADR-0005); empty with `--no-context`.

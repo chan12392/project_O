@@ -49,6 +49,8 @@ pub struct CardInfo {
 pub enum OEvent {
     #[serde(rename = "run.start")]
     RunStart { at: String, run_id: String, title: String, project: String, cards: Vec<CardInfo> },
+    #[serde(rename = "run.branch")]
+    RunBranch { at: String, branch: String },
     #[serde(rename = "run.followup")]
     RunFollowup { at: String, source_run_id: String, card_id: String },
     #[serde(rename = "card.queued")]
@@ -179,6 +181,7 @@ impl OEvent {
     pub fn kind(&self) -> &'static str {
         match self {
             OEvent::RunStart { .. } => "run.start",
+            OEvent::RunBranch { .. } => "run.branch",
             OEvent::RunFollowup { .. } => "run.followup",
             OEvent::CardQueued { .. } => "card.queued",
             OEvent::CardStart { .. } => "card.start",

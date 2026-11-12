@@ -141,6 +141,12 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
         OEvent::RunMode { at: at.clone(), run_id: id.clone(), profile, context: true, yolo: false },
         OEvent::CardInput { at, card_id: card.into(), text: item.task.clone() },
     ] { store::append_event(home, &id, &event).map_err(|e| e.to_string())?; }
+    if let Some(branch) = store::read_events(home, run).into_iter().rev().find_map(|event| match event {
+        OEvent::RunBranch { branch, .. } => Some(branch),
+        _ => None,
+    }) {
+        store::append_event(home, &id, &OEvent::RunBranch { at: crate::sys::js::now_iso(), branch }).map_err(|e| e.to_string())?;
+    }
     if let Err(error) = spawn(&id) {
         let card = &plan.cards[0];
         let at = crate::sys::js::now_iso();

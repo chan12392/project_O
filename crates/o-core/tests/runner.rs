@@ -316,6 +316,7 @@ fn followup_resumes_workspace() {
         fake_cli(|_| vec![r#"{"type":"system","subtype":"init","session_id":"s1"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])(spec, cwd)
     });
     assert_eq!(run_plan(&home, "original", &initial, None, original).unwrap(), CardStatus::Done);
+    o_core::run::store::append_event(&home, "original", &OEvent::RunBranch { at: iso(Utc::now()), branch: "younchan-example".into() }).unwrap();
     mark_active(&home, &ActiveMarker { run_id: "original".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() }).unwrap();
     assert!(o_core::run::followup::target(&home, "original", "a").is_err());
     clear_active(&home, "original", "a");
@@ -332,6 +333,9 @@ fn followup_resumes_workspace() {
     });
     let result = run_plan(&home, &id, &follow, None, resume).unwrap();
     assert_eq!(result, CardStatus::Done, "{:?}", read_events(&home, &id));
+    let events = read_events(&home, &id);
+    let branches: Vec<_> = events.iter().filter_map(|event| match event { OEvent::RunBranch { branch, .. } => Some(branch.as_str()), _ => None }).collect();
+    assert_eq!(branches, ["younchan-example"]);
     assert_eq!(std::fs::read_to_string(project.join("file.txt")).unwrap(), "before");
     assert!(o_core::run::followup::start(&home, "original", "a", "다시", &|_| Err(std::io::Error::other("no runner"))).is_err());
     let failed = std::fs::read_dir(home.join("runs")).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).find(|run| run != "original" && run != &id).unwrap();

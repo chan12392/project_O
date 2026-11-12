@@ -801,6 +801,7 @@ impl Session {
 fn at_of(event: &OEvent) -> &str {
     match event {
         OEvent::RunStart { at, .. }
+        | OEvent::RunBranch { at, .. }
         | OEvent::RunFollowup { at, .. }
         | OEvent::CardQueued { at, .. }
         | OEvent::CardStart { at, .. }

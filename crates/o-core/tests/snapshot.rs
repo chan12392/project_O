@@ -27,6 +27,17 @@ fn by_id(run_id: &str) -> Vec<OEvent> {
 const FIXTURE: &str = "20261101-100916-402x";
 
 #[test]
+fn branch_is_recorded_once_without_guessing_legacy_history() {
+    let mut events = by_id(FIXTURE);
+    assert_eq!(snapshot(&events).unwrap().branch, None);
+    let branch = json!({"t":"run.branch", "at":"2026-11-12T08:00:00Z", "branch":"younchan-fix"});
+    let event: OEvent = serde_json::from_value(branch.clone()).unwrap();
+    assert_eq!(serde_json::to_value(&event).unwrap(), branch);
+    events.insert(1, event);
+    assert_eq!(snapshot(&events).unwrap().branch.as_deref(), Some("younchan-fix"));
+}
+
+#[test]
 fn every_fixture_event_reads_back_and_writes_out_unchanged() {
     let runs = demo();
     assert!(!runs.is_empty());

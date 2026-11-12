@@ -176,6 +176,8 @@ pub struct RunView {
     pub run_id: String,
     pub title: String,
     pub project: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub branch: Option<String>,
     pub started_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<String>,
@@ -217,6 +219,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 run_id: run_id.clone(),
                 title: title.clone(),
                 project: project.clone(),
+                branch: None,
                 started_at: at.clone(),
                 ended_at: None,
                 status: RunStatus::Running,
@@ -250,6 +253,10 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
         }
         let Some(run) = run.as_mut() else { continue };
         match e {
+            OEvent::RunBranch { branch, .. } => {
+                run.branch = Some(branch.clone());
+                continue;
+            }
             OEvent::Msg { at, from, to, text, id, kind, reply_to } => {
                 run.messages.push(TeamMessage { at: at.clone(), from: from.clone(), to: to.clone(), text: text.clone(), id: id.clone(), kind: kind.clone(), reply_to: reply_to.clone(), recipients: Default::default() });
                 for card in &mut run.cards {
