@@ -764,7 +764,7 @@ fn plan_answer(plan: Value) -> String {
 }
 
 fn good_plan() -> Value {
-    json!({ "title": "README 한 줄", "cards": [{ "id": "docs", "provider": "claude", "effort": "low", "task": "README.md 끝에 한 줄 추가" }] })
+    json!({ "title": "README 한 줄", "cards": [{ "id": "docs", "provider": "claude", "model": "test-model", "effort": "low", "task": "README.md 끝에 한 줄 추가" }] })
 }
 
 fn init_git(project: &str) {
@@ -1048,7 +1048,7 @@ fn auto_reason(events: &[LeadEvent], part: &str) -> bool {
 }
 
 fn titled_plan(title: &str) -> Value {
-    json!({ "title": title, "cards": [{ "id": "docs", "provider": "claude", "effort": "low", "task": "README.md 끝에 한 줄 추가" }] })
+    json!({ "title": title, "cards": [{ "id": "docs", "provider": "claude", "model": "test-model", "effort": "low", "task": "README.md 끝에 한 줄 추가" }] })
 }
 
 fn autorun_failures_not_counted() {
@@ -1259,7 +1259,7 @@ fn send_records_a_plan() {
         .map(|e| match e {
             LeadEvent::User { .. } => "user",
             LeadEvent::Session { .. } => "session",
-            LeadEvent::Usage { .. } => "usage",
+            LeadEvent::Usage { .. } | LeadEvent::UsageSettled { .. } => "usage",
             LeadEvent::Reply { .. } => "reply",
             LeadEvent::Plan { .. } => "plan",
             LeadEvent::Error { .. } => "error",
@@ -1275,9 +1275,7 @@ fn send_records_a_plan() {
     assert!(ok, "{violations:?}");
     assert!(plan_id.ends_with("-p1"));
     assert_eq!(plan["project"], project.as_str());
-    if let Some(LeadEvent::Usage { input, cached, output, .. }) = events.iter().find(|e| matches!(e, LeadEvent::Usage { .. })) {
-        assert_eq!((*input, *cached, *output), (15.0, 100.0, 20.0));
-    }
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::UsageSettled { usage, .. } if (usage.input, usage.cached, usage.output) == (15.0, 100.0, 20.0) && !usage.complete)));
     // Saved, and counted as planning overhead.
     let thread = lead::current_thread(&home, &project).unwrap();
     assert_eq!(lead::read_thread(&home, &thread).len(), 7);

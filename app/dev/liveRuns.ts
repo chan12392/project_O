@@ -147,19 +147,6 @@ const PROPOSAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-f\d{1,4}$/;
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
 /** Terminal session ids as `o term` makes them (crates/o-core/src/term `is_session_id`); it checks them again. */
 const TERM_ID = /^t-\d{8}-\d{6}-[A-Za-z0-9]{4}$/;
-/** How long a lead model list is reused before the CLI is asked again (the Tauri `lead_models` keeps it as long). */
-const MODELS_TTL_MS = 10 * 60_000;
-const leadModels = new Map<string, { at: number; out: string }>();
-
-/** `o lead models`, kept a few minutes per agent; a failed listing is not kept. */
-function cachedModels(provider: string): Promise<string> {
-  const hit = leadModels.get(provider);
-  if (hit && Date.now() - hit.at < MODELS_TTL_MS) return Promise.resolve(hit.out);
-  return o(["lead", "models", "--provider", provider]).then((out) => {
-    leadModels.set(provider, { at: Date.now(), out });
-    return out;
-  });
-}
 
 /**
  * `o lead stop` for one project; none without an existing absolute folder. Without
@@ -206,11 +193,13 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
   if (req.method === "GET" && path === "/lead/models") {
     const provider = query.get("provider") ?? "";
-    if (!LEAD_PROVIDER.test(provider)) {
+    if (!/^(claude|codex|opencode|devin|agy)$/.test(provider)) {
       fail(400, "에이전트가 필요합니다");
       return true;
     }
-    run(cachedModels(provider));
+    const project = query.get("project");
+    const clean = query.get("clean") !== "false";
+    run(o(["lead", "models", "--provider", provider, "--profile", clean ? "project-o" : "own", ...(project ? ["--project", project] : []), ...(query.get("refresh") === "true" ? ["--refresh"] : [])]));
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
@@ -656,6 +645,11 @@ export function liveRuns(): Plugin {
           return void o(args).then((out) => send(res, 200, out), error(res));
         }
         if (req.method === "GET" && path === "/billing") return void o(["billing", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "GET" && path === "/fallback") return void o(["fallback", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/fallback") {
+          void body(req, 4096).then((data) => o(["fallback", "--settings", data.toString("utf8"), "--json"])).then((out) => send(res, 200, out), error(res));
+          return;
+        }
         if (req.method === "POST" && path === "/billing") {
           // API 과금 (ADR-0035 개정 1): `o billing --warn|--subscription`.
           const mode = query.get("mode");

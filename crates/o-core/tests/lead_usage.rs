@@ -43,7 +43,7 @@ fn main() {
     let project = project.to_string_lossy();
     let request = SendRequest { project: &project, thread: None, provider: ProviderId::Codex, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
     let events = lead::send(&base.join("state"), &request, &spawner).unwrap();
-    assert!(events.iter().any(|event| matches!(event, LeadEvent::Usage { input, cached, output, complete: Some(false), .. }
-        if *input == 6.0 && *cached == 4.0 && *output == 3.0)));
+    assert!(events.iter().any(|event| matches!(event, LeadEvent::UsageSettled { usage, .. }
+        if usage.input == 6.0 && usage.cached == 4.0 && usage.output == 3.0 && !usage.complete && usage.reported)));
     assert!(events.iter().any(|event| matches!(event, LeadEvent::Error { .. })));
 }

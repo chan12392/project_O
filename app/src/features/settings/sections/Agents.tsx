@@ -1,7 +1,9 @@
 import { Bot, RefreshCw } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { updateSettings, useSettings } from "../../../data/settings.ts";
+import { lastProject, updateSettings, useSettings } from "../../../data/settings.ts";
+import { MODEL_ID } from "../../../../../src/core/lead.ts";
+import type { AgentId, FallbackSettings } from "../../../platform/backend/index.ts";
 import { errorText } from "../../../lib/format.ts";
 import { BUDGET_PERCENTS, type AgentCatalogEntry, type AgyChange, type AgyReport, type Backend, type BudgetPercent, type BillingMode, type BillingReport, type BudgetReport, type RamChange, type RamReport, type YoloChange, type YoloReport } from "../../../platform/backend/index.ts";
 import { BUTTON_SECONDARY, Segmented, SettingsRow, SubHeading, Switch } from "../../../ui/controls.tsx";
@@ -52,6 +54,7 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
         <BudgetRows api={api} />
         <RamRows api={api} />
         <BillingRow billing={billing} />
+        <FallbackRows api={api} />
         <YoloRows api={api} />
         <AgyRows api={api} />
       </Rows>
@@ -78,6 +81,62 @@ function AgentsSection({ api, agentsHome, onOnboarding }: { api: Backend; agents
 }
 
 const catalogCache = new WeakMap<Backend, AgentCatalogEntry[]>();
+
+function FallbackRows({ api }: { api: Backend }) {
+  const { clean } = useSettings();
+  const [saved, setSaved] = useState<FallbackSettings>();
+  const [provider, setProvider] = useState<AgentId | "">("");
+  const [model, setModel] = useState("");
+  const [models, setModels] = useState<Awaited<ReturnType<Backend["leadModels"]>>>();
+  const [modelError, setModelError] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  const project = lastProject();
+  useEffect(() => {
+    let current = true;
+    api.fallback().then((value) => {
+      if (!current) return;
+      setSaved(value); setProvider(value.target?.provider ?? ""); setModel(value.target?.model ?? ""); setError("");
+    }, (e) => current && setError(errorText(e)));
+    return () => { current = false; };
+  }, [api, attempt]);
+  useEffect(() => {
+    let current = true;
+    setModels(undefined);
+    setModelError("");
+    if (provider) api.leadModels(provider, { clean, project }).then((value) => current && setModels(value), (e) => current && setModelError(errorText(e)));
+    return () => { current = false; };
+  }, [api, provider, clean, project]);
+  const save = async (enabled: boolean, target = provider && model.trim() ? { provider, model: model.trim() } : null) => {
+    if (enabled && !target) { setError("대체 에이전트와 모델을 먼저 선택하세요."); return; }
+    if (target && !MODEL_ID.test(target.model)) { setError("대체 모델 ID는 영문·숫자로 시작하는 80자 이내 값이어야 합니다."); return; }
+    setBusy(true); setError("");
+    try { setSaved(await api.setFallback({ enabled, target })); }
+    catch (e) { setError(errorText(e)); }
+    finally { setBusy(false); }
+  };
+  const field = "h-8 w-full rounded-md border bg-background/50 px-2 text-xs focus-ring disabled:cursor-not-allowed disabled:opacity-50";
+  return <>
+    <SettingsRow id="fallback-label" label="구독 한도 자동 전환" description={
+      <>
+        확인된 구독 한도에 걸리면 이미 승인한 작업을 지정한 에이전트·모델로 한 번 이어갑니다. 기본은 꺼짐입니다. 로그인·권한·오늘 예산 오류에는 전환하지 않습니다. 외부 작업의 성공 여부가 불명확하면 멈춥니다.
+        {error && <span id="fallback-error" role="alert" className="mt-1 block text-destructive">{error} {!saved && <button type="button" onClick={() => setAttempt((n) => n + 1)} className="underline focus-ring">다시 읽기</button>}</span>}
+      </>
+    } control={<Switch checked={saved?.enabled ?? false} onChange={(enabled) => void save(enabled, enabled ? undefined : saved?.target ?? null)} labelledBy="fallback-label" disabled={!saved || busy} />} />
+    <SettingsRow label="대체 에이전트·모델" description="총괄을 지원하지 않는 에이전트는 작업카드만 이어갈 수 있습니다. 원래 effort·실행 프로필·승인 방식을 유지하며 시작 직전에 대상의 준비 상태와 예산을 다시 확인합니다." control={
+      <div className="flex w-full max-w-sm flex-col gap-2">
+        <select aria-label="대체 에이전트" value={provider} disabled={!saved || busy} onChange={(e) => { setProvider(e.target.value as AgentId | ""); setModel(""); }} className={field}>
+          <option value="">에이전트 선택</option><option value="claude">Claude Code</option><option value="codex">Codex</option><option value="opencode">OpenCode (카드)</option><option value="devin">Devin (카드)</option>
+        </select>
+        <input aria-label="대체 모델 ID" aria-describedby="fallback-model-note" list="fallback-models" value={model} disabled={!saved || busy || !provider} onChange={(e) => setModel(e.target.value)} onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void save(saved?.enabled ?? false); } }} placeholder="모델 ID 선택 또는 직접 입력" spellCheck={false} autoComplete="off" className={field} />
+        <datalist id="fallback-models">{models?.models.map((m) => <option key={m.id} value={m.id}>{m.label}</option>)}</datalist>
+        <p id="fallback-model-note" role="status" className="text-2xs text-muted-foreground">{busy ? "저장 중…" : !provider ? "자동으로 대상을 선택하지 않습니다." : modelError || (!models ? "모델 목록을 확인하는 중…" : models.error ?? (models.stale ? "오래된 목록입니다. 시작 전에 다시 확인합니다." : models.checkedAt ? `목록 확인: ${new Date(models.checkedAt).toLocaleString()}` : "목록 확인 시각 미확인"))}</p>
+        <button type="button" disabled={!saved || busy || !provider || !model.trim()} onClick={() => void save(saved?.enabled ?? false)} className={BUTTON_SECONDARY}>대체 대상 저장</button>
+      </div>
+    } />
+  </>;
+}
 
 function AgentCatalog({ api }: { api: Backend }) {
   const [entries, setEntries] = useState<AgentCatalogEntry[]>(() => catalogCache.get(api) ?? []);

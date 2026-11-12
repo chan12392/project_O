@@ -4,6 +4,7 @@ import { LEAD_VIEW, leadItems, leadTabOf, leadTabsOf, leadView, type LeadModel, 
 import { createPoll } from "../../../src/core/poll.ts";
 import { errorText } from "../lib/format.ts";
 import type { Backend, LeadDispatched } from "../platform/backend/index.ts";
+import { lastProject, useSettings } from "./settings.ts";
 
 const POLL_MS = 2_000;
 const HIDDEN_POLL_MS = 15_000;
@@ -195,22 +196,27 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
  * The models a lead of this agent may name (`o lead models`, cached by the shell). `failed`
  * says why there is no list (the CLI could not list them); the pickers then offer typing an id.
  */
-export function useLeadModels(api: Backend, provider: LeadProvider | undefined) {
-  const [state, setState] = useState<{ provider?: LeadProvider; models: LeadModel[]; failed?: string }>({ models: [] });
+export function useLeadModels(api: Backend, provider: LeadProvider | undefined, project = lastProject()) {
+  const { clean } = useSettings();
+  const [state, setState] = useState<{ provider?: LeadProvider; clean?: boolean; project?: string; models: LeadModel[]; failed?: string; stale?: boolean; checkedAt?: string | null }>({ models: [] });
   useEffect(() => {
     if (!provider) return;
     let current = true;
-    api.leadModels(provider).then(
-      (r) => current && setState({ provider, models: r.models }),
-      (e) => current && setState({ provider, models: [], failed: errorText(e) }),
+    const load = () => api.leadModels(provider, { clean, project }).then(
+      (r) => current && setState({ provider, clean, project, models: r.models, stale: r.stale, checkedAt: r.checkedAt, failed: r.error ?? undefined }),
+      (e) => current && setState((previous) => ({ provider, clean, project, models: previous.provider === provider && previous.clean === clean && previous.project === project ? previous.models : [], checkedAt: previous.provider === provider && previous.clean === clean && previous.project === project ? previous.checkedAt : undefined, stale: true, failed: errorText(e) })),
     );
+    void load();
+    const active = () => { if (!document.hidden) void load(); };
+    document.addEventListener("visibilitychange", active);
     return () => {
       current = false;
+      document.removeEventListener("visibilitychange", active);
     };
-  }, [api, provider]);
+  }, [api, provider, clean, project]);
   // Until this agent's answer arrives, the last agent's list does not show under it.
-  const ready = state.provider === provider;
-  return { loading: Boolean(provider) && !ready, models: ready ? state.models : [], failed: ready ? state.failed : undefined };
+  const ready = state.provider === provider && state.clean === clean && state.project === project;
+  return { loading: Boolean(provider) && !ready, models: ready ? state.models : [], failed: ready ? state.failed : undefined, stale: ready ? state.stale : undefined, checkedAt: ready ? state.checkedAt : undefined };
 }
 
 /** Folders compare as O compares them: any slash, no trailing one, any case on Windows. */

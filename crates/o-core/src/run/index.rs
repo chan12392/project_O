@@ -379,6 +379,11 @@ fn ingest_run(conn: &mut Connection, path: &Path, run_id: &str) -> io::Result<()
         }
     }
     summary.ingested_bytes += whole as i64;
+    let values: Vec<Value> = all[..summary.ingested_bytes as usize].split(|b| *b == b'\n').filter_map(|line| serde_json::from_slice(line).ok()).collect();
+    if values.iter().any(|v| v["t"] == "card.usage.settled") {
+        summary.tokens = crate::usage::accounting::project(&values).iter().filter(|v| v["t"] == "card.usage")
+            .map(|v| ["input", "cached", "output"].iter().filter_map(|k| v[*k].as_f64()).sum::<f64>() as i64).sum();
+    }
     let prefix_hash = fingerprint(&all[..summary.ingested_bytes as usize]);
     let s = &summary;
     tx.execute(

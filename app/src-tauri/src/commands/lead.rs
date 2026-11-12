@@ -2,15 +2,12 @@
 //! A turn runs the lead CLI through o-core on a blocking thread; a plan is
 //! dispatched by `o _run` in the background, as `o dispatch` does.
 
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 use std::process::Command;
-use std::sync::Mutex;
-use std::time::{Duration, Instant};
 
 use o_core::agents::clean;
 use o_core::lead::{self, files, DispatchError, SendRequest};
-use o_core::providers::{self, ModelChoice};
+use o_core::providers;
 use o_core::run::plan::ProviderId;
 use o_core::run::mode::{Profile, RunMode};
 use o_core::run::runner::official_command;
@@ -127,6 +124,7 @@ pub async fn lead_send(
             yolo: o_core::run::yolo::read_enabled(&home),
         };
         lead::check_request(&home, &req)?;
+        providers::models::refresh_workers(&home, req.clean, std::path::Path::new(&project));
         let thread = lead::select_thread(&home, &project, req.thread, req.fresh)?;
         req.thread = Some(&thread);
         req.fresh = false;
@@ -172,24 +170,15 @@ fn graph_capable(output: &[u8]) -> bool {
         .is_some_and(|caps| ["work-graph-v1", "lead-worktrees-v1", "lead-copy-workspaces-v1"].iter().all(|required| caps.iter().any(|cap| cap.as_str() == Some(required))))
 }
 
-/// How long a lead model list is reused before the CLI is asked again.
-const MODELS_TTL: Duration = Duration::from_secs(10 * 60);
-
-static MODELS: Mutex<BTreeMap<ProviderId, (Instant, Vec<ModelChoice>)>> = Mutex::new(BTreeMap::new());
-
-/// The models a lead of this agent may name (`o lead models`), from the CLI's own list,
-/// kept for a few minutes. A failed listing is not kept, so the next open asks again.
+/// Same core catalog as CLI/workers, including its actual profile and freshness.
 #[tauri::command]
-pub async fn lead_models(provider: String) -> Result<Value, String> {
+pub async fn lead_models(provider: String, clean: Option<bool>, project: Option<String>, refresh: Option<bool>) -> Result<Value, String> {
     let provider = ProviderId::parse(&provider).ok_or_else(|| format!("알 수 없는 에이전트: {provider}"))?;
-    if let Some((at, models)) = MODELS.lock().map_err(|e| e.to_string())?.get(&provider) {
-        if at.elapsed() < MODELS_TTL {
-            return Ok(json!({ "provider": provider, "models": models }));
-        }
-    }
-    let models = blocking(move || providers::lead_models(provider)).await??;
-    MODELS.lock().map_err(|e| e.to_string())?.insert(provider, (Instant::now(), models.clone()));
-    Ok(json!({ "provider": provider, "models": models }))
+    blocking(move || {
+        let root = o_core::agents::clean::default_root();
+        let cwd = project.map(PathBuf::from).or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+        providers::models::catalog(&store::default_home(), provider, clean.unwrap_or(true).then_some(root.as_path()), &cwd, refresh.unwrap_or(false)).map(|catalog| json!(catalog))
+    }).await?
 }
 
 /// The person's 허용/거부 for one action the lead waits on (`o lead decide`, ADR-0008 개정 3).

@@ -24,6 +24,7 @@ pub mod codex_app_server;
 pub mod codex_sandbox;
 pub mod opencode;
 pub mod devin;
+pub mod models;
 mod stream;
 
 use std::collections::BTreeMap;

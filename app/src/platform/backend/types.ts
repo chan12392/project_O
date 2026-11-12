@@ -239,6 +239,8 @@ export interface Backend {
   billing(): Promise<BillingReport>;
   /** Saves the API billing mode (`o billing --warn|--subscription`) and returns the new report. */
   setBilling(mode: BillingMode): Promise<BillingReport>;
+  fallback(): Promise<FallbackSettings>;
+  setFallback(settings: FallbackSettings): Promise<FallbackSettings>;
   yolo(): Promise<YoloReport>;
   setYolo(change: YoloChange): Promise<YoloReport>;
   /** Tokens per card, averaged per way of running (`o tokens --json`), for one project or all. */
@@ -272,7 +274,7 @@ export interface Backend {
   leadAnswerApproval(runId: string, messageId: string, text: string): Promise<{ id: string }>;
   leadStopAll(project: string): Promise<{ stopped: number }>;
   /** The models a lead of this agent may name, from the CLI's own list (`o lead models`), cached a few minutes; rejects when the CLI could not list them. */
-  leadModels(provider: LeadProvider): Promise<{ provider: LeadProvider; models: LeadModel[] }>;
+  leadModels(provider: AgentId, options?: { clean?: boolean; project?: string; refresh?: boolean }): Promise<{ provider: AgentId; models: LeadModel[]; checkedAt?: string | null; stale?: boolean; error?: string | null; workerAvailable?: boolean; unavailableReason?: string | null }>;
 
   // Terminal agents (ADR-0042): `o agy` consent and `o term` sessions.
   // The screen shows the terminal's raw output; it never re-renders it as chat.
@@ -369,6 +371,7 @@ export type RamChange = { enabled?: boolean; percent?: number };
 
 /** `warn` passes CLI auth variables and only warns; `subscription` refuses to start while one is set (ADR-0035 개정 1). */
 export type BillingMode = "warn" | "subscription";
+export interface FallbackSettings { enabled: boolean; target: { provider: AgentId; model: string } | null }
 export interface BillingReport {
   mode: BillingMode;
 }

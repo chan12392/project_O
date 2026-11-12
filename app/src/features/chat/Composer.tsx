@@ -126,7 +126,7 @@ export function Composer({
   const effort = agent ? effortFor(agent, mine ? mine.effort : settings.leadEffort) : undefined;
   // The model: picked here for this agent, else its default in Settings → 총괄.
   const model = mine ? mine.model : agent ? (settings.leadModels[agent] ?? "") : "";
-  const models = useLeadModels(api, agent);
+  const models = useLeadModels(api, agent, project);
   const [typing, setTyping] = useState<{ draft: string; error?: string }>();
 
   const finishTyping = (apply: boolean) => {
@@ -154,6 +154,7 @@ export function Composer({
       ]
     : [];
   const modelName = agent ? modelLabel(models.models, model) : undefined;
+  const supportedEfforts = models.models.find((m) => m.id === model)?.efforts;
 
   const uploading = files.some((f) => !f.saved && !f.error);
   const busy = lead.busy;
@@ -437,7 +438,7 @@ export function Composer({
                           label: "노력 수준",
                           value: effort as string,
                           onChoose: (v: string) => setPicked({ agent, model, effort: v }),
-                          choices: LEAD_EFFORTS[agent].map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e })),
+                          choices: (supportedEfforts?.length ? supportedEfforts : LEAD_EFFORTS[agent]).map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e })),
                         },
                       ]
                     : []),

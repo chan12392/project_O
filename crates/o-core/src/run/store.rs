@@ -348,10 +348,22 @@ pub fn cooldown_times(home: &Path) -> io::Result<HashMap<ProviderId, String>> {
 /// Records a provider limit, keeping the later of the old and new times, and
 /// returns the time now on record. An empty `until` means the CLI gave no reset time.
 pub fn set_cooldown(home: &Path, provider: ProviderId, until: &str, now: DateTime<Utc>) -> io::Result<String> {
+    set_cooldown_kind(home, provider, until, now, false)
+}
+
+pub(crate) fn set_subscription_cooldown(home: &Path, provider: ProviderId, until: &str, now: DateTime<Utc>) -> io::Result<String> {
+    set_cooldown_kind(home, provider, until, now, true)
+}
+
+fn set_cooldown_kind(home: &Path, provider: ProviderId, until: &str, now: DateTime<Utc>, subscription: bool) -> io::Result<String> {
     let resolved = if until.is_empty() { iso(now + Duration::milliseconds(LIMITS.default_cooldown_ms)) } else { until.to_string() };
     let mut conn = index::open(home)?;
     // Read and write under one lock: two cards hitting the limit at once keep the later time.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    tx.execute_batch(crate::usage::fallback::TABLE).map_err(sql)?;
+    if subscription {
+        tx.execute("INSERT INTO subscription_limits(provider,until,observed_at) VALUES(?1,?2,?3) ON CONFLICT(provider) DO UPDATE SET until=excluded.until,observed_at=excluded.observed_at", params![provider.as_str(), resolved, iso(now)]).map_err(sql)?;
+    } else { tx.execute("DELETE FROM subscription_limits WHERE provider=?1", [provider.as_str()]).map_err(sql)?; }
     let current: String = tx
         .query_row("SELECT until FROM cooldowns WHERE provider = ?1", [provider.as_str()], |row| row.get(0))
         .optional()
@@ -362,6 +374,7 @@ pub fn set_cooldown(home: &Path, provider: ProviderId, until: &str, now: DateTim
         _ => false,
     };
     if !current.is_empty() && !later {
+        tx.commit().map_err(sql)?;
         return Ok(current);
     }
     tx.execute("INSERT OR REPLACE INTO cooldowns (provider, until) VALUES (?1, ?2)", params![provider.as_str(), resolved]).map_err(sql)?;
@@ -378,10 +391,22 @@ pub fn record_blocked(home: &Path, at: DateTime<Utc>, title: Option<&Value>, vio
 }
 
 pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyContext> {
+    let mut cooldowns = cooldown_times(home)?;
+    let fallback = crate::usage::fallback::read(home);
+    if fallback.enabled {
+        if let Some(target) = fallback.target {
+            for provider in ProviderId::ALL {
+                if provider != target.provider && crate::usage::fallback::confirmed(home, provider)? {
+                    // The runner must validate and reserve the explicit destination before spawning.
+                    cooldowns.remove(&provider);
+                }
+            }
+        }
+    }
     Ok(PolicyContext {
         now,
         active_by_provider: held_by_provider(home)?,
-        cooldowns: cooldown_times(home)?,
+        cooldowns,
         over_budget: crate::usage::budget::over_budget(home, now)?,
         project_exists: Box::new(|path| Path::new(path).exists()),
         is_mirror: Box::new(o_guard::is_mirror),

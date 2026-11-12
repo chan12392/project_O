@@ -35,9 +35,15 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
     let dir = run_dir(home, run);
     let plan: Plan = serde_json::from_value(read_plan(home, run).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
     let index = plan.cards.iter().position(|item| item.id == card).ok_or("해당 작업을 찾지 못했습니다")?;
-    let card = plan.cards[index].clone();
+    let requested = plan.cards[index].clone();
+    let mut card = requested.clone();
     if crate::providers::get(card.provider).terminal_card() { return Err("터미널 카드는 후속 지시를 받지 않습니다".into()); }
     let events = read_events(home, run);
+    let switched = events.iter().enumerate().rev().find_map(|(index, event)| match event {
+        OEvent::CardFallback { card_id, target, .. } if card_id == &card.id => Some((index, target)),
+        _ => None,
+    });
+    if let Some((_, target)) = switched { card.provider = target.provider; card.model = Some(target.model.clone()); }
     let last_end = events.iter().rev().find_map(|event| match event {
         OEvent::CardEnd { card_id, status, result, exit_code, .. } if card_id == &card.id => Some((*status, result.as_deref(), *exit_code)),
         _ => None,
@@ -51,20 +57,20 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
         || ended.is_none() {
         return Err("이전 작업이 아직 실행 중이거나 정상적으로 종료되지 않았습니다".into());
     }
-    let mut session = events.iter().rev().find_map(|event| match event {
+    let mut session = events.iter().skip(switched.map_or(0, |(index, _)| index + 1)).rev().find_map(|event| match event {
         OEvent::CardSession { card_id, session_id, .. } if card_id == &card.id => Some(session_id.clone()),
         _ => None,
     }).filter(|_| !interrupted);
     // A follow-up of a fresh start (an interrupted card up the chain) that reported no session of
     // its own starts fresh too.
-    let mut fresh = interrupted;
+    let mut fresh = interrupted || (switched.is_some() && session.is_none());
     let workspace = if dir.join("followup.json").exists() {
         let reference: (String, String) = serde_json::from_slice(&fs::read(dir.join("followup.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
         let previous = target_with_depth(home, &reference.0, &reference.1, depth + 1)?;
-        if previous.card.id != card.id || previous.card.provider != card.provider || previous.card.model != card.model || previous.project != plan.project || previous.clean != is_clean(home, run) {
+        if previous.card.id != requested.id || previous.card.provider != requested.provider || previous.card.model != requested.model || previous.project != plan.project || previous.clean != is_clean(home, run) {
             return Err("기존 후속 작업 정보가 바뀌었습니다".into());
         }
-        if session.is_none() && !interrupted {
+        if session.is_none() && !interrupted && switched.is_none() {
             fresh = previous.session.is_none();
             session = previous.session;
         }
@@ -115,7 +121,7 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
     let mut next_card = source.cards.into_iter().find(|item| item.id == card).ok_or("해당 작업을 찾지 못했습니다")?;
     if crate::providers::get(next_card.provider).terminal_card() { return Err("터미널 카드는 후속 지시를 받지 않습니다".into()); }
     let running = run_is_live(home, run) && !read_events(home, run).iter().any(|event| matches!(event, OEvent::CardEnd { card_id, .. } if card_id == card));
-    if !running { target(home, run, card)?; }
+    if !running { next_card = target(home, run, card)?.card; }
     next_card.task = text.to_string();
     next_card.depends_on.clear();
     let plan = Plan { title: "후속 작업".into(), project: source.project, cards: vec![next_card] };

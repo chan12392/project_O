@@ -16,6 +16,42 @@ pub fn check_lead_plan(home: &Path, project: &str, mut plan: Value, mode: RunMod
     (plan, violations, notices)
 }
 
+pub(super) fn check_generated_plan(home: &Path, project: &str, plan: Value, mode: RunMode) -> (Value, Vec<Violation>, Vec<String>) {
+    let (plan, mut violations, notices) = check_lead_plan(home, project, plan, mode);
+    for card in plan["cards"].as_array().into_iter().flatten() {
+        let Some(provider) = card["provider"].as_str().and_then(ProviderId::parse) else { continue };
+        if providers::get(provider).terminal_card() { continue; }
+        let model = card["model"].as_str().filter(|s| !s.is_empty());
+        let effort = card["effort"].as_str().filter(|s| !s.is_empty());
+        let error = if model.is_none() || effort.is_none() { Some("새 총괄 계획의 헤드리스 카드는 model과 effort를 명시해야 합니다".into()) }
+            else {
+                let root = clean::default_root();
+                providers::models::cached(home, provider, mode.profile.is_clean().then_some(root.as_path()), Path::new(project)).and_then(|c| providers::models::validate(&c, model.unwrap(), effort).err())
+            };
+        if let Some(message) = error { violations.push(Violation { rule: "model-selection".into(), message, card_id: card["id"].as_str().map(str::to_owned) }); }
+    }
+    (plan, violations, notices)
+}
+
+#[cfg(test)]
+#[test]
+fn generated_headless_plans_require_explicit_choices_but_legacy_and_terminal_plans_do_not() {
+    let dir = std::env::temp_dir().join(format!("o-generated-model-{}", store::new_run_id(Utc::now())));
+    let project = dir.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let home = dir.join("state");
+    let project = project.to_string_lossy();
+    let mode = RunMode::of(Profile::Own);
+    let mut plan = serde_json::json!({"title":"fixture","cards":[{"id":"a","provider":"claude","task":"inspect"}]});
+    assert!(check_generated_plan(&home, &project, plan.clone(), mode).1.iter().any(|v| v.rule == "model-selection"));
+    assert!(!check_lead_plan(&home, &project, plan.clone(), mode).1.iter().any(|v| v.rule == "model-selection"));
+    plan["cards"][0]["model"] = serde_json::json!("explicit-model");
+    plan["cards"][0]["effort"] = serde_json::json!("medium");
+    assert!(!check_generated_plan(&home, &project, plan, mode).1.iter().any(|v| v.rule == "model-selection"));
+    let terminal = serde_json::json!({"title":"fixture","cards":[{"id":"a","provider":"agy","task":"inspect"}]});
+    assert!(!check_generated_plan(&home, &project, terminal, mode).1.iter().any(|v| v.rule == "model-selection"));
+}
+
 /// `<threadId>-p<n>` → the thread id.
 pub(super) fn plan_thread(plan_id: &str) -> Option<&str> {
     let (thread, n) = plan_id.rsplit_once("-p")?;

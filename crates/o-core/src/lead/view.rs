@@ -283,7 +283,9 @@ pub struct LeadTokens {
 pub fn tokens(home: &Path, project: Option<&str>, since: Option<&str>) -> LeadTokens {
     let mut sum = LeadTokens::default();
     for id in thread_ids(home) {
-        let events = read_thread(home, &id);
+        let raw = read_thread(home, &id);
+        let values: Vec<_> = raw.iter().filter_map(|e| serde_json::to_value(e).ok()).collect();
+        let events: Vec<LeadEvent> = crate::usage::accounting::project(&values).into_iter().filter_map(|v| serde_json::from_value(v).ok()).collect();
         if let Some(project) = project {
             if thread_project(&events).is_none_or(|p| project_key(&p) != project_key(project)) {
                 continue;

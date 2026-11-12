@@ -145,7 +145,7 @@ pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String>
     select_thread(home, project, None, fresh).map_err(io::Error::other)
 }
 
-fn append(home: &Path, thread_id: &str, event: &LeadEvent) -> io::Result<()> {
+pub(crate) fn append(home: &Path, thread_id: &str, event: &LeadEvent) -> io::Result<()> {
     let line = serde_json::to_string(event).map_err(io::Error::other)?;
     let mut file = OpenOptions::new().create(true).append(true).open(thread_dir(home, thread_id).join("events.jsonl"))?;
     file.write_all(format!("{line}\n").as_bytes())
@@ -376,6 +376,9 @@ pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
         if !is_model_id(model) {
             return Err("model 이름 형식이 올바르지 않습니다".into());
         }
+        if let Some(catalog) = providers::models::cached(home, req.provider, req.clean, Path::new(req.project)).filter(|c| !c.stale) {
+            providers::models::validate(&catalog, model, req.effort)?;
+        }
     }
     if req.text.trim().is_empty() {
         return Err("총괄에게 보낼 내용이 비어 있습니다".into());
@@ -556,10 +559,12 @@ fn progress_state(progress: &[Value], counts: &[u64; 4], partial: &str, steps: &
     json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] }, "partial": partial, "live": steps })
 }
 
+#[derive(Clone, Copy)]
 struct WorkerTurn<'a> {
     thread_id: &'a str,
     speaker: &'a team::Speaker,
     message: &'a team::Received,
+    claimed: bool,
 }
 
 /// Handle one queued card message for the open thread that dispatched this run.
@@ -600,7 +605,7 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
     let effort = effort.filter(|e| providers::get(provider).lead_efforts().contains(e));
     let root = clean::default_root();
     let req = SendRequest { project, thread: Some(&thread_id), provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
-    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }), false, None)?;
+    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message, claimed: false }), false, None)?;
     if !team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.id == message.id && m.state == "acknowledged") {
         return Err("총괄 처리 결과가 불명입니다. 대화와 메시지 상태를 확인하세요".into());
     }

@@ -251,7 +251,23 @@ pub fn run_plan_with(
                 completed.insert(card.id.clone(), CardStatus::Stopped);
             }
         }
-        for card in pending.clone() {
+        for original in pending.clone() {
+            let mut card = original.clone();
+            let mut fallback_target = None;
+            if cooldown_times(home)?.get(&card.provider).and_then(|t| parse_time(t)).is_some_and(|t| t > Utc::now())
+                && crate::usage::fallback::confirmed(home, card.provider)? && crate::usage::fallback::read(home).enabled {
+                match crate::usage::fallback::prepare(home, card.provider, card.effort.as_deref(), false, clean, Path::new(&workdir.checked)) {
+                    Ok(Some(target)) => { card = crate::usage::fallback::card(&card, &target, "원래 에이전트는 실행 전 구독 한도로 차단되었습니다"); fallback_target = Some(target); }
+                    Ok(None) => {}
+                    Err(why) => {
+                        pending.retain(|c| c.id != card.id);
+                        emit(ended(&card, CardStatus::Failed, Some(format!("자동 전환 중단: {why}"))))?;
+                        results.push(CardStatus::Failed);
+                        completed.insert(card.id.clone(), CardStatus::Failed);
+                        continue;
+                    }
+                }
+            }
             let take = |pending: &mut Vec<Card>| pending.retain(|c| c.id != card.id);
             if card.depends_on.iter().any(|id| completed.get(id).is_some_and(|status| *status != CardStatus::Done)) {
                 take(&mut pending);
@@ -320,6 +336,19 @@ pub fn run_plan_with(
             }
             // Dispatch checked the caps, but runs dispatched together all saw the same counts: the slot
             // is taken here, in o.db, before the CLI starts (see `reserve_slot`).
+            if fallback_target.is_some() {
+                let mut check_card = card.clone();
+                check_card.depends_on.clear();
+                let next = Plan { cards: vec![check_card], ..plan.clone() };
+                let validation = check_plan_in(&serde_json::to_value(next).map_err(io::Error::other)?, &policy_context(home, Utc::now())?, RunMode { profile: Profile::of_clean(clean.is_some()), context: true, yolo });
+                if !validation.violations.is_empty() {
+                    take(&mut pending);
+                    emit(ended(&card, CardStatus::Failed, Some(format!("자동 전환 중단: {}", validation.violations.iter().map(|v| v.message.as_str()).collect::<Vec<_>>().join(" / ")))))?;
+                    results.push(CardStatus::Failed);
+                    completed.insert(card.id.clone(), CardStatus::Failed);
+                    continue;
+                }
+            }
             let reservation = match reserve_slot(home, run_id, &card, &workdir.checked, Utc::now()) {
                 Ok(Reserved::Granted(reservation)) => reservation,
                 Err(error) => {
@@ -373,8 +402,23 @@ pub fn run_plan_with(
             }
             take(&mut pending);
             let mut card = card.clone();
+            let switched = fallback_target.is_some();
+            if let Some(target) = fallback_target {
+                let error = crate::usage::fallback::claim(home, &format!("run:{run_id}:{}", card.id), &target).err();
+                if let Some(error) = error {
+                    release_slot(home, &reservation, false)?;
+                    emit(ended(&card, CardStatus::Failed, Some(format!("자동 전환 중단: {error}"))))?;
+                    results.push(CardStatus::Failed);
+                    completed.insert(card.id.clone(), CardStatus::Failed);
+                    continue;
+                }
+                if let Err(error) = emit(OEvent::CardFallback { at: now_iso(), card_id: card.id.clone(), from: original.provider, from_model: original.model, target, reason: "실행 전 확인된 구독 사용량 한도".into() }) {
+                    release_slot(home, &reservation, false)?;
+                    return Err(error);
+                }
+            }
             // With the daily budget off (`Pace::Off`) nothing is refused above and `steps_down` is 0.
-            if let Some(to) = budget::lower_effort(card.effort.as_deref(), budget.steps_down) {
+            if let Some(to) = budget::lower_effort(card.effort.as_deref(), if switched { 0 } else { budget.steps_down }) {
                 emit(OEvent::CardBudget {
                     at: now_iso(),
                     card_id: card.id.clone(),
@@ -431,7 +475,8 @@ pub fn run_plan_with(
                     context.push_str(&prior);
                 }
                 let slot = Slot { home: &home, reservation, started: false, marked: false, exited: Arc::new(AtomicBool::new(false)), best_effort: BEST_EFFORT_EXIT };
-                let start = Start { slot, workdir: &workdir, workspace: workspace.map(String::as_str), context: (!context.is_empty()).then_some(context.as_str()), clean: clean.as_deref(), spawner: spawner.as_ref(), yolo, dependencies: &dependencies };
+                let resumed_workspace = resumed.as_ref().filter(|_| switched).map(|target| target.workspace.to_string_lossy().into_owned());
+                let start = Start { slot, workdir: &workdir, workspace: resumed_workspace.as_deref().or_else(|| workspace.map(String::as_str)), context: (!context.is_empty()).then_some(context.as_str()), clean: clean.as_deref(), spawner: spawner.as_ref(), yolo, dependencies: &dependencies };
                 let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, start)))
                     .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))))
                     .or_else(|error| {

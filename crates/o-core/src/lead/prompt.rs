@@ -119,7 +119,7 @@ fn role(yolo: bool, approvals: bool, agy_workers_allowed: bool) -> String {
         String::new(),
         "카드 나누기:".to_string(),
         format!("- 1~5장(최대 {}장), 같은 파일을 두 카드가 고치지 않게 나눕니다. task에 목표·범위(파일)·완료 기준을 씁니다.", LIMITS.max_cards_per_plan),
-        format!("- 카드마다 provider({providers})·model·effort({})를 일에 맞게 고릅니다. 모델이 확실하지 않으면 model을 비웁니다.", EFFORTS.join("|")),
+        format!("- 헤드리스 카드마다 provider({providers})·model·effort({})를 명시합니다. 사용자 지정값이 우선이며, 작업 요구와 아래 모델 후보의 지원 effort를 보고 고른 이유를 계획 설명에 한 줄로 적습니다. 모델 근거가 없으면 비운 계획을 내지 말고 미완성 사유를 알립니다. 터미널 카드는 CLI 설정을 사용합니다.", EFFORTS.join("|")),
         format!("- 동시 실행 상한: {}. 한도·예산에 걸린 서비스는 피합니다.", caps.join(", ")),
         format!("- 허용 필드: {}. id는 영문 소문자·숫자·하이픈. 실행 파일·인자·환경변수·계정은 넣지 않습니다.", CARD_FIELDS.join(", ")),
         "- 카드는 기본적으로 함께 실행됩니다. 쓰는 자원이 겹치지 않는 카드는 동시에 돌고, 겹치거나 depends_on이 걸린 카드는 앞 카드가 끝날 때까지 기다립니다. 되도록 모든 카드가 동시에 돌게 나눕니다.".to_string(),
@@ -132,7 +132,8 @@ fn role(yolo: bool, approvals: bool, agy_workers_allowed: bool) -> String {
         String::new(),
         "답은 마크다운으로 씁니다. 작업을 제안할 때만 답 끝에 아래 블록을 정확히 하나 넣습니다. project는 O가 채웁니다. 선행 작업이 있으면 depends_on에 작업 id 배열을 넣습니다.".to_string(),
         format!("```{PLAN_FENCE}"),
-        r#"{"title":"짧은 제목","cards":[{"id":"ui","provider":"codex","effort":"medium","role":"코딩","task":"무엇을, 어느 파일에서, 완료 기준","resources":[{"kind":"project-path","key":"src/ui","mode":"write"}]}]}"#.to_string(),
+        r#"{"title":"짧은 제목","cards":[{"id":"ui","provider":"codex","model":"chosen-model-id","effort":"medium","role":"코딩","task":"무엇을, 어느 파일에서, 완료 기준","resources":[{"kind":"project-path","key":"src/ui","mode":"write"}]}]}"#.to_string(),
+        "chosen-model-id는 예시 자리표시자입니다. 아래 후보 또는 사용자가 직접 지정한 실제 모델 ID로 바꾸세요.".into(),
         "```".to_string(),
     ]);
     lines.join("\n")
