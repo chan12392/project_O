@@ -17,9 +17,11 @@ import {
   isLeadProvider,
   modelLabel,
   restoreDraft,
+  settleDraft,
   takeDraft,
   uploadDone,
   type DraftFile,
+  type DraftPlace,
   type Drafts,
   type LeadProvider,
 } from "../../../../src/core/lead.ts";
@@ -101,17 +103,13 @@ export function Composer({
   // A notice is about the project it was raised in.
   useEffect(() => setNotice(undefined), [key]);
   // A draft typed before the answer named the project's thread moves to the key that answer
-  // gives; drafts between open tabs stay where they were typed.
-  const prevKey = useRef(key);
+  // gives; drafts between open tabs and between projects stay where they were typed (#86).
+  const place: DraftPlace = { project, thread: lead.selected };
+  const prevPlace = useRef(place);
   useEffect(() => {
-    const from = prevKey.current;
-    prevKey.current = key;
-    if (from === key || from.includes("#") || !key.includes("#")) return;
-    setDrafts((d) => {
-      const gone = draftOf(d, from);
-      if (!gone.text && !gone.files.length) return d;
-      return restoreDraft(takeDraft(d, from).drafts, key, gone);
-    });
+    const from = prevPlace.current;
+    prevPlace.current = place;
+    setDrafts((d) => settleDraft(d, from, place));
   }, [key]);
   /** `model` "" is the CLI's default (no `--model`). */
   const [picked, setPicked] = useState<{ agent: LeadProvider; model: string; effort: string }>();
@@ -416,8 +414,9 @@ export function Composer({
                     value: terminal ? "agy" : (agent ?? ""),
                     onChoose: (v) => {
                       // "agy" is the terminal lead, not a chat provider (ADR-0042); the pane swaps in.
-                      // Choosing it may open the project's first tab; a failure shows here.
-                      if (v === "agy") return void Promise.resolve(onTerminal?.(true)).catch((e) => setNotice(errorText(e)));
+                      // Choosing it may open the project's first tab; a failure shows here, in the
+                      // draft it was chosen in. A chat agent chosen meanwhile is the newer pick (#118).
+                      if (v === "agy") return void Promise.resolve(onTerminal?.(true)).catch((e) => keyNow.current === key && setNotice(errorText(e)));
                       void onTerminal?.(false);
                       if (isLeadProvider(v)) setPicked({ agent: v, model: settings.leadModels[v] ?? "", effort: effortFor(v, effort) });
                     },

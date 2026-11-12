@@ -631,6 +631,31 @@ export function restoreDraft(drafts: Drafts, key: string, taken: Draft): Drafts 
   return editDraft(drafts, key, (now) => ({ text: now.text || taken.text, files: now.files.length ? now.files : taken.files }));
 }
 
+/** Where the composer is: a project folder (in any spelling) and, once named, its conversation. */
+export interface DraftPlace {
+  project: string | undefined;
+  thread: string | undefined;
+}
+
+/**
+ * The composer went from one place to another. A draft typed before the answer named the
+ * project's conversation moves to that conversation's key — only within the same project, and
+ * only into an empty draft: another project's draft is never carried along, and a conversation
+ * that already has a draft keeps it while the project's own stays where it was typed (#86).
+ * Drafts between open tabs stay where they were typed.
+ */
+export function settleDraft(drafts: Drafts, from: DraftPlace, to: DraftPlace): Drafts {
+  if (!from.project || !to.project || from.thread || !to.thread) return drafts;
+  const source = draftKey(from.project);
+  if (draftKey(to.project) !== source) return drafts;
+  const typed = draftOf(drafts, source);
+  if (!typed.text && !typed.files.length) return drafts;
+  const target = draftKey(to.project, to.thread);
+  const there = draftOf(drafts, target);
+  if (there.text || there.files.length) return drafts;
+  return restoreDraft(takeDraft(drafts, source).drafts, target, typed);
+}
+
 /**
  * Why the lead thread could not be read, for the chat: the error, and when it looks like an
  * `o` that does not know `lead` (it printed its usage, or the command failed outright), what to check.

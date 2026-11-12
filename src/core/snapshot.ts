@@ -66,10 +66,14 @@ export interface RunView {
   runId: string;
   title: string;
   project: string;
+  /** Captured in the run's events; never inferred from the project's current checkout. */
+  branch?: string;
   startedAt: string;
   endedAt?: string;
   status: "running" | "done" | "failed" | "stopped";
   followup?: { sourceRunId: string; cardId: string };
+  /** True when automation started the run; absent in older and ordinary runs. */
+  scheduled?: boolean;
   cards: CardView[];
   /** The run's team channel, in order. */
   messages: TeamMessage[];
@@ -140,6 +144,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
       continue;
     }
     if (!run) continue;
+    if (e.t === "run.branch") {
+      run.branch = e.branch;
+      continue;
+    }
     if (e.t === "msg") {
       run.messages.push({ at: e.at, from: e.from, to: e.to, text: e.text, ...(e.id ? { id: e.id } : {}), ...(e.kind ? { kind: e.kind } : {}), ...(e.replyTo ? { replyTo: e.replyTo } : {}) });
       // An external session's "lead to all" lines are its main thread talking, not words sent to
@@ -176,7 +184,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (e.t === "review.posted") continue;
     if (e.t === "run.context") continue;
-    if (e.t === "run.mode") continue;
+    if (e.t === "run.mode") {
+      if (e.scheduled !== undefined) run.scheduled = e.scheduled;
+      continue;
+    }
     const card = byId.get(e.cardId);
     if (!card) continue;
     switch (e.t) {

@@ -21,7 +21,7 @@ import { lastProject, markOnboardingDone, onboardingDone, rememberProject, setti
 import { useLead } from "../data/useLead.ts";
 import { useRunSource } from "../data/useLiveRuns.ts";
 import { readParams, writeParam, type PanelView, type ScreenState } from "../data/useRun.ts";
-import { sessionForThread } from "../../../src/core/terminal.ts";
+import { sessionForThread, terminalPicker } from "../../../src/core/terminal.ts";
 import { Composer } from "../features/chat/Composer.tsx";
 import { LeadGate } from "../features/chat/LeadGate.tsx";
 import { LeadTabs } from "../features/chat/LeadTabs.tsx";
@@ -187,30 +187,21 @@ function MainWindow() {
   const terminalOn = Boolean(project?.path && lead.selected && (terminalPicks[lead.selected] ?? (leadTermSession !== undefined || settings.leadAgent === "agy")));
   const projectNow = useRef(project?.path);
   projectNow.current = project?.path;
-  const firstThread = useRef<{ project: string; made: Promise<string | undefined> } | undefined>(undefined);
+  const [pickTab] = useState(terminalPicker);
   /**
    * A project with no lead tab yet gets its first one for the terminal pick, so the menu choice is
    * not lost. A second click while it is being made shares that tab; a project switched meanwhile
-   * keeps the new tab but is not moved onto it. A failure is the caller's to show.
+   * keeps the new tab but is not moved onto it. Only the newest pick, terminal or chat, lands on
+   * the tab once it is there (#118). A failure is the caller's to show.
    */
   const setTerminalOn = async (on: boolean) => {
     const path = project?.path;
-    let thread = lead.selected;
-    if (!thread && on && path && lead.loaded) {
-      if (firstThread.current?.project !== path) {
-        const mine = { project: path, made: lead.startNew() };
-        firstThread.current = mine;
-        const done = () => {
-          if (firstThread.current === mine) firstThread.current = undefined;
-        };
-        mine.made.then(done, done);
-      }
-      thread = await firstThread.current.made;
-      if (!thread || projectNow.current !== path) return;
-      select({ thread });
-    }
-    const picked = thread;
-    if (picked) setTerminalPicks((p) => ({ ...p, [picked]: on }));
+    if (!path) return;
+    const selected = lead.selected;
+    const thread = await pickTab({ project: path, on, thread: selected, startNew: lead.loaded ? lead.startNew : undefined, shown: () => projectNow.current === path });
+    if (!thread) return;
+    if (thread !== selected) select({ thread });
+    setTerminalPicks((p) => ({ ...p, [thread]: on }));
   };
   // A picked tab that closed (or a backend that fell back to the project's current thread) makes
   // the answer's thread the pick; the correction then lands in selection, memory and URL at once.
@@ -578,7 +569,7 @@ function MainWindow() {
           </>
         )}
       </main>
-      <StatusBar state={state} runs={oRuns} live={data.live} replaying={Boolean(replayingId)} onReplay={() => current && restart(current.view.runId)} />
+      <StatusBar state={state} runs={oRuns} usageWindows={data.usageWindows} now={now} live={data.live} replaying={Boolean(replayingId)} onReplay={() => current && restart(current.view.runId)} />
       <p className="sr-only" aria-live="polite">
         {announced}
       </p>

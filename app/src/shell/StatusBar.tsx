@@ -3,6 +3,8 @@ import { useCallback, useId, useRef, useState } from "react";
 
 import { LIMITS } from "../../../src/core/limits.ts";
 import type { RunView } from "../../../src/core/snapshot.ts";
+import type { UsageWindow } from "../../../src/core/usage.ts";
+import { usageChips, type UsageChip } from "../features/usage/statusUsage.ts";
 import { timeOf } from "../lib/format.ts";
 import { useDismiss } from "../lib/dismiss.ts";
 import type { LiveStatus } from "../data/useLiveRuns.ts";
@@ -24,16 +26,31 @@ function resourceNames(resources: unknown): string {
   }).join(", ");
 }
 
-function sameDay(at: string, now: Date): boolean {
-  const day = new Date(at);
-  return day.getFullYear() === now.getFullYear() && day.getMonth() === now.getMonth() && day.getDate() === now.getDate();
+/** A chip's figure in the colour of its state; the agent's name and the reset time stay quiet. */
+const CHIP_TONE: Record<UsageChip["tone"], string> = {
+  normal: "text-foreground",
+  warn: "text-status-warning-text",
+  danger: "text-destructive",
+  muted: "",
+};
+
+interface Props {
+  state: ScreenState;
+  runs: RunView[];
+  /** Windows read by `o usage`, as the usage panel gets them; Claude's come from `runs`. */
+  usageWindows: UsageWindow[];
+  /** The clock a window's reset is judged by: the wall clock, or the replay's moment in the demo. */
+  now: Date;
+  live?: LiveStatus;
+  replaying: boolean;
+  onReplay: () => void;
 }
 
 /**
- * Orca's bottom status bar, carrying the day's figures against the dispatch ceilings
- * and which source the screen shows: this machine's O runs (`live`) or the recorded demo.
+ * Orca's bottom status bar: each agent's subscription usage, the running cards against the
+ * dispatch ceiling, and which source the screen shows: this machine's O runs (`live`) or the recorded demo.
  */
-export function StatusBar({ state, runs, live, replaying, onReplay }: { state: ScreenState; runs: RunView[]; live?: LiveStatus; replaying: boolean; onReplay: () => void }) {
+export function StatusBar({ state, runs, usageWindows, now, live, replaying, onReplay }: Props) {
   const [leases, setLeases] = useState<ResourceLease[] | null>(null);
   const [leaseError, setLeaseError] = useState("");
   const [leaseOpen, setLeaseOpen] = useState(false);
@@ -71,25 +88,37 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
   };
   const known = state === "full" || state === "empty";
   const cards = runs.flatMap((r) => r.cards);
-  // Live runs span many days; only today's starts count against the daily cap.
-  const now = new Date();
-  const started = cards.filter((c) => c.startedAt && (!live || sameDay(c.startedAt, now))).length;
   const active = cards.filter((c) => c.state === "running").length;
   const budget = useBudget();
-  const limits = serviceLimits(cards, budget?.providers);
+  const limits = known ? serviceLimits(cards, budget?.providers) : { text: "한도 확인 전" };
+  const chips = usageChips(runs, usageWindows, now);
   const n = (value: number) => (known ? value : "?");
   const usageAt = live?.usage?.at;
   const unavailable = live?.usage?.unavailable.map((u) => `${u.provider}: ${u.reason}`).join("\n");
 
   return (
     <footer className="col-span-2 flex h-7 shrink-0 items-center gap-4 border-t bg-sidebar px-3 text-xs text-muted-foreground max-md:col-span-1">
-      <span>
-        카드 <span className="text-foreground tabular-nums">{n(started)}</span> / 하루 {LIMITS.maxCardsPerDay}
-      </span>
-      <span>
+      {/*
+        Chips that do not fit wrap onto a second row, which the bar's height cuts off: whole chips go, never
+        half a figure. The empty ::before holds the first row, so the first chip can wrap away too; the chips
+        carry the gap as padding (the list's negative margin takes the last one back) because it must wrap with them.
+      */}
+      {chips.length > 0 && (
+        <ul aria-label="에이전트 사용량" className="-mr-4 flex h-full min-w-0 flex-wrap content-start overflow-hidden before:h-full before:content-[''] max-md:hidden">
+          {chips.map((chip) => (
+            <li key={chip.provider} className="flex h-full items-center pr-4">
+              <span role="img" aria-label={chip.label} title={chip.title} className="whitespace-nowrap">
+                {chip.name} <span className={`tabular-nums ${CHIP_TONE[chip.tone]}`}>{chip.value}</span>
+                <span className="max-xl:hidden">{chip.rest}</span>
+              </span>
+            </li>
+          ))}
+        </ul>
+      )}
+      <span className="shrink-0 whitespace-nowrap">
         실행 중 <span className="text-foreground tabular-nums">{n(active)}</span> / {LIMITS.maxActiveTotal}
       </span>
-      <span className="max-sm:hidden" title={limits.title}>{!known ? "한도 확인 전" : limits.text}</span>
+      {limits.text && <span className="whitespace-nowrap max-sm:hidden" title={limits.title}>{limits.text}</span>}
       {live ? (
         <>
           <div className="relative">
@@ -110,7 +139,7 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
               <button type="button" disabled={loadingLeases || recovering !== null} onClick={() => void inspect()} className={`mt-2 disabled:opacity-60 ${BUTTON}`}>다시 확인</button>
             </section>}
           </div>
-          <span className="ml-auto max-md:hidden">{live.failed ? "이 PC의 O 실행 기록 · 연결 끊김, 다시 시도하는 중" : "이 PC의 O 실행 기록 · 실시간"}</span>
+          <span className="ml-auto whitespace-nowrap max-md:hidden">{live.failed ? "이 PC의 O 실행 기록 · 연결 끊김, 다시 시도하는 중" : "이 PC의 O 실행 기록 · 실시간"}</span>
           <button
             type="button"
             onClick={live.refreshUsage}
@@ -125,7 +154,7 @@ export function StatusBar({ state, runs, live, replaying, onReplay }: { state: S
         </>
       ) : (
         <>
-          <span className="ml-auto max-md:hidden">{replaying ? "미리보기: 기록을 재생하는 중" : "미리보기: 기록 재생"}</span>
+          <span className="ml-auto whitespace-nowrap max-md:hidden">{replaying ? "미리보기: 기록을 재생하는 중" : "미리보기: 기록 재생"}</span>
           {state === "full" && (
             <button type="button" onClick={onReplay} className={`ml-auto md:ml-0 ${BUTTON}`}>
               <RotateCcw className="size-3" aria-hidden="true" />이 작업 다시 재생

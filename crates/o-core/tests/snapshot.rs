@@ -27,6 +27,20 @@ fn by_id(run_id: &str) -> Vec<OEvent> {
 const FIXTURE: &str = "20261101-100916-402x";
 
 #[test]
+fn run_mode_without_scheduled_round_trips_and_accepts_the_optional_marker() {
+    let legacy = json!({ "t": "run.mode", "at": "now", "runId": "old-run", "profile": "own", "context": true, "yolo": false });
+    for scheduled in [None, Some(true), Some(false)] {
+        let mut value = legacy.clone();
+        if let Some(scheduled) = scheduled {
+            value["scheduled"] = json!(scheduled);
+        }
+        let event: OEvent = serde_json::from_value(value.clone()).unwrap();
+        assert!(matches!(&event, OEvent::RunMode { scheduled: marker, .. } if *marker == scheduled));
+        assert_eq!(serde_json::to_value(event).unwrap(), value);
+    }
+}
+
+#[test]
 fn every_fixture_event_reads_back_and_writes_out_unchanged() {
     let runs = demo();
     assert!(!runs.is_empty());

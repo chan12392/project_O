@@ -1,15 +1,14 @@
 import type { ReactNode } from "react";
 
 import { tokensOf } from "../../../../src/core/attention.ts";
-import type { ProviderId } from "../../../../src/core/plan.ts";
 import type { RunView } from "../../../../src/core/snapshot.ts";
 import type { UsageWindow } from "../../../../src/core/usage.ts";
 import { useBudget } from "../../data/useBudget.ts";
 import type { ProviderBudget } from "../../platform/backend/index.ts";
 import { PROVIDER_NAME, compact, timeOf } from "../../lib/format.ts";
 import { Avatar } from "../office/Avatar.tsx";
+import { METERED, fullest, latestStreamQuotas } from "./statusUsage.ts";
 
-const ORDER: ProviderId[] = ["claude", "codex", "agy"];
 const RINGS: { window: string; name: string }[] = [
   { window: "five_hour", name: "5시간" },
   { window: "seven_day", name: "주간" },
@@ -30,7 +29,7 @@ interface Props {
 export function UsagePanel({ runs, windows }: Props) {
   const budget = useBudget();
   const all = [...windows, ...latestStreamQuotas(runs)];
-  const providers = ORDER.filter((p) => runs.some((r) => r.cards.some((c) => c.provider === p)) || all.some((w) => w.provider === p));
+  const providers = METERED.filter((p) => runs.some((r) => r.cards.some((c) => c.provider === p)) || all.some((w) => w.provider === p));
   if (providers.length === 0) return null;
 
   // With the daily budget off (ADR-0013) the 오늘 ring stays, measured against the same share, but nothing acts on it.
@@ -135,7 +134,7 @@ function Meter({ fraction, tone, name, title }: { fraction: number; tone: string
 
 /** A subscription window: one arc, fuller is warmer. */
 function Ring({ name, windows }: { name: string; windows: UsageWindow[] }) {
-  const worst = windows.reduce<UsageWindow | undefined>((w, x) => (!w || x.used > w.used ? x : w), undefined);
+  const worst = fullest(windows);
   if (!worst) return <EmptyRing name={name} title={`${name}: CLI가 알려 주지 않음`} />;
   const tone = worst.used >= 0.9 ? "stroke-red-500" : worst.used >= 0.7 ? "stroke-amber-500" : "stroke-emerald-500";
   const detail = windows
@@ -172,15 +171,4 @@ function TodayRing({ name, budget }: { name: string; budget: ProviderBudget | un
     budget.readAt ? `${timeOf(budget.readAt)} 기록 기준` : "",
   ];
   return <Meter fraction={budget.spent / budget.allowance} tone={TODAY_TONE[budget.state]} name={`${name} 사용`} title={lines.filter(Boolean).join("\n")} />;
-}
-
-/** Claude reports its windows in each run's stream; keep the newest per window. */
-function latestStreamQuotas(runs: RunView[]): UsageWindow[] {
-  const latest = new Map<string, RunView["quotas"][number]>();
-  for (const q of runs.flatMap((r) => r.quotas)) {
-    const key = `${q.provider}/${q.window}`;
-    const seen = latest.get(key);
-    if (!seen || seen.at < q.at) latest.set(key, q);
-  }
-  return [...latest.values()].map(({ provider, window, used, resetsAt }) => ({ provider, window, used, resetsAt }));
 }
