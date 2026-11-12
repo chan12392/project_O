@@ -155,7 +155,7 @@ fn lead_and_all_are_reserved_card_ids() {
     }
 }
 
-/// `o _run` checks the saved plan.json again: a hand-written one with a reserved id runs nothing.
+/// A captured input still passes the full policy check at execution.
 #[test]
 fn the_runner_refuses_a_saved_plan_with_a_reserved_card_id() {
     let root = std::env::temp_dir().join(format!("o-policy-reserved-{}-{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap()));
@@ -165,7 +165,8 @@ fn the_runner_refuses_a_saved_plan_with_a_reserved_card_id() {
     // Claude: a Codex card would make the runner ask Codex for a usage reading first.
     let saved = json!({ "title": "t", "project": project.to_string_lossy(), "cards": [{ "id": "lead", "provider": "claude", "task": "x" }] });
     std::fs::write(home.join("runs").join("r1").join("plan.json"), saved.to_string()).unwrap();
-    let error = o_core::run::runner::run_detached(&home, "r1").unwrap_err();
+    let approved = o_core::run::input::RunInput::new(&home, "r1", &serde_json::from_value(saved).unwrap(), o_core::run::mode::RunMode::of(o_core::run::mode::Profile::Own), false, false);
+    let error = o_core::run::runner::run_detached(&approved).unwrap_err();
     assert!(error.contains("정책 위반") && error.contains("예약"), "{error}");
     std::fs::remove_dir_all(&root).ok();
 }

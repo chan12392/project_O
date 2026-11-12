@@ -78,7 +78,8 @@ fn exercise(base: &Path, isolated: bool, scenario: &'static str) {
         launch.current_dir(cwd).args(["fixture-card", spec.bin.as_str(), scenario]);
         Ok(launch)
     });
-    assert_eq!(runner::run_plan(&home, "run", &plan, None, spawner).unwrap(), if scenario == "success" { CardStatus::Done } else { CardStatus::Failed });
+    let input = o_core::run::input::RunInput::new(&home, "run", &plan, RunMode { profile: Profile::Own, context: false, yolo: false }, isolated, false);
+    assert_eq!(runner::run_input(&input, None, spawner).unwrap(), if scenario == "success" { CardStatus::Done } else { CardStatus::Failed });
     let seen = seen.lock().unwrap();
     let attempted = !matches!(scenario, "off" | "invalid-model" | "unsafe-tool");
     assert_eq!(seen.len(), if attempted { 2 } else { 1 });

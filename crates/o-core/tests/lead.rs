@@ -151,7 +151,7 @@ Usage: codex [OPTIONS] [PROMPT]
 fn followup_routing() {
     let (home, project) = setup("followup-routing");
     let started = Mutex::new(Vec::new());
-    let resume = |id: &str| { started.lock().unwrap().push(id.to_string()); Ok(()) };
+    let resume = |id: &str, _: &o_core::run::input::RunInput| { started.lock().unwrap().push(id.to_string()); Ok(()) };
     // Nothing dispatched in this thread yet: a follow-up is not a way around "실행".
     let early = "```o-followup\n[{\"run\":\"20260101-000000-abcd\",\"card\":\"docs\",\"task\":\"수정\"}]\n```";
     let (spawner, _) = fake(claude_answer("s", early));
@@ -162,7 +162,7 @@ fn followup_routing() {
     let events = lead::send(&home, &request(&project, "설계"), spawner.as_ref()).unwrap();
     let original = lead::current_thread(&home, &project).unwrap();
     let plan_id = plans(&events).remove(0).0;
-    let dispatched = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &|_| Ok(())).ok().unwrap();
+    let dispatched = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), None, &|_, _| Ok(())).ok().unwrap();
     let answer = format!("수정 요청을 전달합니다.\n```o-followup\n[{{\"run\":\"{}\",\"card\":\"docs\",\"task\":\"제목 수정\"}}]\n```", dispatched.run_id);
     let (entered, release) = (home.join("followup-entered"), home.join("followup-release"));
     let spawner = gated(claude_answer("s", &answer), entered.clone(), release.clone());
@@ -252,7 +252,7 @@ impl Started {
 
 /// `overall::forward` with its starts recorded in `started`.
 fn forward_with(home: &Path, thread: &str, index: usize, spawner: &Spawner, started: &Started) -> Result<Vec<LeadEvent>, String> {
-    let run = |id: &str| started.run(id);
+    let run = |id: &str, _: &o_core::run::input::RunInput| started.run(id);
     let forward = |id: &str, n: usize| started.forward(id, n);
     lead::overall::forward(home, thread, index, spawner, &lead::overall::Starts { run: &run, forward: &forward })
 }
@@ -588,18 +588,18 @@ fn stale_plan_refused() {
     let (spawner, _) = fake(claude_answer("s", &plan_answer(good_plan())));
     let first = plans(&lead::send(&home, &request(&project, "first"), spawner.as_ref()).unwrap()).remove(0).0;
     let second = plans(&lead::send(&home, &request(&project, "second"), spawner.as_ref()).unwrap()).remove(0).0;
-    let start = |_: &str| -> std::io::Result<()> { panic!("stale plans must not start") };
-    assert!(matches!(lead::dispatch(&home, &first, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
+    let start = |_: &str, _: &o_core::run::input::RunInput| -> std::io::Result<()> { panic!("stale plans must not start") };
+    assert!(matches!(lead::dispatch(&home, &first, RunMode::of(Profile::Own), None, &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
     let (reply, _) = fake(claude_answer("s", "답변"));
     lead::send(&home, &request(&project, "추가 질문"), reply.as_ref()).unwrap();
-    assert!(matches!(lead::dispatch(&home, &second, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
+    assert!(matches!(lead::dispatch(&home, &second, RunMode::of(Profile::Own), None, &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
     let latest = plans(&lead::send(&home, &request(&project, "실행할 계획"), spawner.as_ref()).unwrap()).remove(0).0;
     let original = lead::current_thread(&home, &project).unwrap();
     lead::new_thread(&home, &project).unwrap();
-    assert!(lead::dispatch(&home, &latest, RunMode::of(Profile::Own), &|_| Ok(())).is_ok());
+    assert!(lead::dispatch(&home, &latest, RunMode::of(Profile::Own), None, &|_, _| Ok(())).is_ok());
     let latest = plans(&lead::send(&home, &SendRequest { thread: Some(&original), ..request(&project, "다음 계획") }, spawner.as_ref()).unwrap()).remove(0).0;
     lead::close(&home, &original).unwrap();
-    assert!(matches!(lead::dispatch(&home, &latest, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(_))));
+    assert!(matches!(lead::dispatch(&home, &latest, RunMode::of(Profile::Own), None, &start), Err(DispatchError::Other(_))));
 }
 
 fn temp(name: &str) -> PathBuf {
@@ -959,7 +959,7 @@ fn autorun() {
     init_git(&project);
     let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
     let starts = AtomicUsize::new(0);
-    let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
+    let start = |_: &str, _: &o_core::run::input::RunInput| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
     let normal = lead::send_with_autorun(&home, &request(&project, "계획"), spawner.as_ref(), &start).unwrap();
     assert!(normal.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(_), .. })));
     assert_eq!(starts.load(Ordering::SeqCst), 0);
@@ -1020,10 +1020,14 @@ fn scheduled_run_mode_recorded() {
         init_git(&project);
         let (lead_cli, _) = fake(claude_answer("lead", &plan_answer(good_plan())));
         let (worker_cli, _) = fake(claude_answer("worker", "완료"));
-        let start = |run_id: &str| {
+        let start = |run_id: &str, input: &o_core::run::input::RunInput| {
             assert_eq!(store::is_scheduled(&home, run_id), scheduled);
-            let plan = serde_json::from_value(store::read_plan(&home, run_id)?).unwrap();
-            assert_eq!(runner::run_plan(&home, run_id, &plan, None, Arc::clone(&worker_cli))?, CardStatus::Done);
+            assert_eq!(input.scheduled(), scheduled);
+            assert_eq!(input.mode().yolo, !scheduled);
+            std::fs::write(store::run_dir(&home, run_id).join("plan.json"), "{}")?;
+            let _ = std::fs::remove_file(store::run_dir(&home, run_id).join("scheduled"));
+            let _ = std::fs::remove_file(store::run_dir(&home, run_id).join("yolo"));
+            assert_eq!(runner::run_input(input, None, Arc::clone(&worker_cli))?, CardStatus::Done);
             Ok(())
         };
         let req = SendRequest { yolo: !scheduled, ..request(&project, "실행") };
@@ -1058,7 +1062,7 @@ fn autorun_failures_not_counted() {
     let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
     let (attempts, fail) = (AtomicUsize::new(0), AtomicBool::new(true));
     // `o` missing or the start callback failing both come back as the start's error.
-    let start = |_: &str| {
+    let start = |_: &str, _: &o_core::run::input::RunInput| {
         attempts.fetch_add(1, Ordering::SeqCst);
         if fail.load(Ordering::SeqCst) { Err(std::io::Error::new(std::io::ErrorKind::NotFound, "o 실행 파일 없음")) } else { Ok(()) }
     };
@@ -1114,7 +1118,7 @@ fn autorun_new_thread_cancels() {
     let (entered, release) = (home.join("entered"), home.join("release"));
     let spawner = gated(claude_answer("session", &plan_answer(good_plan())), entered.clone(), release.clone());
     let starts = AtomicUsize::new(0);
-    let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
+    let start = |_: &str, _: &o_core::run::input::RunInput| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
     let original = lead::start(&home, &project).unwrap();
     let yolo = SendRequest { thread: Some(&original), yolo: true, ..request(&project, "진행") };
     let events = std::thread::scope(|scope| {
@@ -1153,7 +1157,7 @@ fn autorun_newer_request_wins() {
         let spawner = gated(claude_answer("session", &plan_answer(good_plan())), entered.clone(), release.clone());
         let (later, _) = fake_slow(claude_answer("session", "새 요청에 답합니다"), 500);
         let starts = AtomicUsize::new(0);
-        let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
+        let start = |_: &str, _: &o_core::run::input::RunInput| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
         let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
         let events = std::thread::scope(|scope| {
             let turn = scope.spawn(|| lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start));
@@ -1333,7 +1337,7 @@ fn policy_refusal_stored() {
     let (plan_id, _, ok, rules) = plans(&events).remove(0);
     assert!(!ok);
     assert!(rules.contains(&"unsupported-field".to_string()) && rules.contains(&"unknown-provider".to_string()), "{rules:?}");
-    let refused = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &|_| panic!("a refused plan must not start"));
+    let refused = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), None, &|_, _| panic!("a refused plan must not start"));
     assert!(matches!(refused, Err(DispatchError::Blocked(v)) if !v.is_empty()));
     // A malformed block is an error on record, not a plan.
     let (spawner, _) = fake(claude_answer("s", "```o-plan\n{ broken\n```"));
@@ -1381,22 +1385,22 @@ fn dispatch_once() {
     let events = lead::send(&home, &request(&project, "해 줘"), spawner.as_ref()).unwrap();
     let plan_id = plans(&events).remove(0).0;
     let started = Mutex::new(Vec::new());
-    let start = |run: &str| -> std::io::Result<()> {
+    let start = |run: &str, _: &o_core::run::input::RunInput| -> std::io::Result<()> {
         started.lock().unwrap().push(run.to_string());
         Ok(())
     };
     let untracked = Path::new(&project).join("uncommitted.txt");
     std::fs::write(&untracked, "user edit").unwrap();
-    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), &start), Err(DispatchError::Other(m)) if m.contains("커밋하지 않은")));
+    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), None, &start), Err(DispatchError::Other(m)) if m.contains("커밋하지 않은")));
     assert!(started.lock().unwrap().is_empty());
     std::fs::remove_file(untracked).unwrap();
-    let done = lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), &start).ok().unwrap();
+    let done = lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), None, &start).ok().unwrap();
     assert_eq!(*started.lock().unwrap(), vec![done.run_id.clone()]);
     assert_eq!(done.cards, ["docs"]);
     assert!(home.join("runs").join(&done.run_id).join("plan.json").exists());
     assert!(home.join("runs").join(&done.run_id).join("clean").exists());
     assert!(home.join("runs").join(&done.run_id).join("isolated-worktrees").exists());
-    let again = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &start);
+    let again = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), None, &start);
     assert!(matches!(again, Err(DispatchError::Other(m)) if m.contains("이미 실행")));
     assert_eq!(started.lock().unwrap().len(), 1);
     use o_core::run::events::{CardStatus, OEvent};
@@ -1406,13 +1410,13 @@ fn dispatch_once() {
     let thread = lead::current_thread(&home, &project).unwrap();
     let retry_mark = home.join("leads").join(thread).join("dispatched").join(format!("{plan_id}.retry"));
     std::fs::write(&retry_mark, "unrecorded-run").unwrap();
-    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("확인할 수 없어")));
+    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), None, &start), Err(DispatchError::Other(m)) if m.contains("확인할 수 없어")));
     std::fs::remove_file(retry_mark).unwrap();
-    let retried = lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), &start).ok().expect("failed run can be retried");
+    let retried = lead::dispatch(&home, &plan_id, RunMode::of(Profile::ProjectO), None, &start).ok().expect("failed run can be retried");
     assert_ne!(retried.run_id, done.run_id);
     assert_eq!(started.lock().unwrap().len(), 2);
-    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("이미 실행")));
-    assert!(matches!(lead::dispatch(&home, "nope", RunMode::of(Profile::Own), &start), Err(DispatchError::Other(_))));
+    assert!(matches!(lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), None, &start), Err(DispatchError::Other(m)) if m.contains("이미 실행")));
+    assert!(matches!(lead::dispatch(&home, "nope", RunMode::of(Profile::Own), None, &start), Err(DispatchError::Other(_))));
     // The next turn hears how the dispatched run is doing.
     let (spawner, seen) = fake(claude_answer("s", "확인했습니다"));
     lead::send(&home, &request(&project, "어떻게 됐어?"), spawner.as_ref()).unwrap();
@@ -1424,7 +1428,7 @@ fn dispatch_non_git() {
     let (spawner, _) = fake(claude_answer("s", &plan_answer(good_plan())));
     let events = lead::send(&home, &request(&project, "해 줘"), spawner.as_ref()).unwrap();
     let plan_id = plans(&events).remove(0).0;
-    let done = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &|_| Ok(())).ok().expect("non-Git plan dispatch");
+    let done = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), None, &|_, _| Ok(())).ok().expect("non-Git plan dispatch");
     assert!(home.join("runs").join(done.run_id).join("isolated-worktrees").exists());
     assert!(!Path::new(&project).join(".git").exists());
 }
@@ -1609,7 +1613,7 @@ fn tab_states() {
     assert_eq!(shown["threads"][1]["state"], "idle");
     assert_eq!(shown["projects"][0]["state"], "waiting");
     let plan = plans(&events).remove(0).0;
-    let dispatched = lead::dispatch(&home, &plan, RunMode::of(Profile::Own), &|_| Ok(())).ok().unwrap();
+    let dispatched = lead::dispatch(&home, &plan, RunMode::of(Profile::Own), None, &|_, _| Ok(())).ok().unwrap();
     assert_eq!(lead::show(&home, Some(&project), None).unwrap()["threads"][0]["state"], "working");
     assert_eq!(lead::show(&home, Some(&project), None).unwrap()["projects"][0]["state"], "working");
     let (spawner, _) = fake(claude_answer("title", "```o-ask\n{\"questions\":[{\"question\":\"어느 쪽?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```"));

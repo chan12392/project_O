@@ -6,9 +6,8 @@ use std::process::Command as Process;
 use chrono::Utc;
 use o_core::usage::fallback::check_plan;
 use o_core::review;
-use o_core::run::runner;
+use o_core::run::{input, runner};
 use o_core::run::store::{self, run_dir};
-use o_core::sys::proc;
 use serde_json::json;
 
 use super::{fail, help, print_violations, run_id_arg, Command};
@@ -25,6 +24,7 @@ pub const REVIEW: Command = Command {
 
 /// `o _review <runId> <pr> <number> --head <sha> [--post]`: the background half of `o review --detach`.
 pub const REVIEW_BACKGROUND: Command = Command { name: "_review", usage: "", run: review_background };
+pub const REVIEW_APPROVED: Command = Command { name: "_review-approved", ..REVIEW_BACKGROUND };
 
 /// `o review <pr> …`: reads the PR with gh in this folder, checks a one-card
 /// review plan like `o dispatch`, then runs it here (or in the background with
@@ -93,18 +93,19 @@ fn review(home: &Path, args: &[String]) -> i32 {
     }
 
     let run_id = store::new_run_id(now);
-    if let Err(error) = review::create_run(home, &run_id, &plan, args.mode) {
-        return fail(&error.to_string());
-    }
+    let approved = match review::create_run(home, &run_id, &plan, args.mode) {
+        Ok(input) => input,
+        Err(error) => return fail(&error.to_string()),
+    };
     let events = run_dir(home, &run_id).join("events.jsonl");
     if args.detach {
         // The PR, its head commit and the post flag go to the background runner as arguments, out of the cards' reach.
         let number = pr.number.to_string();
-        let mut background = vec!["_review", &run_id, &args.selector, &number, "--head", &pr.head_ref_oid];
+        let mut background = vec!["_review-approved", &run_id, &args.selector, &number, "--head", &pr.head_ref_oid];
         if args.post {
             background.push("--post");
         }
-        let started = std::env::current_exe().and_then(|exe| proc::spawn_detached(Process::new(exe).args(&background).current_dir(&project)));
+        let started = std::env::current_exe().and_then(|exe| input::spawn(Process::new(exe).args(&background).current_dir(&project), &approved));
         if let Err(error) = started {
             return fail(&format!("실행기를 시작하지 못했습니다: {error}"));
         }
@@ -122,14 +123,12 @@ fn review(home: &Path, args: &[String]) -> i32 {
         return 0;
     }
     eprintln!("실행 {run_id} — 검토 중… (다른 창에서 o events {run_id} --follow)");
-    review_run(home, &run_id, &args.selector, pr.number, Some(&pr.head_ref_oid), args.post, &project)
+    if let Err(message) = runner::run_detached(&approved) { return fail(&message); }
+    finish_review(home, &run_id, &args.selector, pr.number, Some(&pr.head_ref_oid), args.post, &project)
 }
 
 /// Runs the review card (policy checked again, like `o _run`) and finishes: saves, and posts when asked.
-fn review_run(home: &Path, run_id: &str, selector: &str, number: u64, head: Option<&str>, post: bool, project: &Path) -> i32 {
-    if let Err(message) = runner::run_detached(home, run_id) {
-        return fail(&message);
-    }
+fn finish_review(home: &Path, run_id: &str, selector: &str, number: u64, head: Option<&str>, post: bool, project: &Path) -> i32 {
     match review::finish(home, run_id, selector, number, head, post, project, &review::OfficialGh) {
         Ok(done) => {
             if let Some(head) = &done.head {
@@ -155,5 +154,11 @@ fn review_background(home: &Path, args: &[String]) -> i32 {
     }
     let head = args.iter().position(|a| a == "--head").and_then(|i| args.get(i + 1)).filter(|h| !h.is_empty() && h.chars().all(|c| c.is_ascii_hexdigit()));
     let project = std::env::current_dir().unwrap_or_default();
-    review_run(home, run_id, selector, number, head.map(String::as_str), args.iter().any(|a| a == "--post"), &project)
+    let approved = match input::receive(home, run_id, false) { Ok(input) => input, Err(error) => return fail(&error) };
+    if let Err(message) = runner::run_detached(&approved) { return fail(&message); }
+    // Detached stdout is the input acknowledgment pipe, not a console.
+    match review::finish(home, run_id, selector, number, head.map(String::as_str), args.iter().any(|a| a == "--post"), &project, &review::OfficialGh) {
+        Ok(done) => i32::from(done.review_file.is_none()),
+        Err(error) => fail(&error),
+    }
 }

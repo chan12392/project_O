@@ -501,9 +501,12 @@ pub fn build_plan(project: &str, number: u64, task: &str, provider: ProviderId, 
 /// Saves a checked review plan as a new run. The review card gets the PR and nothing else:
 /// no earlier work of the project goes into its prompt (shared context is off, ADR-0005),
 /// whatever the profile is (ADR-0013).
-pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, mode: RunMode) -> std::io::Result<()> {
+pub fn create_run(home: &Path, run_id: &str, plan: &crate::run::plan::Plan, mode: RunMode) -> std::io::Result<crate::run::input::RunInput> {
+    let mode = RunMode { context: false, ..mode };
+    let input = crate::run::input::RunInput::new(home, run_id, plan, mode, false, false);
     crate::run::store::create_run(home, run_id, plan)?;
-    crate::run::store::mark_mode(home, run_id, &RunMode { context: false, ..mode })
+    crate::run::store::mark_mode(home, run_id, &mode)?;
+    Ok(input)
 }
 
 /// The comment text: who wrote it and that it decides nothing, then the review.

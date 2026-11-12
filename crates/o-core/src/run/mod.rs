@@ -8,6 +8,7 @@ pub mod events;
 pub mod followup;
 mod resources;
 pub mod index;
+pub mod input;
 #[cfg(windows)]
 pub mod job_watch;
 mod leases;

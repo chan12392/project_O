@@ -30,7 +30,7 @@ fn main() {
 
 fn run(args: &[String]) -> i32 {
     if commands::inside_agent() {
-        let blocked = matches!(args.first().map(String::as_str), Some("dispatch" | "followup" | "_run" | "_lead-watch" | "_job-watch" | "_followup" | "review" | "_review" | "image" | "schedule" | "changes" | "stop" | "sync-mirror" | "events" | "runs"))
+        let blocked = matches!(args.first().map(String::as_str), Some("dispatch" | "followup" | "_run" | "_run-approved" | "_lead-watch" | "_job-watch" | "_followup" | "_followup-approved" | "review" | "_review" | "_review-approved" | "image" | "schedule" | "changes" | "stop" | "sync-mirror" | "events" | "runs"))
             || matches!((args.first().map(String::as_str), args.get(1).map(String::as_str)), (Some("lead"), Some("send" | "dispatch" | "note" | "wake" | "retry" | "decide" | "stop" | "stop-all" | "forward" | "attach" | "new")) | (Some("projects"), Some("open")) | (Some("agents"), Some("setup")) | (Some("issues"), Some("record" | "classify" | "resolve" | "reopen")))
             || (args.first().is_some_and(|a| a == "_lead-approve") && o_core::agents::agy::inside_card())
             || (args.first().is_some_and(|a| a == "resources") && args.get(1).is_some_and(|a| a == "recover") && args.iter().any(|a| a == "--confirm-exited"));

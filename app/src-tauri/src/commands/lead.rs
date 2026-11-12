@@ -142,18 +142,19 @@ pub async fn lead_forward(proposal_id: String) -> Result<Value, String> {
 }
 
 /// Runs a proposed plan once after the policy check (`o lead dispatch`); the run starts
-/// as `o _run <runId>` in the background, like `o dispatch`.
+/// in a child of this app with the captured approval input, like `o dispatch`.
 #[tauri::command]
-pub async fn lead_dispatch(plan_id: String, clean: bool) -> Result<Value, String> {
+pub async fn lead_dispatch(plan_id: String, clean: bool, yolo: bool, expected_plan: Value) -> Result<Value, String> {
     blocking(move || {
         let o = o_binary().ok_or("o CLI를 찾지 못했습니다 (cargo install --path crates/o-cli)")?;
         let output = proc::hide_window(Command::new(&o).args(["about", "--json"])).output().map_err(|e| format!("O CLI를 확인하지 못했습니다: {e}"))?;
         let compatible = output.status.success() && graph_capable(&output.stdout);
         if !compatible { return Err("O CLI가 작업 그래프와 워크트리 격리를 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하거나 설치하세요".into()); }
-        let start = |run_id: &str| proc::spawn_detached(Command::new(&o).args(["_run", run_id])).map(|_| ());
+        let start = |run_id: &str, input: &o_core::run::input::RunInput| o_core::run::input::spawn(Command::new(std::env::current_exe()?).args(["_run-approved", run_id]), input);
         let home = store::default_home();
-        let mode = RunMode { yolo: o_core::run::yolo::read_enabled(&home), ..RunMode::of(Profile::of_clean(clean)) };
-        match lead::dispatch(&home, &plan_id, mode, &start) {
+        if yolo != o_core::run::yolo::read_enabled(&home) { return Err("화면에서 확인한 실행 모드와 현재 설정이 다릅니다. 다시 확인해 주세요".into()); }
+        let mode = RunMode { yolo, ..RunMode::of(Profile::of_clean(clean)) };
+        match lead::dispatch(&home, &plan_id, mode, Some(&expected_plan), &start) {
             Ok(done) => Ok(json!(done)),
             Err(DispatchError::Blocked(violations)) => {
                 let lines: Vec<String> = violations.iter().map(|v| format!("[{}] {}", v.rule, v.message)).collect();

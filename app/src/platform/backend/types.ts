@@ -262,7 +262,7 @@ export interface Backend {
   /** One message; resolves when the lead has answered, with the events the turn added. */
   leadSend(request: LeadSendRequest): Promise<{ threadId: string | null; events: LeadEvent[] }>;
   /** Runs a proposed plan after the policy check; rejects with the policy's reasons when refused. */
-  leadDispatch(planId: string, clean: boolean): Promise<LeadDispatched>;
+  leadDispatch(planId: string, clean: boolean, yolo: boolean, expectedPlan: unknown): Promise<LeadDispatched>;
   /** The person sends the overall lead's proposed requests on to project leads (`o lead forward`, ADR-0036). */
   leadForward(proposalId: string): Promise<{ events: LeadEvent[] }>;
   /** The person's 허용/거부 for one action the lead waits on (`o lead decide`); only the person's click, never chat text. */

@@ -261,6 +261,7 @@ export type LeadItem =
       kind: "plan";
       at: string;
       planId: string;
+      approvedPlan: unknown;
       title: string;
       cards: PlanCard[];
       ok: boolean;
@@ -472,6 +473,7 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     kind: "plan",
     at: text(e.at) ?? "",
     planId: text(e.planId) ?? `plan-${index}`,
+    approvedPlan: e.plan,
     title: title || "제목 없는 계획",
     cards,
     ok: e.ok === true && problems.length === 0,

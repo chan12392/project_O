@@ -110,14 +110,15 @@ fn exercise(base: &Path, scenario: &str) {
     let plan_id = format!("{thread}-p1");
     let event = LeadEvent::Plan { at: Utc::now().to_rfc3339(), plan_id: plan_id.clone(), plan: input.clone(), ok: true, violations: vec![], notices: vec![] };
     writeln!(fs::OpenOptions::new().append(true).open(lead::thread_dir(&home, &thread).join("events.jsonl")).unwrap(), "{}", serde_json::to_string(&event).unwrap()).unwrap();
-    let started = Mutex::new(String::new());
-    lead::dispatch(&home, &plan_id, mode, &|run_id| { *started.lock().unwrap() = run_id.into(); Ok(()) })
+    let started = Mutex::new(None);
+    lead::dispatch(&home, &plan_id, mode, Some(&input), &|_, approved| { *started.lock().unwrap() = Some(approved.clone()); Ok(()) })
         .unwrap_or_else(|error| match error { lead::DispatchError::Blocked(violations) => panic!("{violations:?}"), lead::DispatchError::Other(message) => panic!("{message}") });
-    let run_id = started.into_inner().unwrap();
+    let approved = started.into_inner().unwrap().unwrap();
+    let run_id = approved.id().to_string();
     let original = fs::read(store::run_dir(&home, &run_id).join("plan.json")).unwrap();
     assert_eq!(store::read_plan(&home, &run_id).unwrap()["cards"][0]["provider"], "claude");
     if scenario == "late-off" { fs::write(home.join("settings.json"), "{}").unwrap(); }
-    let result = runner::run_detached(&home, &run_id);
+    let result = runner::run_detached(&approved);
     let events = store::read_events(&home, &run_id);
     assert_eq!(fs::read(store::run_dir(&home, &run_id).join("plan.json")).unwrap(), original);
     if scenario == "late-off" {

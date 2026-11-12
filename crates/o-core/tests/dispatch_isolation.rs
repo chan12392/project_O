@@ -58,7 +58,8 @@ fn normal_dispatch_preparation_runs_a_card_in_an_isolated_non_git_copy() {
         command.current_dir(cwd).args(["--exact", "fake_card", "--nocapture"]).env("O_DISPATCH_ISOLATION_FAKE", "1");
         Ok(command)
     });
-    assert_eq!(runner::run_plan(&home, "run-1", &plan, None, spawner).unwrap(), CardStatus::Done);
+    let input = o_core::run::input::RunInput::new(&home, "run-1", &plan, RunMode::of(Profile::Own), true, false);
+    assert_eq!(runner::run_input(&input, None, spawner).unwrap(), CardStatus::Done);
     assert_eq!(fs::read_to_string(project.join("result.txt")).unwrap(), "original");
     let baseline: serde_json::Value = serde_json::from_slice(&fs::read(store::run_dir(&home, "run-1").join("workspace-baseline.json")).unwrap()).unwrap();
     assert_eq!(baseline["copySha256"].as_str().unwrap().len(), 64);

@@ -87,7 +87,7 @@ export function tauriBackend(invoke: Invoke): Backend {
         threadId: string | null;
         events: LeadEvent[];
       }>,
-    leadDispatch: (planId, clean) => invoke("lead_dispatch", { planId, clean }) as Promise<LeadDispatched>,
+    leadDispatch: (planId, clean, yolo, expectedPlan) => invoke("lead_dispatch", { planId, clean, yolo, expectedPlan }) as Promise<LeadDispatched>,
     leadForward: (proposalId) => invoke("lead_forward", { proposalId }) as Promise<{ events: LeadEvent[] }>,
     leadDecide: (id, allow) => invoke("lead_decide", { id, allow }) as Promise<{ id: string; decision: "allow" | "deny" }>,
     leadStop: (project, thread) => invoke("lead_stop", { project: project ?? null, thread: thread ?? null }) as Promise<{ stopped: boolean }>,
