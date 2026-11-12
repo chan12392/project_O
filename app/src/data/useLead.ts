@@ -29,6 +29,7 @@ export interface SendInput {
 export function useLead(api: Backend, project: string | undefined, thread: string | undefined, enabled: boolean) {
   const [view, dispatchView] = useReducer(leadView, LEAD_VIEW);
   const [sending, setSending] = useState(false);
+  const [yolo, setYolo] = useState<boolean>();
   const seq = useRef(0);
   const busyPoll = useRef(false);
   const noteWrite = useRef<Promise<void> | null>(null);
@@ -39,7 +40,9 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
     const askedThread = thread;
     const mine = ++seq.current;
     try {
-      dispatchView({ type: "answer", project: asked, thread: askedThread, seq: mine, show: await api.leadShow(asked, askedThread) });
+      const [show, mode] = await Promise.all([api.leadShow(asked, askedThread), api.yolo().then((report) => report.enabled, () => undefined)]);
+      if (mine === seq.current) setYolo(mode);
+      dispatchView({ type: "answer", project: asked, thread: askedThread, seq: mine, show });
     } catch (e) {
       dispatchView({ type: "failed", project: asked, thread: askedThread, seq: mine, error: errorText(e) });
     }
@@ -140,9 +143,9 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
   }, [api, refresh]);
 
   const dispatch = useCallback(
-    async (planId: string, clean: boolean): Promise<LeadDispatched> => {
+    async (planId: string, clean: boolean, yolo: boolean, expectedPlan: unknown): Promise<LeadDispatched> => {
       try {
-        return await api.leadDispatch(planId, clean);
+        return await api.leadDispatch(planId, clean, yolo, expectedPlan);
       } finally {
         await refresh();
       }
@@ -172,6 +175,7 @@ export function useLead(api: Backend, project: string | undefined, thread: strin
     selected,
     busy: sending || Boolean(shown?.busy),
     sending,
+    yolo,
     /** Read the thread again now ("다시 시도"). */
     refresh,
     send,

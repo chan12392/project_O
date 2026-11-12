@@ -77,12 +77,13 @@ pub(super) struct Start<'a> {
     pub(super) spawner: &'a Spawner,
     pub(super) yolo: bool,
     pub(super) dependencies: &'a [(String, String)],
+    pub(super) followup: Option<(&'a str, &'a super::super::followup::Target)>,
 }
 
 pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, start: Start) -> io::Result<CardStatus> {
     let attempt_started = now_iso();
     let attempt = read_events(home, run_id).iter().filter(|event| matches!(event, OEvent::CardStart { card_id, .. } if card_id == &card.id)).count() + 1;
-    let Start { mut slot, workdir, workspace, context, clean, spawner, yolo, dependencies } = start;
+    let Start { mut slot, workdir, workspace, context, clean, spawner, yolo, dependencies, followup: approved_followup } = start;
     let emit = |event: OEvent| append_event(home, run_id, &event);
     let dir = run_dir(home, run_id);
     let cards_dir = dir.join("cards");
@@ -110,12 +111,9 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         emit(end(CardStatus::Failed, Some(reason), None))?;
         return Ok(CardStatus::Failed);
     }
-    let followup_path = dir.join("followup.json");
     let fallback_attempt = plan.cards.iter().find(|c| c.id == card.id).is_some_and(|original| original.provider != card.provider);
     let mut followup_lock = None;
-    let followup = if followup_path.exists() && !fallback_attempt {
-        let reference: (String, String) = serde_json::from_slice(&fs::read(&followup_path)?).map_err(io::Error::other)?;
-        let target = crate::run::followup::target(home, &reference.0, &reference.1).map_err(io::Error::other)?;
+    let followup = if let Some((source, target)) = approved_followup.filter(|_| !fallback_attempt) {
         if plan.cards.len() != 1 || target.card.id != card.id || target.card.provider != card.provider || target.card.model != card.model || target.project != plan.project || target.clean != clean.is_some() || yolo {
             return Err(io::Error::other("이어갈 작업 정보가 바뀌어 시작하지 않았습니다"));
         }
@@ -126,7 +124,7 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
             None => {
                 locks.push("fresh");
                 let hash = crate::run::result::digest;
-                format!("{}.{}", hash(&reference.0), hash(&reference.1))
+                format!("{}.{}", hash(source), hash(&card.id))
             }
         };
         fs::create_dir_all(&locks)?;
@@ -635,7 +633,7 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         match attempt {
             Ok(Some((next, reservation))) => {
                 let slot = Slot { home, reservation, started: false, marked: false, exited: Arc::new(AtomicBool::new(false)), best_effort: BEST_EFFORT_EXIT };
-                return run_card(home, run_id, plan, &next, Start { slot, workdir, workspace: Some(cwd), context, clean, spawner, yolo, dependencies });
+                return run_card(home, run_id, plan, &next, Start { slot, workdir, workspace: Some(cwd), context, clean, spawner, yolo, dependencies, followup: None });
             }
             Ok(None) => {}
             Err(why) => { result = Some(format!("{}\n자동 전환 중단: {why}", result.unwrap_or_default())); }

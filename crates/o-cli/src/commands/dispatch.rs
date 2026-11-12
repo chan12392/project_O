@@ -7,9 +7,8 @@ use std::process::Command as Process;
 use chrono::Utc;
 use o_core::usage::fallback::check_plan;
 use o_core::run::mode::{take_flags, RunMode};
-use o_core::run::{runner, yolo};
+use o_core::run::{input::{self, RunInput}, runner, yolo};
 use o_core::run::store::{self, run_dir};
-use o_core::sys::proc;
 use serde_json::{json, Value};
 
 use super::{fail, print_violations, run_id_arg, Command};
@@ -59,15 +58,16 @@ pub const RUN: Command = Command {
     name: "_run",
     usage: "",
     run: |home, args| {
-        run_id_arg(args.first().map(String::as_str)).map_or(1, |id| if store::run_dir(home, id).join("followup.json").exists() { fail("후속 작업은 전용 실행기로 시작해야 합니다") } else { match runner::run_detached(home, id) {
+        run_id_arg(args.first().map(String::as_str)).map_or(1, |id| match input::receive(home, id, false).and_then(|input| runner::run_detached(&input)) {
             Ok(()) => 0,
             Err(message) => {
                 eprintln!("{message}");
                 1
             }
-        }})
+        })
     },
 };
+pub const RUN_APPROVED: Command = Command { name: "_run-approved", ..RUN };
 
 fn read_input(path: Option<&str>) -> Result<Value, String> {
     let bytes = match path {
@@ -116,11 +116,12 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode, as_json
         return 0;
     }
     let run_id = store::new_run_id(now);
+    let approved = RunInput::new(home, &run_id, &plan, mode, true, false);
     let created = runner::prepare_isolated(home, &run_id, &plan, &mode);
     if let Err(error) = created {
         return fail(&error.to_string());
     }
-    let started = std::env::current_exe().and_then(|exe| proc::spawn_detached(Process::new(exe).args(["_run", &run_id])));
+    let started = std::env::current_exe().and_then(|exe| input::spawn(Process::new(exe).args(["_run-approved", &run_id]), &approved));
     if let Err(error) = started {
         return fail(&format!("실행기를 시작하지 못했습니다: {error}"));
     }

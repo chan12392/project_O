@@ -286,16 +286,20 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
   if (path === "/lead/dispatch") {
     const plan = query.get("plan") ?? "";
-    if (!PLAN_ID.test(plan)) {
-    fail(400, "계획 id 형식이 아닙니다");
-    return true;
-  }
+    const mode = query.get("mode");
+    if (!PLAN_ID.test(plan) || (mode !== "normal" && mode !== "yolo")) {
+      fail(400, "계획 id와 화면에서 확인한 실행 모드가 필요합니다");
+      return true;
+    }
+    let expected: Buffer;
+    try { expected = await body(req, 4 * 1024 * 1024); JSON.parse(expected.toString("utf8")); }
+    catch { fail(400, "화면에서 확인한 계획이 필요합니다"); return true; }
     run(o(["about", "--json"]).then((text) => {
       const caps: unknown = JSON.parse(text).capabilities;
-      if (!Array.isArray(caps) || !caps.includes("work-graph-v1") || !caps.includes("lead-worktrees-v1") || !caps.includes("lead-copy-workspaces-v1")) {
+      if (!Array.isArray(caps) || !caps.includes("work-graph-v1") || !caps.includes("lead-worktrees-v1") || !caps.includes("lead-copy-workspaces-v1") || !caps.includes("approved-run-input-v1")) {
         throw new Error("O CLI가 작업 그래프와 워크트리 격리를 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하세요");
       }
-      return oWithInput(["lead", "dispatch", plan, "--profile", query.get("clean") === "1" ? "project-o" : "own"], Buffer.alloc(0), 60_000);
+      return oWithInput(["lead", "dispatch", plan, "--profile", query.get("clean") === "1" ? "project-o" : "own", "--mode", mode, "--expected-plan"], expected, 60_000);
     }));
     return true;
   }

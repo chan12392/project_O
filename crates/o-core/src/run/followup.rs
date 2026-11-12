@@ -5,12 +5,15 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 
 use crate::run::events::{CardInfo, CardStatus, OEvent};
 use crate::run::plan::{Card, Plan};
 use crate::run::mode::{Profile, RunMode};
 use crate::run::store::{self, is_clean, is_run_id, read_events, read_plan, run_dir, run_is_live};
 
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Target {
     pub card: Card,
     pub project: String,
@@ -24,16 +27,80 @@ pub struct Target {
 /// Marks a follow-up accepted while its original card was still running.
 pub(crate) const QUEUED_BEHIND: &str = "followup-queued-behind";
 
-/// Uses only O's saved run, never a caller-provided executable, session or workspace.
-pub fn target(home: &Path, run: &str, card: &str) -> Result<Target, String> {
-    target_with_depth(home, run, card, 0)
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Source {
+    run: String,
+    plan: Plan,
+    clean: bool,
+    isolated: bool,
+    previous: Option<(String, String)>,
 }
 
-fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result<Target, String> {
+impl Source {
+    fn read(home: &Path, run: &str) -> Result<Self, String> {
+        if !is_run_id(run) { return Err("실행 ID가 올바르지 않습니다".into()); }
+        let dir = run_dir(home, run);
+        let previous = match fs::read(dir.join("followup.json")) {
+            Ok(bytes) => Some(serde_json::from_slice(&bytes).map_err(|e| e.to_string())?),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => None,
+            Err(error) => return Err(error.to_string()),
+        };
+        Ok(Self { run: run.into(), plan: serde_json::from_value(read_plan(home, run).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?, clean: is_clean(home, run), isolated: dir.join("isolated-worktrees").exists(), previous })
+    }
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct Input {
+    pub source: String,
+    pub card: String,
+    pub root: String,
+    pub queued_behind: bool,
+    sources: Vec<Source>,
+    completed: Option<Target>,
+}
+
+impl Input {
+    fn capture(home: &Path, run: &str, card: &str, running: bool) -> Result<Self, String> {
+        let mut sources: Vec<Source> = Vec::new();
+        let mut root = run.to_string();
+        loop {
+            if sources.len() >= 33 || sources.iter().any(|source| source.run == root) { return Err("후속 작업 연결이 너무 깊거나 순환합니다".into()); }
+            let source = Source::read(home, &root)?;
+            let previous = source.previous.clone();
+            sources.push(source);
+            match previous {
+                Some((run, id)) if id == card => root = run,
+                Some(_) => return Err("후속 작업 연결이 올바르지 않습니다".into()),
+                None => break,
+            }
+        }
+        let completed = if running { None } else { Some(target_with_depth(home, run, card, 0, Some(&sources))?) };
+        Ok(Self { source: run.into(), card: card.into(), root, queued_behind: running, sources, completed })
+    }
+
+    pub fn target(&self, home: &Path) -> Result<Target, String> {
+        match &self.completed {
+            Some(target) => Ok(target.clone()),
+            None => target_with_depth(home, &self.source, &self.card, 0, Some(&self.sources)),
+        }
+    }
+}
+
+/// Uses only O's saved run, never a caller-provided executable, session or workspace.
+pub fn target(home: &Path, run: &str, card: &str) -> Result<Target, String> {
+    target_with_depth(home, run, card, 0, None)
+}
+
+fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize, sources: Option<&[Source]>) -> Result<Target, String> {
     if depth > 32 { return Err("후속 작업 연결이 너무 깊습니다".into()); }
     if !is_run_id(run) { return Err("실행 ID가 올바르지 않습니다".into()); }
-    let dir = run_dir(home, run);
-    let plan: Plan = serde_json::from_value(read_plan(home, run).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+    let source = match sources {
+        Some(sources) => sources.iter().find(|source| source.run == run).cloned().ok_or("승인한 후속 작업 연결이 아닙니다")?,
+        None => Source::read(home, run)?,
+    };
+    let plan = source.plan;
     let index = plan.cards.iter().position(|item| item.id == card).ok_or("해당 작업을 찾지 못했습니다")?;
     let requested = plan.cards[index].clone();
     let mut card = requested.clone();
@@ -64,10 +131,9 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
     // A follow-up of a fresh start (an interrupted card up the chain) that reported no session of
     // its own starts fresh too.
     let mut fresh = interrupted || (switched.is_some() && session.is_none());
-    let workspace = if dir.join("followup.json").exists() {
-        let reference: (String, String) = serde_json::from_slice(&fs::read(dir.join("followup.json")).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        let previous = target_with_depth(home, &reference.0, &reference.1, depth + 1)?;
-        if previous.card.id != requested.id || previous.card.provider != requested.provider || previous.card.model != requested.model || previous.project != plan.project || previous.clean != is_clean(home, run) {
+    let workspace = if let Some(reference) = source.previous {
+        let previous = target_with_depth(home, &reference.0, &reference.1, depth + 1, sources)?;
+        if previous.card.id != requested.id || previous.card.provider != requested.provider || previous.card.model != requested.model || previous.project != plan.project || previous.clean != source.clean {
             return Err("기존 후속 작업 정보가 바뀌었습니다".into());
         }
         if session.is_none() && !interrupted && switched.is_none() {
@@ -75,7 +141,7 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
             session = previous.session;
         }
         previous.workspace
-    } else if dir.join("isolated-worktrees").exists() {
+    } else if source.isolated {
         let name = home.file_name().ok_or("상태 폴더가 올바르지 않습니다")?.to_string_lossy();
         let base = home.with_file_name(format!("{name}-worktrees"));
         let run_root = base.join(run);
@@ -103,7 +169,7 @@ fn target_with_depth(home: &Path, run: &str, card: &str, depth: usize) -> Result
     // A card that never reported a session cannot be continued, unless it is to start fresh.
     if session.is_none() && !fresh { return Err("이어갈 세션 ID가 없습니다".into()); }
     if session.as_deref().is_some_and(|session| !is_run_id(session)) { return Err("세션 ID가 올바르지 않습니다".into()); }
-    Ok(Target { card, project: plan.project, workspace, session, clean: is_clean(home, run) })
+    Ok(Target { card, project: plan.project, workspace, session, clean: source.clean })
 }
 
 /// The existing folder a path names, links resolved, in the plain form the rest of O uses
@@ -115,13 +181,14 @@ fn resolved(path: &Path, missing: &str) -> Result<PathBuf, String> {
 }
 
 /// Creates a policy-checked run that resumes the original card in its own workspace.
-pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str) -> io::Result<()>) -> Result<String, String> {
+pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &super::input::StartRun<'_>) -> Result<String, String> {
     if !is_run_id(run) { return Err("실행 ID가 올바르지 않습니다".into()); }
-    let source: Plan = serde_json::from_value(read_plan(home, run).map_err(|_| "이 작업의 실행 정보를 찾지 못했습니다")?).map_err(|_| "이 작업의 실행 정보가 올바르지 않습니다")?;
+    let running = run_is_live(home, run) && !read_events(home, run).iter().any(|event| matches!(event, OEvent::CardEnd { card_id, .. } if card_id == card));
+    let followup = Input::capture(home, run, card, running)?;
+    let source = followup.sources[0].plan.clone();
     let mut next_card = source.cards.into_iter().find(|item| item.id == card).ok_or("해당 작업을 찾지 못했습니다")?;
     if crate::providers::get(next_card.provider).terminal_card() { return Err("터미널 카드는 후속 지시를 받지 않습니다".into()); }
-    let running = run_is_live(home, run) && !read_events(home, run).iter().any(|event| matches!(event, OEvent::CardEnd { card_id, .. } if card_id == card));
-    if !running { next_card = target(home, run, card)?.card; }
+    if !running { next_card = followup.target(home)?.card; }
     next_card.task = text.to_string();
     next_card.depends_on.clear();
     let plan = Plan { title: "후속 작업".into(), project: source.project, cards: vec![next_card] };
@@ -129,10 +196,12 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
     let mut ctx = store::policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
     // Queuing takes no execution slot; real active caps are checked again at launch.
     ctx.active_by_provider.clear();
-    let profile = Profile::of_clean(is_clean(home, run));
+    let profile = Profile::of_clean(followup.sources[0].clean);
     let checked = crate::policy::check_plan_for(&raw, &ctx, profile);
     let plan = checked.plan.ok_or_else(|| checked.violations.iter().map(|v| v.message.as_str()).collect::<Vec<_>>().join(" / "))?;
     let id = store::new_run_id(Utc::now());
+    let mut input = super::input::RunInput::new(home, &id, &plan, RunMode { profile, context: true, yolo: false }, false, false);
+    input.followup = Some(followup);
     store::create_run(home, &id, &plan).map_err(|e| e.to_string())?;
     store::mark_mode(home, &id, &RunMode { profile, context: true, yolo: false }).map_err(|e| e.to_string())?;
     // Whether it waits behind a running card is decided now, not when its runner starts:
@@ -153,7 +222,7 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
     }) {
         store::append_event(home, &id, &OEvent::RunBranch { at: crate::sys::js::now_iso(), branch }).map_err(|e| e.to_string())?;
     }
-    if let Err(error) = spawn(&id) {
+    if let Err(error) = spawn(&id, &input) {
         let card = &plan.cards[0];
         let at = crate::sys::js::now_iso();
         let _ = store::append_event(home, &id, &OEvent::CardEnd { at: at.clone(), card_id: card.id.clone(), status: CardStatus::Failed, result: Some(format!("실행기를 시작하지 못했습니다: {error}")), exit_code: None });

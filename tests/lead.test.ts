@@ -2,6 +2,14 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
 
+test("displayed plan keeps the exact approval payload, including fields outside the card summary", () => {
+  const plan: Extract<LeadEvent, { t: "lead.plan" }>["plan"] = { title: "검토한 계획", project: "C:/work/fixture", cards: [{ id: "a", provider: "claude", task: "승인할 작업", model: "sonnet", effort: "medium", resources: [{ kind: "external", key: "fixture", mode: "read" }] }] };
+  const event: LeadEvent = { t: "lead.plan", at: "2026-11-12T00:00:00Z", planId: "plan-1", plan, ok: true, violations: [], notices: [] };
+  const [item] = leadItems([event]);
+  assert.equal(item?.kind, "plan");
+  if (item?.kind === "plan") assert.deepEqual(item.approvedPlan, plan);
+});
+
 import {
   ATTACH,
   EMPTY_DRAFT,

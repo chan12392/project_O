@@ -15,9 +15,11 @@ use chrono::{Duration as Span, Utc};
 use o_core::run::events::{CardStatus, OEvent};
 use o_core::sys::js::{iso, parse_time};
 use o_core::run::plan::{Card, Plan, ProviderId};
+use o_core::run::input::RunInput;
+use o_core::run::mode::{RunMode, Profile};
 use o_core::policy::LIMITS;
 use o_core::providers::LaunchSpec;
-use o_core::run::runner::{run_detached, run_plan, run_plan_in, Spawner, Workdir};
+use o_core::run::runner::{run_detached, run_input, run_plan, run_plan_in, Spawner, Workdir};
 use o_core::run::store::{
     active_markers, clear_active, cooldown_times, create_run, mark_active, read_events, record_start, request_stop, set_cooldown, started_on,
     ActiveMarker,
@@ -28,6 +30,16 @@ const FAKE: &str = "O_FAKE_CLI_LINES";
 const FAKE_SLEEP: &str = "O_FAKE_CLI_SLEEP_MS";
 /// `--dump-env <file>`: the fake writes its environment there as JSON and succeeds.
 const DUMP_ENV: &str = "--dump-env";
+
+fn followup(home: &std::path::Path, source: &str, card: &str, text: &str) -> (String, RunInput) {
+    let captured = std::sync::Mutex::new(None);
+    let id = o_core::run::followup::start(home, source, card, text, &|_, input| { *captured.lock().unwrap() = Some(input.clone()); Ok(()) }).unwrap();
+    (id, captured.into_inner().unwrap().unwrap())
+}
+
+fn run_isolated(home: &std::path::Path, id: &str, plan: &Plan, clean: Option<&std::path::Path>, spawner: Arc<Spawner>) -> std::io::Result<CardStatus> {
+    run_input(&RunInput::new(home, id, plan, RunMode::of(Profile::of_clean(clean.is_some())), true, false), clean, spawner)
+}
 
 fn main() {
     #[cfg(windows)]
@@ -225,7 +237,7 @@ fn terminal_cards() {
         else if expected == CardStatus::Failed && !startfail { assert!(events.iter().any(|event| matches!(event, OEvent::CardEnd { result: Some(text), .. } if text.contains("완료 보고 없이 끝났습니다")))); }
         if wrong { assert_eq!(events.iter().filter(|event| matches!(event, OEvent::CardTool { name, .. } if name == "확인되지 않은 완료 문서")).count(), 1); }
         if headeronly { assert!(!events.iter().any(|event| matches!(event, OEvent::CardTool { name, .. } if name == "확인되지 않은 완료 문서"))); }
-        assert_eq!(o_core::run::followup::start(&home, "terminal-test", "a", "again", &|_| Ok(())).unwrap_err(), "터미널 카드는 후속 지시를 받지 않습니다");
+        assert_eq!(o_core::run::followup::start(&home, "terminal-test", "a", "again", &|_, _| Ok(())).unwrap_err(), "터미널 카드는 후속 지시를 받지 않습니다");
     }
 }
 
@@ -237,17 +249,15 @@ fn followup_queue_and_stop() {
     let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
     initial.project = project.to_string_lossy().into_owned();
     create_run(&home, "original", &initial).unwrap();
-    let first = o_core::run::followup::start(&home, "original", "a", "수정 1", &|_| Ok(())).unwrap();
-    let second = o_core::run::followup::start(&home, "original", "a", "수정 2", &|_| Ok(())).unwrap();
-    let worker_home = home.clone();
-    let worker_id = first.clone();
-    let worker = std::thread::spawn(move || run_detached(&worker_home, &worker_id));
+    let (first, first_input) = followup(&home, "original", "a", "수정 1");
+    let (second, second_input) = followup(&home, "original", "a", "수정 2");
+    let worker = std::thread::spawn(move || run_detached(&first_input));
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !read_events(&home, &first).iter().any(|e| matches!(e, OEvent::CardQueued { .. })) {
         assert!(std::time::Instant::now() < deadline, "후속 대기 상태가 나타나지 않았습니다");
         std::thread::sleep(Duration::from_millis(50));
     }
-    assert!(run_detached(&home, &second).is_err());
+    assert!(run_detached(&second_input).is_err());
     assert!(read_events(&home, &second).iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Failed, result: Some(text), .. } if text.contains("이미"))));
     request_stop(&home, &first).unwrap();
     assert!(worker.join().unwrap().is_err());
@@ -263,10 +273,8 @@ fn followup_cancelled_with_source() {
     let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
     initial.project = project.to_string_lossy().into_owned();
     create_run(&home, "original", &initial).unwrap();
-    let queued = o_core::run::followup::start(&home, "original", "a", "수정", &|_| Ok(())).unwrap();
-    let worker_home = home.clone();
-    let worker_id = queued.clone();
-    let worker = std::thread::spawn(move || run_detached(&worker_home, &worker_id));
+    let (queued, input) = followup(&home, "original", "a", "수정");
+    let worker = std::thread::spawn(move || run_detached(&input));
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !read_events(&home, &queued).iter().any(|e| matches!(e, OEvent::CardQueued { .. })) {
         assert!(std::time::Instant::now() < deadline, "후속 대기 상태가 나타나지 않았습니다");
@@ -290,12 +298,12 @@ fn followup_cancelled_when_stop_lands_before_runner() {
     let mut initial = plan(vec![card("a", ProviderId::Claude, "first")]);
     initial.project = project.to_string_lossy().into_owned();
     create_run(&home, "original", &initial).unwrap();
-    let queued = o_core::run::followup::start(&home, "original", "a", "수정", &|_| Ok(())).unwrap();
+    let (queued, input) = followup(&home, "original", "a", "수정");
     assert!(o_core::run::runner::stop_run(&home, "original").unwrap());
     let at = o_core::sys::js::now_iso();
     o_core::run::store::append_event(&home, "original", &OEvent::CardEnd { at: at.clone(), card_id: "a".into(), status: CardStatus::Stopped, result: None, exit_code: None }).unwrap();
     o_core::run::store::append_event(&home, "original", &OEvent::RunEnd { at, run_id: "original".into(), status: CardStatus::Stopped }).unwrap();
-    assert!(run_detached(&home, &queued).is_err());
+    assert!(run_detached(&input).is_err());
     let events = read_events(&home, &queued);
     assert!(events.iter().any(|e| matches!(e, OEvent::CardEnd { status: CardStatus::Stopped, result: Some(text), .. } if text.contains("취소"))), "{events:?}");
     assert!(events.iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Stopped, .. })));
@@ -316,13 +324,20 @@ fn followup_resumes_workspace() {
         std::fs::write(PathBuf::from(cwd).join("file.txt"), "changed").unwrap();
         fake_cli(|_| vec![r#"{"type":"system","subtype":"init","session_id":"s1"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#])(spec, cwd)
     });
-    assert_eq!(run_plan(&home, "original", &initial, None, original).unwrap(), CardStatus::Done);
+    assert_eq!(run_isolated(&home, "original", &initial, None, original).unwrap(), CardStatus::Done);
     o_core::run::store::append_event(&home, "original", &OEvent::RunBranch { at: iso(Utc::now()), branch: "younchan-example".into() }).unwrap();
     mark_active(&home, &ActiveMarker { run_id: "original".into(), card_id: "a".into(), provider: ProviderId::Claude, pid: std::process::id() }).unwrap();
     assert!(o_core::run::followup::target(&home, "original", "a").is_err());
     clear_active(&home, "original", "a");
-    let id = o_core::run::followup::start(&home, "original", "a", "다시 확인해 주세요", &|_| Ok(())).unwrap();
-    let follow: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
+    let (id, approved) = followup(&home, "original", "a", "다시 확인해 주세요");
+    // Neither the new run nor its ancestry can redirect the captured resume.
+    let dir = o_core::run::store::run_dir(&home, &id);
+    std::fs::write(dir.join("plan.json"), "{}").unwrap();
+    std::fs::write(dir.join("followup.json"), r#"{"runId":"unapproved","cardId":"a"}"#).unwrap();
+    std::fs::write(dir.join("yolo"), "").unwrap();
+    let source_plan = o_core::run::store::run_dir(&home, "original").join("plan.json");
+    let history = std::fs::read(&source_plan).unwrap();
+    std::fs::write(&source_plan, "{}").unwrap();
     let resume: Arc<Spawner> = Arc::new(|spec, cwd| {
         // The resumed cwd is the plain path the first run used, never the extended `\\?\` form.
         #[cfg(windows)]
@@ -332,13 +347,14 @@ fn followup_resumes_workspace() {
         assert!(spec.stdin.as_ref().unwrap().contains("다시 확인해 주세요"));
         quiet()(spec, cwd)
     });
-    let result = run_plan(&home, &id, &follow, None, resume).unwrap();
+    let result = run_input(&approved, None, resume).unwrap();
+    std::fs::write(&source_plan, history).unwrap();
     assert_eq!(result, CardStatus::Done, "{:?}", read_events(&home, &id));
     let events = read_events(&home, &id);
     let branches: Vec<_> = events.iter().filter_map(|event| match event { OEvent::RunBranch { branch, .. } => Some(branch.as_str()), _ => None }).collect();
     assert_eq!(branches, ["younchan-example"]);
     assert_eq!(std::fs::read_to_string(project.join("file.txt")).unwrap(), "before");
-    assert!(o_core::run::followup::start(&home, "original", "a", "다시", &|_| Err(std::io::Error::other("no runner"))).is_err());
+    assert!(o_core::run::followup::start(&home, "original", "a", "다시", &|_, _| Err(std::io::Error::other("no runner"))).is_err());
     let failed = std::fs::read_dir(home.join("runs")).unwrap().flatten().map(|entry| entry.file_name().to_string_lossy().into_owned()).find(|run| run != "original" && run != &id).unwrap();
     assert!(!o_core::run::store::run_is_live(&home, &failed));
     assert!(read_events(&home, &failed).iter().any(|event| matches!(event, OEvent::RunEnd { status: CardStatus::Failed, .. })));
@@ -347,7 +363,7 @@ fn followup_resumes_workspace() {
     #[cfg(windows)]
     assert!(!retry.workspace.to_string_lossy().starts_with(r"\\?\"), "{}", retry.workspace.display());
     assert_eq!(std::fs::read_to_string(retry.workspace.join("file.txt")).unwrap(), "changed");
-    let interrupted = o_core::run::followup::start(&home, "original", "a", "중단 테스트", &|_| Ok(())).unwrap();
+    let interrupted = o_core::run::followup::start(&home, "original", "a", "중단 테스트", &|_, _| Ok(())).unwrap();
     std::fs::write(o_core::run::store::run_dir(&home, &interrupted).join("runner.json"), r#"{"pid":2147483647}"#).unwrap();
     let runs = o_core::run::store::read_runs(&home, &o_core::run::index::RunQuery { limit: 50, project: None }).unwrap();
     let record = runs.iter().find(|run| run.run_id == interrupted).unwrap();
@@ -382,14 +398,13 @@ fn followup_after_dead_runner_starts_fresh() {
     o_core::run::store::read_runs(&home, &o_core::run::index::RunQuery { limit: 50, project: None }).unwrap();
     assert!(read_events(&home, "cut").iter().any(|e| matches!(e, OEvent::RunEnd { status: CardStatus::Failed, .. })));
 
-    let id = o_core::run::followup::start(&home, "cut", "a", "이어서 해 주세요", &|_| Ok(())).unwrap();
-    let follow: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
+    let (id, approved) = followup(&home, "cut", "a", "이어서 해 주세요");
     let fresh = fake_cli(|spec| {
         assert!(!spec.args.iter().any(|arg| arg == "--resume" || arg == "s1"), "{:?}", spec.args);
         assert!(spec.stdin.as_ref().unwrap().contains("이어서 해 주세요"));
         vec![r#"{"type":"system","subtype":"init","session_id":"s2"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
     });
-    assert_eq!(run_plan(&home, &id, &follow, None, fresh).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &id));
+    assert_eq!(run_input(&approved, None, fresh).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &id));
     let sessions: Vec<String> = read_events(&home, &id).into_iter().filter_map(|e| match e { OEvent::CardSession { session_id, .. } => Some(session_id), _ => None }).collect();
     assert_eq!(sessions, ["s2"]);
     // The next follow-up resumes the new session.
@@ -420,9 +435,7 @@ fn fresh_followup_locks_do_not_collide() {
                 serde_json::json!({"t":"run.end","at":"2026-11-09T12:37:19.000Z","status":status}),
             ];
             std::fs::write(o_core::run::store::run_dir(&home, run_id).join("events.jsonl"), lines.iter().map(|line| format!("{line}\n")).collect::<String>()).unwrap();
-            let id = o_core::run::followup::start(&home, run_id, card_id, "continue", &|_| Ok(())).unwrap();
-            let next: Plan = serde_json::from_value(o_core::run::store::read_plan(&home, &id).unwrap()).unwrap();
-            (id, next)
+            followup(&home, run_id, card_id, "continue")
         };
         let (outer_id, outer) = seed(outer_run, outer_card, outer_fresh);
         let (inner_id, inner) = seed(inner_run, inner_card, true);
@@ -435,10 +448,10 @@ fn fresh_followup_locks_do_not_collide() {
                 assert!(!spec.args.iter().any(|a| a == "--resume"));
                 vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
             });
-            assert_eq!(run_plan(&nested_home, &inner_id, &inner, None, fresh_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&nested_home, &inner_id));
+            assert_eq!(run_input(&inner, None, fresh_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&nested_home, &inner_id));
             vec![r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#]
         });
-        assert_eq!(run_plan(&home, &outer_id, &outer, None, outer_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &outer_id));
+        assert_eq!(run_input(&outer, None, outer_cli).unwrap(), CardStatus::Done, "{:?}", read_events(&home, &outer_id));
     }
 }
 
@@ -464,7 +477,7 @@ fn isolated_copies() {
         observed.lock().unwrap().insert(id, cwd.to_string_lossy().into_owned());
         inner(spec, &cwd.to_string_lossy())
     });
-    assert_eq!(run_plan(&home, "copies", &p, None, spawner).unwrap(), CardStatus::Done);
+    assert_eq!(run_isolated(&home, "copies", &p, None, spawner).unwrap(), CardStatus::Done);
     let paths = paths.lock().unwrap();
     assert_ne!(paths["a"], paths["b"]);
     assert_eq!(std::fs::read_to_string(project.join("src/game.py")).unwrap(), "original\n");
@@ -476,7 +489,7 @@ fn isolated_copies() {
     create_run(&home, "nested", &p).unwrap();
     std::fs::write(o_core::run::store::run_dir(&home, "nested").join("isolated-worktrees"), "").unwrap();
     let never: Arc<Spawner> = Arc::new(|_, _| panic!("nested repository must not start"));
-    assert_eq!(run_plan(&home, "nested", &p, None, never).unwrap(), CardStatus::Failed);
+    assert_eq!(run_isolated(&home, "nested", &p, None, never).unwrap(), CardStatus::Failed);
     assert!(read_events(&home, "nested").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("중첩 Git"))));
 }
 
@@ -535,7 +548,7 @@ fn isolated_worktrees() {
         observed.lock().unwrap().insert(id, cwd.into());
         inner(spec, cwd)
     });
-    assert_eq!(run_plan(&home, "isolated", &p, None, spawner).unwrap(), CardStatus::Done);
+    assert_eq!(run_isolated(&home, "isolated", &p, None, spawner).unwrap(), CardStatus::Done);
     let paths = paths.lock().unwrap();
     assert_ne!(paths["a"], paths["b"]);
     assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "base\n");
@@ -548,7 +561,7 @@ fn isolated_worktrees() {
     let launched = Arc::new(AtomicBool::new(false));
     let seen = Arc::clone(&launched);
     let never: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("must not start")) });
-    assert_eq!(run_plan(&home, "dirty", &p, None, never).unwrap(), CardStatus::Failed);
+    assert_eq!(run_isolated(&home, "dirty", &p, None, never).unwrap(), CardStatus::Failed);
     assert!(!launched.load(Ordering::SeqCst));
     assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "user change\n");
     assert!(read_events(&home, "dirty").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("커밋하지 않은"))));
@@ -614,7 +627,7 @@ fn file_folder_handoffs() {
             }
             inner(spec, cwd)
         });
-        assert_eq!(run_plan(&home, "swap", &p, None, spawner).unwrap(), CardStatus::Done, "{scenario}: {:?}", read_events(&home, "swap"));
+        assert_eq!(run_isolated(&home, "swap", &p, None, spawner).unwrap(), CardStatus::Done, "{scenario}: {:?}", read_events(&home, "swap"));
         assert!(started.load(Ordering::SeqCst), "{scenario}");
     }
 }
@@ -679,7 +692,7 @@ fn unsafe_handoffs() {
             inner(spec, &cwd.to_string_lossy())
         });
         let unchanged = scenario == "non-git-unchanged";
-        assert_eq!(run_plan(&home, "unsafe", &p, None, spawner).unwrap(), if unchanged { CardStatus::Done } else { CardStatus::Failed }, "{scenario}");
+        assert_eq!(run_isolated(&home, "unsafe", &p, None, spawner).unwrap(), if unchanged { CardStatus::Done } else { CardStatus::Failed }, "{scenario}");
         assert_eq!(launched.load(Ordering::SeqCst), unchanged, "{scenario}");
         if !unchanged { assert!(read_events(&home, "unsafe").iter().any(|event| matches!(event, OEvent::CardEnd { card_id, status: CardStatus::Failed, result: Some(reason), .. } if card_id == "c" && reason.contains("인계 실패"))), "{scenario}"); }
         if scenario == "base-change" { assert_eq!(std::fs::read_to_string(project.join("user.txt")).unwrap(), "human"); }
@@ -752,7 +765,7 @@ fn non_git_handoffs() {
             inner(spec, &cwd.to_string_lossy())
         });
         let succeeds = matches!(scenario, "changes" | "independent");
-        assert_eq!(run_plan(&home, "copy-handoff", &p, None, spawner).unwrap(), if succeeds { CardStatus::Done } else { CardStatus::Failed }, "{scenario}");
+        assert_eq!(run_isolated(&home, "copy-handoff", &p, None, spawner).unwrap(), if succeeds { CardStatus::Done } else { CardStatus::Failed }, "{scenario}");
         assert_eq!(launched.load(Ordering::SeqCst), succeeds, "{scenario}");
         if scenario == "changes" {
             assert_eq!(std::fs::read(run.join("handoff-2/edit")).unwrap(), b"base");
@@ -794,7 +807,7 @@ fn isolated_worktrees_refuse_submodules() {
     let launched = Arc::new(AtomicBool::new(false));
     let seen = Arc::clone(&launched);
     let never: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("must not start")) });
-    assert_eq!(run_plan(&home, "submodule", &p, None, never).unwrap(), CardStatus::Failed);
+    assert_eq!(run_isolated(&home, "submodule", &p, None, never).unwrap(), CardStatus::Failed);
     assert!(!launched.load(Ordering::SeqCst));
     assert!(read_events(&home, "submodule").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("서브모듈") && reason.contains("vendor/lib"))));
     assert!(!home.with_file_name("state-worktrees").join("submodule").join("1").exists());
@@ -811,7 +824,7 @@ fn isolated_worktrees_refuse_submodules() {
     let started = Arc::new(AtomicBool::new(false));
     let seen = Arc::clone(&started);
     let spawner: Arc<Spawner> = Arc::new(move |_, _| { seen.store(true, Ordering::SeqCst); Err(std::io::Error::other("fixture stops here")) });
-    let _ = run_plan(&home, "beside-submodule", &app, None, spawner);
+    let _ = run_isolated(&home, "beside-submodule", &app, None, spawner);
     assert!(started.load(Ordering::SeqCst));
 }
 
@@ -969,7 +982,7 @@ fn rejected_plan_records_reason() {
     let mut p = plan(vec![card("a", ProviderId::Claude, "test")]);
     p.project = home.join("missing-project").to_string_lossy().into_owned();
     create_run(&home, "rejected", &p).unwrap();
-    assert!(run_detached(&home, "rejected").is_err());
+    assert!(run_detached(&RunInput::new(&home, "rejected", &p, RunMode::of(Profile::Own), false, false)).is_err());
     let events = read_events(&home, "rejected");
     assert!(matches!(events.as_slice(), [OEvent::RunStart { cards, .. }, OEvent::RunBlocked { violations, .. }, OEvent::RunEnd { status: CardStatus::Failed, .. }] if cards.is_empty() && !violations.is_empty()));
 }

@@ -9,6 +9,28 @@ mod commands;
 mod installer_paths;
 
 fn main() {
+    let args: Vec<_> = std::env::args().skip(1).collect();
+    #[cfg(windows)]
+    if args.first().is_some_and(|arg| arg == "--o-handle-owner") {
+        std::process::exit(i32::from(o_core::sys::win_launch::run_handle_owner(&args[1..].iter().map(Into::into).collect::<Vec<_>>()).is_err()));
+    }
+    #[cfg(target_os = "macos")]
+    if args.first().is_some_and(|arg| arg == "--o-mac-worker") {
+        std::process::exit(i32::from(o_core::sys::macos_worker::run_helper(&args[1..].iter().map(Into::into).collect::<Vec<_>>()).is_err()));
+    }
+    #[cfg(windows)]
+    if args.first().is_some_and(|arg| arg == "_job-watch") {
+        if o_core::agents::agy::inside_agent() { std::process::exit(2); }
+        std::process::exit(i32::from(o_core::run::job_watch::run(&args[1..]).is_err()));
+    }
+    if args.first().is_some_and(|arg| matches!(arg.as_str(), "_run-approved" | "_followup-approved")) {
+        if o_core::agents::agy::inside_agent() { std::process::exit(2); }
+        o_core::sys::resolve::own_folder_first_on_path();
+        let result = args.get(1).ok_or_else(|| "실행 id가 없습니다".to_string())
+            .and_then(|id| o_core::run::input::receive(&o_core::run::store::default_home(), id, args[0] == "_followup-approved"))
+            .and_then(|input| o_core::run::runner::run_detached(&input));
+        std::process::exit(i32::from(result.is_err()));
+    }
     // Children find the o.exe installed beside project_O.exe (the same init as `o`).
     o_core::sys::resolve::own_folder_first_on_path();
     tauri::Builder::default()

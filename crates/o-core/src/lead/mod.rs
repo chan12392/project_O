@@ -84,7 +84,7 @@ pub use approvals::decide;
 pub use files::Attachment;
 pub use tabs::{attachment_thread, close, is_open, open_threads, run_thread, select_thread, set_writer, MAX_OPEN};
 pub(crate) use terminal_plan::pickup;
-type StartRun<'a> = dyn Fn(&str) -> io::Result<()> + 'a;
+use crate::run::input::{RunInput, StartRun};
 
 fn leads_dir(home: &Path) -> PathBuf {
     home.join("leads")
@@ -535,7 +535,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     send_within_followups(home, req, spawner, limit, None, true)
 }
 
-pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, start: &StartRun<'_>) -> Result<Vec<LeadEvent>, String> {
     send_within_followups(home, req, spawner, TURN_LIMIT, Some(start), true)
 }
 

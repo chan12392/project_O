@@ -13,6 +13,10 @@ path = "src/main.rs"
 name = "fallback_dispatch"
 harness = false
 
+[[test]]
+name = "execution_integrity"
+harness = false
+
 [dependencies]
 o-core = { path = "../o-core" }
 o-guard = { path = "../o-guard" }

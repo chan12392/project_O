@@ -571,9 +571,9 @@ pub fn enabled(home: &Path, run_id: &str) -> bool {
 /// Card id → prompt section, for the cards some earlier work matched, and a
 /// `run.context` event when any did. Context is a help, never a reason to
 /// fail a run: any error means no section.
-pub fn prepare(home: &Path, run_id: &str, plan: &Plan) -> HashMap<String, String> {
+pub fn prepare(home: &Path, run_id: &str, plan: &Plan, enabled: bool) -> HashMap<String, String> {
     let mut out = HashMap::new();
-    if !enabled(home, run_id) {
+    if !enabled {
         return out;
     }
     let Ok(conn) = refresh(home) else { return out };

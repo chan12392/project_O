@@ -44,12 +44,12 @@ pub(super) fn reply(home: &Path, run: &str, card: &str, text: &str, message_id: 
     })
 }
 
-pub(super) fn start_followup(id: &str) -> std::io::Result<()> {
+pub(super) fn start_followup(id: &str, input: &o_core::run::input::RunInput) -> std::io::Result<()> {
     let exe = super::o_binary().ok_or_else(|| std::io::Error::other("O CLI를 찾지 못했습니다"))?;
     let output = o_core::sys::proc::hide_window(std::process::Command::new(&exe).args(["about", "--json"])).output()?;
     let capable = output.status.success() && serde_json::from_slice::<serde_json::Value>(&output.stdout).ok().and_then(|v| v.get("capabilities").and_then(|v| v.as_array()).cloned()).is_some_and(|caps| caps.iter().any(|v| v.as_str() == Some("session-followup-v1")));
     if !capable { return Err(std::io::Error::other("이 O CLI는 세션 이어쓰기를 지원하지 않습니다. 앱과 같은 버전으로 설치하세요")); }
-    o_core::sys::proc::spawn_detached(std::process::Command::new(&exe).args(["_followup", id])).map(|_| ())
+    o_core::run::input::spawn(std::process::Command::new(std::env::current_exe()?).args(["_followup-approved", id]), input)
 }
 
 /// `o _lead-forward <threadId> <n>`: a request the overall lead passed on (ADR-0032), and the review of its plan (ADR-0036).

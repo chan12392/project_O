@@ -46,7 +46,7 @@ pub const APPROVE: super::Command = super::Command {
 };
 use o_core::run::yolo;
 use o_core::sys::proc;
-use serde_json::json;
+use serde_json::{json, Value};
 
 use super::{fail, print_violations, Command};
 
@@ -226,8 +226,8 @@ fn forward_start(thread_id: &str, index: usize) -> std::io::Result<()> {
     proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_lead-forward", thread_id, &index.to_string()])).map(|_| ())
 }
 
-fn run_start(run_id: &str) -> std::io::Result<()> {
-    proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ())
+fn run_start(run_id: &str, input: &o_core::run::input::RunInput) -> std::io::Result<()> {
+    o_core::run::input::spawn(Process::new(std::env::current_exe()?).args(["_run-approved", run_id]), input)
 }
 
 use super::inside_agent as agent_env;
@@ -313,8 +313,8 @@ fn send(home: &Path, args: &[String]) -> i32 {
     req.thread = Some(&thread);
     req.fresh = false;
     let spawner: Arc<Spawner> = Arc::new(official_command);
-    let resume = |run_id: &str| -> std::io::Result<()> {
-        proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_followup", run_id])).map(|_| ())
+    let resume = |run_id: &str, input: &o_core::run::input::RunInput| -> std::io::Result<()> {
+        o_core::run::input::spawn(Process::new(std::env::current_exe()?).args(["_followup-approved", run_id]), input)
     };
     let result = if a.manual_dispatch { lead::send_with_followups(home, &req, spawner.as_ref(), &resume) } else { lead::send_with_autorun_and_followups(home, &req, spawner.as_ref(), &run_start, &resume) };
     match result {
@@ -440,13 +440,22 @@ fn attach(home: &Path, args: &[String]) -> i32 {
 }
 
 fn dispatch(home: &Path, args: &[String]) -> i32 {
-    let a = match parse(args) {
+    let expected = if args.iter().any(|arg| arg == "--expected-plan") {
+        match stdin_bytes().and_then(|bytes| serde_json::from_slice::<Value>(&bytes).map_err(|error| error.to_string())) {
+            Ok(plan) => Some(plan), Err(error) => return fail(&error),
+        }
+    } else { None };
+    let args: Vec<_> = args.iter().filter(|arg| *arg != "--expected-plan").cloned().collect();
+    let a = match parse(&args) {
         Ok(a) => a,
         Err(e) => return fail(&e),
     };
     let [plan_id] = a.words.as_slice() else { return fail("o lead dispatch <planId> [--profile project-o|own]") };
     let mode = RunMode { yolo: yolo::resolve(home, a.yolo), ..a.mode };
-    match lead::dispatch(home, plan_id, mode, &run_start) {
+    if expected.is_some() && (a.yolo.is_none() || mode.yolo != yolo::read_enabled(home)) {
+        return fail("화면에서 확인한 실행 모드와 현재 설정이 다릅니다. 다시 확인해 주세요");
+    }
+    match lead::dispatch(home, plan_id, mode, expected.as_ref(), &run_start) {
         Ok(done) => {
             println!("{}", json!(done));
             0

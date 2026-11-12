@@ -81,7 +81,7 @@ pub fn create_run(home: &Path, run_id: &str, plan: &Plan) -> io::Result<()> {
     fs::write(dir.join("plan.json"), to_pretty(plan)?)
 }
 
-/// plan.json as written, unchecked: `o _run` checks it again before running anything.
+/// Historical plan.json as written, unchecked; execution receives the approved plan through `RunInput`.
 pub fn read_plan(home: &Path, run_id: &str) -> io::Result<Value> {
     let text = fs::read_to_string(run_dir(home, run_id).join("plan.json"))?;
     serde_json::from_str(&text).map_err(io::Error::other)
