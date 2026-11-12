@@ -562,7 +562,7 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
         }
         let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
         let mode = RunMode { profile: Profile::of_clean(is_clean(home, run_id)), context: true, yolo: is_yolo(home, run_id) };
-        let checked = check_plan_in(&plan, &ctx, mode);
+        let checked = crate::usage::fallback::check_plan(home, &plan, &ctx, mode);
         let Some(plan) = checked.plan else {
             let reasons: Vec<&str> = checked.violations.iter().map(|v| v.message.as_str()).collect();
             let message = format!("정책 위반: {}", reasons.join(" / "));

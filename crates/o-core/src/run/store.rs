@@ -391,18 +391,7 @@ pub fn record_blocked(home: &Path, at: DateTime<Utc>, title: Option<&Value>, vio
 }
 
 pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyContext> {
-    let mut cooldowns = cooldown_times(home)?;
-    let fallback = crate::usage::fallback::read(home);
-    if fallback.enabled {
-        if let Some(target) = fallback.target {
-            for provider in ProviderId::ALL {
-                if provider != target.provider && crate::usage::fallback::confirmed(home, provider)? {
-                    // The runner must validate and reserve the explicit destination before spawning.
-                    cooldowns.remove(&provider);
-                }
-            }
-        }
-    }
+    let cooldowns = cooldown_times(home)?;
     Ok(PolicyContext {
         now,
         active_by_provider: held_by_provider(home)?,

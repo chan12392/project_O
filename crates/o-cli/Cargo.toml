@@ -9,6 +9,10 @@ publish.workspace = true
 name = "o"
 path = "src/main.rs"
 
+[[test]]
+name = "fallback_dispatch"
+harness = false
+
 [dependencies]
 o-core = { path = "../o-core" }
 o-guard = { path = "../o-guard" }

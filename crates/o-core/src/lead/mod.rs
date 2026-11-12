@@ -58,7 +58,7 @@ use serde_json::{json, Value};
 
 use crate::agents::clean;
 use crate::context::normalize_project;
-use crate::policy::{check_plan_in, check_project, is_model_id, Violation, LIMITS};
+use crate::policy::{check_project, is_model_id, Violation, LIMITS};
 use crate::providers::{self, LeadTurn, StreamReader};
 use crate::run::events::StreamSignal;
 use crate::run::mode::{Profile, RunMode};

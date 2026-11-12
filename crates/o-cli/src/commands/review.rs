@@ -4,7 +4,7 @@ use std::path::Path;
 use std::process::Command as Process;
 
 use chrono::Utc;
-use o_core::policy::check_plan_in;
+use o_core::usage::fallback::check_plan;
 use o_core::review;
 use o_core::run::runner;
 use o_core::run::store::{self, run_dir};
@@ -57,7 +57,7 @@ fn review(home: &Path, args: &[String]) -> i32 {
         Ok(ctx) => ctx,
         Err(error) => return fail(&error.to_string()),
     };
-    let checked = check_plan_in(&input, &ctx, args.mode);
+    let checked = check_plan(home, &input, &ctx, args.mode);
     let summary = || {
         let cut = if task.cut_files.is_empty() { String::new() } else { format!(", 잘린 파일 {}개", task.cut_files.len()) };
         let redacted = if task.redacted_lines > 0 { format!(", 정책 규칙으로 뺀 줄 {}개", task.redacted_lines) } else { String::new() };
