@@ -154,6 +154,13 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
             return Ok(CardStatus::Failed);
         }
     }
+    if card.provider == ProviderId::Codex && !yolo {
+        if let Some(found) = crate::providers::codex::project_config(Path::new(cwd)) {
+            drop(slot);
+            emit(end(CardStatus::Failed, Some(format!("{}의 프로젝트 Codex 설정이 있어 카드를 시작하지 않았습니다. 설정을 검토한 뒤 제거하거나 다른 에이전트를 고르세요", found.display())), None))?;
+            return Ok(CardStatus::Failed);
+        }
+    }
     // ADR-0040: a sandboxed card whose project_O profile still needs its one-time setup (Codex's
     // Windows sandbox) would end "done" having changed nothing, so it ends failed with the reason.
     if let Some(why) = clean.filter(|_| !yolo).and_then(|root| clean::profile_not_ready(root, card.provider)) {
@@ -201,18 +208,8 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
         spec.args.extend(["--prompt-file".into(), path.into()]);
         Some(prompt)
     } else { None };
-    // ADR-0035 개정 2: a Claude card that gets an authentication variable leaves the project's
-    // settings (and so its hooks) unread. Judged by the names of the environment set below.
     if card.provider == ProviderId::Claude {
-        let mut names: Vec<std::ffi::OsString> = match clean {
-            // A profile that cannot be made fails the launch below, with its reason.
-            Some(root) => clean::environment(root, card.provider).unwrap_or_default().into_keys().map(Into::into).collect(),
-            None => std::env::vars_os().map(|(name, _)| name).collect(),
-        };
-        names.extend(spec.env.keys().map(Into::into));
-        if crate::providers::claude::keep_project_settings_from_auth(&mut spec, &names, yolo) {
-            emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "프로젝트 설정".into(), summary: crate::providers::claude::PROJECT_SETTINGS_NOTICE.into() })?;
-        }
+        emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "프로젝트 설정".into(), summary: crate::providers::claude::PROJECT_SETTINGS_NOTICE.into() })?;
     }
     // ADR-0043: a card whose sandbox may not write the run folder talks through its mailbox. The
     // runner answers as this card, whatever the request says, for as long as the card runs.

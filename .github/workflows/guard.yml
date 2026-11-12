@@ -22,6 +22,7 @@ permissions:
 
 jobs:
   policy:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 30
     env:
@@ -30,13 +31,31 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha || github.sha }}
       - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
           toolchain: stable
           components: clippy
       - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - name: 기준 브랜치의 검사기 보존
+        run: |
+          cargo build --locked -p o-cli --target-dir "$RUNNER_TEMP/project-o-policy"
+          mkdir -p "$RUNNER_TEMP/project-o-license/scripts" "$RUNNER_TEMP/project-o-license/app"
+          cp scripts/check-licenses.mjs "$RUNNER_TEMP/project-o-license/scripts/"
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
       - name: 프로바이더 정책 검사 (o scan)
-        run: cargo run --quiet -p o-cli -- scan --all
+        run: '"$RUNNER_TEMP/project-o-policy/debug/o" scan --all'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: 라이선스 검사
+        run: |
+          cp app/package-lock.json "$RUNNER_TEMP/project-o-license/app/"
+          cp THIRD_PARTY_LICENSES.txt "$RUNNER_TEMP/project-o-license/"
+          node "$RUNNER_TEMP/project-o-license/scripts/check-licenses.mjs"
       - name: Rust 테스트·lint
         run: |
           # The desktop shell (crate project-o) needs WebView system libraries that the Linux
@@ -44,9 +63,6 @@ jobs:
           # Every failing test binary is reported, not only the first.
           cargo test --workspace --exclude project-o --no-fail-fast
           cargo clippy --workspace --all-targets --exclude project-o -- -D warnings
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
-        with:
-          node-version: 24
       - name: 화면 로직 테스트·타입 검사
         run: |
           npm ci --ignore-scripts
@@ -54,12 +70,11 @@ jobs:
           npm test
           npm run check
           npx tsc --noEmit -p app
-      - name: 라이선스 검사
-        run: npm run check:licenses
 
   # The Windows build: the Tauri shell (project-o) and the Windows-only code (job objects,
   # process containment, the fake-provider runner tests) compile and run only here.
   windows:
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-latest
     timeout-minutes: 60
     env:

@@ -124,11 +124,11 @@ pub fn handler() -> impl Fn(tauri::ipc::Invoke) -> bool + Send + Sync + 'static 
     ]
 }
 
-/// The `o` built beside this app (target/release), else the one on PATH.
+/// The installed sidecar or the CLI built beside this app by prepare-local-cli.mjs.
 fn o_binary() -> Option<std::path::PathBuf> {
     let name = if cfg!(windows) { "o.exe" } else { "o" };
     let beside = std::env::current_exe().ok().and_then(|exe| exe.parent().map(|dir| dir.join(name))).filter(|p| p.is_file());
-    beside.or_else(|| o_core::sys::resolve::which("o"))
+    beside
 }
 
 /// An absolute folder that exists; o-core checks again whether it may be a project.

@@ -34,33 +34,15 @@ fn lead_settings() -> String {
 /// `.claude/settings.json`.
 const GUARD_MATCHER: &str = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob";
 
-/// YOLO mode's own settings (ADR-0014): O's guard hook, which Claude runs before every tool
-/// call in `bypassPermissions` too (PreToolUse runs before the permission check, and exit 2
-/// stops the call). It blocks when `o` is missing or fails (`onFailure`). A clean profile and
-/// `--setting-sources user` would otherwise bring no hook at all.
+/// Use the O sidecar beside this host directly, so a repository/PATH shadow cannot replace
+/// the guard. Claude's exec-form hook takes argv without passing a path through a shell.
 fn guard_settings() -> String {
-    json!({ "hooks": { "PreToolUse": [{ "matcher": GUARD_MATCHER, "hooks": [{ "type": "command", "command": "o hook", "timeout": 10, "onFailure": "block" }] }] } })
+    let program = std::env::current_exe().map(|exe| exe.with_file_name(if cfg!(windows) { "o.exe" } else { "o" }).to_string_lossy().into_owned()).unwrap_or_default();
+    json!({ "hooks": { "PreToolUse": [{ "matcher": GUARD_MATCHER, "hooks": [{ "type": "command", "command": program, "args": ["hook"], "timeout": 10, "onFailure": "block" }] }] } })
         .to_string()
 }
 
-/// A card about to start with a Claude authentication variable among its environment's `names`
-/// does not read the project's settings (ADR-0035 개정 2, #92): `claude -p` asks no trust for a
-/// folder and runs the hooks its settings files name, with the card's environment — the key
-/// included. `--setting-sources user` leaves the project and local settings unread, as the lead
-/// does; O's guard hook, which this repository's own project settings would have brought, comes
-/// with the run's settings instead (a YOLO card has it already). Only names are looked at.
-pub const PROJECT_SETTINGS_NOTICE: &str = "환경에 Claude 인증 변수가 있어 이 카드는 프로젝트의 Claude 설정·훅(.claude/settings.json)을 읽지 않습니다";
-
-pub fn keep_project_settings_from_auth(spec: &mut LaunchSpec, names: &[std::ffi::OsString], yolo: bool) -> bool {
-    if crate::agents::billing::present_in(crate::run::plan::ProviderId::Claude, names).is_empty() {
-        return false;
-    }
-    spec.args.extend(strings(&["--setting-sources", "user"]));
-    if !yolo {
-        spec.args.extend(strings(&["--settings", &guard_settings()]));
-    }
-    true
-}
+pub const PROJECT_SETTINGS_NOTICE: &str = "Claude 카드는 프로젝트 설정·훅을 읽지 않고 O 가드를 적용합니다";
 
 /// Deny rules for the commands no agent may run; they hold in every permission mode.
 fn denied_commands() -> Vec<String> {
@@ -125,6 +107,9 @@ impl Provider for Claude {
         let mut args = strings(spec.fixed);
         args.push(format!("Bash({TEAM_COMMAND} *)"));
         args.push(format!("Bash({CONTEXT_COMMAND} *)"));
+        // Print mode runs project hooks without a trust prompt, with either sign-in method.
+        args.extend(strings(&["--setting-sources", "user", "--settings", &guard_settings(), "--strict-mcp-config", "--disallowedTools"]));
+        args.extend(denied_shell_commands());
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env }
@@ -192,7 +177,7 @@ impl Provider for Claude {
     /// Deny rules still hold, and O's guard hook comes with the run's settings.
     fn yolo_launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
         let mut args = yolo_head();
-        args.extend(strings(&["--settings", &guard_settings()]));
+        args.extend(strings(&["--setting-sources", "user", "--settings", &guard_settings(), "--strict-mcp-config"]));
         args.extend(opt("--model", card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env })

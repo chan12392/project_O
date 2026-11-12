@@ -280,10 +280,13 @@ fn card_prompt_keeps_the_common_prefix_ahead_of_task_details() {
     assert_eq!(first.split("\n작업: ").next(), second.split("\n작업: ").next());
     let codex = launch_spec(&p.cards[0], &p, &TEAM);
     let mailbox = o_core::run::msg_relay::mailbox("C:/o/runs/r1", "code").to_string_lossy().into_owned();
-    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", mailbox.as_str(), "--skip-git-repo-check", "--enable", "multi_agent", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
+    let expected_args = ["exec", "--json", "-s", "workspace-write", "-C", "C:/work/demo", "--add-dir", mailbox.as_str(), "--skip-git-repo-check", "--disable", "hooks", "--enable", "multi_agent", "-m", "gpt-6.1-sol", "-c", "model_reasoning_effort=xhigh", "-"];
     assert_eq!(codex.args, expected_args);
     let claude = launch_spec(&p.cards[1], &p, &TEAM);
-    let expected_args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "Bash(o context *)", "--effort", "high"];
+    let mut expected_args: Vec<String> = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "acceptEdits", "--allowedTools", "Bash(o msg *)", "Bash(o context *)", "--setting-sources", "user", "--settings", GUARD_HOOK.as_str(), "--strict-mcp-config", "--disallowedTools"].map(String::from).into();
+    expected_args.extend(CLAUDE_DENY.map(String::from));
+    if cfg!(windows) { expected_args.extend(CLAUDE_DENY.map(|rule| rule.replace("Bash(", "PowerShell("))); }
+    expected_args.extend(["--effort".into(), "high".into()]);
     assert_eq!(claude.args, expected_args);
 }
 
@@ -550,7 +553,11 @@ fn a_claude_failure_text_with_a_wait_keeps_the_event_reset_time() {
 // YOLO mode (ADR-0014). This file and the provider files are the only code that may spell
 // the CLIs' "never ask" flags (o_guard::rules BYPASS_PATHS).
 
-const GUARD_HOOK: &str = r#"{"hooks":{"PreToolUse":[{"matcher":"Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob","hooks":[{"type":"command","command":"o hook","timeout":10,"onFailure":"block"}]}]}}"#;
+static GUARD_HOOK: std::sync::LazyLock<String> = std::sync::LazyLock::new(|| {
+    let mut value: serde_json::Value = serde_json::from_str(r#"{"hooks":{"PreToolUse":[{"matcher":"Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob","hooks":[{"type":"command","command":"","args":["hook"],"timeout":10,"onFailure":"block"}]}]}}"#).unwrap();
+    value["hooks"]["PreToolUse"][0]["hooks"][0]["command"] = serde_json::json!(std::env::current_exe().unwrap().with_file_name(if cfg!(windows) { "o.exe" } else { "o" }));
+    value.to_string()
+});
 const CLAUDE_DENY: [&str; 7] = ["Bash(o dispatch*)", "Bash(o followup*)", "Bash(o lead*)", "Bash(o review*)", "Bash(o _run*)", "Bash(o _followup*)", "Bash(o _review*)"];
 const AGY_DENY: &str = r#"{"permissions":{"deny":["command(o dispatch*)","command(o followup*)","command(o lead*)","command(o review*)","command(o _run*)","command(o _followup*)","command(o _review*)"]}}"#;
 
@@ -571,7 +578,7 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
     let [codex, claude, agy] = <[LaunchSpec; 3]>::try_from(yolo_specs(&p, true)).unwrap();
     let mut expected: Vec<&str> = vec!["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools"];
     expected.extend(CLAUDE_DENY);
-    expected.extend(["--settings", GUARD_HOOK, "--effort", "high"]);
+    expected.extend(["--setting-sources", "user", "--settings", GUARD_HOOK.as_str(), "--strict-mcp-config", "--effort", "high"]);
     assert_eq!(claude.args, expected);
     assert_eq!(
         codex.args,
@@ -595,31 +602,63 @@ fn yolo_cards_use_each_clis_official_flag_and_keep_the_deny_rules() {
     assert!(!claude.stdin.unwrap().contains("셸 명령은 승인할 사람이 없어"));
 }
 
-/// ADR-0035 개정 2 (#92): the project's settings, and the hooks they name, are not read by a
-/// Claude card that gets an authentication variable; without one the launch is as it was.
+/// ADR-0046: project hooks are excluded for subscription and API sign-in alike.
 #[test]
-fn a_claude_card_with_an_auth_variable_leaves_project_settings_unread() {
-    use o_core::providers::claude::keep_project_settings_from_auth as keep;
+fn every_claude_card_leaves_project_settings_unread_and_keeps_the_guard() {
     let p = plan();
     let card = p.cards.iter().find(|c| c.provider == ProviderId::Claude).unwrap();
-    let names = |list: &[&str]| -> Vec<std::ffi::OsString> { list.iter().map(Into::into).collect() };
     for yolo in [false, true] {
-        let usual = launch_spec_for(card, &p, &TEAM, None, yolo);
-        // No variable, or another CLI's: nothing changes.
-        let mut spec = usual.clone();
-        assert!(!keep(&mut spec, &names(&["PATH", "OPENAI_API_KEY", "O_RUN_ID"]), yolo));
-        assert_eq!(spec, usual);
-        for name in ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"] {
-            let mut spec = usual.clone();
-            assert!(keep(&mut spec, &names(&["PATH", name]), yolo));
-            assert_eq!(spec.args[..usual.args.len()], usual.args[..]);
-            assert_eq!(after(&spec.args, "--setting-sources"), "user");
-            // O's guard hook comes with the run instead, once; never with hooks turned off.
-            assert_eq!(spec.args.iter().filter(|a| *a == "--settings").count(), 1);
-            assert_eq!(after(&spec.args, "--settings"), GUARD_HOOK);
-            assert_eq!((&spec.stdin, &spec.env), (&usual.stdin, &usual.env));
-        }
+        let spec = launch_spec_for(card, &p, &TEAM, None, yolo);
+        assert_eq!(after(&spec.args, "--setting-sources"), "user");
+        assert_eq!(spec.args.iter().filter(|a| *a == "--settings").count(), 1);
+        assert_eq!(after(&spec.args, "--settings"), GUARD_HOOK.as_str());
+        let settings: serde_json::Value = serde_json::from_str(after(&spec.args, "--settings")).unwrap();
+        assert!(std::path::Path::new(settings["hooks"]["PreToolUse"][0]["hooks"][0]["command"].as_str().unwrap()).is_absolute());
+        assert!(has(&spec.args, "--strict-mcp-config"));
     }
+}
+
+#[test]
+fn codex_project_settings_are_found_in_repository_ancestors() {
+    use o_core::providers::codex::project_config;
+    let base = std::env::temp_dir().join(format!("o-codex-project-{}", o_core::run::store::new_run_id(chrono::Utc::now())));
+    let project = base.join("repo");
+    let child = project.join("src");
+    std::fs::create_dir_all(&child).unwrap();
+    std::fs::write(project.join(".git"), "gitdir: unused").unwrap();
+    assert_eq!(project_config(&child), None);
+    std::fs::create_dir_all(project.join(".codex")).unwrap();
+    let config = project.join(".codex/config.toml");
+    for allowed in ["", "# only a comment\n", "include_collaboration_mode_instructions = false\n[agents]\nenabled = false\n[features]\nmulti_agent = false\n", "[features]\nmulti_agent=true # safe boolean\n"] {
+        std::fs::write(&config, allowed).unwrap();
+        assert_eq!(project_config(&child), None, "{allowed}");
+    }
+    for refused in ["model = \"unexpected\"", "[mcp_servers.fixture]\ncommand = \"never-run\"", "sandbox_mode = \"unexpected\"", "[sandbox_workspace_write]\nnetwork_access=true", "[features]\nunknown = false", "[agents]\nenabled = \"false\"", "[agents]\nenabled=false\nenabled=true", "[features]\nmulti_agent=false\n[features]\nmulti_agent=true"] {
+        std::fs::write(&config, refused).unwrap();
+        assert_eq!(project_config(&child), Some(config.clone()), "{refused}");
+    }
+    std::fs::remove_file(config).unwrap();
+    let hook = project.join(".codex/hooks.json");
+    std::fs::write(&hook, "{}").unwrap();
+    assert_eq!(project_config(&child), None, "hooks are explicitly disabled by the launch spec");
+    let outside = base.join("safe-settings.toml");
+    std::fs::write(&outside, "[agents]\nenabled=false\n").unwrap();
+    std::fs::hard_link(&outside, project.join(".codex/config.toml")).unwrap();
+    assert_eq!(project_config(&child), Some(project.join(".codex/config.toml")), "even harmless linked settings are refused");
+    #[cfg(windows)] {
+        std::fs::remove_file(project.join(".codex/config.toml")).unwrap();
+        let target = base.join("linked-settings");
+        std::fs::rename(project.join(".codex"), &target).unwrap();
+        std::fs::write(target.join("config.toml"), "[agents]\nenabled=false\n").unwrap();
+        let shell = std::path::PathBuf::from(std::env::var_os("SystemRoot").unwrap()).join("System32/WindowsPowerShell/v1.0/powershell.exe");
+        let result = o_core::sys::proc::hide_window(std::process::Command::new(shell)
+            .args(["-NoProfile", "-NonInteractive", "-Command", "New-Item -ItemType Junction -Path $env:O_TEST_CODEX_LINK -Target $env:O_TEST_CODEX_TARGET -ErrorAction Stop | Out-Null"])
+            .env("O_TEST_CODEX_LINK", project.join(".codex")).env("O_TEST_CODEX_TARGET", &target)).output().unwrap();
+        assert!(result.status.success(), "{}", String::from_utf8_lossy(&result.stderr));
+        assert_eq!(project_config(&child), Some(project.join(".codex")), "a linked settings folder is refused");
+        std::fs::remove_dir(project.join(".codex")).unwrap();
+    }
+    std::fs::remove_dir_all(base).unwrap();
 }
 
 fn yolo_lead(provider: ProviderId, session: Option<&str>) -> LaunchSpec {
@@ -631,7 +670,7 @@ fn yolo_lead(provider: ProviderId, session: Option<&str>) -> LaunchSpec {
 fn yolo_leads_may_edit_and_run_commands_but_never_send_work() {
     let mut expected: Vec<&str> = vec!["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "bypassPermissions", "--disallowedTools"];
     expected.extend(CLAUDE_DENY);
-    expected.extend(["--strict-mcp-config", "--setting-sources", "user", "--settings", GUARD_HOOK, "--resume", "s-1", "--effort", "low", "--add-dir", "C:/o-lead/t1"]);
+    expected.extend(["--strict-mcp-config", "--setting-sources", "user", "--settings", GUARD_HOOK.as_str(), "--resume", "s-1", "--effort", "low", "--add-dir", "C:/o-lead/t1"]);
     assert_eq!(yolo_lead(ProviderId::Claude, Some("s-1")).args, expected);
 
     assert_eq!(

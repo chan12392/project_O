@@ -129,6 +129,7 @@ fn main() {
         ("a card's CLI inherits API key variables", api_keys_inherited),
         ("the subscription billing mode refuses a card whose CLI would get an API key", subscription_mode_refuses_api_keys),
         ("an OpenCode card without YOLO does not start under OpenCode project config", opencode_project_config_refused),
+        ("a Codex card refuses project settings before starting a CLI", codex_project_config_refused),
     ];
     let mut failed = 0;
     for &(name, test) in tests {
@@ -1095,6 +1096,37 @@ fn opencode_project_config_refused() {
     std::fs::remove_file(project.join("opencode.jsonc")).unwrap();
     create_run(&home, "oc-clean", &p).unwrap();
     run_plan(&home, "oc-clean", &p, None, spawner).unwrap();
+    assert!(launched.load(Ordering::SeqCst));
+}
+
+fn codex_project_config_refused() {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(project.join(".codex")).unwrap();
+    std::fs::write(project.join(".git"), "gitdir: unused").unwrap();
+    std::fs::write(project.join(".codex/config.toml"), "[mcp_servers.fixture]\ncommand = \"never-run\"\n").unwrap();
+    std::fs::write(project.join(".codex/hooks.json"), "{}").unwrap();
+    let mut p = plan(vec![card("a", ProviderId::Codex, "x")]);
+    p.project = project.to_string_lossy().into_owned();
+    let launched = Arc::new(AtomicBool::new(false));
+    let seen = Arc::clone(&launched);
+    let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        seen.store(true, Ordering::SeqCst);
+        assert!(spec.args.windows(2).any(|pair| pair == ["--disable", "hooks"]));
+        inner(spec, cwd)
+    });
+    create_run(&home, "cx-project", &p).unwrap();
+    assert_eq!(run_plan(&home, "cx-project", &p, None, Arc::clone(&spawner)).unwrap(), CardStatus::Failed);
+    assert!(!launched.load(Ordering::SeqCst));
+    assert!(read_events(&home, "cx-project").iter().any(|e| matches!(e, OEvent::CardEnd { result: Some(reason), .. } if reason.contains("프로젝트 Codex"))));
+    std::fs::write(project.join(".codex/config.toml"), "include_collaboration_mode_instructions=false\n[agents]\nenabled=false\n[features]\nmulti_agent=false\n").unwrap();
+    create_run(&home, "cx-clean", &p).unwrap();
+    assert_eq!(run_plan(&home, "cx-clean", &p, None, Arc::clone(&spawner)).unwrap(), CardStatus::Done);
+    std::fs::remove_file(project.join(".codex/config.toml")).unwrap();
+    create_run(&home, "cx-hooks-only", &p).unwrap();
+    assert_eq!(run_plan(&home, "cx-hooks-only", &p, None, spawner).unwrap(), CardStatus::Done);
     assert!(launched.load(Ordering::SeqCst));
 }
 
