@@ -11,6 +11,8 @@
 - 모델 캐시는 프로필·프로젝트를 분리하고 오래된 목록과 지원 effort를 검사했다.
 - 자동 전환 테스트의 Claude/Codex 실행 파일은 테스트 바이너리의 복사본이다. 상태·모델 메타데이터와 작업 스트림만 응답하며 실제 CLI·서버·모델을 부르지 않는다. 일반/격리 작업 폴더, OFF, 실행 직전 OFF, 대상의 재차 한도, 미지원 모델, 불명확한 외부 작업, 총괄의 시작 전/실행 중 구독 한도를 검사한다.
 - 테스트용 작업 폴더와 결과만 사용하며 실제 구독 소진, Claude 실행, 유료 모델 호출은 하지 않았다.
+- 후속 진입 경계 회귀 검사 `cargo test -p o-cli --test fallback_dispatch`: 실제 `o check`(CLI dispatch와 같은 검사), `check_lead_plan`, `lead::dispatch`와 `run_detached`를 fixture CLI로 통과시켰다. 11개 시나리오에서 시작 전 구독 한도 전환, OFF, 일반 429, 잘못된 모델, 대상 cooldown, 미지원 effort, 보호 프로젝트, 같은 provider, 원래/대상 로그인 실패, 승인 뒤 OFF를 확인했다. 양쪽 provider의 일일 예산·동시 실행 한도·프로필 차단은 그대로 유지하며, 전역 cooldown·승인 계획·격리 작업 폴더·effort·실제 전환 이벤트도 확인했다. 전환 테스트의 CLI 호출은 `o check`로 한정하고, 실행은 테스트 프로세스에서 분배·백그라운드 실행 코어에 연결했다.
+- 후속 변경에서 기존 fallback_runner(카드 7·총괄 2), lead(53), policy(27), runner(42), CLI dispatch_status(3)·review(2), clippy와 전체 정책 검사(613개 파일)를 통과했다. 첫 fixture 실행에서 누락한 `_job-watch` 분기 때문에 보조 프로세스가 테스트를 재시작해 해당 프로세스를 종료했다. 보조 명령 처리와 알 수 없는 명령 거부를 추가한 뒤 정상 종료·남은 fixture 프로세스 0개를 확인했다. 오류 두 건은 교훈으로 저장·색인했다.
 
 실행한 검사: `cargo test -p o-core --lib`, 영향받은 runner·lead·lead_worker·lead_usage·usage·context·snapshot·usage_accounting·fallback_runner 통합 테스트, 새 usage/models 단위 테스트, `cargo clippy -p o-core -p o-cli --all-targets -- -D warnings`, `cargo check -p project-o`, 루트/앱 `npm run check`, 루트 `npm test`(203개), 앱 `npm run build`, `cargo run -p o-cli -- scan --all`(599개 파일). 단위 테스트의 기존 Windows 전용 수동 검사 1개와 lead_worker의 기존 수동 검사 1개는 ignored 상태였다. 앱 빌드는 통과했고 큰 번들 및 settings 모듈의 정적/동적 import 혼용 경고가 남았다.
 

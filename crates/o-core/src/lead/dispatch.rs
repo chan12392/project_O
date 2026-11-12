@@ -10,7 +10,7 @@ pub fn check_lead_plan(home: &Path, project: &str, mut plan: Value, mode: RunMod
         object.insert("project".into(), Value::String(project.to_string()));
     }
     let (violations, notices) = match policy_context(home, Utc::now()) {
-        Ok(ctx) => { let checked = check_plan_in(&plan, &ctx, mode); (checked.violations, checked.notices) },
+        Ok(ctx) => { let checked = crate::usage::fallback::check_plan(home, &plan, &ctx, mode); (checked.violations, checked.notices) },
         Err(error) => (vec![Violation { rule: "policy-context".into(), message: error.to_string(), card_id: None }], Vec::new()),
     };
     (plan, violations, notices)
@@ -158,7 +158,7 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
         object.insert("project".into(), Value::String(project.clone()));
     }
     let ctx = policy_context(home, now).map_err(|e| e.to_string())?;
-    let checked = check_plan_in(&plan, &ctx, mode);
+    let checked = crate::usage::fallback::check_plan(home, &plan, &ctx, mode);
     let Some(plan) = checked.plan else {
         let _ = record_blocked(home, now, plan.get("title"), &checked.violations);
         return Err(DispatchError::Blocked(checked.violations));
@@ -284,7 +284,7 @@ fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMo
     let mut added = Vec::new();
     let events = read_thread(home, thread);
     let now = Utc::now();
-    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_in(plan, &ctx, mode));
+    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| crate::usage::fallback::check_plan(home, plan, &ctx, mode));
     let valid = checked.as_ref().ok().and_then(|result| result.plan.clone());
     let running: Vec<String> = events.iter().filter_map(|e| match e {
         LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),

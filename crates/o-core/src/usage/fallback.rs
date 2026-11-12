@@ -81,9 +81,11 @@ pub fn select(settings: &Settings, from: ProviderId, effort: Option<&str>, lead:
 pub fn prepare(home: &Path, from: ProviderId, effort: Option<&str>, lead: bool, clean: Option<&Path>, cwd: &Path) -> Result<Option<Target>, String> {
     let Some(target) = select(&read(home), from, effort, lead)? else { return Ok(None) };
     if budget::assess_now(home, from, Utc::now()).map_err(|e| e.to_string())?.state == budget::Pace::Over { return Err("원래 에이전트의 오늘 사용 예산 차단은 자동 전환하지 않습니다".into()); }
-    let mut source = std::process::Command::new(from.as_str());
-    if let Some(root) = clean { source.env_clear().envs(crate::agents::clean::environment(root, from).map_err(|e| e.to_string())?); }
-    crate::agents::billing::check_command(home, from, &source, clean.is_some())?;
+    for provider in [from, target.provider] {
+        let mut command = std::process::Command::new(provider.as_str());
+        if let Some(root) = clean { command.env_clear().envs(crate::agents::clean::environment(root, provider).map_err(|e| e.to_string())?); }
+        crate::agents::billing::check_command(home, provider, &command, clean.is_some())?;
+    }
     let status = crate::agents::status_of(clean.unwrap_or(&crate::agents::clean::default_root()), from, clean.is_some());
     if !status.installed || status.logged_in != Some(true) || status.profile_not_ready.is_some() { return Err("원래 에이전트의 로그인·실행 프로필 오류는 자동 전환하지 않습니다".into()); }
     let catalog = crate::providers::models::catalog(home, target.provider, clean, cwd, true)?;
@@ -94,6 +96,55 @@ pub fn prepare(home: &Path, from: ProviderId, effort: Option<&str>, lead: bool, 
     if crate::run::store::cooldown_times(home).map_err(|e| e.to_string())?.get(&target.provider).and_then(|t| crate::sys::js::parse_time(t)).is_some_and(|t| t > Utc::now()) { return Err("대체 에이전트도 사용량 한도로 차단되어 있습니다".into()); }
     if budget::assess_now(home, target.provider, Utc::now()).map_err(|e| e.to_string())?.state == budget::Pace::Over { return Err("대체 에이전트의 오늘 사용 예산을 다 썼습니다".into()); }
     Ok(Some(target))
+}
+
+/// Dispatch checks the effective providers but keeps the person's approved plan unchanged.
+pub fn check_plan(home: &Path, input: &serde_json::Value, ctx: &crate::policy::PolicyContext, mode: crate::run::mode::RunMode) -> crate::policy::Checked {
+    use crate::{policy::{self, Violation}, run::plan::Plan};
+    let mut checked = policy::check_plan_in(input, ctx, mode);
+    if checked.plan.is_some() || !read(home).enabled || checked.violations.iter().any(|v| v.rule != "provider-cooldown") {
+        return checked;
+    }
+    let Ok(plan) = serde_json::from_value::<Plan>(input.clone()) else { return checked };
+    let mut effective = plan.clone();
+    let clean = mode.clean().then(crate::agents::clean::default_root);
+    let mut targets = Vec::new();
+    let mut notices = Vec::new();
+    for card in &mut effective.cards {
+        if !checked.violations.iter().any(|v| v.card_id.as_deref() == Some(&card.id)) { continue; }
+        if crate::providers::get(card.provider).terminal_card() || !confirmed(home, card.provider).unwrap_or(false) {
+            return checked;
+        }
+        match prepare(home, card.provider, card.effort.as_deref(), false, clean.as_deref(), Path::new(&plan.project)) {
+            Ok(Some(target)) => {
+                notices.push(format!("{}: 확인된 구독 한도로 {} → {} {} 전환을 사전 확인했습니다. 시작 직전에 다시 검사합니다", card.id, card.provider, target.provider, target.model));
+                card.provider = target.provider;
+                card.model = Some(target.model.clone());
+                targets.push(target);
+            }
+            Ok(None) => return checked,
+            Err(message) => {
+                checked.violations.push(Violation { rule: "subscription-fallback".into(), message, card_id: Some(card.id.clone()) });
+                return checked;
+            }
+        }
+    }
+    let candidate = policy::check_plan_in(&serde_json::to_value(effective).expect("plan serialization"), ctx, mode);
+    checked.notices.extend(candidate.notices);
+    if candidate.plan.is_none() {
+        checked.violations.extend(candidate.violations);
+        return checked;
+    }
+    for target in targets {
+        if let Err(message) = check_enabled(home, &target) {
+            checked.violations.push(Violation { rule: "subscription-fallback".into(), message, card_id: None });
+            return checked;
+        }
+    }
+    checked.plan = Some(plan);
+    checked.violations.clear();
+    checked.notices.extend(notices);
+    checked
 }
 
 /// A durable claim precedes spawning. Interrupted claims are never automatically replayed.

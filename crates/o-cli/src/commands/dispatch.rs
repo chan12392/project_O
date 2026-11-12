@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::Command as Process;
 
 use chrono::Utc;
-use o_core::policy::check_plan_in;
+use o_core::usage::fallback::check_plan;
 use o_core::run::mode::{take_flags, RunMode};
 use o_core::run::{runner, yolo};
 use o_core::run::store::{self, run_dir};
@@ -92,7 +92,7 @@ fn check(home: &Path, path: Option<&str>, dispatch: bool, mode: RunMode, as_json
         Ok(ctx) => ctx,
         Err(error) => return fail(&error.to_string()),
     };
-    let checked = check_plan_in(&input, &ctx, mode);
+    let checked = check_plan(home, &input, &ctx, mode);
     for notice in &checked.notices { eprintln!("{notice}"); }
     let Some(plan) = checked.plan else {
         if dispatch {
