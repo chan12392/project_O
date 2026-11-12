@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
 members = ["crates/o-guard", "crates/o-core", "crates/o-cli", "app/src-tauri"]
+exclude = ["vendor/glib-0.18.5"]
+
+# GTK3/WebKitGTK still require 0.18. Keep the upstream two-line soundness fix (ADR-0050).
+[patch.crates-io]
+glib = { path = "vendor/glib-0.18.5" }
 
 [workspace.package]
 edition = "2021"
