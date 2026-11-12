@@ -10,6 +10,8 @@
     "test": "node --test \"tests/*.test.ts\"",
     "check": "tsc --noEmit",
     "check:licenses": "node scripts/check-licenses.mjs",
+    "check:dependencies": "python scripts/check-dependencies.py",
+    "test:dependencies": "python -m unittest discover -s tests/dependency-security -p test_*.py",
     "guard": "o scan --all",
     "prepare": "git config core.hooksPath .githooks"
   },

@@ -1,0 +1,41 @@
+name: dependency-security
+
+on:
+  schedule:
+    - cron: '23 2 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: dependency-security-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - name: 도구 버전·전체 lock 보안 검사
+        run: |
+          node --version
+          rustc --version
+          python --version
+          npm run test:dependencies
+          npm run check:dependencies
+      - name: Linux glib 회귀 검사 (일반·최적화)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libglib2.0-dev
+          cargo test --locked --manifest-path tests/glib-variant/Cargo.toml
+          CARGO_PROFILE_TEST_OPT_LEVEL=2 cargo test --locked --manifest-path tests/glib-variant/Cargo.toml

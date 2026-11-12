@@ -42,6 +42,10 @@ jobs:
           cargo build --locked -p o-cli --target-dir "$RUNNER_TEMP/project-o-policy"
           mkdir -p "$RUNNER_TEMP/project-o-license/scripts" "$RUNNER_TEMP/project-o-license/app"
           cp scripts/check-licenses.mjs "$RUNNER_TEMP/project-o-license/scripts/"
+          # Bootstrap only while the base predates ADR-0050; later PRs cannot replace the checker.
+          if test -f scripts/check-dependencies.py; then
+            cp scripts/check-dependencies.py "$RUNNER_TEMP/project-o-dependencies.py"
+          fi
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           persist-credentials: false
@@ -56,6 +60,18 @@ jobs:
           cp app/package-lock.json "$RUNNER_TEMP/project-o-license/app/"
           cp THIRD_PARTY_LICENSES.txt "$RUNNER_TEMP/project-o-license/"
           node "$RUNNER_TEMP/project-o-license/scripts/check-licenses.mjs"
+      - name: npm·Rust 공급망 검사
+        run: |
+          checker="$RUNNER_TEMP/project-o-dependencies.py"
+          if ! test -f "$checker"; then checker=scripts/check-dependencies.py; fi
+          python "$checker" "$GITHUB_WORKSPACE"
+          npm run test:dependencies
+      - name: Linux glib 포인터 회귀 검사 (일반·최적화)
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libglib2.0-dev
+          cargo test --locked --manifest-path tests/glib-variant/Cargo.toml
+          CARGO_PROFILE_TEST_OPT_LEVEL=2 cargo test --locked --manifest-path tests/glib-variant/Cargo.toml
       - name: Rust 테스트·lint
         run: |
           # The desktop shell (crate project-o) needs WebView system libraries that the Linux
