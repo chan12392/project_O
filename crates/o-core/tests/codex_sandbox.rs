@@ -4,7 +4,9 @@
 
 use std::io::{BufRead, Read, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
+#[cfg(windows)]
+use std::process::Stdio;
 use std::time::{Duration, Instant};
 
 use chrono::Utc;
@@ -101,11 +103,15 @@ fn exec(scenario: &str, args: &[String]) {
     println!("{}", json!({"type":"thread.started","thread_id":"fake"}));
     match scenario {
         "hang" => {
-            let mut child = Command::new(std::env::current_exe().unwrap());
-            child.env(FAKE, "park").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
-            // Never waited for on purpose: both stay until the check ends the whole tree.
-            #[allow(clippy::zombie_processes)]
-            let _child = o_core::sys::proc::hide_window(&mut child).spawn().unwrap();
+            // Only Windows exercises Job Object descendant cleanup here. Other hosts test
+            // the timeout, and must not leave an untracked, permanently parked child behind.
+            #[cfg(windows)]
+            {
+                let mut child = Command::new(std::env::current_exe().unwrap());
+                child.env(FAKE, "park").stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+                #[allow(clippy::zombie_processes)]
+                let _child = o_core::sys::proc::hide_window(&mut child).spawn().unwrap();
+            }
             std::fs::write(seen("exec.pid"), std::process::id().to_string()).unwrap();
             park();
         }
@@ -254,6 +260,8 @@ fn hanging_probe_is_stopped() {
     if cfg!(windows) {
         let child: u32 = fixture.note("child.pid").expect("the fake exec's child started").parse().unwrap();
         wait_gone(child);
+    } else {
+        assert_eq!(fixture.note("child.pid"), None, "non-Windows timeout test must not leave a parked child");
     }
 }
 
