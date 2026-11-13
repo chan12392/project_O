@@ -1278,7 +1278,14 @@ mod tests {
         assert_eq!(of("작업 성공/blog/20260101-000000-aaaa-build.md"), ["서명", "tauri", "배포"]);
         assert_eq!(paths(tagged(&["#TAURI", "배포"])), [material.path.as_str(), "배운 것/blog/20260101-000000-aaaa-build-1.md", "작업 성공/blog/20260101-000000-aaaa-build.md"]);
         assert_eq!(paths(DreamQuery { kind: Some("note".into()), ..tagged(&["서명"]) }), ["배운 것/shop/20260102-000000-bbbb-x-1.md", "배운 것/blog/20260101-000000-aaaa-build-1.md"]);
-        assert_eq!(paths(DreamQuery { project: Some("d:\\other\\shop\\".into()), kind: Some("note".into()), ..DreamQuery::default() }), ["배운 것/shop/20260102-000000-bbbb-x-1.md"]);
+        // Separator normalization is independent of the OS's case policy.
+        assert_eq!(paths(DreamQuery { project: Some("D:\\other\\shop\\".into()), kind: Some("note".into()), ..DreamQuery::default() }), ["배운 것/shop/20260102-000000-bbbb-x-1.md"]);
+        let lower_case = paths(DreamQuery { project: Some("d:\\other\\shop\\".into()), kind: Some("note".into()), ..DreamQuery::default() });
+        if cfg!(windows) {
+            assert_eq!(lower_case, ["배운 것/shop/20260102-000000-bbbb-x-1.md"]);
+        } else {
+            assert!(lower_case.is_empty(), "a differently cased project must stay isolated");
+        }
         assert_eq!(paths(DreamQuery { limit: Some(1), ..tagged(&["서명"]) }).len(), 1);
         assert!(find(&home, Scope::Person, &tagged(&["a b"])).is_err());
         assert!(find(&home, Scope::Person, &DreamQuery { kind: Some("everything".into()), ..DreamQuery::default() }).is_err());
