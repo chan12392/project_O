@@ -178,8 +178,10 @@ fn existing_local_runs_still_read() {
     for run_id in o_core::run::store::list_runs(&home) {
         for value in o_core::run::store::read_event_values(&home, &run_id) {
             let event: OEvent = serde_json::from_value(value.clone()).unwrap_or_else(|e| panic!("{run_id}: {e}: {value}"));
-            // Written back byte for byte: same keys, same order, same numbers.
-            assert_eq!(serde_json::to_string(&event).unwrap(), value.to_string(), "{run_id}");
+            // Written back with the same keys and numbers. Key order is not compared: messages written
+            // before team.rs matched the event's order (fixed 2026-11-10) stay as they are on disk;
+            // message_integrity.rs checks the order of new ones.
+            assert_eq!(serde_json::to_value(&event).unwrap(), value, "{run_id}");
         }
     }
 }

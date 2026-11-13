@@ -52,6 +52,15 @@ pub(super) fn start_followup(id: &str) -> std::io::Result<()> {
     o_core::sys::proc::spawn_detached(std::process::Command::new(&exe).args(["_followup", id])).map(|_| ())
 }
 
+/// `o _lead-forward <threadId> <n>`: a request the overall lead passed on (ADR-0032), and the review of its plan (ADR-0036).
+pub(super) fn start_forward(thread_id: &str, index: usize) -> std::io::Result<()> {
+    let exe = super::o_binary().ok_or_else(|| std::io::Error::other("O CLI를 찾지 못했습니다"))?;
+    let output = o_core::sys::proc::hide_window(std::process::Command::new(&exe).args(["about", "--json"])).output()?;
+    let capable = output.status.success() && serde_json::from_slice::<serde_json::Value>(&output.stdout).ok().and_then(|v| v.get("capabilities").and_then(|v| v.as_array()).cloned()).is_some_and(|caps| caps.iter().any(|v| v.as_str() == Some("overall-review-v1")));
+    if !capable { return Err(std::io::Error::other("이 O CLI는 전체 총괄의 요청 전달을 지원하지 않습니다. 앱과 같은 버전으로 설치하세요")); }
+    o_core::sys::proc::spawn_detached(std::process::Command::new(&exe).args(["_lead-forward", thread_id, &index.to_string()])).map(|_| ())
+}
+
 /// `o runs --json` lists this many by default.
 const DEFAULT_RUNS: usize = 50;
 

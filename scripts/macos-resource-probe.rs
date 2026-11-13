@@ -252,16 +252,16 @@ fn lead_run(mode: &'static str) {
             Ok(launch)
         };
         let project = worker_project.to_str().unwrap();
-        let request = SendRequest { project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
+        let request = SendRequest { project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], fresh: false, clean: None, yolo: false };
         let _ = send.send(lead::send(&worker_home, &request, &spawner));
     });
     let deadline = std::time::Instant::now() + Duration::from_secs(10);
     while !project.join("lead-ready").exists() && std::time::Instant::now() < deadline { std::thread::sleep(Duration::from_millis(20)); }
     assert!(project.join("lead-ready").exists(), "fake lead did not start");
-    if mode == "stop" { assert!(lead::stop(&home, project.to_str())); }
+    if mode == "stop" { assert!(lead::stop(&home, project.to_str(), None).unwrap()); }
     receive.recv_timeout(Duration::from_secs(12)).expect("lead did not finish").unwrap();
     if mode == "escape" { assert_descendant_exited(&project); }
-    assert!(lead::show(&home, project.to_str())["thread"]["busy"].is_null(), "completed lead still blocks the next turn");
+    assert!(lead::show(&home, project.to_str(), None).unwrap()["thread"]["busy"].is_null(), "completed lead still blocks the next turn");
 
 }
 

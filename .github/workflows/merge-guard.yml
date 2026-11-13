@@ -1,20 +1,22 @@
 name: merge-guard
 
-# Only the owner (member A) merges into test_1, test_1_hotfix and main; test_2 is free for both.
+# Only the owner (member A) merges into test_1_hotfix, main_hotfix and main; test_2 is
+# free for everyone, and test_1 takes a member's merge once another member approved (ADR-0031).
 #
-# The repository is private on GitHub's free plan, which has no branch protection
-# or rulesets, so nothing on GitHub can stop someone else from merging. This job
-# runs after the fact: a merge or push by anyone else turns red and names the
-# actor, so the owner can see it and revert. The agent hook (`o hook`) and the
-# git hooks (`o scan`) are what stop it beforehand on members' PCs.
+# The repository is on GitHub Pro with rulesets on main (PR, the policy and check CI,
+# no force push or delete) and test_1 (one approving review from someone other than
+# the author; the owner, as admin, may bypass). GitHub itself enforces test_1's
+# approval, so this job no longer watches test_1. No ruleset limits who merges into
+# the owner-only branches, so this job is their after-the-fact alarm: a merge or push
+# by anyone else turns red and names the actor, so the owner can see it and revert.
+# The agent hook (`o hook`) and the git hooks (`o scan`) stop it beforehand on members' PCs.
 
-# Read-only token: this job only reads the event.
-permissions:
-  contents: read
+# The event contains everything this job needs.
+permissions: {}
 
 on:
   push:
-    branches: [test_1, test_1_hotfix, main]
+    branches: [test_1_hotfix, main_hotfix, main]
 
 jobs:
   owner-only:

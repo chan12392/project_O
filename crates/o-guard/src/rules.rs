@@ -82,14 +82,17 @@ pub fn code_rules() -> impl Iterator<Item = &'static Rule> {
 
 /// Protected branches: they only change by merging PRs (no direct commits or
 /// pushes), and checkouts on them are mirrors agents may read and test in,
-/// never change. `test_1_hotfix` is the hotfix lane into test_1 (ADR-0021).
+/// never change. `test_1_hotfix` is the hotfix lane into test_1 (ADR-0021),
+/// `main_hotfix` the hotfix lane into main for the official release (ADR-0031).
 /// Keep in sync with .github/workflows/branch-flow.yml and
 /// crates/o-core/src/sys/mirror.rs.
-pub const READ_ONLY_BRANCHES: [&str; 4] = ["test_1", "test_1_hotfix", "test_2", "main"];
+pub const READ_ONLY_BRANCHES: [&str; 5] = ["test_1", "test_1_hotfix", "test_2", "main_hotfix", "main"];
 
 /// The owner's GitHub login (member A): the only account that may merge into
-/// `test_1`, `test_1_hotfix` and `main`; his agents run under the same `gh` login. Shared
-/// boundary — keep in sync with .github/workflows/merge-guard.yml.
+/// `test_1_hotfix`, `main_hotfix` and `main`; his agents run under the same `gh` login.
+/// `test_1` needs one approving review from another member on GitHub (ruleset), which
+/// the owner may bypass (ADR-0031). Shared boundary — keep in sync with
+/// .github/workflows/merge-guard.yml.
 pub const OWNER: &str = "chan12392";
 
 /// Mirrors are project_O checkouts only; other repositories on main are ordinary work.
@@ -114,6 +117,15 @@ pub static READ_ONLY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {
     .map(|p| Regex::new(p).unwrap())
     .collect()
 });
+
+/// The files that switch the guard itself on: the agent hooks' settings and the git hooks.
+/// An agent does not change them, in any repository; a person does (ADR-0043). The first
+/// pattern is a path an edit tool names (its end), the second a mention in a shell command.
+pub static GUARD_FILE: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)(?:^|/)(?:\.claude/settings(?:\.local)?\.json|\.codex/hooks\.json|\.githooks/[^/]+)$").unwrap());
+pub static GUARD_FILE_NAMED: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)\.claude[\\/]+settings(?:\.local)?\.json|\.codex[\\/]+hooks\.json|\.githooks\b").unwrap());
+pub const GUARD_FILE_REASON: &str = "가드 설정 파일(.claude/settings.json·.codex/hooks.json·.githooks)은 에이전트가 바꿀 수 없습니다. 사람이 고쳐 주세요";
 
 /// Paths that must mention the patterns to do their job. Changing this list is
 /// a shared-boundary change (ADR).
@@ -145,9 +157,10 @@ fn normalized(repo_relative: &str) -> String {
     slashes.strip_prefix("./").unwrap_or(&slashes).to_string()
 }
 
+/// A path that climbs with `..` is never allowed: `docs/../crates/x.rs` is not a file in `docs/`.
 pub fn is_allowed_path(repo_relative: &str) -> bool {
     let normalized = normalized(repo_relative);
-    ALLOWED_PATHS.iter().any(|p| p.is_match(&normalized))
+    !normalized.split('/').any(|step| step == "..") && ALLOWED_PATHS.iter().any(|p| p.is_match(&normalized))
 }
 
 /// Whether `rule` does not apply to the file: an allowed path skips every rule, a bypass path

@@ -3,8 +3,8 @@
 //!
 //! It refuses: shell commands that touch provider credentials or disable a
 //! CLI's permission checks, code edits that introduce those, commits or
-//! pushes to the protected branches (test_1, test_1_hotfix, test_2, main), PR merges into
-//! test_1/test_1_hotfix/main by anyone but the owner, branch names outside the
+//! pushes to the protected branches (test_1, test_1_hotfix, test_2, main_hotfix, main), PR merges into
+//! test_1_hotfix/main_hotfix/main by anyone but the owner, branch names outside the
 //! <personal>-<topic> rule, and any change inside a protected-branch checkout
 //! (those are pull-only mirrors).
 
@@ -19,14 +19,19 @@ use regex::Regex;
 use serde_json::Value;
 
 use crate::rules::{
-    code_rules, find_hits, is_allowed_path, rules_for_paths, CREDENTIAL_RULES, OWNER, PROJECT_REMOTE, READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
+    code_rules, find_hits, is_allowed_path, rules_for_paths, CREDENTIAL_RULES, GUARD_FILE, GUARD_FILE_NAMED, GUARD_FILE_REASON, OWNER, PROJECT_REMOTE,
+    READ_ONLY_BRANCHES, READ_ONLY_COMMANDS,
 };
 
 /// Keep in sync with .github/workflows/branch-flow.yml.
-pub const PERSONAL_BRANCHES: [&str; 3] = ["younchan", "yongwoo", "eunmi"];
+pub const PERSONAL_BRANCHES: [&str; 4] = ["younchan", "yongwoo", "eunmi", "yeeun"];
 
 /// The free integration branch: anyone may merge PRs into it.
 const FREE_MERGE_BRANCH: &str = "test_2";
+
+/// Any member may merge into it once another member approved the PR: the GitHub ruleset
+/// on test_1 enforces that approval (the owner bypasses it), so the hook does not (ADR-0031).
+const APPROVAL_MERGE_BRANCH: &str = "test_1";
 
 static BRANCH_NAME: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"^({})(-[a-z0-9][a-z0-9._-]*)?$", PERSONAL_BRANCHES.join("|"))).unwrap());
@@ -37,13 +42,20 @@ static CREATE_BRANCH: LazyLock<Regex> = LazyLock::new(|| {
 static SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\|").unwrap());
 static LINE_SEGMENT_SPLIT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"&&|\|\||;|\||\n").unwrap());
 static GIT_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgit\b").unwrap());
-static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|review|_review|lead\s+(?:send|dispatch|decide|stop-all|stop))\b"#).unwrap());
+static AGENT_DISPATCH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+(?:dispatch|followup|_run|_followup|_lead-forward|review|_review|lead\s+(?:send|dispatch|forward|decide|stop-all|stop))\b"#).unwrap());
+static AGENT_CONFIRMED_RECOVERY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)(?:^|[\s/\\])o(?:\.exe)?["']?\s+resources\s+recover\s+[^\r\n;&|]*--confirm-exited\b"#).unwrap());
 static PUSH_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\b").unwrap());
 /// A push naming a protected branch as (part of) its refspec: `main`, `HEAD:test_1`, `refs/heads/test_2`.
 static PUSH_TO_PROTECTED: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(&format!(r"(?:\s|:)(?:refs/heads/)?({})(?:\s|$)", READ_ONLY_BRANCHES.join("|"))).unwrap());
 static PUSH_WITH_TARGET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bpush\s+\S+\s+\S+").unwrap());
 static HISTORY_CHANGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(commit|merge|cherry-pick|rebase)\b").unwrap());
+/// Git subcommands that move the branch they run on or rewrite what it holds.
+const HISTORY_COMMANDS: [&str; 8] = ["commit", "merge", "cherry-pick", "rebase", "pull", "revert", "am", "reset"];
+/// Options before the subcommand that take the next word as their value.
+const GIT_VALUE_OPTIONS: [&str; 7] = ["-C", "-c", "--git-dir", "--work-tree", "--namespace", "--config-env", "--super-prefix"];
+/// `git commit -n` (and `-an`, `-nq`): the short form of `--no-verify`. Clusters that carry a value (`-m…`) are not read.
+static SHORT_NO_VERIFY: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^-[aeopqsSuv]*n[A-Za-z]*$").unwrap());
 
 static ABSOLUTE_PATH: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?:[A-Za-z]:[\\/]|/)[^\s"'|;&<>]+"#).unwrap());
 static LEADING_GIT_DASH_C: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"^git\s+-C\s+("[^"]+"|'[^']+'|\S+)\s+"#).unwrap());
@@ -71,10 +83,14 @@ static PATCH_FILE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?m)^\*\*\* (
 static ROOTED: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^([A-Za-z]:)?[\\/]").unwrap());
 
 /// `gh pr merge` (group 1) or `gh api`, wherever it appears: quoted or not, on any line.
-static GH_MERGE_CALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\bgh\s+(?:(pr\s+merge)|api)\b").unwrap());
-static API_PR_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge/?$").unwrap());
-static API_MERGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^/?repos/[^/\s]+/[^/\s]+/merges/?$").unwrap());
+static GH_MERGE_CALL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)\bgh(?:\.exe)?\s+(?:(pr\s+merge)|api)\b").unwrap());
+static API_PR_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:https://api\.github\.com)?/?repos/([^/\s]+/[^/\s]+)/pulls/(\d+)/merge/?$").unwrap());
+static API_MERGES: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)^(?:https://api\.github\.com)?/?repos/[^/\s]+/[^/\s]+/merges/?$").unwrap());
 static GRAPHQL_MERGE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(mergePullRequest|mergeBranch|enablePullRequestAutoMerge)\b").unwrap());
+/// A program that runs a string as a command, so single quotes handed to it do not keep a call literal.
+static STRING_RUNNER: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:bash|sh|zsh|dash|ksh|fish|pwsh|powershell|cmd|eval|iex|invoke-expression|invoke-command|start-process|ssh|wsl|sudo|su|xargs|watch|python3?|py|node|perl|ruby)\b").unwrap()
+});
 /// Credentials named on the command line make gh act as someone the login lookup never saw.
 static GH_IDENTITY_OVERRIDE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\b(GH_TOKEN|GITHUB_TOKEN|GH_ENTERPRISE_TOKEN|GH_CONFIG_DIR|GH_HOST)\b|--hostname\b").unwrap());
 
@@ -97,7 +113,7 @@ pub trait GitProbe {
 }
 
 const READ_ONLY_REASON: &str =
-    "project_O의 test_1·test_1_hotfix·test_2·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
+    "project_O의 test_1·test_1_hotfix·test_2·main_hotfix·main 작업 폴더는 읽기 전용입니다(풀만 받는 거울). 자기 개인 브랜치 폴더에서 작업하고 PR로 올리세요";
 
 /// Reviews one tool call (`{ tool_name, tool_input, cwd }`); every returned reason blocks it.
 pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
@@ -117,12 +133,18 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
 
     if matches!(tool, "Bash" | "shell" | "PowerShell") {
         let command = string_of(args.get("command"));
-        if (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) && AGENT_DISPATCH.is_match(&command) {
+        if (std::env::var_os("O_AGENT_ROLE").is_some_and(|v| !v.is_empty()) || std::env::var_os("O_CARD_ID").is_some_and(|v| !v.is_empty())) && (AGENT_DISPATCH.is_match(&command) || AGENT_CONFIRMED_RECOVERY.is_match(&command)) {
             reasons.push("에이전트 안에서는 작업을 시작할 수 없습니다. 사용자가 실행해 주세요".into());
         }
         reasons.extend(find_hits(&command, code_rules()).into_iter().map(|hit| hit.reason.to_string()));
         reasons.extend(git_reasons(&command, &current_branch));
         reasons.extend(merge_reasons(&command, &cwd, git));
+        // Reading a guard file is fine; anything else that names one may change it.
+        // Pointing git at the repository's hooks (what `npm install` does) names the folder, not a change to it.
+        static HOOKS_PATH_SET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r#"(?i)core\.hookspath(?:\s+|=)["']?\.githooks/?["']?(?:\s|$)"#).unwrap());
+        if GUARD_FILE_NAMED.is_match(&HOOKS_PATH_SET.replace_all(&command, " ")) && !read_only_shell_reasons(&command).is_empty() {
+            reasons.push(GUARD_FILE_REASON.into());
+        }
         // A mirror is read-only whether the command runs in it or names it from elsewhere.
         let targets = shell_targets(&command, &cwd);
         if git.is_mirror(&cwd) || targets.as_ref().is_ok_and(|found| found.iter().any(|p| git.is_mirror(p))) {
@@ -130,7 +152,7 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         } else if let Err(unknown) = &targets {
             if !read_only_shell_reasons(&command).is_empty() {
                 reasons.push(format!(
-                    "명령이 고칠 수 있는 폴더를 확인하지 못했습니다({unknown}). 거울(test_1·test_1_hotfix·test_2·main 작업 폴더)일 수 있어 읽기 전용 명령만 허용합니다. 경로를 변수 없이 그대로 적으세요"
+                    "명령이 고칠 수 있는 폴더를 확인하지 못했습니다({unknown}). 거울(test_1·test_1_hotfix·test_2·main_hotfix·main 작업 폴더)일 수 있어 읽기 전용 명령만 허용합니다. 경로를 변수 없이 그대로 적으세요"
                 ));
             }
         }
@@ -142,12 +164,21 @@ pub fn review(input: &Value, git: &dyn GitProbe) -> Vec<String> {
         return find_hits(&args.to_string(), CREDENTIAL_RULES.iter()).into_iter().map(|hit| hit.reason.to_string()).collect();
     }
 
+    // A page fetched by the CLI's own tool is a request like one made in a shell.
+    if tool == "WebFetch" {
+        return find_hits(&string_of(first_present(args, &["url", "uri"])), code_rules()).into_iter().map(|hit| hit.reason.to_string()).collect();
+    }
+
     let raw_paths = edited_paths(tool, args);
     for path in &raw_paths {
         // Forward slashes so dirname works the same for Windows and POSIX paths; `..` resolved lexically.
         let absolute = normalize(&if ROOTED.is_match(path) { path.clone() } else { format!("{cwd}/{path}") }.replace('\\', "/"));
         if git.is_mirror(dirname(&absolute)) {
             reasons.push(format!("{READ_ONLY_REASON} ({path})"));
+            return reasons;
+        }
+        if GUARD_FILE.is_match(&absolute) {
+            reasons.push(format!("{GUARD_FILE_REASON} ({path})"));
             return reasons;
         }
     }
@@ -188,7 +219,7 @@ fn git_reasons(command: &str, current_branch: &dyn Fn() -> String) -> Vec<String
         if PUSH_WORD.is_match(segment) {
             if let Some(target) = PUSH_TO_PROTECTED.captures(segment) {
                 reasons.push(format!(
-                    "{}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main)",
+                    "{}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main, 정식 핫픽스는 main_hotfix → main)",
                     &target[1]
                 ));
             } else if !PUSH_WITH_TARGET.is_match(segment) && is_protected(&current_branch()) {
@@ -202,6 +233,9 @@ fn git_reasons(command: &str, current_branch: &dyn Fn() -> String) -> Vec<String
             ));
         }
     }
+    for call in git_calls(command) {
+        reasons.extend(git_call_reasons(&call, current_branch));
+    }
     for captures in CREATE_BRANCH.captures_iter(command) {
         let name = &captures[1];
         if !BRANCH_NAME.is_match(name) {
@@ -209,6 +243,162 @@ fn git_reasons(command: &str, current_branch: &dyn Fn() -> String) -> Vec<String
                 "브랜치 이름 {name}은 규칙({} 또는 <개인 브랜치>-<주제>)에 맞지 않습니다",
                 PERSONAL_BRANCHES.join(", ")
             ));
+        }
+    }
+    let mut unique: Vec<String> = Vec::new();
+    for reason in reasons {
+        push_unique(&mut unique, reason);
+    }
+    unique
+}
+
+/// One `git` invocation read as words: the `-c` settings before the subcommand, the subcommand
+/// (lower case) and what follows it.
+#[derive(PartialEq)]
+struct GitCall {
+    config: Vec<String>,
+    sub: String,
+    args: Vec<String>,
+}
+
+/// Whether a command word runs git, however it is spelled: a path, `git.exe`, or with quotes
+/// (dropped by `shell_words`) or escape characters inside the name.
+fn is_git(word: &str) -> bool {
+    let lowered = word.trim_start_matches(['(', '{', '$', '`', '&', '!']).to_ascii_lowercase();
+    let base = lowered.rsplit(['/', '\\']).next().unwrap_or("");
+    let unescaped: String = lowered.chars().filter(|c| !matches!(c, '\\' | '^' | '`')).collect();
+    [base, unescaped.as_str()].iter().any(|name| name.strip_suffix(".exe").unwrap_or(name) == "git")
+}
+
+/// Every git call in a command, read from its words so quoting cannot hide the program, the
+/// subcommand or a branch name (`g""it`, `"main"`). When the command hands a string to another
+/// shell, the words inside that string are read too.
+fn git_calls(command: &str) -> Vec<GitCall> {
+    let mut texts = vec![command.to_string()];
+    if STRING_RUNNER.is_match(command) {
+        texts.push(command.replace(['"', '\''], " "));
+    }
+    let mut calls: Vec<GitCall> = Vec::new();
+    for text in &texts {
+        for segment in split_unquoted(text) {
+            let words = shell_words(segment);
+            for start in (0..words.len()).filter(|i| is_git(&words[*i])) {
+                let mut config = Vec::new();
+                let mut sub = None;
+                let mut rest = words[start + 1..].iter();
+                while let Some(word) = rest.next() {
+                    if GIT_VALUE_OPTIONS.contains(&word.as_str()) {
+                        let value = rest.next();
+                        if word == "-c" || word == "--config-env" {
+                            config.extend(value.cloned());
+                        }
+                    } else if let Some(value) = word.strip_prefix("--config-env=") {
+                        config.push(value.to_string());
+                    } else if !word.starts_with('-') {
+                        sub = Some(word.to_ascii_lowercase());
+                        break;
+                    }
+                }
+                let Some(sub) = sub else { continue };
+                let args = rest.map(|word| word.trim_end_matches([')', '}', '`']).to_string()).collect();
+                let call = GitCall { config, sub, args };
+                if !calls.contains(&call) {
+                    calls.push(call);
+                }
+            }
+        }
+    }
+    calls
+}
+
+/// Why one git call is refused: it reaches a protected branch (a push, a move of the branch, a
+/// switch onto it, history changed while on it) or turns the git hooks off.
+fn git_call_reasons(call: &GitCall, current_branch: &dyn Fn() -> String) -> Vec<String> {
+    let mut reasons = Vec::new();
+    let sub = call.sub.as_str();
+    let flag = |names: &[&str]| call.args.iter().any(|arg| names.contains(&arg.as_str()));
+    let positional: Vec<&str> = call.args.iter().map(String::as_str).take_while(|arg| *arg != "--").filter(|arg| !arg.starts_with('-')).collect();
+    let heads = |name: &str| name.strip_prefix("refs/heads/").unwrap_or(name).to_string();
+    let moved = |branch: &str| format!("보호 브랜치 {branch}를 직접 옮기거나 지우거나 바꿀 수 없습니다. PR 병합으로만 바뀝니다");
+
+    let hooks_path = |text: &str| text.to_ascii_lowercase().starts_with("core.hookspath");
+    let sets_hooks_path = sub == "config"
+        && positional.iter().position(|arg| hooks_path(arg)).is_some_and(|at| {
+            flag(&["--unset", "--unset-all"]) || positional.contains(&"unset") || positional.get(at + 1).is_some_and(|value| *value != ".githooks")
+        });
+    let short_no_verify = sub == "commit" && call.args.iter().take_while(|arg| *arg != "--").any(|arg| SHORT_NO_VERIFY.is_match(arg));
+    if flag(&["--no-verify"]) || short_no_verify || sets_hooks_path || call.config.iter().any(|setting| hooks_path(setting)) {
+        reasons.push("git 훅을 건너뛰거나 끄는 옵션(--no-verify, core.hooksPath 변경)은 쓸 수 없습니다. 훅이 막으면 사유를 그대로 보고하세요".to_string());
+    }
+
+    if sub == "push" {
+        let specs = positional.get(1..).unwrap_or(&[]);
+        if flag(&["--all", "--mirror", "--branches"]) || specs.iter().any(|spec| spec.contains('*') || spec.trim_start_matches('+') == ":") {
+            reasons.push("여러 브랜치를 한꺼번에 push하는 옵션(--all, --mirror, 와일드카드)은 보호 브랜치까지 올릴 수 있어 쓸 수 없습니다. 올릴 브랜치 이름을 적으세요".to_string());
+        }
+        for spec in specs {
+            let target = heads(spec.trim_start_matches('+').rsplit(':').next().unwrap_or(spec));
+            let target = if matches!(target.as_str(), "HEAD" | "@") { current_branch() } else { target };
+            if is_protected(&target) {
+                reasons.push(format!(
+                    "{target}에는 직접 push할 수 없습니다. PR로만 바뀝니다 (개인·작업 브랜치 → test_2 또는 test_1_hotfix → test_1 → main, 정식 핫픽스는 main_hotfix → main)"
+                ));
+            }
+        }
+        if specs.is_empty() && is_protected(&current_branch()) {
+            reasons.push(format!("보호 브랜치 {}에서는 push할 수 없습니다. 자기 개인 브랜치에서 PR로 올리세요", current_branch()));
+        }
+    }
+    // The mirror's own `git pull --ff-only` only follows the remote.
+    if HISTORY_COMMANDS.contains(&sub) && !(sub == "pull" && flag(&["--ff-only"])) && is_protected(&current_branch()) {
+        reasons.push(format!(
+            "보호 브랜치 {}에서는 커밋·병합하지 않습니다. 자기 개인 브랜치나 <개인 브랜치>-<주제> 브랜치로 옮기세요",
+            current_branch()
+        ));
+    }
+    // The branch is read once, before the command runs: a switch onto a protected branch
+    // would let the rest of the same command commit there unseen.
+    if matches!(sub, "checkout" | "switch") && !flag(&["-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan", "--detach", "-d"]) && !call.args.iter().any(|arg| arg == "--") {
+        if let Some(branch) = positional.first().filter(|branch| is_protected(branch)) {
+            reasons.push(format!(
+                "작업 폴더를 보호 브랜치 {branch}로 전환하지 않습니다. 파일이 필요하면 git show {branch}:<경로>나 git checkout {branch} -- <경로>를, 갈라 나올 때는 git switch -c <개인 브랜치>-<주제> {branch}를 쓰세요"
+            ));
+        }
+    }
+    // The branch a call creates or re-creates, read from the call's words so `git.exe`, a path or
+    // quotes do not hide it: it follows the naming rule, and `-B main` would move a protected branch.
+    let created = match sub {
+        "checkout" | "switch" => {
+            let create = ["-b", "-B", "-c", "-C", "--create", "--force-create", "--orphan"];
+            call.args.iter().position(|arg| create.contains(&arg.as_str())).and_then(|at| call.args.get(at + 1)).map(String::as_str)
+        }
+        "branch" if call.args.iter().all(|arg| !arg.starts_with('-') || matches!(arg.as_str(), "-f" | "--force")) => positional.first().copied(),
+        _ => None,
+    };
+    if let Some(name) = created.filter(|name| !name.starts_with('-')) {
+        if is_protected(name) {
+            reasons.push(moved(name));
+        }
+        if !BRANCH_NAME.is_match(name) {
+            reasons.push(format!("브랜치 이름 {name}은 규칙({} 또는 <개인 브랜치>-<주제>)에 맞지 않습니다", PERSONAL_BRANCHES.join(", ")));
+        }
+    }
+    if sub == "worktree" && positional.first() == Some(&"add") && !flag(&["-b", "-B", "--detach", "-d", "--orphan"]) {
+        if let Some(branch) = positional.get(2).filter(|branch| is_protected(branch)) {
+            reasons.push(format!("보호 브랜치 {branch}의 작업 폴더(거울)는 사람이 설정합니다. 에이전트는 만들지 않습니다"));
+        }
+    }
+    if sub == "branch" && flag(&["-f", "--force", "-d", "-D", "--delete", "-m", "-M", "--move", "-c", "-C", "--copy"]) {
+        reasons.extend(positional.iter().filter(|branch| is_protected(branch)).map(|branch| moved(branch)));
+    }
+    if sub == "update-ref" || (sub == "symbolic-ref" && positional.len() >= 2) {
+        reasons.extend(positional.iter().filter_map(|name| name.strip_prefix("refs/heads/")).filter(|branch| is_protected(branch)).map(moved));
+    }
+    if matches!(sub, "fetch" | "pull") {
+        for spec in positional.get(1..).unwrap_or(&[]) {
+            if let Some(branch) = spec.rsplit_once(':').map(|(_, to)| heads(to)).filter(|branch| is_protected(branch)) {
+                reasons.push(moved(&branch));
+            }
         }
     }
     reasons
@@ -225,12 +415,16 @@ enum MergeTarget {
     Base(Option<String>),
 }
 
-/// Merges into test_1/test_1_hotfix/main are the owner's: `gh pr merge` and gh's direct merge APIs
-/// pass only when the base is confirmed free (test_2, a personal or work branch)
+/// Merges into test_1_hotfix/main_hotfix/main are the owner's: `gh pr merge` and gh's direct merge APIs
+/// pass only when the base is confirmed free (test_2, test_1, a personal or work branch)
 /// or the signed-in gh user is the owner. Any lookup that fails blocks, the owner's too:
 /// a PR whose base can't be read is refused before the owner check.
 fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
     let mut reasons = Vec::new();
+    // Quotes inside the program name (`g""h`, `"gh"`) hide the call from the reading below:
+    // when dropping the quotes shows more calls, the command is judged without them.
+    let plain = command.replace(['"', '\''], "");
+    let command = if GH_MERGE_CALL.find_iter(&plain).count() > GH_MERGE_CALL.find_iter(command).count() { plain.as_str() } else { command };
     for (is_pr_merge, arguments, starts_command) in gh_calls(command) {
         let Some(target) = merge_target(is_pr_merge, arguments) else { continue };
         let base = match &target {
@@ -241,7 +435,7 @@ fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
         // name no PR, and for those the owner check below still decides.
         if starts_command && base.is_none() && matches!(target, MergeTarget::Pr { .. }) {
             reasons.push(format!(
-                "병합할 PR의 base 브랜치를 확인하지 못했습니다(gh pr view 실패). 보호 브랜치 병합일 수 있어 막습니다. test_1·test_1_hotfix·main 병합은 대표({OWNER})만 합니다"
+                "병합할 PR의 base 브랜치를 확인하지 못했습니다(gh pr view 실패). 보호 브랜치 병합일 수 있어 막습니다. test_1_hotfix·main_hotfix·main 병합은 대표({OWNER})만 합니다"
             ));
             continue;
         }
@@ -256,25 +450,27 @@ fn merge_reasons(command: &str, cwd: &str, git: &dyn GitProbe) -> Vec<String> {
         let into = base.clone().unwrap_or_else(|| "확인 못 한 브랜치".to_string());
         reasons.push(match &login {
             None => format!(
-                "gh 로그인 계정을 확인하지 못해 {into} 병합을 막습니다(gh api user 실패 또는 명령에 토큰 지정). test_1·test_1_hotfix·main 병합은 대표({OWNER})만 합니다"
+                "gh 로그인 계정을 확인하지 못해 {into} 병합을 막습니다(gh api user 실패 또는 명령에 토큰 지정). test_1_hotfix·main_hotfix·main 병합은 대표({OWNER})만 합니다"
             ),
             Some(user) => format!(
-                "{into}에는 대표({OWNER})만 병합할 수 있습니다(지금 gh 로그인: {user}). test_2 병합은 누구나 하고, test_1_hotfix·test_1·main은 대표가 병합합니다"
+                "{into}에는 대표({OWNER})만 병합할 수 있습니다(지금 gh 로그인: {user}). test_2는 누구나, test_1은 다른 팀원 1명이 승인한 뒤 누구나 병합하고, test_1_hotfix·main_hotfix·main은 대표가 병합합니다"
             ),
         });
     }
     reasons
 }
 
-/// test_2 and the personal/work branches are free to merge into; anything else needs the owner.
+/// test_2, test_1 and the personal/work branches are free to merge into here (test_1's
+/// approval is GitHub's to enforce); anything else needs the owner.
 fn is_free_base(base: &str) -> bool {
-    base == FREE_MERGE_BRANCH || BRANCH_NAME.is_match(base)
+    base == FREE_MERGE_BRANCH || base == APPROVAL_MERGE_BRANCH || BRANCH_NAME.is_match(base)
 }
 
 /// Each `gh pr merge` (`true`) or `gh api` (`false`) call with its arguments: the text from the call
 /// to the first `;`, `&`, `|` or line break (LF, CR) outside quotes. Calls are found anywhere, so a
 /// line break or quoting cannot hide one; one inside an `echo` only costs a lookup. The third value
-/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, `$(` or a line break before it).
+/// says whether the call starts a command (nothing but `;`, `&`, `|`, `(`, a backtick or a line break before it)
+/// and is not literal text inside single quotes (#56).
 fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
     GH_MERGE_CALL
         .captures_iter(command)
@@ -282,10 +478,41 @@ fn gh_calls(command: &str) -> Vec<(bool, &str, bool)> {
             let whole = c.get(0).unwrap();
             let rest = &command[whole.end()..];
             let before = command[..whole.start()].trim_end_matches([' ', '\t']);
-            let starts_command = before.is_empty() || before.ends_with([';', '&', '|', '(', '\n', '\r']);
+            let starts_command = (before.is_empty() || before.ends_with([';', '&', '|', '(', '`', '\n', '\r']))
+                && !in_literal_quote(command, whole.start());
             (c.get(1).is_some(), &rest[..unquoted_end(rest)], starts_command)
         })
         .collect()
+}
+
+/// Whether `at` lies inside single quotes, where bash and PowerShell run nothing. Read with both
+/// escape characters (bash `\`, PowerShell `` ` ``) and true only when both readings agree. Double
+/// quotes do not count (`$(…)` runs inside them), nor does text handed to a program that runs a string.
+/// Quoting this reading cannot follow (command substitutions, `$'…'`, here-documents, comments, curly quotes)
+/// counts as not literal, so the call keeps its full check.
+fn in_literal_quote(command: &str, at: usize) -> bool {
+    const CURLY_QUOTES: [char; 7] = ['\u{2018}', '\u{2019}', '\u{201A}', '\u{201B}', '\u{201C}', '\u{201D}', '\u{201E}'];
+    if STRING_RUNNER.is_match(command) || command.contains("$(") || command.contains('`') || command.contains("$'") || command.contains("<<") || command.contains(CURLY_QUOTES) {
+        return false;
+    }
+    ['\\', '`'].into_iter().all(|escape| {
+        let mut quote: Option<char> = None;
+        let mut escaped = false;
+        for c in command[..at].chars() {
+            match quote {
+                Some('\'') if c == '\'' => quote = None,
+                Some('\'') => {}
+                _ if escaped => escaped = false,
+                _ if c == escape => escaped = true,
+                Some(_) if c == '"' => quote = None,
+                Some(_) => {}
+                None if c == '"' || c == '\'' => quote = Some(c),
+                None if c == '#' => return false,
+                None => {}
+            }
+        }
+        quote == Some('\'')
+    })
 }
 
 /// Where the command part starting `text` ends: the first `;`, `&`, `|`, LF or CR outside quotes.
@@ -316,7 +543,8 @@ fn merge_target(is_pr_merge: bool, arguments: &str) -> Option<MergeTarget> {
         &words,
         &["-X", "--method", "-f", "--raw-field", "-F", "--field", "-H", "--header", "-q", "--jq", "-t", "--template", "--input", "--hostname", "--cache", "-p", "--preview"],
     );
-    let endpoint = positional.first()?;
+    // A query string or fragment does not change which endpoint is called.
+    let endpoint = positional.first()?.split(['?', '#']).next().unwrap_or_default();
     if let Some(pr) = API_PR_MERGE.captures(endpoint) {
         let repo = Some(pr[1].to_string()).filter(|r| !r.contains('{'));
         return Some(MergeTarget::Pr { selector: Some(pr[2].to_string()), repo });
@@ -326,7 +554,10 @@ fn merge_target(is_pr_merge: bool, arguments: &str) -> Option<MergeTarget> {
         let base = fields.iter().find_map(|f| f.strip_prefix("base=")).map(str::to_string);
         return Some(MergeTarget::Base(base));
     }
-    (endpoint == "graphql" && GRAPHQL_MERGE.is_match(arguments)).then_some(MergeTarget::Base(None))
+    // A GraphQL body read from a file or stdin cannot be checked for a merge mutation: treated as one.
+    let fields = flag_values(&flags, &["-f", "--raw-field", "-F", "--field"]);
+    let unseen_body = flags.iter().any(|(flag, _)| flag == "--input") || fields.iter().any(|field| field.split_once('=').is_some_and(|(_, value)| value.starts_with('@')));
+    (endpoint.eq_ignore_ascii_case("graphql") && (GRAPHQL_MERGE.is_match(arguments) || unseen_body)).then_some(MergeTarget::Base(None))
 }
 
 /// Positional words and `(flag, value)` pairs; `takes_value` flags consume the next word unless written `--flag=value`.
@@ -660,9 +891,13 @@ impl GitProbe for RealGit {
     fn branch(&self, dir: &str) -> String {
         git_at(dir, &["branch", "--show-current"])
     }
+    /// A project_O checkout is told by any remote that points at the repository, whatever it is
+    /// called, or by the guard's own rule file in HEAD: worktrees share one config, so renaming
+    /// or removing `origin` from a personal checkout must not turn the mirrors writable.
     fn is_mirror(&self, dir: &str) -> bool {
         READ_ONLY_BRANCHES.contains(&self.branch(dir).as_str())
-            && PROJECT_REMOTE.is_match(&git_at(dir, &["remote", "get-url", "origin"]))
+            && (git_at(dir, &["config", "--get-regexp", r"^remote\..*\.url$"]).lines().any(|line| line.split_whitespace().nth(1).is_some_and(|url| PROJECT_REMOTE.is_match(url)))
+                || git_at(dir, &["cat-file", "-t", "HEAD:crates/o-guard/src/rules.rs"]) == "blob")
     }
     fn pr_base(&self, dir: &str, selector: Option<&str>, repo: Option<&str>) -> Option<String> {
         let mut args = vec!["pr", "view"];
@@ -738,7 +973,9 @@ mod tests {
     fn agent_cannot_stop_leads() {
         assert!(AGENT_DISPATCH.is_match("o lead stop"));
         assert!(AGENT_DISPATCH.is_match("o lead stop-all"));
+        assert!(AGENT_DISPATCH.is_match("o lead forward 20261109-x-f1"));
         assert!(!AGENT_DISPATCH.is_match("o lead status"));
+        assert!(AGENT_DISPATCH.is_match("o _lead-forward 20261107-x 0"));
     }
 
     #[test]

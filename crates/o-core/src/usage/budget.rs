@@ -34,6 +34,7 @@ use serde_json::{Map, Value};
 
 use crate::run::index::{self, sql};
 use crate::sys::js::{iso, parse_time};
+use crate::run::mode::Profile;
 use crate::run::plan::ProviderId;
 use crate::policy::EFFORTS;
 use crate::usage::probe;
@@ -107,6 +108,12 @@ pub fn read_enabled_for_autorun(home: &Path) -> bool {
 
 /// Saves one setting, keeping the file's others.
 pub(crate) fn write_setting(home: &Path, key: &str, value: Value) -> Result<(), String> {
+    update_setting(home, key, |_| value)
+}
+
+/// Saves one setting worked out from the value the file holds now, read under the same lock as
+/// the write: a save that started earlier cannot put back what another one changed meanwhile.
+pub(crate) fn update_setting(home: &Path, key: &str, next: impl FnOnce(Option<&Value>) -> Value) -> Result<(), String> {
     let write = || -> io::Result<()> {
         fs::create_dir_all(home)?;
         let lock = fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(home.join("settings.lock"))?;
@@ -117,6 +124,7 @@ pub(crate) fn write_setting(home: &Path, key: &str, value: Value) -> Result<(), 
             Err(e) => return Err(e),
             Ok(bytes) => serde_json::from_slice::<Map<String, Value>>(&bytes).map_err(io::Error::other)?,
         };
+        let value = next(settings.get(key));
         settings.insert(key.into(), value);
         let temp = path.with_extension(format!("{}.tmp", crate::run::store::new_run_id(Utc::now())));
         fs::write(&temp, to_pretty(&Value::Object(settings))?)?;
@@ -483,18 +491,23 @@ pub fn report_now(home: &Path) -> io::Result<Report> {
     report(home, Utc::now())
 }
 
-/// Whether the saved Codex/Antigravity reading is missing or older than ten minutes.
-pub fn usage_is_stale(home: &Path, now: DateTime<Utc>) -> bool {
-    let at = probe::load_usage(home).ok().flatten().and_then(|v| v.get("at").and_then(Value::as_str).and_then(parse_time));
-    at.is_none_or(|at| now - at > Duration::minutes(STALE_MINUTES))
+/// Whether the saved Codex/Antigravity reading is missing, older than ten minutes, or — when
+/// `profile` says whose login is about to be used — taken with the other profile's login.
+pub fn usage_is_stale(home: &Path, now: DateTime<Utc>, profile: Option<Profile>) -> bool {
+    let saved = probe::load_usage(home).ok().flatten();
+    let at = saved.as_ref().and_then(|v| v.get("at").and_then(Value::as_str).and_then(parse_time));
+    // A reading that names no profile was taken before they were told apart: the person's own.
+    let taken_in = saved.as_ref().and_then(|v| v.get("profile").and_then(Value::as_str)).and_then(Profile::parse).unwrap_or(Profile::Own);
+    profile.is_some_and(|asked| asked != taken_in) || at.is_none_or(|at| now - at > Duration::minutes(STALE_MINUTES))
 }
 
 /// Asks the CLIs again (`o usage`) when the saved reading is stale; saving it records the snapshots.
-pub fn refresh_if_stale(home: &Path, now: DateTime<Utc>) -> Option<UsageReading> {
-    if !usage_is_stale(home, now) {
+/// `profile`: the one the run about to start uses, so its budget is checked against the login it spends.
+pub fn refresh_if_stale(home: &Path, now: DateTime<Utc>, profile: Option<Profile>) -> Option<UsageReading> {
+    if !usage_is_stale(home, now, profile) {
         return None;
     }
-    let reading = probe::read_usage();
+    let reading = probe::read_usage(home, profile);
     if let Err(error) = probe::save_usage(home, &reading) {
         eprintln!("{error}");
     }

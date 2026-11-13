@@ -13,6 +13,11 @@ description: Split a multi-part request into work cards and hand them to agent C
 
 사용자 요청을 서로 독립적인 카드 2~5개로 나눈다. 카드끼리 같은 파일을 동시에 고치지 않게 나눈다.
 
+카드는 기본적으로 함께 실행된다. 쓰는 자원(`resources`)이 겹치지 않는 카드는 동시에 돌고, 겹치거나 `depends_on`이 걸린 카드만 앞 카드를 기다린다. 되도록 모든 카드가 동시에 돌게 나눈다(ADR-0037).
+
+- `depends_on`은 앞 카드가 만든 실제 결과(파일 내용·측정값)가 있어야 시작할 수 있을 때만 쓴다. 함수 이름·시그니처·파일 형식 같은 약속만 필요하면 그 약속을 양쪽 task에 적고 동시에 돌린다. 통합·검토 카드만 뒤에 둔다.
+- Claude·Codex 카드는 카드 안에서 서브에이전트로 일을 다시 나눠 병렬로 처리한다. 카드는 서로 다른 파일 영역 단위로 크게 나누고, task에 나눠 맡길 수 있는 하위 작업을 적는다.
+
 ```json
 {
   "title": "랜딩 페이지 개편",
@@ -26,14 +31,14 @@ description: Split a multi-part request into work cards and hand them to agent C
 }
 ```
 
-- `provider`: `claude` | `codex` | `opencode` | `devin`. Antigravity는 공급자 정책 때문에 실행하지 않는다. **카드마다 어느 에이전트·모델·노력 수준(`effort`)으로 할지는 총괄이 일에 맞게 정한다.**
+- `provider`: `claude` | `codex` | `opencode` | `devin` | `agy`. `agy`는 사람이 약관 안내에 동의해 작업 에이전트를 켰을 때만 터미널 카드로 배정한다. 터미널 카드는 후속 지시를 받지 않으며 완료 문서의 첫 `O-DONE`과 마지막 `O-END`에 같은 일회용 값을 써서 보고하고 `model`·`effort` 대신 CLI의 현재 설정을 쓴다. **다른 카드는 에이전트·모델·노력 수준(`effort`)을 총괄이 일에 맞게 정한다.**
   - 사용자가 특정 에이전트나 모델을 말한 카드는 그대로 따른다.
   - 고르기 전에 `o usage`로 구독 한도를 보고, 한도에 가까운(90% 이상) 서비스는 피한다. 동시 실행 상한을 넘지 않게 나눈다.
   - 모델 이름은 그 CLI가 받는 것만 쓴다. 확실하지 않으면 `model`을 비워 CLI 기본 모델에 맡기고 `effort`로만 조절한다.
   - 사용자에게 전달을 보고할 때 카드마다 왜 그 에이전트·모델을 골랐는지 한 줄씩 적는다.
 - `role`은 선택 사항인 사람용 이름표다("코딩", "검토" 등). 모델이나 권한과 아무 관계가 없다. 없으면 화면에 카드 id로 보인다.
 - 허용 필드는 `id, provider, task, role, model, effort, depends_on, resources`다. 실행 파일·인자·환경변수·계정은 넣을 수 없다.
-- `resources`는 `[{"kind":"project-path","key":"src/ui","mode":"write"},{"kind":"external","key":"service:shared","mode":"read"}]` 형식이다. 프로젝트 상대 경로 또는 공유 외부 키의 읽기·쓰기를 모두 선언하며, 빠뜨릴 가능성이 있으면 생략해 전체 자원을 독점한다.
+- `resources`는 `[{"kind":"project-path","key":"src/ui","mode":"write"},{"kind":"external","key":"service:shared","mode":"read"}]` 형식이다. 프로젝트 상대 경로 또는 공유 외부 키의 읽기·쓰기를 모든 카드에 선언한다. 생략한 카드는 다른 모든 카드와 겹친다고 보아 혼자 실행되므로, 정말 범위를 알 수 없을 때만 생략한다.
 - `task`는 짧고 자족적으로 쓴다: 목표, 범위(파일·폴더), 완료 기준. 다른 카드와 주고받아야 할 것이 있으면 task에 적는다("끝나면 ui 카드에게 바꾼 파일을 알려 줄 것").
 - 이전 작업은 O가 카드마다 task와 관련된 조각만(최대 1,500자) 자동으로 넣는다. 그러니 task에 지난 결과를 길게 옮겨 적지 않는다. 계획 전에 `o context "<핵심어>"`로 이 프로젝트에서 이미 한 일을 확인하고, 다음 카드들이 꼭 알아야 할 결정은 `o context add "내용"`으로 남긴다.
 

@@ -57,6 +57,8 @@ pub enum LogKind {
     Team,
     /// The runner lowered the card's effort for the daily usage budget.
     Budget,
+    /// The project skills and O harness blocks the card's prompt got.
+    Guides,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -296,10 +298,12 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
             | OEvent::CardMessage { card_id, .. }
             | OEvent::CardInput { card_id, .. }
             | OEvent::CardTool { card_id, .. }
+            | OEvent::CardToolError { card_id, .. }
             | OEvent::CardLimit { card_id, .. }
             | OEvent::CardEnd { card_id, .. }
             | OEvent::CardUsage { card_id, .. }
-            | OEvent::CardBudget { card_id, .. } => card_id,
+            | OEvent::CardBudget { card_id, .. }
+            | OEvent::CardGuides { card_id, .. } => card_id,
             _ => continue,
         };
         let Some(card) = run.cards.iter_mut().find(|c| c.id == *card_id) else { continue };
@@ -320,6 +324,12 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 log.tool = Some(ToolWords { word: tool_word(name), detail: tool_detail(summary) });
                 card.log.push(log);
             }
+            // The call itself is already in the log; this line says it failed and why.
+            OEvent::CardToolError { at, name, error, .. } => {
+                let mut log = entry(at, LogKind::Tool, format!("{name} 실패: {error}").trim().to_string());
+                log.tool = Some(ToolWords { word: format!("{} 실패", tool_word(name)), detail: error.clone() });
+                card.log.push(log);
+            }
             OEvent::CardMessage { at, text, .. } => {
                 card.activity = first_line(text);
                 card.log.push(entry(at, LogKind::Message, text.clone()));
@@ -334,6 +344,7 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
                 card.effort = Some(effort_to.clone());
                 card.log.push(entry(at, LogKind::Budget, card.activity.clone()));
             }
+            OEvent::CardGuides { at, skills, harness, .. } => card.log.push(entry(at, LogKind::Guides, guides_text(skills, harness))),
             OEvent::CardUsage { input, cached, output, .. } => {
                 card.usage.input += input;
                 card.usage.cached += cached;
@@ -357,6 +368,13 @@ pub fn snapshot(events: &[OEvent]) -> Option<RunView> {
 /// "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budgetText` in src/core/snapshot.ts.
 pub fn budget_text(from: Option<&str>, to: &str, spent: f64, allowance: f64) -> String {
     format!("사용 예산: effort {} → {to} (오늘 {}/{}%p)", from.unwrap_or("기본"), crate::sys::js::number_text(spent), crate::sys::js::number_text(allowance))
+}
+
+/// "넣은 지침: 하네스 game · 스킬 ui, test", as `guidesText` in src/core/snapshot.ts.
+pub fn guides_text(skills: &[String], harness: &[String]) -> String {
+    let parts: Vec<String> = [("하네스", harness), ("스킬", skills)].into_iter()
+        .filter(|(_, names)| !names.is_empty()).map(|(word, names)| format!("{word} {}", names.join(", "))).collect();
+    format!("넣은 지침: {}", parts.join(" · "))
 }
 
 /// Tool names as each CLI reports them, grouped into what a person would call the act.

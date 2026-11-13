@@ -33,7 +33,7 @@
           "t": "card.message",
           "at": "2026-11-01T16:23:37.751Z",
           "cardId": "sheets-b",
-          "text": "대표님, 참고 시트를 확인하고 요청하신 네 장을 순서대로 생성하겠습니다. 먼저 팀 메시지와 이미지 생성 절차를 확인하겠습니다."
+          "text": "참고 시트를 확인하고 요청하신 네 장을 순서대로 생성하겠습니다. 먼저 팀 메시지와 이미지 생성 절차를 확인하겠습니다."
         },
         {
           "t": "card.tool",
@@ -46,13 +46,13 @@
           "t": "card.message",
           "at": "2026-11-01T16:23:44.542Z",
           "cardId": "sheets-b",
-          "text": "대표님, imagegen 스킬의 내장 도구로 작업합니다. 팀의 새 메시지는 없으며, 지정된 통합 안내 파일은 현재 접근이 거부됐습니다."
+          "text": "imagegen 스킬의 내장 도구로 작업합니다. 팀의 새 메시지는 없으며, 지정된 통합 안내 파일은 현재 접근이 거부됐습니다."
         },
         {
           "t": "card.message",
           "at": "2026-11-01T16:24:39.220Z",
           "cardId": "sheets-b",
-          "text": "대표님, Claude 시트를 생성했습니다. 3행은 점프 동작 때문에 발 높이가 프레임마다 달라지므로 이 차이를 최종 검수에 반영하겠습니다. 나머지 캐릭터를 같은 배치로 제작하겠습니다."
+          "text": "Claude 시트를 생성했습니다. 3행은 점프 동작 때문에 발 높이가 프레임마다 달라지므로 이 차이를 최종 검수에 반영하겠습니다. 나머지 캐릭터를 같은 배치로 제작하겠습니다."
         },
         {
           "t": "card.tool",
@@ -65,13 +65,13 @@
           "t": "card.message",
           "at": "2026-11-01T16:25:23.328Z",
           "cardId": "sheets-b",
-          "text": "대표님, 나머지 세 시트는 Claude 결과와 각 캐릭터의 기존 시트를 함께 참고해 생성 중입니다. 완료 후 프레임 간 여백과 동작 차이를 확인하겠습니다."
+          "text": "나머지 세 시트는 Claude 결과와 각 캐릭터의 기존 시트를 함께 참고해 생성 중입니다. 완료 후 프레임 간 여백과 동작 차이를 확인하겠습니다."
         },
         {
           "t": "card.message",
           "at": "2026-11-01T16:26:33.822Z",
           "cardId": "sheets-b",
-          "text": "대표님, Codex와 agy 시트가 생성됐습니다. Codex는 눈을 감은 일부 프레임에서 안경이 빠져 있고, 공통으로 2행과 3행 사이 여백이 좁아 총괄에게 함께 전달하겠습니다."
+          "text": "Codex와 agy 시트가 생성됐습니다. Codex는 눈을 감은 일부 프레임에서 안경이 빠져 있고, 공통으로 2행과 3행 사이 여백이 좁아 총괄에게 함께 전달하겠습니다."
         },
         {
           "t": "msg",
@@ -91,7 +91,7 @@
           "t": "card.message",
           "at": "2026-11-01T16:27:03.257Z",
           "cardId": "sheets-b",
-          "text": "대표님, 내장 imagegen으로 동작 시트 네 장을 만들고 총괄에게 전달했습니다.\n\n파일: [Claude](C:/projects/project_O/app/public/office/sheets/raw-b-claude.png), [Codex](C:/projects/project_O/app/public/office/sheets/raw-b-codex.png), [agy](C:/projects/project_O/app/public/office/sheets/raw-b-agy.png), [lead](C:/projects/project_O/app/public/office/sheets/raw-b-lead.png).\n\n확인 결과 2~3행 사이 여백이 좁고, 3행은 발 높이가 다릅니다. Codex의 1~4행 일부 프레임에서는 안경이 빠졌습니다.  \n정렬·자르기 후처리는 하지 않았습니다. 🌱 grafly 호출 0회."
+          "text": "내장 imagegen으로 동작 시트 네 장을 만들고 총괄에게 전달했습니다.\n\n파일: [Claude](C:/projects/project_O/app/public/office/sheets/raw-b-claude.png), [Codex](C:/projects/project_O/app/public/office/sheets/raw-b-codex.png), [agy](C:/projects/project_O/app/public/office/sheets/raw-b-agy.png), [lead](C:/projects/project_O/app/public/office/sheets/raw-b-lead.png).\n\n확인 결과 2~3행 사이 여백이 좁고, 3행은 발 높이가 다릅니다. Codex의 1~4행 일부 프레임에서는 안경이 빠졌습니다.  \n정렬·자르기 후처리는 하지 않았습니다. 🌱 grafly 호출 0회."
         },
         {
           "t": "card.usage",
@@ -106,7 +106,7 @@
           "at": "2026-11-01T16:27:06.423Z",
           "cardId": "sheets-b",
           "status": "done",
-          "result": "대표님, 내장 imagegen으로 동작 시트 네 장을 만들고 총괄에게 전달했습니다.\n\n파일: [Claude](C:/projects/project_O/app/public/office/sheets/raw-b-claude.png), [Codex](C:/projects/project_O/app/public/office/sheets/raw-b-codex.png), [agy](C:/projects/project_O/app/public/office/sheets/raw-b-agy.png), [lead](C:/projects/project_O/app/public/office/sheets/raw-b-lead.png).\n\n확인 결과 2~3행 사이 여백이 좁고, 3행은 발 높이가 다릅니다. Codex의 1~4행 일부 프레임에서는 안경이 빠졌습니다.  \n정렬·자르기 후처리는 하지 않았습니다. 🌱 grafly 호출 0회.",
+          "result": "내장 imagegen으로 동작 시트 네 장을 만들고 총괄에게 전달했습니다.\n\n파일: [Claude](C:/projects/project_O/app/public/office/sheets/raw-b-claude.png), [Codex](C:/projects/project_O/app/public/office/sheets/raw-b-codex.png), [agy](C:/projects/project_O/app/public/office/sheets/raw-b-agy.png), [lead](C:/projects/project_O/app/public/office/sheets/raw-b-lead.png).\n\n확인 결과 2~3행 사이 여백이 좁고, 3행은 발 높이가 다릅니다. Codex의 1~4행 일부 프레임에서는 안경이 빠졌습니다.  \n정렬·자르기 후처리는 하지 않았습니다. 🌱 grafly 호출 0회.",
           "exitCode": 0
         },
         {
@@ -151,7 +151,7 @@
           "t": "card.message",
           "at": "2026-11-01T16:15:36.377Z",
           "cardId": "sheets",
-          "text": "대표님, 백호가 원본 캐릭터를 확인하고 Claude 시트부터 생성한 뒤 네 캐릭터를 같은 배율로 정렬하겠습니다. 결과는 지정하신 `sheets` 폴더에만 저장하고 각 행의 차이도 확인하겠습니다."
+          "text": "원본 캐릭터를 확인하고 Claude 시트부터 생성한 뒤 네 캐릭터를 같은 배율로 정렬하겠습니다. 결과는 지정하신 `sheets` 폴더에만 저장하고 각 행의 차이도 확인하겠습니다."
         },
         {
           "t": "card.tool",
@@ -185,7 +185,7 @@
           "t": "card.message",
           "at": "2026-11-01T16:15:45.130Z",
           "cardId": "sheets",
-          "text": "대표님, `imagegen` 스킬의 내장 도구를 사용하겠습니다. 팀 메시지는 새 내용이 없으며, 세션 통합 안내 파일은 접근이 거부되어 읽지 못했습니다."
+          "text": "`imagegen` 스킬의 내장 도구를 사용하겠습니다. 팀 메시지는 새 내용이 없으며, 세션 통합 안내 파일은 접근이 거부되어 읽지 못했습니다."
         },
         {
           "t": "card.message",
@@ -278,7 +278,7 @@
           "t": "card.message",
           "at": "2026-11-01T16:20:16.479Z",
           "cardId": "sheets",
-          "text": "대표님, 내장 imagegen으로 네 캐릭터 시트와 정렬본을 만들고 총괄에게 검수 결과를 전달했습니다.  \n파일: [sheets 폴더](C:/projects/project_O/app/public/office/sheets)에 `raw-{claude,codex,agy,lead}.png`, `sheet-{claude,codex,agy,lead}.png`, `sheets.json`, 정렬용 `align.py`.  \n확인: 64칸의 투명 경계·가로 중앙·하단 8px 정렬을 검사했습니다.  \n남은 문제: 원본의 칸 침범으로 작업·인사 행에 잘림과 조각이 있고, 작업 자세와 일부 인사 프레임도 요청과 다릅니다. `align.py` 삭제는 훅에서 차단됐습니다.  \n🌱 Grafly 약 2,068 토큰 절약."
+          "text": "내장 imagegen으로 네 캐릭터 시트와 정렬본을 만들고 총괄에게 검수 결과를 전달했습니다.  \n파일: [sheets 폴더](C:/projects/project_O/app/public/office/sheets)에 `raw-{claude,codex,agy,lead}.png`, `sheet-{claude,codex,agy,lead}.png`, `sheets.json`, 정렬용 `align.py`.  \n확인: 64칸의 투명 경계·가로 중앙·하단 8px 정렬을 검사했습니다.  \n남은 문제: 원본의 칸 침범으로 작업·인사 행에 잘림과 조각이 있고, 작업 자세와 일부 인사 프레임도 요청과 다릅니다. `align.py` 삭제는 훅에서 차단됐습니다.  \n🌱 Grafly 약 2,068 토큰 절약."
         },
         {
           "t": "card.usage",
@@ -293,7 +293,7 @@
           "at": "2026-11-01T16:20:19.929Z",
           "cardId": "sheets",
           "status": "done",
-          "result": "대표님, 내장 imagegen으로 네 캐릭터 시트와 정렬본을 만들고 총괄에게 검수 결과를 전달했습니다.  \n파일: [sheets 폴더](C:/projects/project_O/app/public/office/sheets)에 `raw-{claude,codex,agy,lead}.png`, `sheet-{claude,codex,agy,lead}.png`, `sheets.json`, 정렬용 `align.py`.  \n확인: 64칸의 투명 경계·가로 중앙·하단 8px 정렬을 검사했습니다.  \n남은 문제: 원본의 칸 침범으로 작업·인사 행에 잘림과 조각이 있고, 작업 자세와 일부 인사 프레임도 요청과 다릅니다. `align.py` 삭제는 훅에서 차단됐습니다.  \n🌱 Grafly 약 2,068 토큰 절약.",
+          "result": "내장 imagegen으로 네 캐릭터 시트와 정렬본을 만들고 총괄에게 검수 결과를 전달했습니다.  \n파일: [sheets 폴더](C:/projects/project_O/app/public/office/sheets)에 `raw-{claude,codex,agy,lead}.png`, `sheet-{claude,codex,agy,lead}.png`, `sheets.json`, 정렬용 `align.py`.  \n확인: 64칸의 투명 경계·가로 중앙·하단 8px 정렬을 검사했습니다.  \n남은 문제: 원본의 칸 침범으로 작업·인사 행에 잘림과 조각이 있고, 작업 자세와 일부 인사 프레임도 요청과 다릅니다. `align.py` 삭제는 훅에서 차단됐습니다.  \n🌱 Grafly 약 2,068 토큰 절약.",
           "exitCode": 0
         },
         {
@@ -338,7 +338,7 @@
           "t": "card.message",
           "at": "2026-11-01T15:18:24.214Z",
           "cardId": "art",
-          "text": "대표님, imagegen 스킬로 다섯 이미지를 제작하고 지정된 폴더에 저장한 뒤 결과를 확인하겠습니다. 먼저 팀 메시지와 작업 지침을 확인하겠습니다."
+          "text": "imagegen 스킬로 다섯 이미지를 제작하고 지정된 폴더에 저장한 뒤 결과를 확인하겠습니다. 먼저 팀 메시지와 작업 지침을 확인하겠습니다."
         },
         {
           "t": "card.tool",
@@ -358,19 +358,19 @@
           "t": "card.message",
           "at": "2026-11-01T15:22:53.086Z",
           "cardId": "art",
-          "text": "대표님, 팀 메시지 조회가 지연되고 있어 지침 확인과 이미지 제작을 먼저 진행하겠습니다."
+          "text": "팀 메시지 조회가 지연되고 있어 지침 확인과 이미지 제작을 먼저 진행하겠습니다."
         },
         {
           "t": "card.message",
           "at": "2026-11-01T15:22:53.086Z",
           "cardId": "art",
-          "text": "대표님, 첫 캐릭터를 만들었습니다. 이 이미지를 기준으로 나머지 세 캐릭터의 비율과 화풍을 맞추고 있습니다."
+          "text": "첫 캐릭터를 만들었습니다. 이 이미지를 기준으로 나머지 세 캐릭터의 비율과 화풍을 맞추고 있습니다."
         },
         {
           "t": "card.message",
           "at": "2026-11-01T15:22:53.087Z",
           "cardId": "art",
-          "text": "대표님, 나머지 이미지 네 장을 생성 중입니다. 완료되면 투명 배경과 파일 저장 상태를 확인하겠습니다."
+          "text": "나머지 이미지 네 장을 생성 중입니다. 완료되면 투명 배경과 파일 저장 상태를 확인하겠습니다."
         },
         {
           "t": "card.tool",
@@ -404,7 +404,7 @@
           "t": "card.message",
           "at": "2026-11-01T15:23:11.150Z",
           "cardId": "art",
-          "text": "대표님, 다섯 파일을 지정 폴더에 복사했습니다. 캐릭터 배경의 실제 투명도와 이미지 크기를 확인하고 총괄에게 결과를 전달하겠습니다."
+          "text": "다섯 파일을 지정 폴더에 복사했습니다. 캐릭터 배경의 실제 투명도와 이미지 크기를 확인하고 총괄에게 결과를 전달하겠습니다."
         },
         {
           "t": "msg",
@@ -431,7 +431,7 @@
           "t": "card.message",
           "at": "2026-11-01T15:23:22.780Z",
           "cardId": "art",
-          "text": "대표님, 내장 imagegen으로 픽셀 아트 5장을 제작해 [office 폴더](C:/projects/project_O/app/public/office)에 저장하고 총괄에게 전달했습니다.  \n파일: `office.png`, `agent-claude.png`, `agent-codex.png`, `agent-agy.png`, `agent-lead.png`  \n확인: 사무실은 3:2, 캐릭터는 정사각형이며 네 캐릭터의 배경 투명도를 확인했습니다.  \n차이·미확인: AGY의 곱슬머리는 두드러지지 않고, 이미지 간 픽셀 크기의 완전한 일치는 검증하지 못했습니다. 앱 적용은 확인하지 않았습니다.  \n🌱 grafly 호출 0회; 통합 지침 파일은 접근 거부로 읽지 못했습니다."
+          "text": "내장 imagegen으로 픽셀 아트 5장을 제작해 [office 폴더](C:/projects/project_O/app/public/office)에 저장하고 총괄에게 전달했습니다.  \n파일: `office.png`, `agent-claude.png`, `agent-codex.png`, `agent-agy.png`, `agent-lead.png`  \n확인: 사무실은 3:2, 캐릭터는 정사각형이며 네 캐릭터의 배경 투명도를 확인했습니다.  \n차이·미확인: AGY의 곱슬머리는 두드러지지 않고, 이미지 간 픽셀 크기의 완전한 일치는 검증하지 못했습니다. 앱 적용은 확인하지 않았습니다.  \n🌱 grafly 호출 0회; 통합 지침 파일은 접근 거부로 읽지 못했습니다."
         },
         {
           "t": "card.usage",
@@ -446,7 +446,7 @@
           "at": "2026-11-01T15:23:26.374Z",
           "cardId": "art",
           "status": "done",
-          "result": "대표님, 내장 imagegen으로 픽셀 아트 5장을 제작해 [office 폴더](C:/projects/project_O/app/public/office)에 저장하고 총괄에게 전달했습니다.  \n파일: `office.png`, `agent-claude.png`, `agent-codex.png`, `agent-agy.png`, `agent-lead.png`  \n확인: 사무실은 3:2, 캐릭터는 정사각형이며 네 캐릭터의 배경 투명도를 확인했습니다.  \n차이·미확인: AGY의 곱슬머리는 두드러지지 않고, 이미지 간 픽셀 크기의 완전한 일치는 검증하지 못했습니다. 앱 적용은 확인하지 않았습니다.  \n🌱 grafly 호출 0회; 통합 지침 파일은 접근 거부로 읽지 못했습니다.",
+          "result": "내장 imagegen으로 픽셀 아트 5장을 제작해 [office 폴더](C:/projects/project_O/app/public/office)에 저장하고 총괄에게 전달했습니다.  \n파일: `office.png`, `agent-claude.png`, `agent-codex.png`, `agent-agy.png`, `agent-lead.png`  \n확인: 사무실은 3:2, 캐릭터는 정사각형이며 네 캐릭터의 배경 투명도를 확인했습니다.  \n차이·미확인: AGY의 곱슬머리는 두드러지지 않고, 이미지 간 픽셀 크기의 완전한 일치는 검증하지 못했습니다. 앱 적용은 확인하지 않았습니다.  \n🌱 grafly 호출 0회; 통합 지침 파일은 접근 거부로 읽지 못했습니다.",
           "exitCode": 0
         },
         {
@@ -507,7 +507,7 @@
           "t": "card.message",
           "at": "2026-11-01T14:58:22.559Z",
           "cardId": "d",
-          "text": "대표님, 백호가 먼저 메시지를 확인하고 c의 연락을 기다리겠습니다. 파일은 변경하지 않겠습니다."
+          "text": "먼저 메시지를 확인하고 c의 연락을 기다리겠습니다. 파일은 변경하지 않겠습니다."
         },
         {
           "t": "card.tool",
@@ -616,7 +616,7 @@
           "t": "card.message",
           "at": "2026-11-01T14:58:58.317Z",
           "cardId": "d",
-          "text": "대표님, c의 메시지를 받고 답장했습니다.  \n받은 메시지: “안녕 d, 나는 c야”  \n답장: “받았어 c, 나는 d”  \n변경한 파일과 남은 일은 없습니다. 안내 문서는 접근이 거부되어 확인하지 못했습니다."
+          "text": "c의 메시지를 받고 답장했습니다.  \n받은 메시지: “안녕 d, 나는 c야”  \n답장: “받았어 c, 나는 d”  \n변경한 파일과 남은 일은 없습니다. 안내 문서는 접근이 거부되어 확인하지 못했습니다."
         },
         {
           "t": "card.usage",
@@ -631,7 +631,7 @@
           "at": "2026-11-01T14:59:01.415Z",
           "cardId": "d",
           "status": "done",
-          "result": "대표님, c의 메시지를 받고 답장했습니다.  \n받은 메시지: “안녕 d, 나는 c야”  \n답장: “받았어 c, 나는 d”  \n변경한 파일과 남은 일은 없습니다. 안내 문서는 접근이 거부되어 확인하지 못했습니다.",
+          "result": "c의 메시지를 받고 답장했습니다.  \n받은 메시지: “안녕 d, 나는 c야”  \n답장: “받았어 c, 나는 d”  \n변경한 파일과 남은 일은 없습니다. 안내 문서는 접근이 거부되어 확인하지 못했습니다.",
           "exitCode": 0
         },
         {
@@ -739,7 +739,7 @@
           "t": "card.message",
           "at": "2026-11-01T14:53:43.015Z",
           "cardId": "a",
-          "text": "대표님, Baekho가 기존 메시지를 확인한 뒤 b에게 요청하신 문구를 보내고 답장을 기다리겠습니다."
+          "text": "기존 메시지를 확인한 뒤 b에게 요청하신 문구를 보내고 답장을 기다리겠습니다."
         },
         {
           "t": "card.tool",
@@ -823,13 +823,13 @@
           "t": "card.message",
           "at": "2026-11-01T14:53:55.963Z",
           "cardId": "a",
-          "text": "대표님, b에게 요청하신 문구를 보냈습니다. 15초 간격으로 답장을 확인하겠습니다."
+          "text": "b에게 요청하신 문구를 보냈습니다. 15초 간격으로 답장을 확인하겠습니다."
         },
         {
           "t": "card.message",
           "at": "2026-11-01T14:53:58.113Z",
           "cardId": "b",
-          "text": "a의 메시지를 받아 답장까지 보냈습니다, 대표님.\n\n- **한 일:** `o msg read`를 세 번 실행했고, 세 번째에 a의 메시지가 도착했습니다. 이어서 a에게 답장을 보냈습니다.\n- **받은 메시지:** [a → b] \"안녕 b, 나는 a야. 답장 줘\"\n- **보낸 답장:** [b → a] \"받았어 a, 나는 b\" (`보냄: b → a`로 전송 확인)\n- **바꾼 파일:** 없습니다.\n- **남은 일:** 없습니다. a가 답장을 실제로 읽었는지는 이쪽에서 확인할 수 없습니다."
+          "text": "a의 메시지를 받아 답장까지 보냈습니다.\n\n- **한 일:** `o msg read`를 세 번 실행했고, 세 번째에 a의 메시지가 도착했습니다. 이어서 a에게 답장을 보냈습니다.\n- **받은 메시지:** [a → b] \"안녕 b, 나는 a야. 답장 줘\"\n- **보낸 답장:** [b → a] \"받았어 a, 나는 b\" (`보냄: b → a`로 전송 확인)\n- **바꾼 파일:** 없습니다.\n- **남은 일:** 없습니다. a가 답장을 실제로 읽었는지는 이쪽에서 확인할 수 없습니다."
         },
         {
           "t": "card.usage",
@@ -860,7 +860,7 @@
           "at": "2026-11-01T14:53:59.697Z",
           "cardId": "b",
           "status": "done",
-          "result": "a의 메시지를 받아 답장까지 보냈습니다, 대표님.\n\n- **한 일:** `o msg read`를 세 번 실행했고, 세 번째에 a의 메시지가 도착했습니다. 이어서 a에게 답장을 보냈습니다.\n- **받은 메시지:** [a → b] \"안녕 b, 나는 a야. 답장 줘\"\n- **보낸 답장:** [b → a] \"받았어 a, 나는 b\" (`보냄: b → a`로 전송 확인)\n- **바꾼 파일:** 없습니다.\n- **남은 일:** 없습니다. a가 답장을 실제로 읽었는지는 이쪽에서 확인할 수 없습니다.",
+          "result": "a의 메시지를 받아 답장까지 보냈습니다.\n\n- **한 일:** `o msg read`를 세 번 실행했고, 세 번째에 a의 메시지가 도착했습니다. 이어서 a에게 답장을 보냈습니다.\n- **받은 메시지:** [a → b] \"안녕 b, 나는 a야. 답장 줘\"\n- **보낸 답장:** [b → a] \"받았어 a, 나는 b\" (`보냄: b → a`로 전송 확인)\n- **바꾼 파일:** 없습니다.\n- **남은 일:** 없습니다. a가 답장을 실제로 읽었는지는 이쪽에서 확인할 수 없습니다.",
           "exitCode": 0
         },
         {
@@ -888,7 +888,7 @@
           "t": "card.message",
           "at": "2026-11-01T14:54:22.452Z",
           "cardId": "a",
-          "text": "대표님, b에게 메시지를 보냈고 답장을 받았습니다: “받았어 a, 나는 b”\n바꾼 파일: 없음. 답장 수신을 확인하고 lead에게 전달했습니다.\n남은 일: 없음. 통합 안내서는 접근 거부로 확인하지 못했습니다."
+          "text": "b에게 메시지를 보냈고 답장을 받았습니다: “받았어 a, 나는 b”\n바꾼 파일: 없음. 답장 수신을 확인하고 lead에게 전달했습니다.\n남은 일: 없음. 통합 안내서는 접근 거부로 확인하지 못했습니다."
         },
         {
           "t": "card.usage",
@@ -903,7 +903,7 @@
           "at": "2026-11-01T14:54:25.270Z",
           "cardId": "a",
           "status": "done",
-          "result": "대표님, b에게 메시지를 보냈고 답장을 받았습니다: “받았어 a, 나는 b”\n바꾼 파일: 없음. 답장 수신을 확인하고 lead에게 전달했습니다.\n남은 일: 없음. 통합 안내서는 접근 거부로 확인하지 못했습니다.",
+          "result": "b에게 메시지를 보냈고 답장을 받았습니다: “받았어 a, 나는 b”\n바꾼 파일: 없음. 답장 수신을 확인하고 lead에게 전달했습니다.\n남은 일: 없음. 통합 안내서는 접근 거부로 확인하지 못했습니다.",
           "exitCode": 0
         },
         {
@@ -986,7 +986,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:09:26.887Z",
           "cardId": "code",
-          "text": "대표님, 세 파일만으로 바로 열어 쓸 수 있는 할 일 목록을 만들겠습니다. 추가·완료·삭제·저장 복원과 기본 접근성을 확인하겠습니다."
+          "text": "세 파일만으로 바로 열어 쓸 수 있는 할 일 목록을 만들겠습니다. 추가·완료·삭제·저장 복원과 기본 접근성을 확인하겠습니다."
         },
         {
           "t": "card.tool",
@@ -1006,7 +1006,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:09:30.793Z",
           "cardId": "research",
-          "text": "대표님, 루트 지침에 따라 통합 가이드와 관련 교훈을 확인한 뒤 그래프에서 저장 위치를 찾고, `RESEARCH.md`만 작성하겠습니다."
+          "text": "루트 지침에 따라 통합 가이드와 관련 교훈을 확인한 뒤 그래프에서 저장 위치를 찾고, `RESEARCH.md`만 작성하겠습니다."
         },
         {
           "t": "card.tool",
@@ -1041,7 +1041,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:09:40.286Z",
           "cardId": "code",
-          "text": "대표님, `beakho-design` 스킬로 디자인 절차를 확인하고, 브라우저 검증에는 `ego-browser` 스킬을 적용하겠습니다. 지정된 통합 가이드는 현재 권한으로 읽을 수 없어, 접근 가능한 지침과 세 파일 제한에 맞춰 진행하겠습니다."
+          "text": "디자인 스킬로 디자인 절차를 확인하고, 브라우저 검증에는 `ego-browser` 스킬을 적용하겠습니다. 지정된 통합 가이드는 현재 권한으로 읽을 수 없어, 접근 가능한 지침과 세 파일 제한에 맞춰 진행하겠습니다."
         },
         {
           "t": "card.tool",
@@ -1136,7 +1136,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:10:51.145Z",
           "cardId": "code",
-          "text": "대표님, 기본 파일만 있는 상태라 기존 구현과 연결할 곳은 없습니다. Taste의 앱 화면 절차를 적용해 입력과 목록에 집중한 화면으로 만들고, 문서·이미지·설정 파일은 추가하지 않겠습니다."
+          "text": "기본 파일만 있는 상태라 기존 구현과 연결할 곳은 없습니다. Taste의 앱 화면 절차를 적용해 입력과 목록에 집중한 화면으로 만들고, 문서·이미지·설정 파일은 추가하지 않겠습니다."
         },
         {
           "t": "card.tool",
@@ -1149,7 +1149,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:10:56.733Z",
           "cardId": "research",
-          "text": "대표님, 할 일 목록 웹앱의 접근성 체크리스트를 작성했습니다.\n변경: [RESEARCH.md](RESEARCH.md) — 제목 1줄과 WCAG 2.2 기준을 표기한 체크박스 5줄입니다 ([W3C 기준](https://www.w3.org/WAI/WCAG22/quickref/)).\n확인: 총 6줄, 체크박스 5개이며 이번 작업에서 만든 파일은 `RESEARCH.md`뿐입니다.\n남은 일: 없음. 통합 가이드는 샌드박스에서 읽지 못했고, 실제 웹앱 동작은 확인하지 않았습니다.\n🌱 grafly saved ~0 tokens this turn, 2 calls (matching source nodes 없음)."
+          "text": "할 일 목록 웹앱의 접근성 체크리스트를 작성했습니다.\n변경: [RESEARCH.md](RESEARCH.md) — 제목 1줄과 WCAG 2.2 기준을 표기한 체크박스 5줄입니다 ([W3C 기준](https://www.w3.org/WAI/WCAG22/quickref/)).\n확인: 총 6줄, 체크박스 5개이며 이번 작업에서 만든 파일은 `RESEARCH.md`뿐입니다.\n남은 일: 없음. 통합 가이드는 샌드박스에서 읽지 못했고, 실제 웹앱 동작은 확인하지 않았습니다.\n🌱 grafly saved ~0 tokens this turn, 2 calls (matching source nodes 없음)."
         },
         {
           "t": "card.usage",
@@ -1164,7 +1164,7 @@
           "at": "2026-11-01T10:10:59.944Z",
           "cardId": "research",
           "status": "done",
-          "result": "대표님, 할 일 목록 웹앱의 접근성 체크리스트를 작성했습니다.\n변경: [RESEARCH.md](RESEARCH.md) — 제목 1줄과 WCAG 2.2 기준을 표기한 체크박스 5줄입니다 ([W3C 기준](https://www.w3.org/WAI/WCAG22/quickref/)).\n확인: 총 6줄, 체크박스 5개이며 이번 작업에서 만든 파일은 `RESEARCH.md`뿐입니다.\n남은 일: 없음. 통합 가이드는 샌드박스에서 읽지 못했고, 실제 웹앱 동작은 확인하지 않았습니다.\n🌱 grafly saved ~0 tokens this turn, 2 calls (matching source nodes 없음).",
+          "result": "할 일 목록 웹앱의 접근성 체크리스트를 작성했습니다.\n변경: [RESEARCH.md](RESEARCH.md) — 제목 1줄과 WCAG 2.2 기준을 표기한 체크박스 5줄입니다 ([W3C 기준](https://www.w3.org/WAI/WCAG22/quickref/)).\n확인: 총 6줄, 체크박스 5개이며 이번 작업에서 만든 파일은 `RESEARCH.md`뿐입니다.\n남은 일: 없음. 통합 가이드는 샌드박스에서 읽지 못했고, 실제 웹앱 동작은 확인하지 않았습니다.\n🌱 grafly saved ~0 tokens this turn, 2 calls (matching source nodes 없음).",
           "exitCode": 0
         },
         {
@@ -1199,7 +1199,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:12:41.463Z",
           "cardId": "code",
-          "text": "대표님, 세 파일 구현을 마쳤습니다. 다만 Ego Lite 연결이 차단되어 실제 브라우저 검증은 진행할 수 없습니다. 다른 브라우저로 우회하지 않고, 실행 가능한 코드 점검으로 기능과 저장 복원을 확인하겠습니다."
+          "text": "세 파일 구현을 마쳤습니다. 다만 Ego Lite 연결이 차단되어 실제 브라우저 검증은 진행할 수 없습니다. 다른 브라우저로 우회하지 않고, 실행 가능한 코드 점검으로 기능과 저장 복원을 확인하겠습니다."
         },
         {
           "t": "card.tool",
@@ -1247,7 +1247,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:14:17.885Z",
           "cardId": "code",
-          "text": "대표님, 자체 점검에서 추가·공백 무시·완료 토글·삭제·저장 후 재실행 복원을 확인했습니다. 저장 오류 처리, label·버튼 이름, 색상 대비와 Taste 소스 검사도 통과했습니다. 실제 브라우저 표시와 키보드 조작은 연결 제한으로 미확인입니다."
+          "text": "자체 점검에서 추가·공백 무시·완료 토글·삭제·저장 후 재실행 복원을 확인했습니다. 저장 오류 처리, label·버튼 이름, 색상 대비와 Taste 소스 검사도 통과했습니다. 실제 브라우저 표시와 키보드 조작은 연결 제한으로 미확인입니다."
         },
         {
           "t": "card.message",
@@ -1266,7 +1266,7 @@
           "t": "card.message",
           "at": "2026-11-01T10:15:16.777Z",
           "cardId": "code",
-          "text": "대표님, `index.html`·`style.css`·`app.js`에 추가·완료·삭제·저장 복원을 구현했습니다.\n확인: 기능 자체 점검·접근성 소스·색상 대비·Taste 검사 통과. 브라우저 실검증은 Ego 연결 차단으로 미확인입니다.\n\n자동 승인 검토가 영구 삭제 금지로 `RESEARCH.md` 정리를 차단해, 세 파일만 남기는 조건은 미완료입니다.\n🌱 grafly 1회·검색 결과 없음·절감 집계 없음."
+          "text": "`index.html`·`style.css`·`app.js`에 추가·완료·삭제·저장 복원을 구현했습니다.\n확인: 기능 자체 점검·접근성 소스·색상 대비·Taste 검사 통과. 브라우저 실검증은 Ego 연결 차단으로 미확인입니다.\n\n자동 승인 검토가 영구 삭제 금지로 `RESEARCH.md` 정리를 차단해, 세 파일만 남기는 조건은 미완료입니다.\n🌱 grafly 1회·검색 결과 없음·절감 집계 없음."
         },
         {
           "t": "card.usage",
@@ -1281,7 +1281,7 @@
           "at": "2026-11-01T10:15:19.460Z",
           "cardId": "code",
           "status": "done",
-          "result": "대표님, `index.html`·`style.css`·`app.js`에 추가·완료·삭제·저장 복원을 구현했습니다.\n확인: 기능 자체 점검·접근성 소스·색상 대비·Taste 검사 통과. 브라우저 실검증은 Ego 연결 차단으로 미확인입니다.\n\n자동 승인 검토가 영구 삭제 금지로 `RESEARCH.md` 정리를 차단해, 세 파일만 남기는 조건은 미완료입니다.\n🌱 grafly 1회·검색 결과 없음·절감 집계 없음.",
+          "result": "`index.html`·`style.css`·`app.js`에 추가·완료·삭제·저장 복원을 구현했습니다.\n확인: 기능 자체 점검·접근성 소스·색상 대비·Taste 검사 통과. 브라우저 실검증은 Ego 연결 차단으로 미확인입니다.\n\n자동 승인 검토가 영구 삭제 금지로 `RESEARCH.md` 정리를 차단해, 세 파일만 남기는 조건은 미완료입니다.\n🌱 grafly 1회·검색 결과 없음·절감 집계 없음.",
           "exitCode": 0
         },
         {
@@ -1300,7 +1300,7 @@
         {
           "from": "lead",
           "at": "2026-11-01T10:09:16.428Z",
-          "text": "대표님, 카드 3개를 O CLI로 넘겼고 지금 셋 다 실행 중입니다. 결과는 아직 나오지 않았습니다.\n\n- **정책 검사:** 통과했습니다.\n- **runId:** `20261101-100916-402x`\n- **카드별 담당 파일:** 서로 겹치지 않습니다.\n  - `code`: Codex, gpt-6.1-sol xhigh. `index.html`, `style.css`, `app.js`를 만듭니다(추가·완료·삭제, localStorage 저장).\n  - `design`: Antigravity, gemini-3.8-flash-high. `DESIGN.md`에 색·글꼴·간격 가이드를 30줄 이내로 씁니다.\n  - `research`: Codex, gpt-6-luna max. `RESEARCH.md`에 WCAG 기준 번호를 단 체크리스트 5줄을 씁니다.\n\n폴더에 이미 있던 `plan.json`이 요청과 그대로 맞아서 수정하지 않고 사용했습니다.\n\n이벤트 스트림을 백그라운드에서 지켜보고 있습니다. 모든 카드가 끝나면 카드별 결과를 정리해 보고드리겠습니다."
+          "text": "카드 3개를 O CLI로 넘겼고 지금 셋 다 실행 중입니다. 결과는 아직 나오지 않았습니다.\n\n- **정책 검사:** 통과했습니다.\n- **runId:** `20261101-100916-402x`\n- **카드별 담당 파일:** 서로 겹치지 않습니다.\n  - `code`: Codex, gpt-6.1-sol xhigh. `index.html`, `style.css`, `app.js`를 만듭니다(추가·완료·삭제, localStorage 저장).\n  - `design`: Antigravity, gemini-3.8-flash-high. `DESIGN.md`에 색·글꼴·간격 가이드를 30줄 이내로 씁니다.\n  - `research`: Codex, gpt-6-luna max. `RESEARCH.md`에 WCAG 기준 번호를 단 체크리스트 5줄을 씁니다.\n\n폴더에 이미 있던 `plan.json`이 요청과 그대로 맞아서 수정하지 않고 사용했습니다.\n\n이벤트 스트림을 백그라운드에서 지켜보고 있습니다. 모든 카드가 끝나면 카드별 결과를 정리해 보고드리겠습니다."
         }
       ]
     }

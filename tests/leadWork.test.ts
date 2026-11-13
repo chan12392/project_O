@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { leadItems, type LeadApproval } from "../src/core/lead.ts";
-import { approvalView, decisionText, detailIsLong, fileName, lineCounts, remainingText, secondsLeft, stepLine, workSummary } from "../src/core/leadWork.ts";
+import { approvalNotice, approvalView, decisionText, detailIsLong, fileName, lineCounts, remainingText, secondsLeft, stepLine, workSummary } from "../src/core/leadWork.ts";
 
 const step = (over: Record<string, unknown>) => ({ t: "lead.step", at: "2026-11-04T00:00:01.000Z", id: "s", kind: "read", label: "C:/p/src/a.ts", status: "done", ...over });
 
@@ -82,4 +82,15 @@ test("a file request lists each file with its counts instead of the raw request"
   assert.equal(approvalView([approval({ kind: "other", files: undefined })], 0)?.title, "도구 사용");
   assert.ok(detailIsLong("x\n".repeat(9)));
   assert.ok(!detailIsLong("npm test"));
+});
+
+test("a new approval request notifies with what it asks and how many wait behind it", () => {
+  const one = approvalView([approval()], 0);
+  assert.ok(one);
+  const notice = approvalNotice(one);
+  assert.equal(notice.title, `총괄 ${one.title} 승인 요청`);
+  assert.equal(notice.body, one.summary);
+  const two = approvalView([approval(), approval({ id: "t-a2" })], 0);
+  assert.ok(two);
+  assert.match(approvalNotice(two).body, / 외 1개 대기$/);
 });

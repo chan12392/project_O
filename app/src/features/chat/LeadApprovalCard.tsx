@@ -1,13 +1,15 @@
 import { Clock, ShieldQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { approvalView, detailIsLong, remainingText } from "../../../../src/core/leadWork.ts";
+import { approvalNotice, approvalView, detailIsLong, remainingText } from "../../../../src/core/leadWork.ts";
 import { LEAD_NAME } from "../../../../src/core/lead.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useSettings } from "../../data/settings.ts";
+import { errorText } from "../../lib/format.ts";
+import type { Backend } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
+import { alertPerson } from "./QuestionDialog.tsx";
 
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 const NAMES: Record<string, string> = LEAD_NAME;
 
 /** A shell command or a request as sent: in full, folded when long. */
@@ -24,11 +26,29 @@ function Detail({ text, label }: { text: string; label: string }) {
 }
 
 /**
+ * Tells the person when a new approval request comes in and the window is not in front (the same
+ * notice setting as questions), once per request. Mounted with the main window, not the card:
+ * the card is not on screen while an agent pane covers the lead chat (issue #79).
+ */
+export function useApprovalAlert(lead: LeadState, api: Backend) {
+  const approvals = lead.thread?.busy && lead.thread.busy !== "unknown" ? lead.thread.approvals : undefined;
+  const view = approvalView(approvals, Date.now());
+  const told = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    if (!view || told.current === view.id) return;
+    told.current = view.id;
+    const notice = approvalNotice(view);
+    void alertPerson(api, notice.title, notice.body);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view?.id]);
+}
+
+/**
  * The action a normal-mode lead waits on (ADR-0008 개정 3), right above the composer: what it
  * asks in full, how long it waits, and 거부 (focused first) or 허용. There is no "always allow":
  * each action is its own decision, and only these buttons decide, never text in the chat.
  */
-export function LeadApprovalCard({ lead }: { lead: LeadState }) {
+export function LeadApprovalCard({ lead, api }: { lead: LeadState; api: Backend }) {
   const { clean } = useSettings();
   const [now, setNow] = useState(() => Date.now());
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});

@@ -62,7 +62,7 @@ function NotificationsSection() {
         <SettingsRow
           id="notify-questions-label"
           label="질문 알림"
-          description="총괄이나 카드가 선택을 묻거나 질문을 보내면, 창이 최소화되었거나 트레이에 있을 때 알림을 띄우고 작업 표시줄 단추를 깜빡입니다. 알림 권한이 없으면 처음 질문이 올 때 묻습니다."
+          description="총괄이나 카드가 선택을 묻거나 질문을 보내거나, 총괄이 승인을 요청하면, 창이 최소화되었거나 트레이에 있을 때 알림을 띄우고 작업 표시줄 단추를 깜빡입니다. 알림 권한이 없으면 처음 질문이 올 때 묻습니다."
           control={<Switch checked={settings.notifyQuestions} onChange={(next) => updateSettings({ notifyQuestions: next })} labelledBy="notify-questions-label" />}
         />
         {on && (

@@ -18,3 +18,6 @@ export function backend(demo = false): Backend {
   const tauri = window.__TAURI_INTERNALS__;
   return tauri ? tauriBackend(tauri.invoke) : devBackend;
 }
+
+/** `backend` for this page: the recorded preview only when the link asks for it (`?source=demo`). */
+export const currentBackend = () => backend(new URLSearchParams(window.location.search).get("source") === "demo");

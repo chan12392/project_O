@@ -16,7 +16,7 @@ use crate::installer_paths::{fresh_dir, no_links};
 pub const REPOSITORY: &str = "chan12392/project_O";
 pub const BUILD_SHA: &str = match option_env!("PROJECT_O_BUILD_SHA") { Some(v) => v, None => "" };
 pub const BUILD_TIME: &str = match option_env!("PROJECT_O_BUILD_TIME") { Some(v) => v, None => "" };
-const HELP: &str = "GitHub CLI(gh)를 설치하고 gh auth login --hostname github.com으로 로그인해 주세요. https://github.com/chan12392/project_O/releases 에서 직접 받을 수도 있습니다.";
+const HELP: &str = "https://github.com/chan12392/project_O/releases 에서 로그인 없이 직접 받을 수 있습니다. 앱에서 업데이트하려면 GitHub CLI(gh)를 설치하고 gh auth login --hostname github.com으로 로그인해 주세요.";
 const MAX_SETUP_SIZE: u64 = 1024 * 1024 * 1024;
 static TAG: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Atest_1-[0-9]{8}-[0-9a-f]{7}\z").unwrap());
 static ASSET: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\Aproject_O_[0-9]+\.[0-9]+\.[0-9]+_x64-setup\.exe\z").unwrap());
@@ -254,6 +254,30 @@ fn verify_download(dir: &Path, update: &Update) -> Result<std::path::PathBuf, St
     Ok(path)
 }
 
+/// The workflow whose attestation an installer must carry, and the ref it must have run on.
+const SIGNER_WORKFLOW: &str = "chan12392/project_O/.github/workflows/release.yml";
+const SOURCE_REF: &str = "refs/heads/test_1";
+
+/// `gh attestation verify` for the downloaded installer: built by the release workflow, on
+/// test_1, from the release's commit, on a GitHub-hosted runner (ADR-0043).
+fn attestation_args<'a>(setup: &'a str, commit: &'a str) -> [&'a str; 11] {
+    ["attestation", "verify", setup, "--repo", REPOSITORY, "--signer-workflow", SIGNER_WORKFLOW, "--source-ref", SOURCE_REF, "--source-digest", commit]
+}
+
+/// The release's author, tag and digest can all be produced by any workflow in the repository;
+/// the attestation cannot. Without one the installer is not started.
+fn verify_attestation(setup: &Path, update: &Update) -> Result<(), String> {
+    let refused = || format!("릴리스 {}의 설치 파일이 release 워크플로(test_1)에서 만들어졌다는 증명을 확인하지 못했습니다. 설치하지 않았습니다", update.tag);
+    if !COMMIT.is_match(&update.target) { return Err(refused()); }
+    let path = setup.to_str().ok_or_else(refused)?;
+    let mut command = gh_command(&attestation_args(path, &update.target))?;
+    command.arg("--deny-self-hosted-runners");
+    match proc::capture(&mut command, Duration::from_secs(120)) {
+        Ok((status, _, _)) if status.success() => Ok(()),
+        _ => Err(refused()),
+    }
+}
+
 fn file_sha256(path: &Path) -> Result<String, String> {
     use sha2::{Digest, Sha256};
     let mut file = fs::File::open(path).map_err(|e| e.to_string())?;
@@ -274,6 +298,7 @@ pub async fn update_install(app: tauri::AppHandle, tag: String) -> Result<(), St
             let mut download = gh_command(&["release", "download", &update.tag, "--repo", REPOSITORY, "--pattern", &update.asset, "--dir", folder])?;
             run_cancellable(&mut download, Duration::from_secs(15 * 60), &CANCELLED)?;
             let setup = verify_download(&dir, &update)?;
+            verify_attestation(&setup, &update)?;
             if CANCELLED.load(Ordering::SeqCst) { return Err(CANCELLED_MESSAGE.into()); }
             // Interactive NSIS owns errors, cancellation and the final 'run app' checkbox.
             proc::spawn_detached(&mut Command::new(setup)).map_err(|e| format!("설치 프로그램을 열지 못했습니다: {e}"))?;
@@ -347,6 +372,22 @@ mod tests {
         assert_eq!(workflow.matches("\n    if: github.ref == 'refs/heads/test_1'\n").count(), jobs, "모든 job이 test_1에서만 돌아야 합니다");
     }
 
+    /// The installer is tied to the release workflow, the test_1 ref and the release's commit,
+    /// and the workflow makes the attestation the updater asks for.
+    #[test]
+    fn an_installer_needs_the_release_workflows_attestation() {
+        let args = attestation_args("C:/t/setup.exe", "1234567890abcdef1234567890abcdef12345678");
+        assert_eq!(args[..5], ["attestation", "verify", "C:/t/setup.exe", "--repo", REPOSITORY]);
+        for pair in [["--signer-workflow", "chan12392/project_O/.github/workflows/release.yml"], ["--source-ref", "refs/heads/test_1"], ["--source-digest", "1234567890abcdef1234567890abcdef12345678"]] {
+            assert!(args.windows(2).any(|w| w == pair), "{pair:?}");
+        }
+        let workflow = include_str!("../../../../.github/workflows/release.yml");
+        assert!(workflow.contains("actions/attest-build-provenance@"));
+        assert!(workflow.contains("attestations: write") && workflow.contains("id-token: write"));
+        let update = select_release(FIXTURE, "", "").unwrap().map(|mut u| { u.target = "test_1".into(); u }).unwrap();
+        assert!(verify_attestation(Path::new("C:/t/setup.exe"), &update).is_err());
+    }
+
     #[test]
     fn download_size_and_unique_directory_are_checked() {
         let first = fresh_dir(&std::env::temp_dir(), "project_O-update-test").unwrap();
@@ -367,6 +408,8 @@ mod tests {
         assert_eq!(last_check(&Ok(None), "t".into()).tag, None);
         let failed = last_check(&Err(HELP.into()), "t".into());
         assert_eq!(failed.error.as_deref(), Some(HELP));
+        assert!(HELP.contains("로그인 없이 직접"));
+        assert!(HELP.contains("앱에서 업데이트하려면"));
         assert!(HELP.contains("gh auth login"));
     }
 

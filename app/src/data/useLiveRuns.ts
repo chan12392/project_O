@@ -4,7 +4,7 @@ import type { OEvent } from "../../../src/core/events.ts";
 import { foldRuns, type FoldedRun, type RunView } from "../../../src/core/snapshot.ts";
 import { isSessionRun } from "../../../src/core/attention.ts";
 import type { UsageWindow } from "../../../src/core/usage.ts";
-import { sessionsShown, useSettings } from "./settings.ts";
+import { sessionsShown, settingsNow, useSettings } from "./settings.ts";
 import { USAGE_WINDOWS, useDemoRuns, type Message } from "./useRun.ts";
 
 /** Where the screen's runs come from: this machine's O home, or the recorded demo. */
@@ -50,11 +50,11 @@ async function readRuns(sessions: boolean): Promise<{ runsText: string; usageTex
   return { runsText: await runsRes.text(), usageText: usageRes.ok ? await usageRes.text() : "" };
 }
 
-/** Asks the official CLIs again; undefined when the reading failed. */
-async function readFreshUsage(): Promise<UsageReading | undefined> {
+/** Asks the official CLIs again, with the login the app's runs use ("project_O 프로필 사용"); undefined when the reading failed. */
+async function readFreshUsage(profile: string): Promise<UsageReading | undefined> {
   const tauri = window.__TAURI_INTERNALS__;
-  if (tauri) return JSON.parse((await tauri.invoke("usage_refresh")) as string) as UsageReading;
-  const res = await fetch("/api/usage/refresh", { method: "POST" });
+  if (tauri) return JSON.parse((await tauri.invoke("usage_refresh", { profile })) as string) as UsageReading;
+  const res = await fetch(`/api/usage/refresh?profile=${profile}`, { method: "POST" });
   return res.ok ? ((await res.json()) as UsageReading) : undefined;
 }
 
@@ -140,8 +140,16 @@ function useLiveRuns(enabled: boolean, sessions: boolean) {
   const refreshUsage = useCallback(async () => {
     setRefreshing(true);
     try {
-      const fresh = await readFreshUsage();
-      if (fresh) setUsage(fresh);
+      // The profile switch can change while a reading is on its way: that reading is the other
+      // profile's, so the profile chosen now is read instead of showing it.
+      const chosen = () => (settingsNow().clean ? "project-o" : "own");
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const profile = chosen();
+        const fresh = await readFreshUsage(profile);
+        if (profile !== chosen()) continue;
+        if (fresh) setUsage(fresh);
+        break;
+      }
     } catch {
       // The status bar keeps the last reading and its time.
     } finally {

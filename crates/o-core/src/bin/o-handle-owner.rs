@@ -5,6 +5,10 @@ fn main() {
     if args.first().is_some_and(|arg| arg == "--o-handle-owner") {
         std::process::exit(i32::from(o_core::sys::win_launch::run_handle_owner(&args[1..]).is_err()));
     }
+    if args.first().is_some_and(|arg| arg == "_job-watch") {
+        let args: Vec<String> = std::env::args().skip(2).collect();
+        std::process::exit(i32::from(o_core::run::job_watch::run(&args).is_err()));
+    }
     std::process::exit(2);
 }
 

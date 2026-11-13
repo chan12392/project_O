@@ -1,27 +1,39 @@
 name: branch-flow
 
-# Read-only token: this job only reads the PR's branch names.
-permissions:
-  contents: read
+# pull_request_target: the job runs this file as it is on the PR's base branch, so a PR cannot
+# rewrite its own check (ADR-0043). It never checks out or runs the PR's code; it reads the
+# event and the PR's file list only.
+permissions: {}
 
 on:
-  pull_request:
+  pull_request_target:
     types: [opened, reopened, edited, synchronize]
 
 jobs:
   check:
     runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
     steps:
       - name: PR 방향 검사
         env:
           HEAD: ${{ github.head_ref }}
           BASE: ${{ github.base_ref }}
+          HEAD_REPOSITORY: ${{ github.event.pull_request.head.repo.full_name }}
+          BASE_REPOSITORY: ${{ github.repository }}
           # Keep in sync with PERSONAL_BRANCHES in crates/o-guard/src/hook.rs.
-          PERSONAL: "younchan yongwoo eunmi"
+          PERSONAL: "younchan yongwoo eunmi yeeun"
+          # Keep in sync with OWNER in crates/o-guard/src/rules.rs.
+          OWNER: chan12392
+          AUTHOR: ${{ github.event.pull_request.user.login }}
+          NUMBER: ${{ github.event.pull_request.number }}
+          GH_TOKEN: ${{ github.token }}
         run: |
           # 개인·작업 브랜치 ──PR──▶ test_2 ──PR──▶ test_1 ──PR──▶ main
           # 핫픽스: 개인·작업 브랜치 ──PR──▶ test_1_hotfix ──PR──▶ test_1 (ADR-0021)
+          # 핫픽스(정식): 개인·작업 브랜치 ──PR──▶ main_hotfix ──PR──▶ main (ADR-0031)
           fail() { echo "::error::$1 (head=$HEAD, base=$BASE). AGENTS.md의 병합 흐름을 확인하세요."; exit 1; }
+          [ "$HEAD_REPOSITORY" = "$BASE_REPOSITORY" ] || fail "포크 PR은 허용하지 않습니다. 외부 기여는 팀원을 통해 제출해 주세요"
           is_personal() { for p in $PERSONAL; do [ "$1" = "$p" ] && return 0; done; return 1; }
           # A personal branch or <personal>-<topic> (no "/").
           is_member_branch() {
@@ -32,7 +44,10 @@ jobs:
             return 1
           }
           if [ "$BASE" = "main" ]; then
-            [ "$HEAD" = "test_1" ] || fail "main에는 test_1만 병합할 수 있습니다"
+            [ "$HEAD" = "test_1" ] || [ "$HEAD" = "main_hotfix" ] || fail "main에는 test_1이나 main_hotfix만 병합할 수 있습니다"
+          elif [ "$BASE" = "main_hotfix" ]; then
+            # main → main_hotfix는 핫픽스 차선을 main에 맞추는 동기화
+            [ "$HEAD" = "main" ] || is_member_branch "$HEAD" || fail "main_hotfix에는 개인 브랜치($PERSONAL)나 <개인>-<주제> 브랜치, main 동기화만 병합할 수 있습니다"
           elif [ "$BASE" = "test_1" ]; then
             [ "$HEAD" = "test_2" ] || [ "$HEAD" = "test_1_hotfix" ] || fail "test_1에는 test_2나 test_1_hotfix만 병합할 수 있습니다"
           elif [ "$BASE" = "test_1_hotfix" ]; then
@@ -48,6 +63,14 @@ jobs:
               *) fail "$BASE에는 $BASE-<주제> 브랜치나 main·test_1 동기화만 병합할 수 있습니다" ;;
             esac
           else
-            fail "PR 대상은 main, test_1, test_1_hotfix, test_2, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
+            fail "PR 대상은 main, main_hotfix, test_1, test_1_hotfix, test_2, 개인 브랜치($PERSONAL) 중 하나여야 합니다"
+          fi
+          # The other required checks (guard.yml) run the PR's own copy of the workflows, so a
+          # change under .github/ comes in only through a PR the owner opened (ADR-0043).
+          if is_member_branch "$HEAD" && [ "$AUTHOR" != "$OWNER" ]; then
+            files=$(gh api --paginate "repos/$BASE_REPOSITORY/pulls/$NUMBER/files" --jq '.[] | .filename, (.previous_filename // empty)') || fail "PR의 변경 파일 목록을 확인하지 못했습니다"
+            if echo "$files" | grep -q '^\.github/'; then
+              fail ".github/ 아래(워크플로·검사 설정)를 바꾸는 PR은 대표($OWNER)가 열어야 합니다"
+            fi
           fi
           echo "ok: $HEAD -> $BASE"

@@ -1,9 +1,9 @@
 import { CircleAlert, CircleCheck, FileText, FolderOpen, Image as ImageIcon, MessageCircleQuestion, OctagonX, Play, Wrench } from "lucide-react";
 import { useEffect, useId, useRef, useState, type FormEvent } from "react";
 
-import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
+import { EFFORT_WORD, LEAD_NAME as NAMES, fileSize, leadProgressSummary, leadReadProblem, leadToolLabel, planIsStale, planOrderText, taskIsLong, type LeadItem } from "../../../../src/core/lead.ts";
 import { failedBeforeCards, type RunView } from "../../../../src/core/snapshot.ts";
-import { PROVIDER_NAME, timeOf } from "../../lib/format.ts";
+import { PROVIDER_NAME, errorText, timeOf } from "../../lib/format.ts";
 import type { LeadState } from "../../data/useLead.ts";
 import { useSettings } from "../../data/settings.ts";
 import { useBudget } from "../../data/useBudget.ts";
@@ -16,7 +16,6 @@ import { LiveWork, WorkList } from "./LeadWork.tsx";
 
 /** Thread events may name an agent this build does not know; it shows as its id. */
 const LEAD_NAME: Record<string, string> = NAMES;
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 interface Props {
   project: string | undefined;
@@ -117,6 +116,7 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
             </ul>
           )}
           <p className="mt-1.5 text-right text-2xs text-chat-foreground-faint">
+            {item.origin ? `${item.origin === "review" ? "O의 검토 요청" : "전체 총괄이 넘긴 요청"} · ` : ""}
             {LEAD_NAME[item.provider] ?? item.provider}
             {item.model ? ` · ${item.model}` : ""}
             {item.effort ? ` · ${EFFORT_WORD[item.effort] ?? item.effort}` : ""} · <time dateTime={item.at}>{timeOf(item.at)}</time>
@@ -174,6 +174,20 @@ function Item({ item, animate }: { item: LeadItem; animate: boolean }) {
       return <p role="status" className="text-xs text-chat-foreground-faint">{item.cardId} 에이전트의 후속 지시를 접수했습니다 · {item.runId}</p>;
     case "plan":
       return <p className="text-xs text-chat-foreground-faint">{item.title} · {item.runId ? `분배한 작업 ${item.runId}` : "오른쪽 설계에서 최신 분배안을 확인하세요."}</p>;
+    case "proposal":
+      return <p className="text-xs text-chat-foreground-faint">프로젝트 요청 {item.items.length}개 제안 · {item.failed.length > 0 ? `${item.failed.length}개는 전달을 시작하지 못함 — 오른쪽 설계에서 다시 전달하세요.` : item.sent ? "전달함" : "오른쪽 설계에서 확인하고 전달하세요."}</p>;
+    case "forward":
+      if (item.failed !== undefined) return <p role="alert" className="text-xs text-status-warning-text">{item.project}에 {item.revision ? "보완 요청" : "요청"} 전달을 시작하지 못했습니다: {item.failed}</p>;
+      return <p role="status" className="text-xs text-chat-foreground-faint">{item.project}에 {item.revision ? "보완 요청을" : "요청을"} 넘겼습니다 · <time dateTime={item.at}>{timeOf(item.at)}</time></p>;
+    case "review":
+      return (
+        <p role="status" className={`flex items-start gap-2 text-xs ${item.verdict === "approve" ? "text-status-success" : "text-status-warning-text"}`}>
+          {item.verdict === "approve" ? <CircleCheck className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" /> : <CircleAlert className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />}
+          <span className="min-w-0 whitespace-pre-wrap break-words">
+            전체 총괄 {item.verdict === "approve" ? "승인" : "보완 요청"} · {item.project} {item.planId}{item.notes ? `\n${item.notes}` : ""}
+          </span>
+        </p>
+      );
   }
 }
 
@@ -250,6 +264,12 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
         )}
       </header>
       <PlanDetails plan={plan} />
+      {plan.review && (
+        <div role="note" className={`border-t px-4 py-3 text-xs ${plan.review.verdict === "approve" ? "text-status-success" : "text-status-warning-text"}`}>
+          <p className="font-medium">{plan.review.verdict === "approve" ? "전체 총괄 승인" : "전체 총괄 보완 요청"}</p>
+          {plan.review.notes && <p className="mt-1 whitespace-pre-wrap break-words text-muted-foreground">{plan.review.notes}</p>}
+        </div>
+      )}
       {!plan.runId && over.length > 0 && <div role="note" className="border-t px-4 py-3 text-xs text-destructive">
         <p>최근 확인한 예산이 소진되어 실행이 차단될 수 있습니다. 실행 직전에 다시 검사합니다.</p>
         {over.map((entry) => <p key={entry.provider} className="mt-1">{entry.message}</p>)}
@@ -315,6 +335,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
 export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }> }) {
   return (
     <>
+      {plan.cards.length > 1 && <p className="border-b px-4 py-2 text-2xs text-muted-foreground">{planOrderText(plan.cards)}</p>}
       {plan.cards.length > 0 && (
         <div className="relative overflow-x-auto">
           {/* relative: the sr-only caption stays inside the chat instead of stretching the page. */}
@@ -345,8 +366,14 @@ export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }
                   </th>
                   <td className="px-2 py-2.5 whitespace-nowrap">{PROVIDER_NAME[card.provider as keyof typeof PROVIDER_NAME] ?? card.provider}</td>
                   <td className="px-2 py-2.5 whitespace-nowrap text-muted-foreground @max-md:hidden">
-                    {card.model || "기본 모델"}
-                    {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
+                    {card.provider === "agy" ? (
+                      "터미널 실행 · 지정 없음"
+                    ) : (
+                      <>
+                        {card.model || "기본 모델"}
+                        {card.effort ? ` · ${EFFORT_WORD[card.effort] ?? card.effort}` : ""}
+                      </>
+                    )}
                   </td>
                   <td className="px-2 py-2.5 pr-4">
                     <CardTask task={card.task} />
@@ -382,6 +409,13 @@ export function PlanDetails({ plan }: { plan: Extract<LeadItem, { kind: "plan" }
                 {v.message}
               </span>
             </li>
+          ))}
+        </ul>
+      )}
+      {plan.notices.length > 0 && (
+        <ul className="space-y-1 border-t px-4 py-3 text-xs text-muted-foreground" aria-label="계획 안내">
+          {plan.notices.map((notice, i) => (
+            <li key={i}>{notice}</li>
           ))}
         </ul>
       )}

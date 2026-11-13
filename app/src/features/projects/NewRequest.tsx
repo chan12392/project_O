@@ -3,7 +3,7 @@ import { useState } from "react";
 
 import { sameFolder } from "../../../../src/core/projects.ts";
 import { useProjectList, type Project } from "../../data/projects.ts";
-import { timeOf } from "../../lib/format.ts";
+import { errorText, timeOf } from "../../lib/format.ts";
 import { AddFolderForm, canPickFolder, NewProjectForm, pickAndRegister } from "./ProjectForms.tsx";
 
 const day = new Intl.DateTimeFormat("ko-KR", { month: "numeric", day: "numeric" });
@@ -33,7 +33,7 @@ export function NewRequest({ projects, current, onPick }: { projects: Project[];
       const path = await pickAndRegister();
       if (path) onPick(path);
     } catch (e) {
-      setPickError(e instanceof Error ? e.message : String(e));
+      setPickError(errorText(e));
     } finally {
       setPicking(false);
     }

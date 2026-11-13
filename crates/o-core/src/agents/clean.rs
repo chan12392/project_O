@@ -14,7 +14,7 @@
 //! ```
 //!
 //! A clean launch sees a short list of system variables plus that home, and
-//! nothing else from the parent. Sign-in stays the CLI's own: O never creates
+//! its provider's authentication variables, and nothing else from the parent. Sign-in stays the CLI's own: O never creates
 //! or reads login files, and login state comes only from each CLI's status command.
 
 use std::collections::BTreeMap;
@@ -62,20 +62,10 @@ fn keeps(name: &str) -> bool {
     KEEP.contains(&name.as_str()) || KEEP_PREFIX.iter().any(|p| name.starts_with(p))
 }
 
-/// OpenCode의 평소 프로필은 유지하되 프로세스에 개인 인증 환경변수는 전달하지 않는다.
-pub fn own_profile_environment() -> BTreeMap<String, String> {
-    std::env::vars_os().filter_map(|(key, value)| {
-        let key = key.into_string().ok()?;
-        let upper = key.to_ascii_uppercase();
-        let profile = matches!(upper.as_str(), "HOME" | "USERPROFILE" | "HOMEDRIVE" | "HOMEPATH" | "XDG_CONFIG_HOME" | "XDG_DATA_HOME" | "XDG_STATE_HOME" | "XDG_CACHE_HOME");
-        (keeps(&key) || profile).then(|| value.into_string().ok().map(|value| (key, value))).flatten()
-    }).collect()
-}
-
 /// The whole environment of a clean CLI: the kept system variables of `parent`,
 /// the profile home as the user's home, and the provider's own pointer into it.
 pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: &Path, provider: ProviderId) -> BTreeMap<String, String> {
-    let mut env: BTreeMap<String, String> = parent.into_iter().filter(|(name, _)| keeps(name)).collect();
+    let mut env: BTreeMap<String, String> = parent.into_iter().filter(|(name, _)| keeps(name) || super::auth_env_names(provider).iter().any(|auth| name.eq_ignore_ascii_case(auth))).collect();
     let text = home.to_string_lossy().into_owned();
     env.insert("USERPROFILE".into(), text.clone());
     env.insert("HOME".into(), text.clone());
@@ -86,7 +76,35 @@ pub fn clean_env_from(parent: impl IntoIterator<Item = (String, String)>, home: 
     }
     let (name, value) = providers::get(provider).clean_env(home);
     env.insert(name.into(), value);
+    if let Some(temp) = providers::get(provider).clean_temp(home) {
+        env.retain(|name, _| !name.eq_ignore_ascii_case("TEMP") && !name.eq_ignore_ascii_case("TMP"));
+        let temp = temp.to_string_lossy().into_owned();
+        env.insert("TEMP".into(), temp.clone());
+        env.insert("TMP".into(), temp);
+    }
     env
+}
+
+/// The person's home and what points a CLI at its own config, kept for a CLI that cannot move
+/// into a profile.
+const OWN_HOME: &[&str] = &["USERPROFILE", "HOME", "HOMEDRIVE", "HOMEPATH"];
+const OWN_HOME_PREFIX: &[&str] = &["XDG_", "DEVIN_", "WINDSURF_"];
+
+/// The environment of a CLI whose config cannot move into a profile (Devin, ADR-0016) in a
+/// project_O profile run. It keeps the person's home, so it runs on their own login and
+/// settings, but nothing else of their environment: another tool's token (`GH_TOKEN`, a cloud
+/// key) is not the card's to use (ADR-0043).
+pub fn own_home_env_from(parent: impl IntoIterator<Item = (String, String)>, provider: ProviderId) -> BTreeMap<String, String> {
+    parent.into_iter().filter(|(name, _)| {
+        let upper = name.to_ascii_uppercase();
+        keeps(name) || OWN_HOME.contains(&upper.as_str()) || OWN_HOME_PREFIX.iter().any(|p| upper.starts_with(p))
+            || super::auth_env_names(provider).iter().any(|auth| name.eq_ignore_ascii_case(auth))
+    }).collect()
+}
+
+/// `own_home_env_from` this process's environment.
+pub fn own_home_environment(provider: ProviderId) -> BTreeMap<String, String> {
+    own_home_env_from(std::env::vars_os().filter_map(|(k, v)| Some((k.into_string().ok()?, v.into_string().ok()?))), provider)
 }
 
 /// The clean environment for a provider, its profile made first if missing. A CLI that
@@ -164,6 +182,17 @@ pub fn unsupported(provider: ProviderId, why: &str) -> String {
 pub fn login_needed(provider: ProviderId) -> String {
     let name = providers::get(provider).official().name;
     format!("로그인 필요({provider}): {name}의 project_O 프로필에 로그인되어 있지 않습니다. 설정 → 에이전트에서 '연결'을 누르거나 o agents login {provider}로 공식 로그인을 마친 뒤 다시 실행하세요.")
+}
+
+/// Why `provider`'s project_O profile under `root` cannot do a sandboxed card's work yet
+/// (`Provider::profile_not_ready`, ADR-0040): a one-time setup the person finishes in the CLI.
+/// `None` when it can, or when the CLI cannot have a profile at all (`profile_unsupported`).
+pub fn profile_not_ready(root: &Path, provider: ProviderId) -> Option<String> {
+    let p = providers::get(provider);
+    if p.profile_unsupported().is_some() {
+        return None;
+    }
+    p.profile_not_ready(&profile_home(root, provider))
 }
 
 /// Before a card or lead starts with the project_O profile (ADR-0015): each provider's profile
@@ -295,6 +324,7 @@ pub struct ProfileReport {
     #[serde(flatten)]
     pub login: LoginState,
     pub issues: Vec<String>,
+    pub api_key_env: Vec<&'static str>,
 }
 
 /// `o agents doctor`: every profile's login state and cleanliness. The status
@@ -306,7 +336,7 @@ pub fn doctor(root: &Path) -> Vec<ProfileReport> {
             .into_iter()
             .map(|(provider, check)| {
                 let login = check.join().unwrap_or_else(|_| LoginState { logged_in: None, detail: "내부 오류".into() });
-                ProfileReport { provider, home: profile_home(root, provider).to_string_lossy().into_owned(), login, issues: inspect(root, provider) }
+                ProfileReport { provider, home: profile_home(root, provider).to_string_lossy().into_owned(), login, issues: inspect(root, provider), api_key_env: super::present_auth_env(provider) }
             })
             .collect()
     })

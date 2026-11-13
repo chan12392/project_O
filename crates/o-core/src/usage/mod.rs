@@ -7,9 +7,11 @@
 
 pub mod budget;
 pub mod probe;
+pub mod thread_total;
 
 use serde::{Deserialize, Serialize};
 
+use crate::run::mode::Profile;
 use crate::run::plan::ProviderId;
 use crate::sys::js::ser_num;
 
@@ -37,6 +39,10 @@ pub struct Unavailable {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct UsageReading {
     pub at: String,
+    /// Whose login answered: the project_O profile's or the person's own CLI setup (ADR-0013).
+    /// A reading saved before this was recorded has none; it was the person's own.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<Profile>,
     pub windows: Vec<UsageWindow>,
     /// Providers whose CLI could not answer, with why.
     pub unavailable: Vec<Unavailable>,
@@ -45,6 +51,6 @@ pub struct UsageReading {
 impl UsageReading {
     /// What a screen shows before any reading was saved.
     pub fn empty() -> Self {
-        UsageReading { at: String::new(), windows: Vec::new(), unavailable: Vec::new() }
+        UsageReading { at: String::new(), profile: None, windows: Vec::new(), unavailable: Vec::new() }
     }
 }

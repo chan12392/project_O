@@ -4,6 +4,8 @@
 //! vendors' install scripts are shown to the person, never fetched and run here.
 //! Sign-in opens the CLI's own login in a console window the person drives.
 
+pub mod agy;
+pub mod billing;
 pub mod catalog;
 pub mod clean;
 
@@ -34,6 +36,7 @@ pub struct AgentStatus {
     pub path: Option<String>,
     /// `None` (null) when the CLI's status check could not tell.
     pub logged_in: Option<bool>,
+    pub api_key_env: Vec<&'static str>,
     pub install_hint: String,
     pub can_install: bool,
     pub install_url: String,
@@ -44,6 +47,28 @@ pub struct AgentStatus {
     /// is then read from the person's own setup, and its cards are refused while the profile is on.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub profile_unsupported: Option<String>,
+    /// With the project_O profile on: why this CLI's profile cannot do a card's work until the
+    /// person finishes a one-time setup in the CLI (`clean::profile_not_ready`, ADR-0040).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub profile_not_ready: Option<String>,
+}
+
+/// Authentication environment names understood by each CLI; values stay with the CLI.
+pub fn auth_env_names(provider: ProviderId) -> &'static [&'static str] {
+    match provider {
+        ProviderId::Claude => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"],
+        ProviderId::Codex => &["CODEX_API_KEY", "OPENAI_API_KEY"],
+        ProviderId::OpenCode => &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"],
+        ProviderId::Devin => &["WINDSURF_API_KEY"],
+        ProviderId::Agy => &[],
+    }
+}
+
+pub fn present_auth_env(provider: ProviderId) -> Vec<&'static str> {
+    let names: Vec<_> = std::env::vars_os().map(|(name, _)| name).collect();
+    auth_env_names(provider).iter().copied().filter(|expected| names.iter().any(|name| name.to_str().is_some_and(|name| {
+        if cfg!(windows) { name.eq_ignore_ascii_case(expected) } else { name == *expected }
+    }))).collect()
 }
 
 /// What an install or sign-in did (`ActionResult` in app/src/platform/backend/types.ts).
@@ -103,8 +128,6 @@ fn login(root: &Path, provider: ProviderId, cli: &CliCommand, clean: bool) -> Lo
     let p = providers::get(provider);
     let mut command = cli_command(cli, p.status_args());
     command.envs(p.check_env().iter().copied());
-    // A leftover API key would read as signed in, though cards never get it.
-    providers::without_api_keys(&mut command, provider);
     let home = user_home();
     if home.is_dir() {
         command.current_dir(home);
@@ -142,11 +165,13 @@ pub fn status_of(root: &Path, provider: ProviderId, clean: bool) -> AgentStatus 
         version,
         path: found.filter(|_| cli.is_some()).map(|p| p.to_string_lossy().into_owned()),
         logged_in,
+        api_key_env: present_auth_env(provider),
         install_hint,
         can_install: npm_ready,
         install_url: o.url.into(),
         profile: (clean && cli.is_some()).then(|| clean::ProfileState::of(provider, logged_in)),
         profile_unsupported: unsupported.map(str::to_string),
+        profile_not_ready: if clean && cli.is_some() { clean::profile_not_ready(root, provider) } else { None },
     }
 }
 
@@ -206,15 +231,7 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
     };
     let mut argv = cli.prefix.clone();
     argv.extend(args.iter().map(|a| a.to_string()));
-    let started = if clean {
-        #[cfg(target_os = "macos")]
-        let root = std::path::absolute(root);
-        #[cfg(not(target_os = "macos"))]
-        let root: std::io::Result<_> = Ok(root.to_path_buf());
-        root.and_then(|root| clean::environment(&root, provider).and_then(|env| proc::spawn_console(&cli.command, &argv, Some(&env), Some(&clean::profile_home(&root, provider)))))
-    } else {
-        proc::spawn_console(&cli.command, &argv, None, None)
-    };
+    let started = if clean { clean_console(root, provider, &cli, &argv) } else { proc::spawn_console(&cli.command, &argv, None, None) };
     let shown = format!("{} {}", provider.as_str(), args.join(" "));
     match started {
         Ok(()) => {
@@ -222,6 +239,55 @@ pub fn open_login(root: &Path, provider: ProviderId, clean: bool) -> ActionResul
             ActionResult::new(true, format!("새 창에서 {} 공식 로그인({shown})을 진행하세요{profile}. 끝나면 상태를 다시 확인합니다.", o.name))
         }
         Err(error) => ActionResult::new(false, format!("{shown} 창을 열지 못했습니다: {error}")),
+    }
+}
+
+/// The CLI in a console window of its own with the project_O profile's environment, started in
+/// that profile's home (as `o agents shell` runs it, but not attached to this process).
+fn clean_console(root: &Path, provider: ProviderId, cli: &CliCommand, argv: &[String]) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let root = std::path::absolute(root)?;
+    #[cfg(not(target_os = "macos"))]
+    let root = root.to_path_buf();
+    let env = clean::environment(&root, provider)?;
+    proc::spawn_console(&cli.command, argv, Some(&env), Some(&clean::profile_home(&root, provider)))
+}
+
+/// Sets up and checks what the project_O profile needs before its cards can work, with no window
+/// (Codex's Windows sandbox, ADR-0040 개정 1): Codex's own setup through `codex app-server`, then
+/// one card-like `codex exec` that must run a real command (one small model call). The outcome is
+/// recorded beside the profile, and readiness (`clean::profile_not_ready`) follows that record.
+/// Run only when a person asks: Settings → 에이전트 or `o agents setup codex`.
+pub fn check_setup(home: &Path, root: &Path, provider: ProviderId) -> ActionResult {
+    let o = providers::get(provider).official();
+    if provider != ProviderId::Codex || !cfg!(windows) {
+        return ActionResult::new(true, format!("{}의 project_O 프로필은 따로 설정하거나 점검할 것이 없습니다.", o.name));
+    }
+    if resolve_cli(provider.as_str()).is_none() {
+        return ActionResult::new(false, format!("{}가 설치되어 있지 않습니다.", o.name));
+    }
+    let make = |args: &[&str]| clean::command(root, provider, args);
+    // The probe is agent work: the subscription billing mode refuses it as it would a card. Asked
+    // here so nothing starts, and again of the model command itself right before it runs: the mode
+    // may be changed while Codex's setup is waited for.
+    let billing = |command: &std::process::Command| billing::check_command(home, provider, command, true);
+    if let Err(why) = make(&[]).map_err(|e| e.to_string()).and_then(|c| billing(&c)) {
+        return ActionResult::new(false, why);
+    }
+    let profile = clean::profile_home(root, provider);
+    match providers::codex_sandbox::check(&profile, &make, &billing, &providers::codex_sandbox::DEADLINES) {
+        Ok(Err(why)) => ActionResult::new(false, why),
+        Ok(Ok(record)) => {
+            if !record.version.is_empty() {
+                providers::codex_sandbox::remember_version(&record.version);
+            }
+            if record.ok {
+                ActionResult::new(true, format!("Codex 샌드박스 점검을 통과했습니다({}). 이제 project_O 프로필의 Codex 카드를 쓸 수 있습니다.", record.version))
+            } else {
+                ActionResult::new(false, format!("Codex 샌드박스 점검에 실패해 그동안 Codex 카드는 다른 에이전트에 맡깁니다. {}", record.detail))
+            }
+        }
+        Err(error) => ActionResult::new(false, format!("Codex 샌드박스 점검 결과를 저장하지 못했습니다: {error}")),
     }
 }
 

@@ -184,10 +184,12 @@ mod tests {
         assert_eq!(read_as(Some("a"), "assets/only.png").unwrap(), image("only original"));
         // Relative paths start at the card's folder, not the checkout root; an absolute path in the checkout still opens.
         assert!(read_as(Some("a"), "top.png").is_err());
-        assert_eq!(read_as(Some("a"), first.join("top.png").to_str().unwrap()).unwrap(), image("checkout top"));
+        // The absolute path is spelled as the roots are: the temp folder may be given by its short (8.3) name.
+        let first_resolved = PathBuf::from(store::resolved_path(&first.to_string_lossy()));
+        assert_eq!(read_as(Some("a"), first_resolved.join("top.png").to_str().unwrap()).unwrap(), image("checkout top"));
         // Another card's folder and outside paths stay closed.
         assert_eq!(read_as(Some("b"), "assets/output.png").unwrap(), image("original"));
-        assert!(read_as(Some("b"), first.join("app/assets/output.png").to_str().unwrap()).is_err());
+        assert!(read_as(Some("b"), first_resolved.join("app/assets/output.png").to_str().unwrap()).is_err());
         assert!(read_as(Some("c"), "x.png").is_err());
         assert!(read_as(Some("c"), outside.join("x.png").to_str().unwrap()).is_err());
 

@@ -8,7 +8,8 @@
 import type { AskQuestion, LeadItem } from "./lead.ts";
 import type { ProviderId } from "./plan.ts";
 import type { RunView } from "./snapshot.ts";
-import { isSessionRun } from "./attention.ts";
+import { cancelledForLead, isSessionRun } from "./attention.ts";
+import { sameFolder } from "./projects.ts";
 
 export interface Choice {
   label: string;
@@ -74,18 +75,59 @@ export function parseCardQuestion(text: string): Question {
 }
 
 /**
+ * Other projects whose own lead may own a waiting card question (issue #75): running O runs
+ * outside `current` with a `--question` to the lead. Their leads' threads decide, not the one
+ * on screen; each project once, in the order the runs list them.
+ */
+export function foreignAskProjects(runs: readonly RunView[], current: string | undefined): string[] {
+  const projects: string[] = [];
+  for (const run of runs) {
+    if (isSessionRun(run) || run.status !== "running" || (current && sameFolder(run.project, current))) continue;
+    if (!run.messages.some((m) => m.to === "lead" && m.kind === "question")) continue;
+    if (!projects.some((p) => sameFolder(p, run.project))) projects.push(run.project);
+  }
+  return projects;
+}
+
+/**
+ * The runs whose questions the person must not be asked now: those each project's own lead
+ * thread handles (`owned`, by project), and those of a project whose thread is not read yet,
+ * so a question never pops up and then vanishes once its lead is known.
+ */
+export function ledRuns(runs: readonly RunView[], current: ReadonlySet<string>, owned: ReadonlyMap<string, ReadonlySet<string> | "loading">): Set<string> {
+  const led = new Set(current);
+  for (const run of runs) {
+    const entry = [...owned].find(([project]) => sameFolder(project, run.project))?.[1];
+    if (entry === "loading" || entry?.has(run.runId)) led.add(run.runId);
+  }
+  return led;
+}
+
+/** Runs the lead's current thread dispatched or continued: their cards' questions wake it (`wake_card`). */
+export function leadRuns(items: readonly LeadItem[]): Set<string> {
+  const runs = new Set<string>();
+  for (const item of items) {
+    if (item.kind === "plan" && item.runId) runs.add(item.runId);
+    if (item.kind === "followup") runs.add(item.runId);
+  }
+  return runs;
+}
+
+/**
  * Card questions the lead has not answered, from O runs still running (a finished card could
  * not read the answer) and cards still at work. Messages that only report are left out.
+ * `led`: runs whose `--question`s the lead answers itself; any other run's wait on the person.
  */
-export function cardQuestions(runs: readonly RunView[]): PendingAsk[] {
+export function cardQuestions(runs: readonly RunView[], led: ReadonlySet<string> = new Set()): PendingAsk[] {
   const asks: PendingAsk[] = [];
   for (const run of runs) {
     if (isSessionRun(run) || run.status !== "running") continue;
     const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
     for (const card of run.cards) {
       if (card.state !== "running" && card.state !== "waiting") continue;
-      // A `--question` goes to the lead, which answers it itself (ADR-0029); only an approval waits on the person.
-      const structured = run.messages.filter((m) => m.from === card.id && m.to === "lead" && m.id && m.kind === "approval" && m.recipients?.lead !== "cancelled" && !run.messages.some((reply) => reply.from === "lead" && reply.replyTo === m.id));
+      // A `--question` goes to the lead, which answers it itself in a run it dispatched (ADR-0029); an approval,
+      // or a question from a run no lead thread handles (`o dispatch` from the CLI), waits on the person.
+      const structured = run.messages.filter((m) => m.from === card.id && m.to === "lead" && m.id && (m.kind === "approval" || (m.kind === "question" && !led.has(run.runId))) && !cancelledForLead(m) && !run.messages.some((reply) => reply.from === "lead" && reply.replyTo === m.id));
       for (const m of structured) {
         asks.push({ key: `card:${run.runId}:${card.id}:${m.id}`, source: { kind: "card", runId: run.runId, runTitle: run.title, cardId: card.id, cardLabel: card.label, provider: card.provider, messageId: m.id, approval: m.kind === "approval" }, intro: "", questions: [parseCardQuestion(m.text)], since: m.at });
       }

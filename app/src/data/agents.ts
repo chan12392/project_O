@@ -1,5 +1,6 @@
 import { useCallback, useSyncExternalStore } from "react";
 
+import { errorText } from "../lib/format.ts";
 import type { AgentStatus, Backend } from "../platform/backend/index.ts";
 
 /** One profile's agent check, as every screen sees it. */
@@ -69,7 +70,7 @@ export function createAgentStore(load: (clean: boolean) => Promise<AgentStatus[]
         // Not remembered: the next launch checks first.
       }
     } catch (error) {
-      if (ticket === e.ticket) set(clean, { ...e.state, checking: false, error: error instanceof Error ? error.message : String(error) });
+      if (ticket === e.ticket) set(clean, { ...e.state, checking: false, error: errorText(error) });
     }
   };
 

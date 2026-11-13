@@ -4,6 +4,8 @@ export interface PopoutTarget {
   project?: string;
   run?: string;
   card?: string;
+  /** The project's open lead tab; the pop-out shows the same one (ADR-0034). */
+  thread?: string;
 }
 
 /**
@@ -21,5 +23,6 @@ export function popoutUrl(href: string, target: PopoutTarget, source?: "live" | 
   if (target.project) url.searchParams.set("project", target.project);
   if (target.run) url.searchParams.set("run", target.run);
   if (target.card) url.searchParams.set("card", target.card);
+  if (target.thread) url.searchParams.set("thread", target.thread);
   return url;
 }

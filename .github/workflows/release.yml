@@ -3,6 +3,11 @@ name: release
 # Windows installer for every push to test_1 (and on demand from test_1): built with
 # scripts/build-installer.ps1, published as a GitHub pre-release and a workflow artifact.
 # The app's updater offers these releases, so a manual run from any other ref publishes nothing.
+#
+# Release gate (ADR-0038): nothing is published unless
+#   1. the full guard checks (Linux policy/tests and the Windows build/tests) pass on this commit,
+#   2. the built installer installs silently, its o.exe answers, and it uninstalls cleanly.
+# The real-agent check (scripts/release-gate.ps1) needs logged-in CLIs and runs on the owner's PC.
 on:
   push:
     branches: [test_1]
@@ -16,21 +21,44 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Read-only checks; the installer job below is what refuses to publish from another ref.
+  checks:
+    uses: ./.github/workflows/guard.yml
+    permissions:
+      contents: read
+
   installer:
+    needs: checks
     if: github.ref == 'refs/heads/test_1'
     runs-on: windows-latest
+    timeout-minutes: 90
+    # The signing secrets belong to this environment. The owner restricts it to test_1 in the
+    # repository settings, so a workflow on any other branch cannot read them (ADR-0043).
+    environment: release
     permissions:
       contents: write
+      # For the build provenance attestation the updater verifies (ADR-0043).
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: 설치 파일 빌드
         id: build
         shell: pwsh
+        env:
+          # Code signing is opt-in: with these secrets unset the build is unsigned and says so.
+          # build-installer.ps1 imports the PFX as non-exportable and never prints the values.
+          PROJECT_O_SIGN_PFX_BASE64: ${{ secrets.PROJECT_O_SIGN_PFX_BASE64 }}
+          PROJECT_O_SIGN_PFX_PASSWORD: ${{ secrets.PROJECT_O_SIGN_PFX_PASSWORD }}
         run: |
           $env:PROJECT_O_BUILD_SHA = '${{ github.sha }}'
           $env:PROJECT_O_BUILD_TIME = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
@@ -38,25 +66,97 @@ jobs:
           if ($LASTEXITCODE) { exit $LASTEXITCODE }
           $setup = Get-ChildItem target/release/bundle/nsis -Filter '*-setup.exe' | Sort-Object LastWriteTime -Descending | Select-Object -First 1
           "setup=$($setup.FullName)" >> $env:GITHUB_OUTPUT
-      - uses: actions/upload-artifact@v4
+          $signed = (Get-AuthenticodeSignature -LiteralPath $setup.FullName).Status -eq 'Valid'
+          "signed=$($signed.ToString().ToLowerInvariant())" >> $env:GITHUB_OUTPUT
+      - name: 설치 파일 연기 시험 (조용한 설치 → o.exe → 조용한 제거)
+        shell: pwsh
+        env:
+          SETUP: ${{ steps.build.outputs.setup }}
+          SIGNED: ${{ steps.build.outputs.signed }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Assert-That([bool]$Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
+          function Invoke-O([string[]]$Arguments) {
+            $out = & $o @Arguments | Out-String
+            Write-Host "o $($Arguments -join ' ') -> exit $LASTEXITCODE"
+            Write-Host $out
+            Assert-That ($LASTEXITCODE -eq 0) "o $($Arguments -join ' ') failed (exit $LASTEXITCODE)"
+            $out
+          }
+          $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\project_O'
+          Assert-That (-not (Test-Path -LiteralPath $uninstallKey)) 'project_O is already installed on this runner'
+          $work = Join-Path $env:RUNNER_TEMP ('project_O-smoke-' + [Guid]::NewGuid().ToString('N'))
+          $dir = Join-Path $work 'app'
+          # NSIS: /D= comes last and unquoted.
+          $install = Start-Process -FilePath $env:SETUP -ArgumentList "/S /D=$dir" -WindowStyle Hidden -Wait -PassThru
+          Assert-That ($install.ExitCode -eq 0) "silent install failed (exit $($install.ExitCode))"
+          foreach ($name in 'project_O.exe', 'o.exe', 'o-uninstall-data.exe', 'uninstall.exe', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'THIRD_PARTY_LICENSES.txt') {
+            Assert-That (Test-Path -LiteralPath (Join-Path $dir $name)) "missing installed file: $name"
+          }
+          $entry = Get-ItemProperty -LiteralPath $uninstallKey
+          Assert-That ($entry.UninstallString.Trim('"') -eq (Join-Path $dir 'uninstall.exe')) 'uninstall registry entry points elsewhere'
+          if ($env:SIGNED -eq 'true') {
+            foreach ($name in 'project_O.exe', 'o.exe') {
+              $status = (Get-AuthenticodeSignature -LiteralPath (Join-Path $dir $name)).Status
+              Assert-That ($status -eq 'Valid') "installed $name is not validly signed ($status)"
+            }
+          }
+
+          $o = Join-Path $dir 'o.exe'
+          $about = Invoke-O @('about', '--json') | ConvertFrom-Json
+          Assert-That ([bool]$about.version) 'o about --json has no version'
+          Assert-That (@($about.capabilities).Count -gt 0) 'o about --json has no capabilities'
+          $ram = Invoke-O @('ram', '--json') | ConvertFrom-Json
+          Assert-That ($null -ne $ram.enabled -and $null -ne $ram.percent) 'o ram --json is missing enabled/percent'
+          $project = Join-Path $work 'project'
+          New-Item -ItemType Directory -Path $project | Out-Null
+          $plan = Join-Path $work 'plan.json'
+          @{
+            title = 'release smoke'
+            project = $project
+            cards = @(
+              @{ id = 'a'; provider = 'claude'; task = 'Create hello.txt containing hi.'; resources = @(@{ kind = 'project-path'; key = 'hello.txt'; mode = 'write' }) }
+              @{ id = 'b'; provider = 'codex'; effort = 'low'; task = 'Create world.txt containing hi.'; resources = @(@{ kind = 'project-path'; key = 'world.txt'; mode = 'write' }) }
+            )
+          } | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $plan -Encoding utf8
+          # Policy check only: nothing is dispatched.
+          Invoke-O @('check', $plan) | Out-Null
+
+          $uninstall = Start-Process -FilePath (Join-Path $dir 'uninstall.exe') -ArgumentList '/S' -WindowStyle Hidden -Wait -PassThru
+          Assert-That ($uninstall.ExitCode -eq 0) "silent uninstall failed (exit $($uninstall.ExitCode))"
+          # The NSIS uninstaller finishes from a temporary copy; give it a moment.
+          $deadline = (Get-Date).AddSeconds(60)
+          while (((Test-Path -LiteralPath $dir) -or (Test-Path -LiteralPath $uninstallKey)) -and (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
+          Assert-That (-not (Test-Path -LiteralPath (Join-Path $dir 'project_O.exe'))) 'app files remain after uninstall'
+          Assert-That (-not (Test-Path -LiteralPath (Join-Path $dir 'o.exe'))) 'o.exe remains after uninstall'
+          Assert-That (-not (Test-Path -LiteralPath $uninstallKey)) 'uninstall registry key remains'
+          Write-Host 'PASS installer smoke: install, files, o about/ram/check, uninstall'
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: project_O-setup
           path: ${{ steps.build.outputs.setup }}
           if-no-files-found: error
+      # Signed by GitHub for this workflow at this ref and commit. The updater installs nothing
+      # without it: a release made by another workflow or branch has no such attestation.
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: ${{ steps.build.outputs.setup }}
       - name: 프리릴리스 게시
         shell: pwsh
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SETUP: ${{ steps.build.outputs.setup }}
+          SIGNED: ${{ steps.build.outputs.signed }}
           SHA: ${{ github.sha }}
           REF: ${{ github.ref_name }}
         run: |
           $tag = "test_1-{0}-{1}" -f (Get-Date).ToUniversalTime().ToString('yyyyMMdd'), $env:SHA.Substring(0, 7)
+          $signing = if ($env:SIGNED -eq 'true') { '코드 서명된 테스트 빌드입니다.' } else { '서명되지 않은 테스트 빌드입니다.' }
           gh release view $tag 2>$null
           if ($LASTEXITCODE -eq 0) {
             # Re-run on the same commit and day: replace the installer on the existing release.
             gh release upload $tag $env:SETUP --clobber
           } else {
-            gh release create $tag $env:SETUP --prerelease --target $env:SHA --title $tag --notes "Windows 설치 파일 ($env:REF @ $env:SHA). 서명되지 않은 테스트 빌드입니다. 설치 안내: docs/INSTALL.md"
+            gh release create $tag $env:SETUP --prerelease --target $env:SHA --title $tag --notes "Windows 설치 파일 ($env:REF @ $env:SHA). $signing 설치 안내: docs/INSTALL.md"
           }
           if ($LASTEXITCODE) { exit $LASTEXITCODE }

@@ -15,7 +15,7 @@ fn main() {
         return;
     }
     if mode.as_deref() == Some(std::ffi::OsStr::new("--env-audit")) {
-        println!("{}", serde_json::json!({"has_key": std::env::var_os("CODEX_API_KEY").is_some(), "home": std::env::var("O_FAKE_HOME").ok(), "inherited": std::env::var("O_FAKE_INHERITED").ok()}));
+        println!("{}", serde_json::json!({"has_key": std::env::var_os("CODEX_API_KEY").is_some(), "removed": std::env::var_os("O_FAKE_REMOVE").is_some(), "home": std::env::var("O_FAKE_HOME").ok(), "inherited": std::env::var("O_FAKE_INHERITED").ok()}));
         return;
     }
     if mode.as_deref() == Some(std::ffi::OsStr::new("--managed-owner")) {
@@ -181,6 +181,10 @@ fn main() {
     assert_managed_owner_handshake_and_lifecycle(&launch);
     assert_explicit_environment_in_real_child(&launch, &owner.0);
     assert_common_native_child(&launch, &owner.0);
+    // cmd's hidden variables start with `=` and are valid names; other `=` placements are not.
+    let names = |names: &[&str]| Launch { executable: launch.executable.clone(), args: vec![], cwd: launch.cwd.clone(), environment: names.iter().map(|name| (OsString::from(name), OsString::from("x"))).collect() }.environment_block();
+    assert!(names(&["=C:", "=ExitCode", "=::"]).is_ok());
+    for bad in ["=", "A=B", "=A=B", ""] { assert!(names(&[bad]).is_err(), "{bad:?}"); }
     let mut duplicate = launch;
     duplicate.environment.push((OsString::from("o_test_value"), OsString::from("duplicate")));
     assert!(duplicate.spawn(&owner.0).is_err());
@@ -212,10 +216,10 @@ fn assert_common_native_child(launch: &o_core::sys::win_launch::Launch, owner: &
 fn assert_explicit_environment_in_real_child(launch: &o_core::sys::win_launch::Launch, owner: &std::os::windows::io::OwnedHandle) {
     use std::io::Read;
     use o_core::sys::launch::{EnvironmentBase, Launch};
-    let mut inherited = vec![("codex_api_key".into(), "fake-only".into()), ("O_FAKE_INHERITED".into(), "kept".into()), ("O_FAKE_HOME".into(), "own".into())];
+    let mut inherited = vec![("codex_api_key".into(), "fake-only".into()), ("O_FAKE_INHERITED".into(), "kept".into()), ("O_FAKE_HOME".into(), "own".into()), ("o_fake_remove".into(), "removed".into())];
     if let Some(root) = std::env::var_os("SystemRoot") { inherited.push(("SystemRoot".into(), root)); }
     for base in [EnvironmentBase::Inherit, EnvironmentBase::Replace] {
-        let mut changes = vec![("CODEX_API_KEY".into(), None)];
+        let mut changes = vec![("O_FAKE_REMOVE".into(), None)];
         if base == EnvironmentBase::Replace {
             changes.push(("O_FAKE_HOME".into(), Some("clean".into())));
             if let Some(root) = std::env::var_os("SystemRoot") { changes.push(("SystemRoot".into(), Some(root))); }
@@ -228,7 +232,8 @@ fn assert_explicit_environment_in_real_child(launch: &o_core::sys::win_launch::L
         child.stdout.take().unwrap().read_to_string(&mut output).unwrap();
         assert!(child.wait().unwrap().success());
         let value: serde_json::Value = serde_json::from_str(output.trim()).unwrap();
-        assert_eq!(value["has_key"], false);
+        assert_eq!(value["has_key"], base == EnvironmentBase::Inherit);
+        assert_eq!(value["removed"], false);
         assert_eq!(value["home"], if base == EnvironmentBase::Inherit { "own" } else { "clean" });
         if base == EnvironmentBase::Inherit { assert_eq!(value["inherited"], "kept"); } else { assert!(value["inherited"].is_null()); }
     }

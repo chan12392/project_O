@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::sys::js::{js_len, parse_time};
-use crate::run::mode::Profile;
+use crate::run::mode::{Profile, RunMode};
 use crate::run::plan::{Card, Plan, ProviderId, CARD_FIELDS, PLAN_FIELDS};
 
 pub struct Limits {
@@ -53,10 +53,14 @@ pub const LIMITS: Limits = Limits {
 /// The effort ladder, lowest first (the daily budget lowers along it, see `budget`).
 pub const EFFORTS: [&str; 6] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 pub const AGY_UNAVAILABLE: &str = "Antigravity는 제3자 앱을 통한 사용에 관한 Google 정책 때문에 Project O에서 실행할 수 없습니다. Claude 또는 Codex를 선택하세요";
+pub const AGY_WORKERS_DISABLED: &str = "Antigravity 작업 에이전트가 꺼져 있습니다. 설정 → 에이전트 → Antigravity 또는 o agy --workers on --ack에서 켜세요";
 static MODEL: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z0-9][A-Za-z0-9._:\-/\[\]]{0,79}$").unwrap());
 static CARD_ID: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[a-z0-9][a-z0-9-]{0,31}$").unwrap());
 /// Team-channel names a card must not take: its messages would read as the lead's or as a broadcast.
-const RESERVED_CARD_IDS: [&str; 2] = ["lead", "all"];
+const RESERVED_CARD_IDS: [&str; 3] = ["lead", "all", WIKI_PARTY];
+
+/// The team-message recipient that is nobody's inbox: what a card sends there is a Wiki note (ADR-0041).
+pub const WIKI_PARTY: &str = "wiki";
 static ABSOLUTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"^[A-Za-z]:[\\/]").unwrap());
 
 /// Whether a model id has the shape a card's `model` field takes (the lead's `--model` uses it too).
@@ -83,7 +87,7 @@ pub struct PolicyContext {
     /// Provider → why it spent today's usage budget (ADR-0004, see `budget`).
     pub over_budget: HashMap<ProviderId, String>,
     pub project_exists: Box<dyn Fn(&str) -> bool>,
-    /// Whether the folder is a project_O protected-branch (test_1/test_2/main) mirror checkout.
+    /// Whether the folder is a project_O protected-branch (test_1/test_1_hotfix/test_2/main_hotfix/main) mirror checkout.
     pub is_mirror: Box<dyn Fn(&str) -> bool>,
     /// O's state folder: a project may neither be inside it nor contain it.
     pub o_home: String,
@@ -92,11 +96,16 @@ pub struct PolicyContext {
     /// The folder a path names on disk (links, junctions and short names
     /// resolved), or the path itself when it cannot be resolved.
     pub resolve: Box<dyn Fn(&str) -> String>,
+    /// Why a provider's project_O profile cannot do a sandboxed card's work yet
+    /// (`agents::clean::profile_not_ready`, ADR-0040); `None` when it can.
+    pub profile_not_ready: Box<dyn Fn(ProviderId) -> Option<String>>,
+    pub agy_workers_allowed: bool,
 }
 
 pub struct Checked {
     pub plan: Option<Plan>,
     pub violations: Vec<Violation>,
+    pub notices: Vec<String>,
 }
 
 /// Whether `path` is `dir` or inside it, compared as Windows does (any slash, any
@@ -130,11 +139,27 @@ fn lexical(path: &str) -> String {
 /// A card may write inside its project: O's own state and the home folder (CLI
 /// settings) must stay out of reach, however either path is spelled.
 fn reaches_protected(project: &str, ctx: &PolicyContext) -> bool {
-    let o_homes = [ctx.o_home.clone(), (ctx.resolve)(&ctx.o_home)];
+    let mut o_homes = vec![ctx.o_home.clone(), (ctx.resolve)(&ctx.o_home)];
+    for sibling in o_siblings(&ctx.o_home) {
+        o_homes.push((ctx.resolve)(&sibling));
+        o_homes.push(sibling);
+    }
     let user_homes = [ctx.user_home.clone(), (ctx.resolve)(&ctx.user_home)];
     [project.to_string(), (ctx.resolve)(project)]
         .iter()
         .any(|p| o_homes.iter().any(|h| within(p, h) || within(h, p)) || user_homes.iter().any(|u| within(u, p)))
+}
+
+/// The folders O keeps beside its state folder, as off-limits as the state folder itself: the
+/// agent profiles (each CLI's sign-in), lead attachments and plans, terminal card tasks and
+/// card worktrees. A card whose project is one of them would be handed a copy of it.
+fn o_siblings(o_home: &str) -> Vec<String> {
+    let home = o_home.replace('\\', "/");
+    let Some((parent, name)) = home.trim_end_matches('/').rsplit_once('/') else { return Vec::new() };
+    let mut names = vec!["project_O-agents".to_string()];
+    names.extend(["agents", "lead", "term", "worktrees"].map(|kind| format!("{name}-{kind}")));
+    names.dedup();
+    names.into_iter().map(|name| format!("{parent}/{name}")).collect()
 }
 
 fn is_absolute(path: &str) -> bool {
@@ -154,7 +179,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     let mut found = Found::default();
     let Some(object) = input.as_object() else {
         found.add("plan-shape", "계획은 JSON 객체여야 합니다", None);
-        return Checked { plan: None, violations: found.0 };
+        return Checked { plan: None, violations: found.0, notices: Vec::new() };
     };
     for key in object.keys() {
         if !PLAN_FIELDS.contains(&key.as_str()) {
@@ -171,7 +196,7 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
         Some(cards) if !cards.is_empty() => cards,
         _ => {
             found.add("plan-shape", "cards가 1개 이상 필요합니다", None);
-            return Checked { plan: None, violations: found.0 };
+            return Checked { plan: None, violations: found.0, notices: Vec::new() };
         }
     };
     if cards.len() > LIMITS.max_cards_per_plan {
@@ -254,26 +279,47 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
     }
 
     if !found.0.is_empty() {
-        return Checked { plan: None, violations: found.0 };
+        return Checked { plan: None, violations: found.0, notices: Vec::new() };
     }
     let plan = Plan { title: title.unwrap_or_default().trim().to_string(), project: project.unwrap_or_default().to_string(), cards: valid };
-    Checked { plan: Some(plan), violations: Vec::new() }
+    Checked { plan: Some(plan), violations: Vec::new(), notices: Vec::new() }
 }
 
-/// `check_plan` for a run on `profile` (ADR-0013): a card whose CLI cannot run on the
-/// project_O profile (`Provider::profile_unsupported`, Devin) is refused while it is on —
-/// never quietly run with the person's own setup instead.
+/// `check_plan` for a sandboxed run on `profile`.
 pub fn check_plan_for(input: &Value, ctx: &PolicyContext, profile: Profile) -> Checked {
+    check_plan_in(input, ctx, RunMode::of(profile))
+}
+
+/// `check_plan_for` in the run's mode: on the project_O profile with YOLO off, a card whose
+/// CLI's profile still needs its one-time setup (`ctx.profile_not_ready`, Codex's Windows
+/// sandbox) is refused too (rule `profile-not-ready`, ADR-0040): it would end "done" having
+/// changed nothing. YOLO cards run without the CLI's sandbox and are not refused for it.
+pub fn check_plan_in(input: &Value, ctx: &PolicyContext, mode: RunMode) -> Checked {
+    let profile = mode.profile;
     let mut checked = check_plan(input, ctx);
     let cards = input.get("cards").and_then(Value::as_array).map(Vec::as_slice).unwrap_or_default();
     for card in cards {
-        if card.get("provider").and_then(Value::as_str) == Some("agy") {
+        if !ctx.agy_workers_allowed && card.get("provider").and_then(Value::as_str) == Some("agy") {
             checked.plan = None;
-            checked.violations.push(Violation { rule: "provider-terms".into(), message: AGY_UNAVAILABLE.into(), card_id: card.get("id").and_then(Value::as_str).map(str::to_string) });
+            checked.violations.push(Violation { rule: "provider-terms".into(), message: AGY_WORKERS_DISABLED.into(), card_id: card.get("id").and_then(Value::as_str).map(str::to_string) });
         }
     }
-    let named = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?)));
-    let refused = profile_violations(named, profile);
+    let named: Vec<_> = cards.iter().filter_map(|c| Some((c.get("id").and_then(Value::as_str).unwrap_or("?"), ProviderId::parse(c.get("provider")?.as_str()?)?))).collect();
+    if cards.iter().any(|card| card.get("provider").and_then(Value::as_str).and_then(ProviderId::parse).is_some_and(|provider| crate::providers::get(provider).terminal_card()) && (card.get("model").is_some_and(|v| !v.is_null()) || card.get("effort").is_some_and(|v| !v.is_null()))) {
+        checked.notices.push("터미널 카드는 model·effort를 적용하지 않습니다(CLI의 현재 설정으로 실행)".into());
+    }
+    if profile.is_clean() && named.iter().any(|(_, provider)| *provider == ProviderId::Devin) {
+        checked.notices.push(crate::providers::devin::OWN_PROFILE_NOTICE.into());
+    }
+    let mut refused = profile_violations(named.iter().copied(), profile);
+    if profile.is_clean() && !mode.yolo {
+        let mut asked: HashMap<ProviderId, Option<String>> = HashMap::new();
+        for (id, provider) in named {
+            if let Some(why) = asked.entry(provider).or_insert_with(|| (ctx.profile_not_ready)(provider)) {
+                refused.push(Violation { rule: "profile-not-ready".into(), message: why.clone(), card_id: Some(id.to_string()) });
+            }
+        }
+    }
     if !refused.is_empty() {
         checked.plan = None;
         checked.violations.extend(refused);
@@ -288,6 +334,7 @@ pub fn profile_violations<'a>(cards: impl IntoIterator<Item = (&'a str, Provider
     }
     let mut found = Found::default();
     for (id, provider) in cards {
+        if provider == ProviderId::Devin { continue; }
         if let Some(why) = crate::providers::get(provider).profile_unsupported() {
             found.add("profile-unsupported", why, Some(id));
         }
@@ -307,13 +354,13 @@ pub fn check_project(project: Option<&str>, ctx: &PolicyContext) -> Vec<Violatio
             } else if (ctx.is_mirror)(project) {
                 found.add(
                     "read-only-project",
-                    format!("{project}는 project_O의 보호 브랜치(test_1·test_1_hotfix·test_2·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
+                    format!("{project}는 project_O의 보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main) 거울 폴더라 작업을 보낼 수 없습니다. 개인 브랜치 폴더를 지정하세요"),
                     None,
                 );
             } else if reaches_protected(project, ctx) {
                 found.add(
                     "protected-project",
-                    format!("{project}는 O의 상태 폴더나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
+                    format!("{project}는 O의 상태 폴더(와 그 옆의 프로필·총괄·터미널·작업 사본 폴더)나 홈 폴더를 포함해 작업 폴더로 쓸 수 없습니다. 프로젝트 폴더를 지정하세요"),
                     None,
                 );
             }
@@ -343,7 +390,7 @@ fn check_card(raw: &Value, found: &mut Found) -> Option<Card> {
     if !CARD_ID.is_match(&id) {
         fail(found, "plan-shape".into(), "카드 id는 영문 소문자·숫자·하이픈 32자 이내입니다".into());
     } else if RESERVED_CARD_IDS.contains(&id.as_str()) {
-        fail(found, "plan-shape".into(), format!("카드 id {id}는 팀 대화의 총괄(lead)·전체 방송(all)용으로 예약돼 있어 쓸 수 없습니다"));
+        fail(found, "plan-shape".into(), format!("카드 id {id}는 팀 대화의 총괄(lead)·전체 방송(all)·Wiki 메모(wiki)용으로 예약돼 있어 쓸 수 없습니다"));
     }
     let provider = raw.get("provider").and_then(Value::as_str).and_then(ProviderId::parse);
     if provider.is_none() {
@@ -431,8 +478,9 @@ pub fn check_message(text: &str, parties: &Parties) -> Vec<Violation> {
     if js_len(text) > LIMITS.max_message_chars {
         found.add("msg-size", format!("메시지는 {}자 이내입니다", LIMITS.max_message_chars), None);
     }
-    for party in [parties.from, parties.to] {
-        if !(party == "lead" || party == "all" || parties.known.iter().any(|k| k == party)) {
+    for (party, receives) in [(parties.from, false), (parties.to, true)] {
+        // A run planned before "wiki" was reserved may have a card of that name; it keeps its inbox.
+        if !(party == "lead" || party == "all" || (receives && party == WIKI_PARTY) || parties.known.iter().any(|k| k == party)) {
             found.add("msg-party", format!("이 실행에 없는 상대입니다: {party}"), None);
         }
     }

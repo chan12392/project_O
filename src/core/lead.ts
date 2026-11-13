@@ -102,14 +102,23 @@ export interface AskQuestion {
 
 export type LeadEvent =
   | { t: "lead.start"; at: string; threadId: string; project: string }
-  | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  /** `origin`: absent for the person; "overall" for a request the overall lead passed on, "review" for O's review request (ADR-0032, ADR-0036). */
+  | { t: "lead.user"; at: string; text: string; attachments?: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string; origin?: string }
+  /** Requests the overall lead proposes; they go on when the person presses 요청 전달 (ADR-0036). */
+  | { t: "lead.forward-plan"; at: string; proposalId: string; items: LeadForwardItem[]; provider: ProviderId; model?: string; effort?: string }
+  /** A request passed on to a project lead; `revision` names the plan an overall review asked to revise. */
+  | { t: "lead.forward"; at: string; project: string; text: string; proposal?: string; revision?: string }
+  /** The thread's `index`-th lead.forward did not start (`error`), or was sent again (no `error`); the last one counts (#96). */
+  | { t: "lead.forward-start"; at: string; index: number; error?: string }
+  /** The overall lead's review of a project lead's plan, in both threads (ADR-0036). */
+  | { t: "lead.review"; at: string; planId: string; project: string; verdict: LeadVerdict; notes?: string }
   | { t: "lead.worker"; at: string; runId: string; cardId: string; messageId: string; text: string }
   | { t: "lead.session"; at: string; provider: ProviderId; sessionId: string }
   | { t: "lead.reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { t: "lead.design"; at: string; design: { goal: string; decisions: string[]; questions: string[] } }
   /** Questions in place of an answer (an `o-ask` block); the next lead.user carries the picks. */
   | { t: "lead.ask"; at: string; askId: string; provider: ProviderId; intro?: string; questions: AskQuestion[] }
-  | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[] }
+  | { t: "lead.plan"; at: string; planId: string; plan: { title?: string; project?: string; cards?: PlanCard[] }; ok: boolean; violations: LeadViolation[]; notices?: string[] }
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
@@ -125,7 +134,60 @@ export type LeadEvent =
 /** What `o lead show --json` prints. `unknown` means a previous turn's exit is unconfirmed. */
 export interface LeadShow {
   thread: { threadId: string; project: string; busy: ProviderId | "starting" | "unknown" | null; progress?: { name: string; summary: string }[]; progressCounts?: LeadProgressCounts | null; partial?: string; steps?: LeadStep[]; approvals?: LeadApproval[]; notes?: DesignNote[]; notesError?: string | null; events: LeadEvent[] } | null;
-  projects: { project: string; threadId: string }[];
+  /** The project's open conversations, in the order they were opened (ADR-0034); absent in older answers. */
+  threads?: LeadTab[];
+  projects: { project: string; threadId: string; /** How the project's tabs add up (waiting > working > idle); absent in older answers. */ state?: LeadTab["state"] }[];
+}
+
+/** One open lead conversation — a tab on screen (ADR-0034). */
+export interface LeadTab {
+  threadId: string;
+  /** The first request's first line, or "새 총괄" before one. */
+  title: string;
+  /** working: answering or its dispatched runs go; waiting: it needs the person; idle: otherwise. */
+  state: "working" | "waiting" | "idle";
+  /** Who answers on it now; "unknown" when a previous turn's exit is unconfirmed. */
+  busy: ProviderId | "starting" | "unknown" | null;
+  /** The one tab that may edit the project directly; the rest are design-only. */
+  writer: boolean;
+  startedAt: string;
+}
+
+/** A project's open tabs cap (`lead::MAX_OPEN`). */
+export const LEAD_TAB_MAX = 4;
+
+/** What the tab's status dot says: waiting means the person's action is needed (approval, question, unconfirmed exit). */
+export const LEAD_TAB_WORD: Record<LeadTab["state"], string> = { working: "작업 중", waiting: "확인 필요", idle: "대기" };
+
+/**
+ * The tab a `leadShow` answer shows: the picked one while it is still open; the answer's own
+ * thread when it is not (closed or never opened — the backend falls back to the project's
+ * current conversation). An old answer without `threads` has one tab: its thread (ADR-0034).
+ */
+export function leadTabOf(show: LeadShow | undefined, picked: string | undefined): string | undefined {
+  if (!show || (picked !== undefined && show.threads?.some((tab) => tab.threadId === picked))) return picked;
+  return show.thread?.threadId;
+}
+
+/** A tab's title when only the thread is known: its first request's first line, or "새 총괄". */
+export function leadTabTitle(events: readonly LeadEvent[]): string {
+  const first = events.find((e) => e.t === "lead.user" && typeof (e as { text?: unknown }).text === "string") as { text: string } | undefined;
+  const line = first?.text.split("\n", 1)[0].trim() ?? "";
+  return line ? line.slice(0, 24) : "새 총괄";
+}
+
+/** A shown thread's state when the answer names none (`threads` absent): waiting > working > idle. */
+export function threadState(thread: NonNullable<LeadShow["thread"]>): LeadTab["state"] {
+  if (thread.busy === "unknown" || (thread.approvals?.length ?? 0) > 0) return "waiting";
+  return thread.busy ? "working" : "idle";
+}
+
+/** The open tabs an answer draws: `threads`, or the one thread of an older answer (its tab is the writer). */
+export function leadTabsOf(show: LeadShow | undefined): LeadTab[] {
+  if (!show) return [];
+  if (show.threads) return show.threads;
+  const thread = show.thread;
+  return thread ? [{ threadId: thread.threadId, title: leadTabTitle(thread.events), state: threadState(thread), busy: thread.busy, writer: true, startedAt: "" }] : [];
 }
 
 /**
@@ -137,6 +199,8 @@ export interface LeadShow {
  */
 export interface LeadView {
   project?: string;
+  /** The tab the project is asked for; undefined follows the answer's own thread (ADR-0034). */
+  thread?: string;
   show?: LeadShow;
   projects: LeadShow["projects"];
   failed?: string;
@@ -144,17 +208,21 @@ export interface LeadView {
 }
 
 export type LeadViewAction =
-  | { type: "project"; project?: string }
-  | { type: "answer"; project?: string; seq: number; show: LeadShow }
-  | { type: "failed"; project?: string; seq: number; error: string };
+  | { type: "project"; project?: string; thread?: string }
+  | { type: "answer"; project?: string; thread?: string; seq: number; show: LeadShow }
+  | { type: "failed"; project?: string; thread?: string; seq: number; error: string };
 
 export const LEAD_VIEW: LeadView = { projects: [], seq: 0 };
 
 export function leadView(state: LeadView, action: LeadViewAction): LeadView {
   if (action.type === "project") {
-    return action.project === state.project && state.show !== undefined ? state : { ...state, project: action.project, show: undefined, failed: undefined };
+    // Another project or another tab of it: the former answer no longer applies.
+    return action.project === state.project && action.thread === state.thread && state.show !== undefined
+      ? state
+      : { ...state, project: action.project, thread: action.thread, show: undefined, failed: undefined };
   }
-  if (action.project !== state.project || action.seq <= state.seq) return state;
+  // A check answered for a project or tab no longer looked at, or older than one applied, is dropped.
+  if (action.project !== state.project || action.thread !== state.thread || action.seq <= state.seq) return state;
   if (action.type === "failed") return { ...state, seq: action.seq, failed: action.error };
   // The same answer again keeps its objects, so what was drawn from it is not redrawn.
   const same = state.show !== undefined && JSON.stringify(state.show) === JSON.stringify(action.show);
@@ -164,8 +232,21 @@ export function leadView(state: LeadView, action: LeadViewAction): LeadView {
 }
 
 /** One thing the chat draws, in order. */
+/** One request the overall lead proposes for a project lead. */
+export interface LeadForwardItem {
+  project: string;
+  text: string;
+}
+
+export type LeadVerdict = "approve" | "revise";
+
 export type LeadItem =
-  | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string }
+  | { kind: "user"; at: string; text: string; attachments: LeadAttachment[]; provider: ProviderId; model?: string; effort?: string; origin?: string }
+  /** The overall lead's proposed requests; `sent` once the person sent them on, `failed` the projects whose request did not start. */
+  | { kind: "proposal"; at: string; proposalId: string; items: LeadForwardItem[]; sent: boolean; failed: string[] }
+  /** `failed`: why its start failed, until it is sent again. */
+  | { kind: "forward"; at: string; project: string; text: string; proposal?: string; revision?: string; failed?: string }
+  | { kind: "review"; at: string; planId: string; project: string; verdict: LeadVerdict; notes: string }
   | { kind: "worker"; at: string; runId: string; cardId: string; text: string }
   | { kind: "reply"; at: string; provider: ProviderId; text: string; reportedFiles?: string[] }
   | { kind: "followup"; at: string; cardId: string; runId: string }
@@ -181,10 +262,14 @@ export type LeadItem =
       cards: PlanCard[];
       ok: boolean;
       violations: LeadViolation[];
+      /** What the check wants said but does not block on (neutral information, not an error). */
+      notices: string[];
       /** What was wrong with the stored plan's shape (left out of what is drawn); a plan with any never runs from here. */
       problems: string[];
       runId?: string;
       autoRunReason?: string;
+      /** The overall lead's last word on it (ADR-0036). */
+      review?: { verdict: LeadVerdict; notes: string };
     }
   | { kind: "warning" | "error"; at: string; text: string };
 
@@ -197,6 +282,7 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
     if (!work) { work = { kind: "work", at, entries: [] }; items.push(work); }
     return work;
   };
+  const forwards: (LeadForward | undefined)[] = [];
   for (const raw of events) {
     const e = raw as LeadEvent;
     switch (e.t) {
@@ -217,7 +303,37 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
       case "lead.user":
         work = undefined;
         for (const item of items) if (item.kind === "ask") item.answered = true;
-        items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort });
+        items.push({ kind: "user", at: e.at, text: e.text, attachments: e.attachments ?? [], provider: e.provider, model: e.model, effort: e.effort, ...(typeof e.origin === "string" ? { origin: e.origin } : {}) });
+        break;
+      case "lead.forward-plan": {
+        // Stored data: requests without a project or text are left out.
+        const forwards = (Array.isArray(e.items) ? e.items : []).filter((item): item is LeadForwardItem => isObject(item) && typeof item.project === "string" && typeof item.text === "string");
+        if (typeof e.proposalId === "string" && forwards.length > 0) items.push({ kind: "proposal", at: e.at, proposalId: e.proposalId, items: forwards, sent: false, failed: [] });
+        break;
+      }
+      case "lead.forward": {
+        // Every lead.forward has a number, drawn or not: lead.forward-start names it by that.
+        const valid = typeof e.project === "string" && typeof e.text === "string";
+        const forward: LeadForward | undefined = valid
+          ? { kind: "forward", at: e.at, project: e.project, text: e.text, ...(typeof e.proposal === "string" ? { proposal: e.proposal } : {}), ...(typeof e.revision === "string" ? { revision: e.revision } : {}) }
+          : undefined;
+        forwards.push(forward);
+        if (!forward) break;
+        for (const item of items) if (item.kind === "proposal" && item.proposalId === e.proposal) item.sent = true;
+        items.push(forward);
+        break;
+      }
+      case "lead.forward-start": {
+        const forward = forwards[e.index];
+        if (!forward) break;
+        if (typeof e.error === "string") forward.failed = e.error;
+        else delete forward.failed;
+        break;
+      }
+      case "lead.review":
+        if (typeof e.planId !== "string" || (e.verdict !== "approve" && e.verdict !== "revise")) break;
+        for (const item of items) if (item.kind === "plan" && item.planId === e.planId) item.review = { verdict: e.verdict, notes: e.notes ?? "" };
+        items.push({ kind: "review", at: e.at, planId: e.planId, project: String(e.project ?? ""), verdict: e.verdict, notes: e.notes ?? "" });
         break;
       case "lead.worker":
         work = undefined;
@@ -257,9 +373,13 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
         break;
     }
   }
+  for (const item of items) {
+    if (item.kind === "proposal") item.failed = forwards.flatMap((forward) => (forward?.failed !== undefined && forward.proposal === item.proposalId ? [forward.project] : []));
+  }
   return items;
 }
 
+type LeadForward = Extract<LeadItem, { kind: "forward" }>;
 type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
 
 /**
@@ -269,6 +389,20 @@ type LeadPlan = Extract<LeadItem, { kind: "plan" }>;
 export function leadPlans(items: readonly LeadItem[]): { latest?: LeadPlan; earlier: LeadPlan[] } {
   const plans = items.filter((item): item is LeadPlan => item.kind === "plan");
   return { latest: plans.at(-1), earlier: plans.slice(0, -1).reverse() };
+}
+
+type LeadProposal = Extract<LeadItem, { kind: "proposal" }>;
+
+/**
+ * The overall lead's latest proposal of requests (ADR-0036), and whether it may still be sent on:
+ * not yet sent or with a request that did not start (only those go again, #96), and nothing the
+ * person wrote since (O refuses a stale one the same way).
+ */
+export function latestProposal(items: readonly LeadItem[]): { proposal?: LeadProposal; sendable: boolean } {
+  const position = items.findLastIndex((item) => item.kind === "proposal");
+  if (position < 0) return { sendable: false };
+  const proposal = items[position] as LeadProposal;
+  return { proposal, sendable: (!proposal.sent || proposal.failed.length > 0) && !items.slice(position + 1).some((item) => item.kind === "user") };
 }
 
 /** A plan the user wrote after, or the lead proposed another after, is out of date: it is not dispatched. */
@@ -336,6 +470,7 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     cards,
     ok: e.ok === true && problems.length === 0,
     violations,
+    notices: (Array.isArray(e.notices) ? e.notices : []).filter((n: unknown): n is string => typeof n === "string" && n.length > 0),
     problems,
   };
 }
@@ -343,7 +478,7 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
 /** The agents that can lead and the efforts each takes (crates/o-core/src/providers `lead_efforts`). */
 export const LEAD_EFFORTS = {
   claude: ["low", "medium", "high", "xhigh", "max"],
-  codex: ["minimal", "low", "medium", "high", "xhigh"],
+  codex: ["low", "medium", "high", "xhigh"],
   agy: ["low", "medium", "high", "xhigh", "max"],
 } as const satisfies Partial<Record<ProviderId, readonly string[]>>;
 
@@ -447,9 +582,10 @@ export type Drafts = Readonly<Record<string, Draft>>;
 
 export const EMPTY_DRAFT: Draft = { text: "", files: [], gen: 0 };
 
-/** A project's draft key: folders compare as O compares them (any slash, no trailing one, any case). */
-export function draftKey(project: string): string {
-  return project.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+/** A draft's key: the folder as O compares it, and the conversation when the project has several (ADR-0034). */
+export function draftKey(project: string, thread?: string): string {
+  const folder = project.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+  return thread ? `${folder}#${thread}` : folder;
 }
 
 export function draftOf(drafts: Drafts, key: string): Draft {
@@ -464,11 +600,24 @@ export function editDraft(drafts: Drafts, key: string, change: (draft: Draft) =>
 /**
  * An upload finished: it lands in the draft it was started from, only if that draft has not
  * been sent since (same generation) and still has its chip. Another project's draft never gets it.
+ * A draft started before the project's first conversation was named has moved to that
+ * conversation's key meanwhile: the answer follows its chip there (#88).
  */
 export function uploadDone(drafts: Drafts, key: string, gen: number, fileKey: string, result: { saved?: LeadAttachment; error?: string }): Drafts {
-  const draft = drafts[key];
-  if (!draft || draft.gen !== gen || !draft.files.some((f) => f.key === fileKey)) return drafts;
-  return editDraft(drafts, key, (d) => ({ files: d.files.map((f) => (f.key === fileKey ? { ...f, ...result, image: result.saved?.image ?? f.image } : f)) }));
+  const holds = (at: string) => drafts[at]?.files.some((f) => f.key === fileKey) ?? false;
+  const at = drafts[key]?.gen === gen && holds(key) ? key : movedChip(drafts, key, holds);
+  if (at === undefined) return drafts;
+  return editDraft(drafts, at, (d) => ({ files: d.files.map((f) => (f.key === fileKey ? { ...f, ...result, image: result.saved?.image ?? f.image } : f)) }));
+}
+
+/**
+ * Where a chip of the project's own draft (a key without a conversation) is now: one conversation
+ * of that same project, when it still has the chip. A removed chip, a sent draft, another project
+ * and a draft that belonged to a conversation from the start give nothing.
+ */
+function movedChip(drafts: Drafts, key: string, holds: (at: string) => boolean): string | undefined {
+  if (key.includes("#")) return undefined;
+  return Object.keys(drafts).find((at) => at.startsWith(`${key}#`) && !at.includes("#", key.length + 1) && holds(at));
 }
 
 /** The draft taken to send: emptied, and its generation moved on. */
@@ -494,4 +643,31 @@ export function leadReadProblem(error: string): string {
 /** A card task too long for the plan table's three lines: it gets a "전체 보기". */
 export function taskIsLong(task: string): boolean {
   return task.length > 120 || task.split("\n").length > 3;
+}
+
+/**
+ * How a plan will run, before "실행": its cards in stages by depends_on (a stage starts when the one
+ * before it ends), and the cards that declare no resources and so run alone (ADR-0037). Unknown or
+ * circular dependencies end up in a last stage; the runner fails those cards. Slots are not counted.
+ */
+export function planOrder(cards: readonly Pick<PlanCard, "id" | "depends_on" | "resources">[]): { stages: string[][]; alone: string[] } {
+  const placed = new Set<string>();
+  const stages: string[][] = [];
+  let left = [...cards];
+  while (left.length > 0) {
+    const ready = left.filter((card) => (card.depends_on ?? []).every((id) => placed.has(id)));
+    const stage = ready.length > 0 ? ready : left;
+    stages.push(stage.map((card) => card.id));
+    for (const card of stage) placed.add(card.id);
+    left = left.filter((card) => !placed.has(card.id));
+  }
+  const alone = cards.length > 1 ? cards.filter((card) => !card.resources?.length).map((card) => card.id) : [];
+  return { stages, alone };
+}
+
+/** One line for the plan table: "모두 동시에" or the stages in order, and who runs alone. */
+export function planOrderText(cards: readonly Pick<PlanCard, "id" | "depends_on" | "resources">[]): string {
+  const { stages, alone } = planOrder(cards);
+  const order = stages.length <= 1 ? `${cards.length}개 작업 모두 동시에 시작` : `${stages.length}단계로 차례 실행: ${stages.map((stage) => stage.join(", ")).join(" → ")}`;
+  return alone.length > 0 ? `${order} · 자원 미선언(${alone.join(", ")})은 혼자 실행` : order;
 }

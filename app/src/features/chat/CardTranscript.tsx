@@ -1,8 +1,9 @@
-import { CircleAlert, CircleCheck, FilePen, FileText, Gauge, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
+import { BookOpen, CircleAlert, CircleCheck, FilePen, FileText, Gauge, Globe, Hourglass, SquareTerminal, Wrench } from "lucide-react";
 
 import type { CardLogEntry, CardView, RunView } from "../../../../src/core/snapshot.ts";
+import { EMPTY_COMPOSER, type Composer } from "../../../../src/core/panes.ts";
 import { lookOf } from "../office/characters.ts";
-import { PROVIDER_NAME, STATE_WORD, modelLine, timeOf } from "../../lib/format.ts";
+import { PROVIDER_NAME, STATE_WORD, errorText, modelLine, timeOf } from "../../lib/format.ts";
 import { AgentStateDot } from "../../ui/AgentStateDot.tsx";
 import { Avatar } from "../office/Avatar.tsx";
 import { Markdown } from "./Markdown.tsx";
@@ -14,15 +15,22 @@ import { useFollowBottom } from "./Thread.tsx";
 import { useRef, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useAutoGrow } from "../../lib/autoGrow.ts";
 import type { Backend } from "../../platform/backend/index.ts";
+import { sessionForCard } from "../../../../src/core/terminal.ts";
+import { TerminalView } from "../terminal/TerminalView.tsx";
+import { useTermSessions } from "../terminal/useTermSessions.ts";
 
 const TOOL_ICON: Record<string, typeof Wrench> = { "명령 실행": SquareTerminal, "파일 읽기": FileText, "파일 수정": FilePen, "웹 검색": Globe };
 
 /** One work card's session, read back as Orca shows an agent transcript. */
-export function CardTranscript({ card, run, names, api, onFollowup }: { card: CardView; run: RunView; names: (party: string) => string; api?: Backend; onFollowup?: (runId: string) => void }) {
-  const [draft, setDraft] = useState("");
+export function CardTranscript({ card, run, names, api, onFollowup, composer }: { card: CardView; run: RunView; names: (party: string) => string; api?: Backend; onFollowup?: (runId: string) => void; composer?: Composer & { set: (change: Partial<Composer>) => void } }) {
+  // The draft lives with the caller when it gives one, so hiding this transcript keeps it.
+  const [own, setOwn] = useState<Composer>(EMPTY_COMPOSER);
+  const { draft, sending } = composer ?? own;
+  const update = composer?.set ?? ((change: Partial<Composer>) => setOwn((current) => ({ ...current, ...change })));
+  const setDraft = (text: string) => update({ draft: text });
+  const setSending = (value: boolean) => update({ sending: value });
   const draftRef = useRef<HTMLTextAreaElement>(null);
   useAutoGrow(draftRef, draft);
-  const [sending, setSending] = useState(false);
   const [error, setError] = useState<string>();
   const [notice, setNotice] = useState<string>();
   const send = async () => {
@@ -35,7 +43,7 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
       setDraft("");
       setNotice("후속 지시를 접수했습니다. 작업 상태가 곧 표시됩니다.");
       onFollowup(result.runId);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setError(errorText(e)); }
     finally { setSending(false); }
   };
   // As the lead composer: Ctrl+Enter inserts a line break, Shift+Enter keeps the default one, Enter sends.
@@ -58,8 +66,11 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
   };
   const scroller = useFollowBottom([card.log.length]);
   const pr = prOf(card);
+  // A card that runs as a terminal shows its session above the transcript (ADR-0042).
+  const { sessions: termSessions } = useTermSessions(api, Boolean(api));
+  const termSession = sessionForCard(termSessions, run.runId, card.id);
   // Where follow-ups can't go, one line says why instead of a disabled input.
-  const readOnly = card.provider === "agy" ? "Antigravity 실행은 보류 중이라 후속 지시를 보낼 수 없습니다" : run.runId.startsWith("session-") ? "외부 세션은 기록만 볼 수 있습니다" : undefined;
+  const readOnly = card.provider === "agy" ? "터미널 카드는 후속 지시를 받지 않습니다" : run.runId.startsWith("session-") ? "외부 세션은 기록만 볼 수 있습니다" : undefined;
   return (
     <ImageScope.Provider value={{ project: run.project, run: run.runId, card: card.id }}><div className="flex min-h-0 flex-1 flex-col bg-chat-canvas">
       <header className="flex min-w-0 shrink-0 items-center gap-3 border-b px-6 py-2.5">
@@ -76,6 +87,7 @@ export function CardTranscript({ card, run, names, api, onFollowup }: { card: Ca
         </span>
       </header>
       {pr && <div className="flex flex-wrap items-center gap-3 border-b px-6 py-2 text-xs"><ExternalAnchor href={pr} className="text-callout-note underline focus-ring">{pr}</ExternalAnchor>{!isReviewCard(card) && <ReviewButton project={run.project} pr={pr} />}</div>}
+      {api && termSession && <div className="h-64 shrink-0 border-b"><TerminalView api={api} session={termSession} title={`${card.label} 터미널`} /></div>}
       <div ref={scroller} className="scrollbar-sleek min-h-0 flex-1 overflow-y-auto">
         <ol className="mx-auto flex max-w-3xl flex-col gap-1 px-6 py-5 text-sm text-chat-foreground">
           {card.log.length === 0 && <li className="text-chat-foreground-faint">아직 남긴 기록이 없습니다.</li>}
@@ -161,8 +173,8 @@ function Entry({
     );
   }
   const failed = entry.kind === "end" && cardFailed;
-  const Icon = entry.kind === "end" ? (failed ? CircleAlert : CircleCheck) : entry.kind === "queued" ? Hourglass : entry.kind === "budget" ? Gauge : CircleAlert;
-  const tone = entry.kind === "end" && !failed ? "text-emerald-500" : entry.kind === "queued" ? "text-chat-foreground-faint" : entry.kind === "budget" ? "text-amber-500" : "text-destructive";
+  const Icon = entry.kind === "end" ? (failed ? CircleAlert : CircleCheck) : entry.kind === "queued" ? Hourglass : entry.kind === "budget" ? Gauge : entry.kind === "guides" ? BookOpen : CircleAlert;
+  const tone = entry.kind === "end" && !failed ? "text-emerald-500" : entry.kind === "queued" || entry.kind === "guides" ? "text-chat-foreground-faint" : entry.kind === "budget" ? "text-amber-500" : "text-destructive";
   return (
     <li className="mt-3 flex items-start gap-2 rounded-lg border bg-card px-3 py-2.5 text-card-foreground">
       <Icon className={`mt-0.5 size-4 shrink-0 ${tone}`} aria-hidden="true" />

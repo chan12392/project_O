@@ -21,10 +21,11 @@ pub const AGENTS: Command = Command {
   o agents status [--clean] [--json]   CLI별 설치·버전·로그인 상태 (--clean: 깨끗한 프로필 기준)
   o agents install <claude|codex|agy|opencode|devin> [--json]   공식 npm 패키지로 설치 (없으면 공식 안내)
   o agents open-login <claude|codex|agy|opencode|devin> [--clean] [--json]   새 콘솔 창에서 공식 로그인
+  o agents setup <codex> [--json]   창 없이 Codex의 Windows 샌드박스 설정을 마치고 카드처럼 명령 하나를 실제로 실행해 점검 (모델 호출 1번, 결과는 프로필 옆 sandbox-check.json)
   o agents terminal [--json]   독립 터미널 열기
   o agents list [--all] [--json]   다른 에이전트 CLI 목록과 이 PC 감지(--version만 실행). --all 없이는 연결된 것만
   o agents models <opencode> [--json]   그 CLI의 모델 목록 (작업카드 model 값)",
-    run: |_, args| run(args),
+    run,
 };
 
 fn provider_arg(value: Option<&String>) -> Option<ProviderId> {
@@ -43,13 +44,13 @@ fn attached(command: std::io::Result<Process>) -> i32 {
     }
 }
 
-fn run(args: &[String]) -> i32 {
+fn run(home: &Path, args: &[String]) -> i32 {
     let root = clean::default_root();
     let (verb, rest) = match args.split_first() {
         Some((verb, rest)) => (verb.as_str(), rest),
         None => ("", &[][..]),
     };
-    if matches!(verb, "status" | "install" | "open-login" | "login" | "shell") {
+    if matches!(verb, "status" | "install" | "open-login" | "setup" | "login" | "shell") {
         o_core::sys::resolve::ensure_paths();
     }
     match verb {
@@ -89,6 +90,7 @@ fn run(args: &[String]) -> i32 {
                 for a in &list {
                     let state = match (a.installed, a.logged_in) {
                         (true, _) if a.profile_unsupported.is_some() => format!("프로필 미지원 — {}", a.profile_unsupported.as_deref().unwrap_or_default()),
+                        (true, Some(true)) if a.profile_not_ready.is_some() => format!("로그인됨 · {}", a.profile_not_ready.as_deref().unwrap_or_default()),
                         (false, _) => format!("설치 안 됨 — {}", a.install_hint),
                         (true, Some(true)) => "로그인됨".into(),
                         (true, Some(false)) => "로그인 안 됨".into(),
@@ -106,6 +108,13 @@ fn run(args: &[String]) -> i32 {
         "open-login" => {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
             action(agents::open_login(&root, provider, rest.iter().any(|a| a == "--clean")), rest)
+        }
+        "setup" => {
+            let Some(provider) = provider_arg(rest.first()) else { return 1 };
+            if !rest.iter().any(|a| a == "--json") {
+                eprintln!("{} 프로필을 설정하고 실제 명령으로 점검합니다(몇 분 걸릴 수 있고, Codex 모델 호출이 한 번 있습니다)…", provider.as_str());
+            }
+            action(agents::check_setup(home, &root, provider), rest)
         }
         "terminal" => action(agents::open_terminal(), rest),
         "list" => {
@@ -180,6 +189,10 @@ fn doctor(root: &Path, as_json: bool) -> i32 {
         for p in &profiles {
             let state = if p.issues.is_empty() { "깨끗함" } else { "문제 있음" };
             println!("{:<6} {state:<6} {}  {}", p.provider.as_str(), p.login.detail, p.home);
+            if !p.api_key_env.is_empty() {
+                let consequence = if p.provider == ProviderId::Claude && p.api_key_env.contains(&"ANTHROPIC_API_KEY") { "헤드리스 실행에서 키를 사용하면 구독 대신 API로 과금됩니다" } else { "인증 방식과 과금이 달라질 수 있습니다" };
+                println!("         - 환경변수 {}: {consequence}.", p.api_key_env.join(", "));
+            }
             for issue in &p.issues {
                 println!("         - {issue}");
             }

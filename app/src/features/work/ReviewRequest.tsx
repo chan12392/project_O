@@ -2,11 +2,12 @@ import { Bot, GitPullRequest, LoaderCircle, X } from "lucide-react";
 import { useId, useRef, useState } from "react";
 
 import type { CardView } from "../../../../src/core/snapshot.ts";
-import { PR_SELECTOR, backend } from "../../platform/backend/index.ts";
+import { PR_SELECTOR, currentBackend } from "../../platform/backend/index.ts";
 import { useSettings } from "../../data/settings.ts";
+import { errorText } from "../../lib/format.ts";
 
 /** The same machine side App.tsx uses: the recorded demo answers with a fixed refusal. */
-const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
+const api = currentBackend();
 
 /** A card `o review` started (id and label as crates/o-core/src/review.rs sets them). */
 export function isReviewCard(card: CardView): boolean {
@@ -26,7 +27,7 @@ function useReviewRequest(project: string) {
       const started = await api.review(project, pr, clean);
       setStatus({ kind: started.ok ? "ok" : "error", text: started.message });
     } catch (e) {
-      setStatus({ kind: "error", text: e instanceof Error ? e.message : String(e) });
+      setStatus({ kind: "error", text: errorText(e) });
     }
   };
   return { status, request };

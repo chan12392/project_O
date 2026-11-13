@@ -18,6 +18,7 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 pub mod agents;
 pub mod context;
+pub mod graph;
 pub mod images;
 pub mod issues;
 pub mod lead;
@@ -30,4 +31,7 @@ pub mod schedule;
 pub mod sessions;
 pub mod skills;
 pub mod sys;
+pub mod term;
 pub mod usage;
+pub mod dream;
+pub mod tuning;

@@ -1,15 +1,19 @@
 name: guard
 
-# Each PR is checked once, in the dev profile (an optimized --release build of every test
-# binary took most of the run). Pushes are not checked again: the PR already tested the merge
-# result, and merge-guard.yml flags direct pushes to the protected branches.
+# Every PR gets the full checks, in the dev profile (an optimized --release build of every test
+# binary took most of the run). No step is skipped because the merge result equals the head:
+# that never proved the head itself passed, and test_2 can hold PRs that were each checked alone
+# but never together (ADR-0038). Pushes are not checked here; merge-guard.yml flags direct
+# pushes to the protected branches, and release.yml calls this workflow before it publishes.
 on:
   pull_request:
   workflow_dispatch:
+  workflow_call:
 
-# A newer push to the same PR replaces the run still going.
+# A newer push to the same PR replaces the run still going. The calling workflow's name is part
+# of the group, so a release's call never cancels (or waits on) a PR run.
 concurrency:
-  group: guard-${{ github.event.pull_request.number || github.ref }}
+  group: guard-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 # Read-only token: these jobs only check out and inspect.
@@ -23,46 +27,65 @@ jobs:
     env:
       CARGO_INCREMENTAL: "0"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          # The PR merge commit and its two parents (base, head).
-          fetch-depth: 2
-      - name: 이미 검사한 내용인지 확인
-        id: same
-        # Release PRs (test_2/test_1_hotfix → test_1, test_1 → main) usually carry exactly the head's
-        # tree, which its own PRs already tested. Anything the base adds on top runs the full check.
-        # This assumes the head was merged after its checks passed (the owner never merges red checks).
-        if: github.event_name == 'pull_request' && contains(fromJSON('["test_2", "test_1_hotfix", "test_1"]'), github.head_ref)
-        run: |
-          if git diff --quiet HEAD^2 HEAD; then
-            echo "skip=true" >> "$GITHUB_OUTPUT"
-            echo "::notice::병합 결과가 ${GITHUB_HEAD_REF}와 같아 이미 검사한 내용입니다. 무거운 검사를 건너뜁니다."
-          fi
-      - uses: dtolnay/rust-toolchain@stable
-        if: steps.same.outputs.skip != 'true'
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
         with:
+          toolchain: stable
           components: clippy
-      - uses: Swatinem/rust-cache@v2
-        if: steps.same.outputs.skip != 'true'
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
       - name: 프로바이더 정책 검사 (o scan)
-        if: steps.same.outputs.skip != 'true'
         run: cargo run --quiet -p o-cli -- scan --all
       - name: Rust 테스트·lint
-        if: steps.same.outputs.skip != 'true'
         run: |
-          # The desktop shell (crate project-o) needs WebView system libraries that the CI image lacks.
+          # The desktop shell (crate project-o) needs WebView system libraries that the Linux
+          # image lacks; the windows job below builds and tests it.
           # Every failing test binary is reported, not only the first.
           cargo test --workspace --exclude project-o --no-fail-fast
           cargo clippy --workspace --all-targets --exclude project-o -- -D warnings
-      - uses: actions/setup-node@v4
-        if: steps.same.outputs.skip != 'true'
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 24
       - name: 화면 로직 테스트·타입 검사
-        if: steps.same.outputs.skip != 'true'
         run: |
           npm ci --ignore-scripts
           npm ci --ignore-scripts --prefix app
           npm test
           npm run check
           npx tsc --noEmit -p app
+      - name: 라이선스 검사
+        run: npm run check:licenses
+
+  # The Windows build: the Tauri shell (project-o) and the Windows-only code (job objects,
+  # process containment, the fake-provider runner tests) compile and run only here.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 60
+    env:
+      CARGO_INCREMENTAL: "0"
+    defaults:
+      run:
+        # bash stops at the first failing command; the pwsh wrapper only checks the last one.
+        shell: bash
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+        with:
+          toolchain: stable
+          components: clippy
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 24
+      - name: 화면 빌드 (Tauri 크레이트가 app/dist를 싣는다)
+        run: |
+          npm ci --ignore-scripts
+          npm ci --ignore-scripts --prefix app
+          npm run build --prefix app
+      - name: Rust 테스트 (Windows, 데스크톱 셸 포함)
+        run: cargo test --workspace --no-fail-fast
+      - name: Rust lint (Windows, 데스크톱 셸 포함)
+        run: cargo clippy --workspace --all-targets -- -D warnings

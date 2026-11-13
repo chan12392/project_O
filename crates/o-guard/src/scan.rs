@@ -1,8 +1,8 @@
 //! Static policy scan, run by git hooks and CI.
 //!
 //!   --all       every tracked file (CI)
-//!   --staged    staged content, and no commits on test_1/test_2/main (pre-commit)
-//!   --pre-push  refuses pushes that target test_1/test_2/main (pre-push; refs on stdin)
+//!   --staged    staged content, and no commits on a protected branch (pre-commit)
+//!   --pre-push  refuses pushes that target a protected branch (pre-push; refs on stdin)
 
 use std::io::{self, Read};
 use std::process::Stdio;
@@ -49,10 +49,9 @@ fn scan_files(files: &[String], read: impl Fn(&str) -> io::Result<Vec<u8>>) -> i
             Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
             Err(error) => return Err(io::Error::new(error.kind(), format!("{file}: {error}"))),
         };
-        if bytes.contains(&0) {
-            continue; // binary
-        }
-        let text = String::from_utf8_lossy(&bytes);
+        // A NUL byte does not make a file exempt: it is read with the NULs dropped, which is
+        // also how UTF-16 text spells the same patterns.
+        let text = if bytes.contains(&0) { String::from_utf8_lossy(&bytes.iter().copied().filter(|b| *b != 0).collect::<Vec<u8>>()).into_owned() } else { String::from_utf8_lossy(&bytes).into_owned() };
         for hit in find_hits(&text, rules_for_paths(std::slice::from_ref(file))) {
             problems.push(format!("{file}:{} [{}] {}", hit.line, hit.rule, hit.reason));
         }
@@ -69,7 +68,7 @@ fn fail(title: &str, lines: &[String]) -> i32 {
     1
 }
 
-/// The pre-push lines (`<local ref> <local sha> <remote ref> <remote sha>`) whose remote ref is a protected branch (test_1, test_2, main).
+/// The pre-push lines (`<local ref> <local sha> <remote ref> <remote sha>`) whose remote ref is a protected branch (READ_ONLY_BRANCHES).
 pub fn blocked_refs(stdin: &str) -> Vec<String> {
     let protected_refs: Vec<String> = READ_ONLY_BRANCHES.iter().map(|b| format!("refs/heads/{b}")).collect();
     lines(stdin)
@@ -84,7 +83,7 @@ fn run(mode: &str) -> io::Result<i32> {
         io::stdin().read_to_string(&mut stdin)?;
         let blocked = blocked_refs(&stdin);
         if !blocked.is_empty() {
-            return Ok(fail("보호 브랜치(test_1·test_1_hotfix·test_2·main)에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
+            return Ok(fail("보호 브랜치(test_1·test_1_hotfix·test_2·main_hotfix·main)에는 직접 push할 수 없습니다. GitHub PR 병합으로만 바뀝니다", &blocked));
         }
         return Ok(0);
     }
@@ -136,9 +135,10 @@ mod tests {
         let main = format!("refs/heads/younchan abc refs/heads/main {ZERO}");
         let test_1 = format!("refs/heads/test_2 abc refs/heads/test_1 {ZERO}");
         let test_2 = format!("refs/heads/younchan abc refs/heads/test_2 {ZERO}\r");
+        let main_hotfix = format!("refs/heads/younchan-fix abc refs/heads/main_hotfix {ZERO}");
         let own = format!("refs/heads/younchan abc refs/heads/younchan {ZERO}");
-        let input = format!("{own}\n{main}\n\n{test_1}\n{test_2}\n");
-        assert_eq!(blocked_refs(&input), vec![main, test_1, test_2]);
+        let input = format!("{own}\n{main}\n\n{test_1}\n{test_2}\n{main_hotfix}\n");
+        assert_eq!(blocked_refs(&input), vec![main, test_1, test_2, main_hotfix]);
     }
 
     #[test]
@@ -149,20 +149,24 @@ mod tests {
     }
 
     #[test]
-    fn scan_skips_allowed_missing_and_binary_files_but_not_other_errors() {
+    fn scan_skips_allowed_and_missing_files_but_not_files_with_nul_bytes_or_other_errors() {
         // Split so this file itself does not trip the scanner.
         const BYPASS: &str = concat!("--yo", "lo");
-        let files: Vec<String> = ["docs/a.md", "gone.rs", "bin.dat", "ok.rs"].map(String::from).to_vec();
+        let files: Vec<String> = ["docs/a.md", "gone.rs", "bin.dat", "wide.txt", "ok.rs"].map(String::from).to_vec();
         let problems = scan_files(&files, |path| match path {
             "gone.rs" => Err(io::Error::from(io::ErrorKind::NotFound)),
             "bin.dat" => Ok(format!("\0{BYPASS}").into_bytes()),
+            // UTF-16: a NUL after every letter.
+            "wide.txt" => Ok(BYPASS.bytes().flat_map(|b| [b, 0]).collect()),
             _ => Ok(format!("fn main() {{}}\n{BYPASS}\n").into_bytes()),
         })
         .unwrap();
-        assert_eq!(problems.len(), 1);
-        assert!(problems[0].starts_with("ok.rs:2 [permission-bypass]"), "{}", problems[0]);
+        assert_eq!(problems.len(), 3, "{problems:?}");
+        assert!(problems[0].starts_with("bin.dat:1 [permission-bypass]"), "{}", problems[0]);
+        assert!(problems[1].starts_with("wide.txt:1 [permission-bypass]"), "{}", problems[1]);
+        assert!(problems[2].starts_with("ok.rs:2 [permission-bypass]"), "{}", problems[2]);
 
-        let denied = scan_files(&files[3..], |_| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
+        let denied = scan_files(&files[4..], |_| Err(io::Error::from(io::ErrorKind::PermissionDenied)));
         assert!(denied.is_err());
     }
 

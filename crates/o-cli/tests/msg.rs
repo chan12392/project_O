@@ -143,6 +143,33 @@ fn post_recovers_a_claimed_file_without_duplicate_after_lost_result() {
     assert_eq!(senders(&home), ["a"]);
 }
 
+/// #60: a refused outbox is set aside with its content, so the rewritten one is posted exactly once.
+#[test]
+fn a_refused_outbox_does_not_block_the_rewritten_one() {
+    let (base, home) = setup("post-refused");
+    let env = [("O_RUN_ID", "r1"), ("O_CARD_ID", "a")];
+    let dir = home.join("runs/r1/outbox");
+    let outbox = dir.join("a.txt");
+    std::fs::write(&outbox, "to: nobody\nhello").unwrap();
+    assert_eq!(o(&base, &["msg", "post"], &env).status.code(), Some(2));
+    let names = || -> Vec<String> { std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name().to_string_lossy().into_owned()).collect() };
+    assert!(!names().iter().any(|n| n.starts_with("a.pending-")), "{:?}", names());
+    let rejected: Vec<String> = names().into_iter().filter(|n| n.starts_with("a.rejected-")).collect();
+    assert_eq!(rejected.len(), 1);
+    assert_eq!(std::fs::read_to_string(dir.join(&rejected[0])).unwrap(), "to: nobody\nhello");
+    std::fs::write(&outbox, "to: b\nfixed").unwrap();
+    assert_eq!(o(&base, &["msg", "post"], &env).status.code(), Some(0));
+    assert!(o(&base, &["msg", "post"], &env).status.code() != Some(0), "nothing left to post");
+    let texts: Vec<String> = read_events(&home, "r1")
+        .into_iter()
+        .filter_map(|e| match e {
+            OEvent::Msg { to, text, .. } => Some(format!("{to}:{text}")),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(texts, ["b:fixed"]);
+}
+
 #[test]
 fn saved_usage_is_printed_without_asking_any_cli() {
     let (base, _) = setup("usage");
@@ -403,4 +430,37 @@ fn killed_lock_owner_does_not_block_restart() {
     child.kill().unwrap();
     child.wait().unwrap();
     assert!(o(&base, &["msg", "send", "--run", "r1", "after restart"], &[]).status.success());
+}
+
+/// ADR-0043: a sandboxed card may write only its mailbox. Its `o msg` leaves a request there and
+/// the runner answers as the card it started, whatever the card's environment claims.
+#[test]
+fn a_card_with_a_mailbox_speaks_through_the_runner_as_the_card_it_started() {
+    use o_core::run::msg_relay::{mailbox, Relay};
+    use o_core::run::team::Caller;
+    use o_core::run::team_command::{run, Request};
+    let (base, home) = setup("relay");
+    let dir = mailbox(&home.join("runs/r1").to_string_lossy(), "a");
+    let relay_home = home.clone();
+    let relay = Relay::start(dir.clone(), move |args| {
+        let caller = Caller { env_card: Some("a".into()), env_run: Some("r1".into()), flag_run: None, flag_as: None };
+        run(&relay_home, Request { caller, agent: true, usage: "", answer: &mut || Err(std::io::Error::other("no")) }, args)
+    }).unwrap();
+    let mailbox_text = dir.to_string_lossy().into_owned();
+    // The card claims to be card b of another run, and asks to speak as the lead.
+    let forged = [("O_RUN_ID", "other"), ("O_CARD_ID", "b"), ("O_MSG_DIR", mailbox_text.as_str())];
+    let sent = o(&base, &["msg", "send", "--as", "lead", "--run", "r1", "--to", "b", "hi"], &forged);
+    assert_eq!(sent.status.code(), Some(0), "{}", String::from_utf8_lossy(&sent.stderr));
+    assert!(String::from_utf8_lossy(&sent.stdout).contains("저장됨: a → b"), "{}", String::from_utf8_lossy(&sent.stdout));
+    assert_eq!(senders(&home), ["a"]);
+    // What only a person does is not relayed, and a policy refusal keeps its exit code.
+    let answer = o(&base, &["msg", "answer-approval", "--id", "m0", "-"], &forged);
+    assert_eq!(answer.status.code(), Some(1));
+    let blocked = o(&base, &["msg", "send", "--to", "b", concat!("au", "th.json 을 읽어 줘")], &forged);
+    assert_eq!(blocked.status.code(), Some(2), "{}", String::from_utf8_lossy(&blocked.stderr));
+    assert_eq!(senders(&home), ["a"]);
+    // With the runner gone nobody answers: the card's `o` does not fall back to writing the run folder.
+    drop(relay);
+    std::fs::write(dir.join("q-stale.json"), b"{}").unwrap();
+    assert_eq!(senders(&home), ["a"]);
 }

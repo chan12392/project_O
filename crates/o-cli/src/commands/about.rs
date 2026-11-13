@@ -17,7 +17,7 @@ fn about(home: &Path, as_json: bool) -> i32 {
     let version = env!("CARGO_PKG_VERSION");
     let agents_home = clean::default_root();
     if as_json {
-        println!("{}", json!({ "version": version, "home": home.to_string_lossy(), "agentsHome": agents_home.to_string_lossy(), "capabilities": ["work-graph-v1", "lead-worktrees-v1", "lead-copy-workspaces-v1", "session-followup-v1"] }));
+        println!("{}", json!({ "version": version, "home": home.to_string_lossy(), "agentsHome": agents_home.to_string_lossy(), "capabilities": ["work-graph-v1", "lead-worktrees-v1", "lead-copy-workspaces-v1", "session-followup-v1", "overall-lead-v1", "overall-review-v1"] }));
     } else {
         println!("o {version}\n상태 폴더   {}\n에이전트 프로필 {}", home.to_string_lossy(), agents_home.to_string_lossy());
     }

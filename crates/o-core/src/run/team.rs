@@ -31,8 +31,18 @@ pub struct Caller {
 }
 
 impl Caller {
-    pub fn from_env(flag_run: Option<String>, flag_as: Option<String>) -> Self {
-        Caller { env_card: std::env::var("O_CARD_ID").ok(), env_run: std::env::var("O_RUN_ID").ok(), flag_run, flag_as }
+    /// A process in a card's job (`agent_job`, ADR-0043) speaks only as that card: with the
+    /// variables cleared or changed it would otherwise pass for the lead or another card.
+    pub fn from_env(flag_run: Option<String>, flag_as: Option<String>) -> Result<Self, String> {
+        use crate::sys::agent_job::{card_label, current, AgentJob};
+        let caller = Caller { env_card: std::env::var("O_CARD_ID").ok(), env_run: std::env::var("O_RUN_ID").ok(), flag_run, flag_as };
+        if let Some(AgentJob::Card(job)) = current() {
+            let named = caller.env_run.as_deref().zip(caller.env_card.as_deref()).map(|(run, card)| card_label(run, card));
+            if named.as_deref() != Some(job.as_str()) {
+                return Err("이 카드의 실행·카드 표식(O_RUN_ID, O_CARD_ID)이 바뀌어 팀 대화를 쓸 수 없습니다".into());
+            }
+        }
+        Ok(caller)
     }
 }
 
@@ -63,10 +73,6 @@ pub enum Refused {
 }
 
 /// Checks and appends one message.
-pub fn send(home: &Path, speaker: &Speaker, to: &str, text: &str) -> Result<(), Refused> {
-    send_tracked(home, speaker, to, text, false, None).map(|_| ())
-}
-
 /// `key` makes retries by the same sender idempotent, including after a lost response.
 pub fn send_tracked(home: &Path, speaker: &Speaker, to: &str, text: &str, question: bool, key: Option<&str>) -> Result<String, Refused> {
     send_reply(home, speaker, to, text, question, key, None)
@@ -137,6 +143,10 @@ fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, k
     if !violations.is_empty() {
         return Err(Refused::Policy(violations));
     }
+    // Nobody reads "wiki" as an inbox (ADR-0041): a question or a reply sent there would wait for ever.
+    if to == crate::policy::WIKI_PARTY && !speaker.cards.iter().any(|card| card == to) && (kind != "message" || reply_to.is_some()) {
+        return Err(Refused::Io(io::Error::other("wiki에게는 질문이나 답장을 보낼 수 없습니다. 남길 내용만 메시지로 보내세요")));
+    }
     if key.is_some_and(|key| key.is_empty() || key.len() > 64 || !key.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')) {
         return Err(Refused::Io(io::Error::other("메시지 키는 영문·숫자·-·_ 1~64자여야 합니다")));
     }
@@ -161,7 +171,7 @@ fn send_kind(home: &Path, speaker: &Speaker, to: &str, text: &str, kind: &str, k
                 return Err(io::Error::other("이미 답한 질문입니다. 기존 답변을 확인해 주세요"));
             }
         }
-        let mut event = json!({"t":"msg", "at":now_iso(), "id":id, "kind":kind, "from":speaker.me, "to":to, "text":text});
+        let mut event = json!({"t":"msg", "at":now_iso(), "from":speaker.me, "to":to, "text":text, "id":id, "kind":kind});
         if let Some(question_id) = reply_to { event["replyTo"] = json!(question_id); }
         append_value(file, &event)?;
         Ok(id)
@@ -204,7 +214,16 @@ pub fn post(home: &Path, speaker: &Speaker) -> Result<(String, String), Refused>
     let key = name.strip_prefix(&prefix).ok_or_else(|| Refused::Io(io::Error::other("outbox 이름 오류")))?;
     let content = fs::read(&claimed).map_err(Refused::Io)?;
     let (to, text) = parse_outbox(&String::from_utf8_lossy(&content));
-    let id = send_tracked(home, speaker, &to, &text, false, Some(key))?;
+    let id = match send_tracked(home, speaker, &to, &text, false, Some(key)) {
+        // A policy refusal is final and nothing was stored: set the claim aside (content kept) so a
+        // rewritten outbox is posted next instead of the refused one again (#60). I/O errors keep the
+        // claim for the idempotent retry.
+        Err(Refused::Policy(violations)) => {
+            fs::rename(&claimed, dir.join(format!("{}.rejected-{key}", speaker.me))).map_err(Refused::Io)?;
+            return Err(Refused::Policy(violations));
+        }
+        result => result?,
+    };
     fs::remove_file(claimed).map_err(Refused::Io)?;
     Ok((to, id))
 }

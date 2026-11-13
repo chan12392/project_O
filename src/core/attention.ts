@@ -33,6 +33,11 @@ export interface NextItem {
 /** Claude Code sessions read as runs (`o runs --sessions`) carry ids that start with this. */
 export const SESSION_PREFIX = "session-";
 
+/** The card took this message back before the lead got it: nobody is to answer it (`o msg cancel`). */
+export function cancelledForLead(m: Pick<RunView["messages"][number], "recipients">): boolean {
+  return m.recipients?.lead === "cancelled";
+}
+
 /** A Claude Code session (its main thread as the lead, its subagents as cards), not an O plan. */
 export function isSessionRun(run: Pick<RunView, "runId">): boolean {
   return run.runId.startsWith(SESSION_PREFIX);
@@ -122,7 +127,7 @@ export function nextUp(runs: RunView[], now: Date, handled: ReadonlySet<string> 
     // An agent wrote to the lead and the lead has not written back to it (or to everyone) since.
     const answeredAt = (party: string) => run.messages.findLast((m) => m.from === "lead" && (m.to === party || m.to === "all"))?.at ?? "";
     for (const m of run.messages) {
-      if (m.to !== "lead") continue;
+      if (m.to !== "lead" || cancelledForLead(m)) continue;
       const questionId = m.kind === "question" || m.kind === "approval" ? m.id : undefined;
       if (questionId ? run.messages.some((reply) => reply.from === "lead" && reply.to === m.from && reply.replyTo === questionId) : m.at <= answeredAt(m.from)) continue;
       const card = cardOf.get(m.from);

@@ -81,9 +81,16 @@ fn quit_activity_in(home: &std::path::Path) -> Result<serde_json::Value, String>
     }
     let cards = o_core::run::store::active_markers(home).len();
     let leads = o_core::lead::active_count(home).map_err(|e| e.to_string())?;
+    let running = |events: &[o_core::run::events::OEvent]| o_core::run::snapshot::snapshot(events).is_some_and(|run| run.status == o_core::run::snapshot::RunStatus::Running);
     let runs = o_core::run::store::list_runs(home).iter().filter(|id| {
-        o_core::run::snapshot::snapshot(&o_core::run::store::read_events(home, id))
-            .is_some_and(|run| run.status == o_core::run::snapshot::RunStatus::Running)
+        let events = o_core::run::store::read_events(home, id);
+        if !running(&events) { return false; }
+        // A run whose runner died is closed on record, not counted as still going (ADR-0039);
+        // the events read under that close are the current ones, closed by this reader or another.
+        match o_core::run::store::close_if_runner_died(home, id, &events) {
+            Ok(Some(current)) => running(&current),
+            _ => true,
+        }
     }).count();
     Ok(serde_json::json!({ "cards": cards, "leads": leads, "runs": runs }))
 }
@@ -108,6 +115,32 @@ fn link_target(url: &str) -> LinkTarget {
     } else {
         LinkTarget::Refused("이 링크는 앱에서 열 수 없습니다.")
     }
+}
+
+/// Where a window's pages come from, for comparing two addresses.
+fn site(url: &Url) -> String {
+    format!("{}://{}:{}", url.scheme(), url.host_str().unwrap_or_default(), url.port_or_known_default().unwrap_or_default())
+}
+
+/// Where the app's own pages are served from: Tauri's app address (`http://tauri.localhost` on
+/// Windows, `tauri://localhost` elsewhere) and, in a development build, the dev server.
+fn own_sites<R: Runtime>(app: &AppHandle<R>) -> Vec<String> {
+    let mut sites: Vec<String> = ["tauri://localhost", "http://tauri.localhost", "https://tauri.localhost"].iter().filter_map(|text| Url::parse(text).ok()).map(|url| site(&url)).collect();
+    if tauri::is_dev() { sites.extend(app.config().build.dev_url.as_ref().map(site)); }
+    sites
+}
+
+/// Whether a window may go to `url`: only to the app's own pages. A page that got a script in
+/// could otherwise send the whole window, with the app's title on it, to a page of its own
+/// (ADR-0043). Links open in the browser through `on_new_window`.
+fn stays_home(sites: &[String], url: &Url) -> bool {
+    url.as_str() == "about:blank" || sites.contains(&site(url))
+}
+
+/// The navigation handler of a window (`stays_home`).
+fn on_navigation<R: Runtime>(app: &AppHandle<R>) -> impl Fn(&Url) -> bool + Send + 'static {
+    let sites = own_sites(app);
+    move |url| stays_home(&sites, url)
 }
 
 /// Never opens a webview window for a link: https goes to the browser, the rest is refused.
@@ -149,7 +182,7 @@ fn window_event(name: &str, detail: Option<serde_json::Value>) -> String {
 /// The main window as tauri.conf.json describes it (`create: false` there), with the link handler.
 pub fn open_main(app: &AppHandle) -> tauri::Result<()> {
     let config = app.config().app.windows.iter().find(|w| w.label == MAIN).cloned().expect("tauri.conf.json의 main 창");
-    let window = WebviewWindowBuilder::from_config(app, &config)?.visible(false).on_new_window(on_new_window(app.clone(), MAIN)).build()?;
+    let window = WebviewWindowBuilder::from_config(app, &config)?.visible(false).on_navigation(on_navigation(app)).on_new_window(on_new_window(app.clone(), MAIN)).build()?;
     fit_to_work_area(&window, (config.width, config.height), config.min_width.zip(config.min_height));
     window.show()?;
     // Closing the main window closes the pop-out too, so the app ends.
@@ -231,6 +264,7 @@ pub async fn popout_open(app: AppHandle, view: String, project: Option<String>, 
         .title("Project O 패널")
         .inner_size(PANEL_SIZE.0, PANEL_SIZE.1)
         .visible(false)
+        .on_navigation(on_navigation(&app))
         .on_new_window(on_new_window(app.clone(), PANEL))
         .build()
         .map_err(|e| format!("패널 창을 열지 못했습니다: {e}"))?;
@@ -328,5 +362,19 @@ mod tests {
         assert!(popout_path("board&source=demo", None, None, None).is_err());
         assert!(popout_path("board", Some("a\nb"), None, None).is_err());
         assert!(popout_path("board", None, None, Some(&"x".repeat(1025))).is_err());
+    }
+
+    #[test]
+    fn a_window_stays_on_the_apps_own_pages() {
+        let url = |text: &str| Url::parse(text).unwrap();
+        let sites: Vec<String> = ["tauri://localhost", "http://tauri.localhost", "http://localhost:1430"].iter().map(|text| site(&url(text))).collect();
+        assert!(stays_home(&sites, &url("about:blank")));
+        for own in ["http://tauri.localhost/index.html", "tauri://localhost/index.html", "http://localhost:1430/"] {
+            assert!(stays_home(&sites, &url(own)), "{own}");
+            assert!(stays_home(&sites, &url(&format!("{own}?popout=panel&view=board#x"))), "{own}");
+        }
+        for away in ["https://example.org/", "http://localhost:9999/", "https://tauri.localhost.example.org/", "http://tauri.localhost:8080/", "file:///C:/x.html", "data:text/html,x", "about:srcdoc"] {
+            assert!(!stays_home(&sites, &url(away)), "{away}");
+        }
     }
 }

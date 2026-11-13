@@ -45,6 +45,44 @@ fn resources_shows_durable_identity_without_releasing_the_lease() {
 }
 
 #[test]
+fn person_can_release_an_unknown_lease_after_checking_children() {
+    use o_core::run::store::{self, Reserved};
+    let nonce = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos();
+    let base = std::env::temp_dir().join(format!("o-cli-confirm-{}-{nonce}", std::process::id()));
+    let home = base.join("project_O");
+    std::fs::create_dir_all(&base).unwrap();
+    let card = serde_json::from_value(serde_json::json!({"id":"a","provider":"claude","task":"test"})).unwrap();
+    let Reserved::Granted(lease) = store::reserve_slot(&home, "r1", &card, base.to_str().unwrap(), chrono::Utc::now()).unwrap() else { panic!("not granted") };
+    store::mark_spawning(&home, &lease).unwrap();
+    let exited = || {
+        let mut command = if cfg!(windows) { let mut c = Command::new("cmd"); c.args(["/C", "exit 0"]); c } else { let mut c = Command::new("sh"); c.args(["-c", "exit 0"]); c };
+        let mut child = o_core::sys::proc::hide_window(&mut command).spawn().unwrap();
+        let pid = child.id();
+        let started = o_core::sys::proc::started_at(pid).unwrap();
+        child.wait().unwrap();
+        (pid, started as i64)
+    };
+    let (owner, owner_started) = exited();
+    let (worker, worker_started) = exited();
+    let conn = rusqlite::Connection::open(home.join("o.db")).unwrap();
+    conn.execute("UPDATE resource_leases SET owner_pid=?1,owner_started=?2,worker_pid=?3,worker_started=?4", rusqlite::params![owner, owner_started, worker, worker_started]).unwrap();
+    let id = store::resource_leases(&home).unwrap()[0].id.clone();
+    // Linux and macOS prove the owner gone only where its boot and PID namespace can be read;
+    // an unprivileged Linux user (CI) cannot, and the lease then rightly stays unknown.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    if o_core::sys::proc::process_scope().is_none() {
+        assert!(!store::resource_leases(&home).unwrap()[0].processes_exited);
+        return;
+    }
+    let mut command = Command::new(env!("CARGO_BIN_EXE_o"));
+    command.args(["resources", "recover", &id, "--confirm-exited"]).env("LOCALAPPDATA", &base).env_remove("O_AGENT_ROLE").env_remove("O_CARD_ID");
+    let output = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("자식 프로세스"));
+    assert!(!store::resource_held(&home, "r1", "a").unwrap());
+}
+
+#[test]
 fn resource_owner_fixture() {
     if let Some(base) = std::env::var_os("O_TEST_LEASE_OWNER") {
         let base = std::path::PathBuf::from(base);

@@ -53,7 +53,7 @@ type Entries = BTreeMap<PathBuf, (bool, u64, SystemTime)>;
 type SnapshotEntry = Option<(Vec<u8>, fs::Permissions)>;
 type Snapshot = BTreeMap<PathBuf, SnapshotEntry>;
 
-pub(super) fn open_plain(path: &Path) -> io::Result<fs::File> {
+pub(crate) fn open_plain(path: &Path) -> io::Result<fs::File> {
     let mut options = fs::OpenOptions::new();
     options.read(true);
     #[cfg(windows)]
@@ -400,8 +400,10 @@ impl Workspaces {
                 if saved.insert(name.clone()) {
                     let target_file = target_root.join(name);
                     match fs::symlink_metadata(&target_file) {
-                        Err(error) if error.kind() == io::ErrorKind::NotFound => (),
+                        Err(error) if gone(&error) => (),
                         Err(error) => return Err(error),
+                        // A folder the change turns into a file: its files are changed and saved by their own names.
+                        Ok(meta) if meta.is_dir() && !meta.file_type().is_symlink() && tracked.contains(name) => (),
                         Ok(meta) if meta.is_file() && !meta.file_type().is_symlink() && PathBuf::from(resolved_path(&target_file.to_string_lossy())).starts_with(&target_root) => {
                             let backup = original_files.join(name);
                             fs::create_dir_all(backup.parent().ok_or_else(|| io::Error::other("파일 상위 폴더가 없습니다"))?)?;
@@ -416,7 +418,10 @@ impl Workspaces {
                 apply(&target_root, &patch, true)?;
                 apply(&target_root, &patch, false)?;
             }
+            let folder = |root: &Path, name: &str| fs::symlink_metadata(root.join(name)).is_ok_and(|meta| meta.is_dir() && !meta.file_type().is_symlink());
             for name in changed {
+                // A file the change replaced by a folder on both sides: the folder's files are compared by their own names.
+                if !tracked.contains(&name) && folder(&source_root, &name) && folder(&target_root, &name) { continue; }
                 if !same_file(&source_root, &target_root, &name)? {
                     return Err(io::Error::other(format!("인계 후 파일이 원본과 다릅니다: {name}")));
                 }
@@ -430,7 +435,7 @@ fn same_file(a: &Path, b: &Path, name: &str) -> io::Result<bool> {
     let paths = [a.join(name), b.join(name)];
     let metadata = |path: &Path| match fs::symlink_metadata(path) {
         Ok(meta) => Ok(Some(meta)),
-        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+        Err(error) if gone(&error) => Ok(None),
         Err(error) => Err(error),
     };
     let (left, right) = (metadata(&paths[0])?, metadata(&paths[1])?);
@@ -486,10 +491,12 @@ fn lock_git_files(root: &Path) -> io::Result<Vec<fs::File>> {
         let full = root.join(path);
         let meta = match fs::symlink_metadata(&full) {
             Ok(meta) => meta,
-            Err(error) if error.kind() == io::ErrorKind::NotFound => continue,
+            Err(error) if gone(&error) => continue,
             Err(error) => return Err(error),
         };
         if meta.file_type().is_symlink() { continue; }
+        // A tracked file replaced by a folder (#63): the folder's files are listed on their own.
+        if meta.is_dir() && tracked_as_file(root, name)? { continue; }
         if !meta.is_file() { return Err(io::Error::other("Git 작업 파일이 일반 파일이 아닙니다")); }
         if !PathBuf::from(resolved_path(&full.to_string_lossy())).starts_with(root) {
             return Err(io::Error::other("Git 작업 파일 경로가 작업 폴더 밖을 가리킵니다"));
@@ -497,6 +504,17 @@ fn lock_git_files(root: &Path) -> io::Result<Vec<fs::File>> {
         files.push(open_plain(&full)?);
     }
     Ok(files)
+}
+
+/// No entry at a path: missing, or a parent on the way is a file (a file and folder swapped places).
+fn gone(error: &io::Error) -> bool {
+    matches!(error.kind(), io::ErrorKind::NotFound | io::ErrorKind::NotADirectory)
+}
+
+/// Whether the index holds `name` as a regular file (not a link or a submodule).
+fn tracked_as_file(root: &Path, name: &str) -> io::Result<bool> {
+    let entry = git_output(root, &["ls-files", "--stage", "-z", "--", &format!(":(literal){name}")])?;
+    Ok(entry.starts_with(b"100644 ") || entry.starts_with(b"100755 "))
 }
 
 fn apply(dir: &Path, patch: &[u8], check: bool) -> io::Result<()> {

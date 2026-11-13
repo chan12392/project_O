@@ -6,7 +6,6 @@ import {
   EFFORT_WORD,
   LEAD_EFFORTS,
   LEAD_NAME,
-  LEAD_PROVIDERS,
   MODEL_ID,
   attachProblem,
   canLead,
@@ -24,11 +23,13 @@ import {
   type Drafts,
   type LeadProvider,
 } from "../../../../src/core/lead.ts";
+import { composerAgentChoices } from "../../../../src/core/terminal.ts";
 import { updateSettings, useSettings } from "../../data/settings.ts";
 import { useLeadModels, type LeadState } from "../../data/useLead.ts";
 import { useAgentCheck } from "../../data/agents.ts";
 import type { Backend } from "../../platform/backend/index.ts";
 import { useAutoGrow } from "../../lib/autoGrow.ts";
+import { errorText } from "../../lib/format.ts";
 import { ChoiceMenu, type MenuChoice } from "../../ui/Menu.tsx";
 
 const PLACEHOLDER = "총괄에게 맡길 일을 적어 주세요 · + 로 이미지·문서 첨부";
@@ -41,8 +42,6 @@ const PROFILE_TIP = {
 /** The model menu's "type an id" row; a leading space never starts a model id. */
 const TYPE_MODEL = " 직접 입력";
 
-const errorText = (e: unknown) => (e instanceof Error ? e.message : String(e));
-
 /**
  * The agents that may lead right now (`canLead`), from the check every screen shares
  * (`data/agents.ts`). The last launch's answer counts until this one's arrives, so a lead
@@ -52,15 +51,7 @@ function useLeadAgents(api: Backend, clean: boolean) {
   const check = useAgentCheck(api, clean);
   const agents = check.agents ?? (check.checking ? undefined : []);
   const usable = (agents ?? []).filter(canLead);
-  /** Why a lead agent cannot be picked now (on the disabled row), or what to know about a usable one. */
-  const why = (id: LeadProvider): string | undefined => {
-    const status = agents?.find((a) => a.id === id);
-    if (!status?.installed) return "설치되지 않았습니다 · 설정 → 에이전트";
-    if (status.loggedIn === false) return "로그인이 필요합니다 · 설정 → 에이전트";
-    if (status.loggedIn !== true) return "로그인 상태를 CLI가 알려 주지 않습니다";
-    return undefined;
-  };
-  return { checking: agents === undefined, usable: usable.map((a) => a.id as LeadProvider), why };
+  return { checking: agents === undefined, usable: usable.map((a) => a.id as LeadProvider), agents };
 }
 
 /**
@@ -73,12 +64,17 @@ export function Composer({
   api,
   project,
   lead,
+  terminal,
+  onTerminal,
   onAgents,
 }: {
   inputRef: RefObject<HTMLTextAreaElement | null>;
   api: Backend;
   project: string | undefined;
   lead: LeadState;
+  /** This tab's agent menu picked the Antigravity terminal (ADR-0042): its pane, not this box, takes the turn. */
+  terminal?: boolean;
+  onTerminal?: (on: boolean) => void | Promise<void>;
   onAgents: () => void;
 }) {
   const settings = useSettings();
@@ -90,27 +86,44 @@ export function Composer({
     const timer = window.setInterval(refresh, 2000);
     return () => { live = false; window.clearInterval(timer); };
   }, [api]);
-  const { checking, usable, why } = useLeadAgents(api, settings.clean);
-  // Each project keeps its own draft; switching shows that project's, and an upload or a failed
-  // send lands back in the draft it came from (src/core/lead.ts `Drafts`).
+  const { checking, usable, agents } = useLeadAgents(api, settings.clean);
+  // Each open lead conversation keeps its own draft (ADR-0034); switching tabs shows that tab's,
+  // and an upload or a failed send lands back in the draft it came from (src/core/lead.ts `Drafts`).
   const [drafts, setDrafts] = useState<Drafts>({});
-  const key = project ? draftKey(project) : "";
+  const key = project ? draftKey(project, lead.selected) : "";
   const { text, files } = draftOf(drafts, key);
   const setText = (value: string) => setDrafts((d) => editDraft(d, key, () => ({ text: value })));
   useAutoGrow(inputRef, text);
   const [notice, setNotice] = useState<string>();
-  // The project shown now, for answers that arrive later: their notice shows only there.
-  const projectNow = useRef(project);
-  projectNow.current = project;
+  // The draft on screen now, for answers that arrive later: their notice shows only there.
+  const keyNow = useRef(key);
+  keyNow.current = key;
   // A notice is about the project it was raised in.
   useEffect(() => setNotice(undefined), [key]);
+  // A draft typed before the answer named the project's thread moves to the key that answer
+  // gives; drafts between open tabs stay where they were typed.
+  const prevKey = useRef(key);
+  useEffect(() => {
+    const from = prevKey.current;
+    prevKey.current = key;
+    if (from === key || from.includes("#") || !key.includes("#")) return;
+    setDrafts((d) => {
+      const gone = draftOf(d, from);
+      if (!gone.text && !gone.files.length) return d;
+      return restoreDraft(takeDraft(d, from).drafts, key, gone);
+    });
+  }, [key]);
   /** `model` "" is the CLI's default (no `--model`). */
   const [picked, setPicked] = useState<{ agent: LeadProvider; model: string; effort: string }>();
   const fileInput = useRef<HTMLInputElement>(null);
   const leadButton = useRef<HTMLButtonElement>(null);
 
   // The message's agent: the one picked here, else Settings → 총괄, else the first that can lead.
-  const agent: LeadProvider | undefined = [picked?.agent, settings.leadAgent, ...usable].find((a): a is LeadProvider => !!a && usable.includes(a));
+  // Antigravity is terminal-fixed (ADR-0042): never a chat provider, the menu offers it as "Antigravity · 터미널".
+  const chatUsable: LeadProvider[] = usable.filter((id) => id !== "agy");
+  const agent: LeadProvider | undefined = [picked?.agent, settings.leadAgent, ...chatUsable].find((a): a is LeadProvider => !!a && chatUsable.includes(a));
+  // With no chat agent at all the menu stays (Antigravity · 터미널 may still be picked).
+  const agyInstalled = Boolean(agents?.some((a) => a.id === "agy" && a.installed));
   const mine = picked?.agent === agent ? picked : undefined;
   const effort = agent ? effortFor(agent, mine ? mine.effort : settings.leadEffort) : undefined;
   // The model: picked here for this agent, else its default in Settings → 총괄.
@@ -155,7 +168,7 @@ export function Composer({
       : uploading
         ? "첨부를 올리는 중입니다"
         : undefined;
-  const canSend = Boolean(text.trim()) && !blocker && !busy && Boolean(agent) && yolo !== undefined;
+  const canSend = Boolean(text.trim()) && !blocker && !busy && Boolean(agent) && yolo !== undefined && !terminal;
   const dispatched = lead.thread?.events.some((event) => event.t === "lead.dispatch") ?? false;
 
   const addFiles = (list: FileList | File[]) => {
@@ -170,11 +183,11 @@ export function Composer({
       added.push(item);
       if (problem) continue;
       count += 1;
-      api.leadAttach(project, file).then(
+      api.leadAttach(project, file, lead.selected).then(
         (saved) => setDrafts((d) => uploadDone(d, key, gen, item.key, { saved })),
         (e) => {
           setDrafts((d) => uploadDone(d, key, gen, item.key, { error: errorText(e) }));
-          if (draftKey(projectNow.current ?? "") === key) setNotice(`${file.name}: ${errorText(e)}`);
+          if (keyNow.current === key) setNotice(`${file.name}: ${errorText(e)}`);
         },
       );
     }
@@ -185,9 +198,9 @@ export function Composer({
 
   const submit = async (event?: FormEvent) => {
     event?.preventDefault();
-    if (!canSend || !agent || !project) {
+    if (!canSend || !agent || !project || terminal) {
       // A send that cannot go says why, the lead still answering included.
-      if (text.trim() && (blocker || busy)) setNotice(blocker ?? "총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요");
+      if (text.trim() && (blocker || busy || terminal)) setNotice(blocker ?? (terminal ? "터미널에서 Antigravity와 직접 대화합니다" : "총괄이 아직 답하는 중입니다. 끝나거나 중지한 뒤 보내세요"));
       return;
     }
     const from = key;
@@ -200,7 +213,7 @@ export function Composer({
     } catch (e) {
       // Nothing was recorded: give the message and its attachments back, to the draft they came from.
       setDrafts((d) => restoreDraft(d, from, taken));
-      if (draftKey(projectNow.current ?? "") === from) setNotice(errorText(e));
+      if (keyNow.current === from) setNotice(errorText(e));
     }
   };
 
@@ -376,43 +389,59 @@ export function Composer({
           {yolo && <span className="rounded-full border border-destructive bg-destructive px-2 py-0.5 text-xs font-semibold text-destructive-foreground" title="승인 없이 파일 수정과 명령 실행이 가능합니다">YOLO</span>}
           {yolo === undefined && <span role="status" className="text-xs text-destructive">YOLO 상태 확인 중 또는 확인 실패</span>}
           <div className="ml-auto flex min-w-0 items-center gap-1.5">
-            {agent && effort ? (
+            {terminal || (agent && effort) || agyInstalled ? (
               <ChoiceMenu
-                label={`총괄 에이전트·모델·노력 수준: ${LEAD_NAME[agent]}, ${modelName ?? "기본 모델"}, ${EFFORT_WORD[effort] ?? effort}`}
+                label={terminal ? "총괄 에이전트: Antigravity · 터미널" : agent && effort ? `총괄 에이전트·모델·노력 수준: ${LEAD_NAME[agent]}, ${modelName ?? "기본 모델"}, ${EFFORT_WORD[effort] ?? effort}` : "총괄 에이전트"}
                 align="right"
                 triggerRef={leadButton}
                 stayOpen={(group, value) => group === "에이전트" || (group === "모델" && value !== TYPE_MODEL)}
                 triggerClass="inline-flex h-7 min-w-0 items-center gap-1.5 rounded-md px-2 text-xs hover:bg-accent focus-ring disabled:opacity-50"
                 trigger={
-                  <span className="min-w-0 truncate">
-                    <span className="font-medium text-chat-foreground">{LEAD_NAME[agent]}</span>
-                    <span className="text-chat-foreground-faint">
-                      {modelName ? ` · ${modelName}` : ""} · {EFFORT_WORD[effort] ?? effort}
+                  terminal ? (
+                    <span className="min-w-0 truncate font-medium text-chat-foreground">Antigravity · 터미널</span>
+                  ) : agent && effort ? (
+                    <span className="min-w-0 truncate">
+                      <span className="font-medium text-chat-foreground">{LEAD_NAME[agent]}</span>
+                      <span className="text-chat-foreground-faint">
+                        {modelName ? ` · ${modelName}` : ""} · {EFFORT_WORD[effort] ?? effort}
+                      </span>
                     </span>
-                  </span>
+                  ) : (
+                    <span className="min-w-0 truncate text-chat-foreground-faint">에이전트 선택</span>
+                  )
                 }
                 groups={[
                   {
                     label: "에이전트",
-                    value: agent,
-                    onChoose: (v) => isLeadProvider(v) && setPicked({ agent: v, model: settings.leadModels[v] ?? "", effort: effortFor(v, effort) }),
+                    value: terminal ? "agy" : (agent ?? ""),
+                    onChoose: (v) => {
+                      // "agy" is the terminal lead, not a chat provider (ADR-0042); the pane swaps in.
+                      // Choosing it may open the project's first tab; a failure shows here.
+                      if (v === "agy") return void Promise.resolve(onTerminal?.(true)).catch((e) => setNotice(errorText(e)));
+                      void onTerminal?.(false);
+                      if (isLeadProvider(v)) setPicked({ agent: v, model: settings.leadModels[v] ?? "", effort: effortFor(v, effort) });
+                    },
                     // Every agent that can lead is listed; one that cannot be used now says why.
-                    choices: [...LEAD_PROVIDERS.map((id) => ({ value: id, label: LEAD_NAME[id], disabled: !usable.includes(id), hint: why(id) })), { value: "devin", label: "Devin", disabled: true, hint: "총괄은 아직 지원하지 않음" }],
+                    choices: composerAgentChoices(agents ?? []),
                   },
-                  {
-                    label: "모델",
-                    // A long list (Antigravity names every model at every level) scrolls; agent and effort stay in view.
-                    scroll: true,
-                    value: model,
-                    onChoose: (v) => (v === TYPE_MODEL ? setTyping({ draft: model }) : setPicked({ agent, model: v, effort })),
-                    choices: modelChoices,
-                  },
-                  {
-                    label: "노력 수준",
-                    value: effort,
-                    onChoose: (v) => setPicked({ agent, model, effort: v }),
-                    choices: LEAD_EFFORTS[agent].map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e })),
-                  },
+                  ...(agent && effort && !terminal
+                    ? [
+                        {
+                          label: "모델",
+                          // A long list (Antigravity names every model at every level) scrolls; agent and effort stay in view.
+                          scroll: true,
+                          value: model,
+                          onChoose: (v: string) => (v === TYPE_MODEL ? setTyping({ draft: model }) : setPicked({ agent, model: v, effort })),
+                          choices: modelChoices,
+                        },
+                        {
+                          label: "노력 수준",
+                          value: effort as string,
+                          onChoose: (v: string) => setPicked({ agent, model, effort: v }),
+                          choices: LEAD_EFFORTS[agent].map((e) => ({ value: e, label: EFFORT_WORD[e] ?? e })),
+                        },
+                      ]
+                    : []),
                 ]}
               />
             ) : (
@@ -451,7 +480,7 @@ export function Composer({
         aria-live="polite"
         className={`mx-auto mt-1.5 max-w-3xl px-1 empty:mt-0 ${notice ? "text-xs text-destructive" : "truncate text-2xs text-chat-foreground-faint"}`}
       >
-        {notice ?? (lead.thread?.busy === "unknown" ? blocker : busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
+        {notice ?? (terminal ? "터미널에서 Antigravity와 직접 대화합니다. 계획은 파일로 전달됩니다" : lead.thread?.busy === "unknown" ? blocker : busy ? "총괄이 답하는 중입니다. ■로 중지할 수 있습니다." : dispatched ? "기존 작업의 후속 요청은 자동 전달됩니다" : null)}
       </p>
     </form>
   );

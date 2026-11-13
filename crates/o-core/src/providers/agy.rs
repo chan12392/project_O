@@ -30,6 +30,10 @@ const USAGE: [&str; 6] = ["-p", "/usage", "--output-format", "json", "--print-ti
 const LEAD_DENY: [&str; 5] = ["write_file(*)", "command(*)", "mcp(*)", "read_url(*)", "execute_url(*)"];
 
 impl Provider for Agy {
+    fn terminal_card(&self) -> bool { true }
+
+    fn daily_budget(&self) -> bool { false }
+
     fn launch(&self, card: &Card, _plan: &Plan, team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
         // agy allow-rules match whole commands only, so it gets two fixed ones and
         // writes what it sends to its outbox file first (see `o msg post`).
@@ -42,12 +46,7 @@ impl Provider for Agy {
         args.extend(opt("--effort", card.effort.as_deref()));
         args.push("-p".into());
         args.push(prompt);
-        LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) }
-    }
-
-    /// agy signs in through the system; no key variable is taken out.
-    fn api_key_vars(&self) -> &'static [&'static str] {
-        &[]
+        LaunchSpec { bin: "agy".into(), args, stdin: None, env }
     }
 
     fn tool_note(&self) -> Option<String> {
@@ -92,7 +91,7 @@ impl Provider for Agy {
         args.push("-p".into());
         args.push(turn.prompt.clone());
         let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
-        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env })
     }
 
     /// Every tool call approved without asking (agy's skip-permissions flag, which outranks the
@@ -106,7 +105,7 @@ impl Provider for Agy {
         args.extend(opt("--effort", card.effort.as_deref()));
         args.push("-p".into());
         args.push(prompt);
-        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env })
     }
 
     /// The lead with every tool approved: no plan mode, no sandbox, and of the read-only deny
@@ -121,7 +120,7 @@ impl Provider for Agy {
         args.push("-p".into());
         args.push(turn.prompt.clone());
         let env = BTreeMap::from([(NO_UPDATE.0.to_string(), NO_UPDATE.1.to_string())]);
-        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env, env_remove: strings(self.api_key_vars()) })
+        Some(LaunchSpec { bin: "agy".into(), args, stdin: None, env })
     }
 
     /// `agy models` lists the models this sign-in may use, one `id<TAB>name` per line.
@@ -187,7 +186,7 @@ impl Provider for Agy {
         }
     }
 
-    fn usage_windows(&self) -> Option<Result<Vec<UsageWindow>, String>> {
+    fn usage_windows(&self, _profile_root: Option<&Path>) -> Option<Result<Vec<UsageWindow>, String>> {
         Some(Err(crate::policy::AGY_UNAVAILABLE.into()))
     }
 }

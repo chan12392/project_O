@@ -15,6 +15,8 @@ export interface Selection {
   run?: string;
   view: PanelView;
   card?: string;
+  /** The project's open lead tab (ADR-0034); the pop-out panel follows it. */
+  thread?: string;
 }
 
 type Signal = { type: "select"; selection: Selection } | { type: "popout-closed" } | { type: "dock" };
@@ -105,7 +107,7 @@ export function usePanelLayout(onRemoteSelect: (s: Selection) => void) {
     const tauri = window.__TAURI_INTERNALS__;
     if (tauri) {
       const { view, project, run, card } = selection;
-      void tauri.invoke("popout_open", { view, project: project ?? null, run: run ?? null, card: card ?? null }).then(
+      void tauri.invoke("popout_open", { view, project: project ?? null, run: run ?? null, card: card ?? null, thread: selection.thread ?? null }).then(
         () => setPopped(true),
         () => setPopped(false),
       );

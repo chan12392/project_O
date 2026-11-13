@@ -9,7 +9,7 @@ use std::io::{BufRead, Write};
 
 use chrono::Utc;
 use o_core::lead::files::{self, MAX_BYTES};
-use o_core::lead::prompt::{build, split_plan, PromptInput};
+use o_core::lead::prompt::{build, split_plan, PromptInput, Verdict};
 use o_core::lead::{self, DispatchError, LeadEvent, SendRequest};
 use o_core::providers::LaunchSpec;
 use o_core::run::plan::ProviderId;
@@ -77,18 +77,19 @@ Usage: codex [OPTIONS] [PROMPT]
     // Normal-mode turns find `o` beside the running program for their approvals; whether a
     // built `o` happens to sit beside this test binary differs by OS, so name one for every test.
     lead::approvals::set_program(Some(std::env::current_exe().unwrap()));
-    let tests: [(&str, fn()); 34] = [
+    let tests: [(&str, fn()); 40] = [
         ("follow-ups only target cards dispatched by this thread", followup_routing),
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
         ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
         ("design snapshots persist and malformed ones do not dispatch", design_snapshots),
         ("design notes persist, reach the lead and preserve concurrent edits", design_notes),
-        ("only the latest plan in the current thread can dispatch", stale_plan_refused),
+        ("only the latest plan in an open thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
         ("an automatic dispatch that fails to start uses up no auto-run limit", autorun_failures_not_counted),
-        ("a new thread cannot replace a live lead", autorun_new_thread_cancels),
+        ("opening another tab preserves the live tab's automatic dispatch", autorun_new_thread_cancels),
         ("an automatic dispatch never starts a plan a newer request replaced", autorun_newer_request_wins),
         ("lead child receives its agent marker", lead_child_marker),
+        ("the subscription billing mode refuses a lead turn whose CLI would get an API key", lead_subscription_mode),
         ("a plan block is read: none, one, malformed, two", plan_blocks),
         ("the first turn tells the role and schema; a resumed one only the news", prompts),
         ("a turn records the message, session, tokens, reply and a checked plan", send_records_a_plan),
@@ -99,11 +100,16 @@ Usage: codex [OPTIONS] [PROMPT]
         ("the next turn resumes the CLI session", resumes_session),
         ("a plan is dispatched once, after the policy check again", dispatch_once),
         ("a thread persists per project; new starts another", threads),
+        ("legacy current state migrates without changing the writer", thread_migration),
+        ("concurrent tab creation respects the four-tab limit", concurrent_open_limit),
+        ("different tabs answer together and each excludes a second turn", parallel_tabs),
+        ("design-only tabs remain read-only even in YOLO", nonwriter_read_only),
+        ("tab titles and project state aggregate waiting before working", tab_states),
         ("attachments: type, size, name and link refusals", attachments),
         ("sends started together run one turn; the others are refused", busy),
         ("a dead turn's marker remains unknown, even with its pid reused", stale_marker),
         ("bad requests start nothing", refused_requests),
-        ("the lead CLI never inherits an API key variable of its provider", api_keys_removed),
+        ("the lead CLI inherits API key variables", api_keys_inherited),
         ("no project hook runs before a plan is approved, first turn or resumed", project_hooks_off),
         ("an attachment reached through a linked parent folder is refused", attachment_parent_links),
         ("a stop while the turn starts keeps the CLI from running and never ends the owner", stop_while_starting),
@@ -113,7 +119,13 @@ Usage: codex [OPTIONS] [PROMPT]
         ("the thread list is written whole and a broken one is never overwritten", current_list),
         ("the lead's CLI sessions are listed from a small index, not every thread's events", session_index),
     ];
-    let extra: [(&str, fn()); 7] = [
+    let extra: [(&str, fn()); 13] = [
+        ("the overall lead designs and proposes; the person sends requests on to listed projects, once each", overall_forwards),
+        ("a request whose forward did not start can be sent again, alone and once (#96)", overall_forward_retries),
+        ("stopped or closed overall threads do not deliver pending requests", overall_cancelled_forwards),
+        ("the overall lead's approval runs the plan; a revision goes back at most twice", overall_reviews),
+        ("an approved plan still keeps to the auto-run limits and a newer request", overall_review_limits),
+        ("stop targets one tab, one project, or all open tabs", stop_scopes),
         ("questions stand in for the answer; the next turn carries the picks", ask_questions),
         ("a Codex CLI without app-server leads through read-only exec, probed once, resuming across transports", codex_exec_fallback),
         ("Codex reports an interrupted turn rather than its partial answer", codex_interrupted),
@@ -147,28 +159,355 @@ fn followup_routing() {
     assert!(started.lock().unwrap().is_empty());
     let (spawner, _) = fake(claude_answer("s", &plan_answer(good_plan())));
     let events = lead::send(&home, &request(&project, "설계"), spawner.as_ref()).unwrap();
+    let original = lead::current_thread(&home, &project).unwrap();
     let plan_id = plans(&events).remove(0).0;
     let dispatched = lead::dispatch(&home, &plan_id, RunMode::of(Profile::Own), &|_| Ok(())).ok().unwrap();
     let answer = format!("수정 요청을 전달합니다.\n```o-followup\n[{{\"run\":\"{}\",\"card\":\"docs\",\"task\":\"제목 수정\"}}]\n```", dispatched.run_id);
-    let (spawner, _) = fake(claude_answer("s", &answer));
-    let result = lead::send_with_followups(&home, &request(&project, "제목 수정해줘"), spawner.as_ref(), &resume).unwrap();
+    let (entered, release) = (home.join("followup-entered"), home.join("followup-release"));
+    let spawner = gated(claude_answer("s", &answer), entered.clone(), release.clone());
+    let req = SendRequest { thread: Some(&original), ..request(&project, "제목 수정해줘") };
+    let result = std::thread::scope(|scope| {
+        let turn = scope.spawn(|| lead::send_with_followups(&home, &req, spawner.as_ref(), &resume));
+        wait_until("the follow-up turn", || entered.exists());
+        lead::new_thread(&home, &project).unwrap();
+        std::fs::write(&release, "").unwrap();
+        turn.join().unwrap().unwrap()
+    });
     assert!(result.iter().any(|e| matches!(e, LeadEvent::Followup { source_run_id, card_id, .. } if source_run_id == &dispatched.run_id && card_id == "docs")));
     assert_eq!(started.lock().unwrap().len(), 1);
     let (bad, _) = fake(claude_answer("s", "```o-followup\n[{\"run\":\"foreign\",\"card\":\"docs\",\"task\":\"수정\"}]\n```"));
-    let refused = lead::send_with_followups(&home, &request(&project, "수정해줘"), bad.as_ref(), &resume).unwrap();
+    let refused = lead::send_with_followups(&home, &SendRequest { thread: Some(&original), ..request(&project, "수정해줘") }, bad.as_ref(), &resume).unwrap();
     assert!(refused.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("이 대화"))));
     assert_eq!(started.lock().unwrap().len(), 1);
     let followup_run = started.lock().unwrap()[0].clone();
     assert_eq!(lead::stop_all(&home, &project).unwrap(), 2);
     assert!(o_core::run::store::stop_requested(&home, &followup_run));
-    // A new design is a new thread: work dispatched by the old one is not continued from it.
+    // Open tabs keep their own dispatch scope; another tab still cannot borrow it.
     lead::new_thread(&home, &project).unwrap();
     let (spawner, _) = fake(claude_answer("s2", &answer));
     let refused = lead::send_with_followups(&home, &request(&project, "제목 수정해줘"), spawner.as_ref(), &resume).unwrap();
     assert!(refused.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("이 대화"))));
     assert_eq!(started.lock().unwrap().len(), 1);
+    lead::close(&home, &original).unwrap();
+    let (spawner, seen) = fake(claude_answer("s", &answer));
+    assert!(lead::send_with_followups(&home, &SendRequest { thread: Some(&original), ..request(&project, "닫힌 탭") }, spawner.as_ref(), &resume).is_err());
+    assert!(seen.lock().unwrap().is_empty());
+    assert_eq!(started.lock().unwrap().len(), 1);
     let example = "````markdown\n```o-followup\n[]\n```\n````";
     assert!(o_core::lead::prompt::split_followups(example).1.unwrap().is_none());
+}
+
+/// A home beside a projects root holding "alpha" and "beta"; the root is the overall lead's folder.
+fn setup_overall(name: &str) -> (PathBuf, String, String, String) {
+    let base = temp(name);
+    let home = base.join("project_O");
+    let root = base.join("projects");
+    for dir in [&home, &root.join("alpha"), &root.join("beta")] { std::fs::create_dir_all(dir).unwrap(); }
+    let listing = o_core::projects::set_root(&home, &o_core::run::store::user_home(), Some(&root.to_string_lossy())).unwrap();
+    let path = |name: &str| listing.projects.iter().find(|p| p.name == name).unwrap().path.clone();
+    (home, listing.root.clone(), path("alpha"), path("beta"))
+}
+
+fn forward_block(items: &[(&str, &str)]) -> String {
+    let items: Vec<Value> = items.iter().map(|(project, text)| json!({"project": project, "text": text})).collect();
+    format!("두 프로젝트에 넘깁니다.\n```o-forward\n{}\n```", Value::from(items))
+}
+
+/// The overall lead's latest proposal of requests (`lead.forward-plan`).
+fn proposal(events: &[LeadEvent]) -> String {
+    events.iter().rev().find_map(|e| match e { LeadEvent::ForwardPlan { proposal_id, .. } => Some(proposal_id.clone()), _ => None }).expect("a proposal")
+}
+
+fn review_answer(verdict: &str, notes: &str) -> String {
+    format!("검토했습니다.\n```o-review\n{}\n```", json!({ "verdict": verdict, "notes": notes }))
+}
+
+/// A fake lead CLI answering by the folder it runs in: `projects` (the overall lead) or a project's name.
+fn fake_by_folder(answers: Vec<(&'static str, Vec<String>)>) -> (Arc<Spawner>, Arc<Mutex<Vec<LaunchSpec>>>) {
+    let seen = Arc::new(Mutex::new(Vec::new()));
+    let keep = seen.clone();
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        if let Some(command) = probe_command(spec, cwd, &APP_SERVER) { return command; }
+        keep.lock().unwrap().push(spec.clone());
+        let lines = answers.iter().find(|(name, _)| Path::new(cwd).file_name().is_some_and(|n| n == *name)).map(|(_, lines)| lines.clone()).unwrap_or_default();
+        let mut command = support::fake_worker_launch()?;
+        command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap()).env(FAKE_SLEEP, "0");
+        Ok(command)
+    });
+    (spawner, seen)
+}
+
+/// What `o _lead-forward` would start next: runs, and requests passed on again.
+#[derive(Default)]
+struct Started {
+    runs: Mutex<Vec<String>>,
+    forwards: Mutex<Vec<(String, usize)>>,
+}
+
+impl Started {
+    fn run(&self, id: &str) -> std::io::Result<()> { self.runs.lock().unwrap().push(id.to_string()); Ok(()) }
+    fn forward(&self, id: &str, n: usize) -> std::io::Result<()> { self.forwards.lock().unwrap().push((id.to_string(), n)); Ok(()) }
+}
+
+/// `overall::forward` with its starts recorded in `started`.
+fn forward_with(home: &Path, thread: &str, index: usize, spawner: &Spawner, started: &Started) -> Result<Vec<LeadEvent>, String> {
+    let run = |id: &str| started.run(id);
+    let forward = |id: &str, n: usize| started.forward(id, n);
+    lead::overall::forward(home, thread, index, spawner, &lead::overall::Starts { run: &run, forward: &forward })
+}
+
+fn overall_forwards() {
+    let (home, root, alpha, beta) = setup_overall("overall");
+    assert!(lead::overall::is_overall(&home, &root) && !lead::overall::is_overall(&home, &alpha));
+    // The overall lead sees every project, never runs in YOLO, designs and proposes; nothing goes on yet.
+    let design = "설계했습니다.\n```o-design\n{\"goal\":\"둘 다 정리\",\"decisions\":[\"alpha 먼저\"],\"questions\":[]}\n```";
+    let answer = format!("{design}\n{}", forward_block(&[(&alpha, "로그인 화면 정리"), (&beta, "테스트 보강")]));
+    let (spawner, seen) = fake(claude_answer("o1", &answer));
+    let events = lead::send(&home, &SendRequest { yolo: true, ..request(&root, "둘 다 진행해") }, spawner.as_ref()).unwrap();
+    let prompt = seen.lock().unwrap()[0].stdin.clone().unwrap();
+    assert!(prompt.contains("[O 전체 총괄]") && prompt.contains("alpha") && prompt.contains("beta") && !prompt.contains("YOLO"));
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::User { yolo: false, origin: None, .. })));
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Design { design, .. } if design["goal"] == "둘 다 정리")));
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Forward { .. })));
+    let thread = lead::current_thread(&home, &root).unwrap();
+    let first = proposal(&events);
+    assert_eq!(first, format!("{thread}-f1"));
+    // The next turn hears the saved design; the tab waits for the person.
+    let (spawner, seen) = fake(claude_answer("o1", "네"));
+    let later = lead::send(&home, &request(&root, "설계 다시 보여줘"), spawner.as_ref()).unwrap();
+    assert!(seen.lock().unwrap()[0].stdin.as_deref().unwrap().contains("둘 다 정리"));
+    // A word from the person after the proposal makes it stale; a new proposal is sent on, once.
+    assert!(lead::overall::send_on(&home, &first, &|_, _| Ok(())).unwrap_err().contains("바뀌었습니다"));
+    assert!(!later.iter().any(|e| matches!(e, LeadEvent::ForwardPlan { .. })));
+    let (spawner, _) = fake(claude_answer("o1", &answer));
+    let events = lead::send(&home, &request(&root, "다시 제안해"), spawner.as_ref()).unwrap();
+    let second = proposal(&events);
+    let shown = lead::show(&home, Some(&root), None).unwrap();
+    assert_eq!(shown["threads"][0]["state"], "waiting");
+    let started = Started::default();
+    let sent = lead::overall::send_on(&home, &second, &|id, n| started.forward(id, n)).unwrap();
+    let forwards: Vec<(String, String, Option<String>)> = sent.iter().filter_map(|e| match e { LeadEvent::Forward { project, text, proposal, .. } => Some((project.clone(), text.clone(), proposal.clone())), _ => None }).collect();
+    assert_eq!(forwards, [(alpha.clone(), "로그인 화면 정리".into(), Some(second.clone())), (beta.clone(), "테스트 보강".into(), Some(second.clone()))]);
+    assert_eq!(*started.forwards.lock().unwrap(), [(thread.clone(), 0), (thread.clone(), 1)]);
+    assert!(lead::overall::send_on(&home, &second, &|_, _| Ok(())).unwrap_err().contains("이미"));
+    assert!(lead::overall::send_on(&home, "not-a-proposal", &|_, _| Ok(())).is_err());
+
+    // The project lead gets it marked as the overall lead's, once. A review without its block
+    // approves nothing: the plan waits for "실행".
+    let (spawner, seen) = fake_by_folder(vec![("alpha", claude_answer("p1", &plan_answer(good_plan()))), ("projects", claude_answer("o1", "좋아 보입니다"))]);
+    let sent = forward_with(&home, &thread, 0, spawner.as_ref(), &started).unwrap();
+    let prompts: Vec<String> = seen.lock().unwrap().iter().map(|s| s.stdin.clone().unwrap()).collect();
+    assert!(prompts[0].contains("[전체 총괄이 넘긴 요청"));
+    assert!(prompts[1].contains("[O 검토 요청]") && prompts[1].contains("README 한 줄") && prompts[1].contains("로그인 화면 정리"));
+    assert!(sent.iter().any(|e| matches!(e, LeadEvent::User { origin: Some(o), text, .. } if o == "overall" && text == "로그인 화면 정리")));
+    assert_eq!(plans(&sent).len(), 1);
+    let overall_events = lead::read_thread(&home, &thread);
+    assert!(overall_events.iter().any(|e| matches!(e, LeadEvent::User { origin: Some(o), .. } if o == "review")));
+    assert!(overall_events.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("o-review"))));
+    assert!(!overall_events.iter().any(|e| matches!(e, LeadEvent::Review { .. })));
+    assert!(started.runs.lock().unwrap().is_empty());
+    assert!(forward_with(&home, &thread, 0, spawner.as_ref(), &started).unwrap_err().contains("이미"));
+    assert!(forward_with(&home, &thread, 5, spawner.as_ref(), &started).is_err());
+    // The overview shows the plan waiting for the person on the next overall turn.
+    assert!(lead::overall::overview(&home).contains("실행하지 않은 계획"));
+
+    // What the code refuses, whatever the model writes.
+    let refused = |answer: String, word: &str| {
+        let (spawner, _) = fake(claude_answer("o1", &answer));
+        let events = lead::send(&home, &request(&root, "진행"), spawner.as_ref()).unwrap();
+        assert!(!events.iter().any(|e| matches!(e, LeadEvent::Forward { .. } | LeadEvent::ForwardPlan { .. } | LeadEvent::Plan { .. } | LeadEvent::Review { .. })), "{answer}");
+        assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains(word))), "{answer}: {events:?}");
+    };
+    refused(plan_answer(good_plan()), "계획");
+    refused(review_answer("approve", "좋음"), "검토 블록");
+    refused(forward_block(&[("C:/elsewhere", "일")]), "목록에 없는");
+    refused(forward_block(&[(&root, "일")]), "목록에 없는");
+    refused(forward_block(&[(&alpha, "하나"), (&alpha, "둘")]), "하나만");
+    refused(forward_block(&[(&alpha, "1"), (&beta, "2"), (&alpha, "3"), (&beta, "4")]), "1~3");
+    assert!(forward_with(&home, &lead::current_thread(&home, &alpha).unwrap(), 0, spawner.as_ref(), &started).unwrap_err().contains("전체 총괄 대화가 아닙니다"));
+}
+
+fn overall_forward_retries() {
+    let (home, root, alpha, beta) = setup_overall("overall-retry");
+    let (spawner, _) = fake(claude_answer("o1", &forward_block(&[(&alpha, "로그인 화면 정리"), (&beta, "테스트 보강")])));
+    let events = lead::send(&home, &request(&root, "둘 다 진행해"), spawner.as_ref()).unwrap();
+    let id = proposal(&events);
+    let thread = lead::current_thread(&home, &root).unwrap();
+    let state = || lead::show(&home, Some(&root), None).unwrap()["threads"][0]["state"].clone();
+    let failures = |events: &[LeadEvent]| -> Vec<usize> { events.iter().filter_map(|e| match e { LeadEvent::ForwardStart { index, error: Some(_), .. } => Some(*index), _ => None }).collect() };
+
+    // The first request starts, the second does not: it alone is recorded as not started.
+    let started = Started::default();
+    let second_fails = |id: &str, n: usize| if n == 1 { Err(std::io::Error::other("o CLI가 맞지 않습니다")) } else { started.forward(id, n) };
+    let sent = lead::overall::send_on(&home, &id, &second_fails).unwrap();
+    assert_eq!(failures(&sent), [1]);
+    assert_eq!(*started.forwards.lock().unwrap(), [(thread.clone(), 0)]);
+    assert_eq!(lead::overall::unstarted(&lead::read_thread(&home, &thread)).into_iter().collect::<Vec<_>>(), [1]);
+    assert_eq!(state(), "waiting");
+    // Still failing: it stays as it was. The cause gone: the second goes, alone, once.
+    assert_eq!(failures(&lead::overall::send_on(&home, &id, &second_fails).unwrap()), [1]);
+    let again = lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).unwrap();
+    assert!(matches!(again.as_slice(), [LeadEvent::ForwardStart { index: 1, error: None, .. }]), "{again:?}");
+    assert_eq!(*started.forwards.lock().unwrap(), [(thread.clone(), 0), (thread.clone(), 1)]);
+    assert!(lead::overall::unstarted(&lead::read_thread(&home, &thread)).is_empty());
+    assert!(lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).unwrap_err().contains("이미"));
+    assert_eq!(started.forwards.lock().unwrap().len(), 2);
+    assert_eq!(lead::read_thread(&home, &thread).iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).count(), 2);
+
+    // Every start failing: all go again, at once from two sides each is started once.
+    let (spawner, _) = fake(claude_answer("o1", &forward_block(&[(&alpha, "하나"), (&beta, "둘")])));
+    let events = lead::send(&home, &request(&root, "다시 제안해"), spawner.as_ref()).unwrap();
+    let id = proposal(&events);
+    assert_eq!(failures(&lead::overall::send_on(&home, &id, &|_, _| Err(std::io::Error::other("없음"))).unwrap()), [2, 3]);
+    let started = Started::default();
+    let results: Vec<bool> = std::thread::scope(|s| {
+        let retries: Vec<_> = (0..2).map(|_| s.spawn(|| lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).is_ok())).collect();
+        retries.into_iter().map(|retry| retry.join().unwrap()).collect()
+    });
+    assert_eq!(results.iter().filter(|ok| **ok).count(), 1, "{results:?}");
+    let mut forwards = started.forwards.lock().unwrap().clone();
+    forwards.sort();
+    assert_eq!(forwards, [(thread.clone(), 2), (thread.clone(), 3)]);
+
+    // A request `o _lead-forward` already took is not started again, whatever the record says.
+    let (spawner, _) = fake(claude_answer("o1", &forward_block(&[(&alpha, "셋")])));
+    let events = lead::send(&home, &request(&root, "하나 더"), spawner.as_ref()).unwrap();
+    let id = proposal(&events);
+    lead::overall::send_on(&home, &id, &|_, _| Err(std::io::Error::other("없음"))).unwrap();
+    let (project, _) = fake_by_folder(vec![("alpha", claude_answer("p1", "네"))]);
+    forward_with(&home, &thread, 4, project.as_ref(), &started).unwrap();
+    assert!(lead::overall::send_on(&home, &id, &|id, n| started.forward(id, n)).unwrap_err().contains("이미"));
+    assert_eq!(started.forwards.lock().unwrap().len(), 2);
+}
+
+fn overall_reviews() {
+    let (home, root, alpha, beta) = setup_overall("overall-review");
+    init_git(&alpha);
+    let (source, _) = fake(claude_answer("o", &forward_block(&[(&alpha, "README 정리"), (&beta, "테스트 보강")])));
+    let events = lead::send(&home, &request(&root, "진행"), source.as_ref()).unwrap();
+    lead::overall::send_on(&home, &proposal(&events), &|_, _| Ok(())).unwrap();
+    let thread = lead::current_thread(&home, &root).unwrap();
+
+    // Approved: the plan runs at once, with YOLO off.
+    let started = Started::default();
+    let (spawner, _) = fake_by_folder(vec![("alpha", claude_answer("p", &plan_answer(good_plan()))), ("projects", claude_answer("o", &review_answer("approve", "설계와 맞음")))]);
+    let sent = forward_with(&home, &thread, 0, spawner.as_ref(), &started).unwrap();
+    let plan_id = plans(&sent).remove(0).0;
+    assert_eq!(started.runs.lock().unwrap().len(), 1);
+    let project = lead::read_thread(&home, &lead::current_thread(&home, &alpha).unwrap());
+    assert!(project.iter().any(|e| matches!(e, LeadEvent::Review { plan_id: id, verdict: Verdict::Approve, notes, .. } if *id == plan_id && notes == "설계와 맞음")));
+    assert!(project.iter().any(|e| matches!(e, LeadEvent::Dispatch { plan_id: id, yolo: false, .. } if *id == plan_id)));
+    assert!(lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::Review { verdict: Verdict::Approve, .. })));
+
+    // Revise: the notes go back to the thread that made the plan, at most twice.
+    let (spawner, seen) = fake_by_folder(vec![("beta", claude_answer("p", &plan_answer(good_plan()))), ("projects", claude_answer("o", &review_answer("revise", "테스트 범위를 넓혀 주세요")))]);
+    forward_with(&home, &thread, 1, spawner.as_ref(), &started).unwrap();
+    assert_eq!(*started.forwards.lock().unwrap(), [(thread.clone(), 2)]);
+    let revision = lead::read_thread(&home, &thread).into_iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).nth(2).unwrap();
+    assert!(matches!(&revision, LeadEvent::Forward { text, revision: Some(_), proposal: Some(_), .. } if text == "테스트 범위를 넓혀 주세요"));
+    forward_with(&home, &thread, 2, spawner.as_ref(), &started).unwrap();
+    assert!(seen.lock().unwrap().iter().any(|s| s.stdin.as_deref().unwrap().contains("[전체 총괄이 넘긴 요청") && s.stdin.as_deref().unwrap().contains("테스트 범위를 넓혀")));
+    forward_with(&home, &thread, 3, spawner.as_ref(), &started).unwrap();
+    assert_eq!(started.forwards.lock().unwrap().len(), 2);
+    assert!(lead::read_thread(&home, &thread).iter().any(|e| matches!(e, LeadEvent::Warning { text, .. } if text.contains("2번을 넘어"))));
+    let beta_thread = lead::current_thread(&home, &beta).unwrap();
+    let beta_events = lead::read_thread(&home, &beta_thread);
+    assert_eq!(beta_events.iter().filter(|e| matches!(e, LeadEvent::Review { verdict: Verdict::Revise, .. })).count(), 3);
+    assert!(!beta_events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    assert_eq!(started.runs.lock().unwrap().len(), 1);
+}
+
+fn overall_review_limits() {
+    let (home, root, alpha, _) = setup_overall("overall-review-limits");
+    init_git(&alpha);
+    let (source, _) = fake(claude_answer("o", &forward_block(&[(&alpha, "README 정리")])));
+    let send_on = |text: &str| {
+        let events = lead::send(&home, &request(&root, text), source.as_ref()).unwrap();
+        lead::overall::send_on(&home, &proposal(&events), &|_, _| Ok(())).unwrap();
+        lead::read_thread(&home, &lead::current_thread(&home, &root).unwrap()).iter().filter(|e| matches!(e, LeadEvent::Forward { .. })).count() - 1
+    };
+    let thread = |home: &Path| lead::current_thread(home, &root).unwrap();
+    let started = Started::default();
+    let (spawner, _) = fake_by_folder(vec![("alpha", claude_answer("p", &plan_answer(good_plan()))), ("projects", claude_answer("o", &review_answer("approve", "")))]);
+    // The daily budget off: approved, yet not run.
+    o_core::usage::budget::write_enabled(&home, false).unwrap();
+    let index = send_on("진행");
+    forward_with(&home, &thread(&home), index, spawner.as_ref(), &started).unwrap();
+    assert!(started.runs.lock().unwrap().is_empty());
+    let project = lead::read_thread(&home, &lead::current_thread(&home, &alpha).unwrap());
+    assert!(auto_reason(&project, "예산"));
+    assert!(lead::read_thread(&home, &thread(&home)).iter().any(|e| matches!(e, LeadEvent::Warning { text, .. } if text.contains("승인한 계획을 실행하지 않았습니다"))));
+    // A stopped overall thread applies no verdict.
+    o_core::usage::budget::write_enabled(&home, true).unwrap();
+    let index = send_on("다시");
+    let overall = thread(&home);
+    let stop = lead::thread_dir(&home, &overall).join("stop-all-at");
+    let (stopper, _) = fake_by_folder(vec![("alpha", claude_answer("p", &plan_answer(good_plan()))), ("projects", claude_answer("o", &review_answer("approve", "")))]);
+    let stopping: Arc<Spawner> = {
+        let stop = stop.clone();
+        Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+            if Path::new(cwd).file_name().is_some_and(|n| n == "projects") { std::fs::write(&stop, (Utc::now() + chrono::Duration::seconds(1)).to_rfc3339()).unwrap(); }
+            stopper(spec, cwd)
+        })
+    };
+    forward_with(&home, &overall, index, stopping.as_ref(), &started).unwrap();
+    assert!(started.runs.lock().unwrap().is_empty());
+    assert!(lead::read_thread(&home, &overall).iter().any(|e| matches!(e, LeadEvent::Warning { text, .. } if text.contains("중지"))));
+}
+
+fn overall_cancelled_forwards() {
+    for replace in [false, true] {
+        let (home, root, alpha, _) = setup_overall(if replace { "forward-replaced" } else { "forward-stopped" });
+        let (source, _) = fake(claude_answer("o", &forward_block(&[(&alpha, "작업")])));
+        let events = lead::send(&home, &request(&root, "진행"), source.as_ref()).unwrap();
+        lead::overall::send_on(&home, &proposal(&events), &|_, _| Ok(())).unwrap();
+        let thread = lead::current_thread(&home, &root).unwrap();
+        let target = lead::new_thread(&home, &alpha).unwrap();
+        let (spawner, seen) = fake(claude_answer("p", "완료"));
+        let started = Started::default();
+
+        if replace {
+            lead::new_thread(&home, &root).unwrap();
+            let sent = forward_with(&home, &thread, 0, spawner.as_ref(), &started).unwrap();
+            assert!(sent.iter().any(|e| matches!(e, LeadEvent::User { origin: Some(origin), .. } if origin == "overall")));
+            let events = lead::send(&home, &SendRequest { thread: Some(&thread), ..request(&root, "다음 전달") }, source.as_ref()).unwrap();
+            lead::overall::send_on(&home, &proposal(&events), &|_, _| Ok(())).unwrap();
+            lead::close(&home, &thread).unwrap();
+            let (spawner, seen) = fake(claude_answer("p", "must not run"));
+            assert!(forward_with(&home, &thread, 1, spawner.as_ref(), &started).is_err());
+            assert!(seen.lock().unwrap().is_empty());
+            continue;
+        } else {
+            let lock = std::fs::OpenOptions::new().read(true).write(true).open(home.join("leads/current.lock")).unwrap();
+            lock.lock().unwrap();
+            std::thread::scope(|scope| {
+                let (ready, wait) = std::sync::mpsc::channel();
+                let (home, thread, spawner, started) = (&home, &thread, &spawner, &started);
+                let forward = scope.spawn(move || {
+                    ready.send(()).unwrap();
+                    forward_with(home, thread, 0, spawner.as_ref(), started)
+                });
+                wait.recv().unwrap();
+                // Cancellation reaches the queued forward before it can acquire current.lock.
+                std::fs::write(lead::thread_dir(home, thread).join("stop-all-at"), Utc::now().to_rfc3339()).unwrap();
+                drop(lock);
+                assert!(forward.join().unwrap().is_err());
+            });
+        }
+        assert!(seen.lock().unwrap().is_empty());
+        assert!(!lead::read_thread(&home, &target).iter().any(|e| matches!(e, LeadEvent::User { origin: Some(_), .. })));
+
+        // A later turn remains deliverable after stopping the preceding one.
+        if !replace {
+            let stopped = chrono::DateTime::parse_from_rfc3339(&std::fs::read_to_string(lead::thread_dir(&home, &thread).join("stop-all-at")).unwrap()).unwrap();
+            wait_until("the next turn's timestamp after cancellation", || Utc::now().timestamp_millis() > stopped.timestamp_millis());
+            let events = lead::send(&home, &request(&root, "다시 진행"), source.as_ref()).unwrap();
+            lead::overall::send_on(&home, &proposal(&events), &|_, _| Ok(())).unwrap();
+            let sent = forward_with(&home, &thread, 1, spawner.as_ref(), &started).unwrap();
+            assert_eq!(sent.iter().filter(|e| matches!(e, LeadEvent::User { origin: Some(o), .. } if o == "overall")).count(), 1);
+            assert_eq!(seen.lock().unwrap().len(), 1);
+        }
+    }
 }
 
 fn design_snapshots() {
@@ -253,8 +592,13 @@ fn stale_plan_refused() {
     let (reply, _) = fake(claude_answer("s", "답변"));
     lead::send(&home, &request(&project, "추가 질문"), reply.as_ref()).unwrap();
     assert!(matches!(lead::dispatch(&home, &second, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
+    let latest = plans(&lead::send(&home, &request(&project, "실행할 계획"), spawner.as_ref()).unwrap()).remove(0).0;
+    let original = lead::current_thread(&home, &project).unwrap();
     lead::new_thread(&home, &project).unwrap();
-    assert!(matches!(lead::dispatch(&home, &second, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(m)) if m.contains("설계가 변경")));
+    assert!(lead::dispatch(&home, &latest, RunMode::of(Profile::Own), &|_| Ok(())).is_ok());
+    let latest = plans(&lead::send(&home, &SendRequest { thread: Some(&original), ..request(&project, "다음 계획") }, spawner.as_ref()).unwrap()).remove(0).0;
+    lead::close(&home, &original).unwrap();
+    assert!(matches!(lead::dispatch(&home, &latest, RunMode::of(Profile::Own), &start), Err(DispatchError::Other(_))));
 }
 
 fn temp(name: &str) -> PathBuf {
@@ -438,6 +782,28 @@ fn lead_child_marker() {
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "lead")));
 }
 
+/// ADR-0035 개정 1: a lead turn in 구독만 with an authentication variable on its launch does not
+/// start and says which by name; in 경고만 it answers. The variable is a placeholder on the launch only.
+fn lead_subscription_mode() {
+    use o_core::agents::billing;
+    let (home, project) = setup("lead-billing");
+    let (inner, seen) = fake(claude_answer("session", "답"));
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        let mut command = inner(spec, cwd)?;
+        command.env("ANTHROPIC_AUTH_TOKEN", "placeholder-not-a-key");
+        Ok(command)
+    });
+    billing::write_mode(&home, "subscription").unwrap();
+    let events = lead::send(&home, &request(&project, "확인"), spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("구독만") && text.contains("ANTHROPIC_AUTH_TOKEN"))), "{events:?}");
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Reply { .. })));
+    assert!(!serde_json::to_string(&events).unwrap().contains("placeholder-not-a-key"));
+    billing::write_mode(&home, "warn").unwrap();
+    let events = lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap();
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "답")), "{events:?}");
+    assert!(!seen.lock().unwrap().is_empty());
+}
+
 fn live_tool_progress() {
     let (home, project) = setup("tool-progress");
     let mut lines = vec![
@@ -459,7 +825,7 @@ fn live_tool_progress() {
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
-        let view = lead::show(&home, Some(&project));
+        let view = lead::show(&home, Some(&project), None).unwrap();
         if view["thread"]["progressCounts"] == json!({ "reads": 1, "searches": 0, "edits": 1, "commands": 1 }) {
             assert!(view["thread"]["progress"].as_array().unwrap().iter().any(|item| item["name"] == "Read" && item["summary"] == "src/demo.py"));
             break;
@@ -468,7 +834,7 @@ fn live_tool_progress() {
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
     worker.join().unwrap();
-    let view = lead::show(&home, Some(&project));
+    let view = lead::show(&home, Some(&project), None).unwrap();
     assert_eq!(view["thread"]["progress"], json!([]));
     assert!(view["thread"]["progressCounts"].is_null());
     assert!(view["thread"]["events"].as_array().unwrap().iter().all(|event| event["t"] != "lead.tool"));
@@ -506,7 +872,7 @@ fn codex_approval() {
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
-        let view = lead::show(&home, Some(&project));
+        let view = lead::show(&home, Some(&project), None).unwrap();
         // Normal mode asks the person (ADR-0008 개정 3); here they refuse.
         if let Some(id) = view["thread"]["approvals"][0]["id"].as_str() { let _ = lead::decide(&home, id, false); }
         if view["thread"]["progress"].as_array().is_some_and(|steps| steps.iter().any(|step| step["name"] == "권한" && step["summary"].as_str().is_some_and(|text| text.contains("거절")))) { break; }
@@ -570,7 +936,7 @@ fn codex_partial() {
     });
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(8);
     loop {
-        let view = lead::show(&home, Some(&project));
+        let view = lead::show(&home, Some(&project), None).unwrap();
         if let Some(partial) = view["thread"]["partial"].as_str().filter(|text| !text.is_empty()) {
             assert!(partial.contains("카드 한 장"));
             assert!(!partial.contains("o-plan") && !partial.contains("README"));
@@ -583,7 +949,7 @@ fn codex_partial() {
     let events = worker.join().unwrap();
     assert!(events.iter().any(|event| matches!(event, LeadEvent::Reply { text, .. } if text.contains("카드 한 장"))));
     assert!(events.iter().any(|event| matches!(event, LeadEvent::Plan { .. })));
-    assert_eq!(lead::show(&home, Some(&project))["thread"]["partial"], "");
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["thread"]["partial"], "");
 }
 
 fn autorun() {
@@ -612,6 +978,10 @@ fn autorun() {
     let agy = lead::send_with_scheduled_autorun(&agy_home, &request(&agy_project, "예약"), agy_spawner.as_ref(), &start).unwrap();
     assert!(agy.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("Antigravity"))));
     assert!(!agy.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
+    o_core::agents::agy::set(&agy_home, o_core::agents::agy::Change { workers: Some(true), ack: Some(true), ..Default::default() }).unwrap();
+    let agy_enabled = lead::send_with_scheduled_autorun(&agy_home, &request(&agy_project, "예약"), agy_spawner.as_ref(), &start).unwrap();
+    assert!(agy_enabled.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("예약에서는 Antigravity"))));
+    assert!(!agy_enabled.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
     let agy_lead = SendRequest { provider: ProviderId::Agy, ..request(&agy_project, "예약") };
     assert!(lead::send_with_scheduled_autorun(&agy_home, &agy_lead, agy_spawner.as_ref(), &start).is_err());
     assert!(lead::send(&agy_home, &agy_lead, agy_spawner.as_ref()).unwrap_err().contains("Antigravity"));
@@ -699,9 +1069,7 @@ fn autorun_failures_not_counted() {
 fn gated(lines: Vec<String>, entered: PathBuf, release: PathBuf) -> Arc<Spawner> {
     Arc::new(move |_spec: &LaunchSpec, cwd: &str| {
         std::fs::write(&entered, "").unwrap();
-        while !release.exists() {
-            std::thread::sleep(std::time::Duration::from_millis(10));
-        }
+        wait_until("the fake turn's release", || release.exists());
         let mut command = support::fake_worker_launch()?;
         command.current_dir(cwd).env(FAKE, serde_json::to_string(&lines).unwrap());
         Ok(command)
@@ -716,23 +1084,31 @@ fn autorun_new_thread_cancels() {
     let spawner = gated(claude_answer("session", &plan_answer(good_plan())), entered.clone(), release.clone());
     let starts = AtomicUsize::new(0);
     let start = |_: &str| { starts.fetch_add(1, Ordering::SeqCst); Ok(()) };
-    let yolo = SendRequest { yolo: true, ..request(&project, "진행") };
+    let original = lead::start(&home, &project).unwrap();
+    let yolo = SendRequest { thread: Some(&original), yolo: true, ..request(&project, "진행") };
     let events = std::thread::scope(|scope| {
         let turn = scope.spawn(|| lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start));
         wait_until("the lead to start answering", || entered.exists());
-        // Another client cannot replace a lead that is still answering.
-        assert!(lead::start(&home, &project).is_err());
+        let next = lead::start(&home, &project).unwrap();
+        assert_ne!(next, original);
+        assert!(lead::is_open(&home, &project, &original));
         std::fs::write(&release, "").unwrap();
         turn.join().unwrap().unwrap()
     });
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Plan { ok: true, .. })));
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
+    // A design-only tab still auto-runs its own plan under the existing card policy.
+    let designer = lead::new_thread(&home, &project).unwrap();
+    let (spawner, _) = fake(claude_answer("designer", &plan_answer(titled_plan("별도 설계"))));
+    let result = lead::send_with_autorun(&home, &SendRequest { thread: Some(&designer), yolo: true, ..request(&project, "다른 작업") }, spawner.as_ref(), &start).unwrap();
+    assert!(result.iter().any(|e| matches!(e, LeadEvent::Dispatch { .. })), "{result:?}");
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
     // The existing dispatch prevents another automatic run while it is active.
     let (spawner, _) = fake(claude_answer("session", &plan_answer(good_plan())));
     let run = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
     assert!(auto_reason(&run, "진행 중"));
-    assert_eq!(starts.load(Ordering::SeqCst), 1);
+    assert_eq!(starts.load(Ordering::SeqCst), 2);
 }
 
 /// Another request lands right as the lead's answer ends: the auto path either starts the plan
@@ -776,7 +1152,7 @@ fn autorun_newer_request_wins() {
 }
 
 fn request<'a>(project: &'a str, text: &'a str) -> SendRequest<'a> {
-    SendRequest { project, provider: ProviderId::Claude, model: None, effort: Some("low"), text, attach: &[], fresh: false, clean: None, yolo: false }
+    SendRequest { project, thread: None, provider: ProviderId::Claude, model: None, effort: Some("low"), text, attach: &[], fresh: false, clean: None, yolo: false }
 }
 
 fn plans(events: &[LeadEvent]) -> Vec<(String, Value, bool, Vec<String>)> {
@@ -816,13 +1192,31 @@ fn plan_blocks() {
 }
 
 fn prompts() {
-    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], budget: &["codex 여유 있음".into()], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false };
+    let input = PromptInput { project: "C:/p", text: "할 일", attachments: &[], agy_workers_allowed: false, budget: &["codex 여유 있음".into()], unready: &[], runs: &[], runs_file: None, runs_error: None, result_tools: false, resumed: false, history: &[], missed: &[], design: None, yolo: false, approvals: false, overview: None, forwarded: false, review: None };
     let first = build(&input);
     for part in ["[O 총괄]", "프로젝트: C:/p", "```o-plan", "읽기만", "codex 여유 있음", "사용자:\n할 일"] {
         assert!(first.contains(part), "{part}");
     }
     let next = build(&PromptInput { resumed: true, budget: &[], ..input });
+    let enabled = build(&PromptInput { agy_workers_allowed: true, ..input });
+    assert!(enabled.contains("claude|codex|agy|opencode|devin") && enabled.contains("완료 파일") && enabled.contains("후속 지시를 받지"));
+    assert!(first.contains("작업 에이전트가 꺼져"));
     assert!(!next.contains("```o-plan") && next.ends_with("사용자:\n할 일"));
+    assert!(!first.contains(o_core::lead::prompt::UNREADY_NOTE) && !next.contains(o_core::lead::prompt::UNREADY_NOTE));
+    // A provider whose project_O profile is not ready is named on every turn, fresh or resumed (ADR-0040).
+    let unready = [o_core::providers::codex::SANDBOX_NOT_SET.to_string()];
+    for turn in [build(&PromptInput { unready: &unready, ..input }), build(&PromptInput { resumed: true, unready: &unready, ..input })] {
+        assert!(turn.contains(&format!("{}\n- {}", o_core::lead::prompt::UNREADY_NOTE, unready[0])), "{turn}");
+        assert!(turn.ends_with("사용자:\n할 일"));
+    }
+    let (home, project) = setup("plan-notice");
+    let mut plan = good_plan();
+    plan["cards"][0]["provider"] = json!("devin");
+    let (plan, violations, notices) = lead::check_lead_plan(&home, &project, plan, RunMode::of(Profile::ProjectO));
+    assert!(violations.is_empty());
+    let event = LeadEvent::Plan { at: Utc::now().to_rfc3339(), plan_id: "p".into(), plan, ok: true, violations, notices };
+    let stored = serde_json::to_value(event).unwrap();
+    assert_eq!(stored["notices"][0], o_core::providers::devin::OWN_PROFILE_NOTICE);
 }
 
 fn send_records_a_plan() {
@@ -1008,17 +1402,205 @@ fn dispatch_non_git() {
 
 fn threads() {
     let (home, project) = setup("threads");
-    let first = lead::thread_for(&home, &project, false).unwrap();
-    assert_eq!(lead::thread_for(&home, &project, false).unwrap(), first);
+    let first = lead::select_thread(&home, &project, None, false).unwrap();
+    assert_eq!(lead::select_thread(&home, &project, None, false).unwrap(), first);
     // The same folder written another way is the same project.
     assert_eq!(lead::current_thread(&home, &format!("{}/", project.replace('\\', "/"))), Some(first.clone()));
-    let second = lead::thread_for(&home, &project, true).unwrap();
+    let second = lead::start(&home, &project).unwrap();
     assert_ne!(first, second);
     assert_eq!(lead::current_thread(&home, &project), Some(second.clone()));
-    let shown = lead::show(&home, Some(&project));
+    let shown = lead::show(&home, Some(&project), None).unwrap();
     assert_eq!(shown["thread"]["threadId"], second.as_str());
     assert_eq!(shown["projects"][0]["project"], project.as_str());
-    assert!(lead::show(&home, Some("C:/no/such")).get("thread").unwrap().is_null());
+    assert_eq!(lead::open_threads(&home, &project), [first.clone(), second.clone()]);
+    assert_eq!(shown["threads"][0]["writer"], true);
+    assert_eq!(shown["threads"][1]["writer"], false);
+    assert!(lead::show(&home, Some("C:/no/such"), None).unwrap()["thread"].is_null());
+    assert_eq!(lead::show(&home, None, Some(&first)).unwrap()["thread"]["threadId"], first);
+    assert!(lead::show(&home, Some("C:/no/such"), Some(&first)).is_err());
+    assert!(lead::select_thread(&home, &project, Some("../outside"), false).is_err());
+    assert!(lead::select_thread(&home, "C:/no/such", Some(&first), false).is_err());
+    assert!(lead::select_thread(&home, &project, Some(&first), true).is_err());
+    let third = lead::new_thread(&home, &project).unwrap();
+    lead::set_writer(&home, &third).unwrap();
+    let shown = lead::show(&home, Some(&project), Some(&first)).unwrap();
+    assert_eq!(shown["thread"]["threadId"], first);
+    assert_eq!(shown["threads"].as_array().unwrap().iter().map(|tab| tab["writer"].as_bool().unwrap()).collect::<Vec<_>>(), [false, false, true]);
+    lead::select_thread(&home, &project, Some(&third), false).unwrap();
+    let history = std::fs::read(lead::thread_dir(&home, &third).join("events.jsonl")).unwrap();
+    lead::close(&home, &third).unwrap();
+    assert_eq!(lead::current_thread(&home, &project), Some(second.clone()));
+    assert!(!lead::is_open(&home, &project, &third));
+    assert_eq!(std::fs::read(lead::thread_dir(&home, &third).join("events.jsonl")).unwrap(), history);
+    assert!(lead::set_writer(&home, &third).is_err());
+    assert!(lead::select_thread(&home, &project, Some(&third), false).is_err());
+    assert_eq!(lead::show(&home, Some(&project), Some(&third)).unwrap()["thread"]["threadId"], second);
+    assert!(lead::stop(&home, Some(&project), Some(&third)).is_err());
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["threads"][0]["writer"], true);
+    lead::close(&home, &first).unwrap();
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["threads"][0]["writer"], true);
+    lead::close(&home, &second).unwrap();
+    assert!(lead::open_threads(&home, &project).is_empty());
+    assert!(lead::current_thread(&home, &project).is_none());
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"].is_null());
+    let replacement = lead::select_thread(&home, &project, None, false).unwrap();
+    assert_ne!(replacement, second);
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["threads"][0]["writer"], true);
+}
+
+fn thread_migration() {
+    let (home, project) = setup("legacy-tabs");
+    let first = lead::start(&home, &project).unwrap();
+    std::fs::remove_file(home.join("leads/open.json")).unwrap();
+    assert_eq!(lead::open_threads(&home, &project), std::slice::from_ref(&first));
+    assert!(lead::is_open(&home, &project, &first));
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["threads"][0]["writer"], true);
+    let second = lead::new_thread(&home, &project).unwrap();
+    assert_eq!(lead::open_threads(&home, &project), [first.clone(), second]);
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["threads"][0]["writer"], true);
+
+    let (home, root, _, _) = setup_overall("overall-tabs");
+    let first = lead::start(&home, &root).unwrap();
+    std::fs::remove_file(home.join("leads/open.json")).unwrap();
+    assert_eq!(lead::show(&home, Some(&root), None).unwrap()["threads"][0]["writer"], false);
+    let second = lead::new_thread(&home, &root).unwrap();
+    assert_eq!(lead::open_threads(&home, &root), [first.clone(), second.clone()]);
+    assert!(lead::set_writer(&home, &first).is_err());
+    assert!(lead::set_writer(&home, &second).is_err());
+    assert!(lead::show(&home, Some(&root), None).unwrap()["threads"].as_array().unwrap().iter().all(|tab| tab["writer"] == false));
+}
+
+fn concurrent_open_limit() {
+    let (home, project) = setup("tab-limit");
+    assert_eq!(lead::MAX_OPEN, 4);
+    let barrier = std::sync::Barrier::new(8);
+    let results = std::thread::scope(|scope| {
+        let handles: Vec<_> = (0..8).map(|_| scope.spawn(|| {
+            barrier.wait();
+            lead::start(&home, &project)
+        })).collect();
+        handles.into_iter().map(|handle| handle.join().unwrap()).collect::<Vec<_>>()
+    });
+    let made: std::collections::BTreeSet<_> = results.iter().filter_map(|result| result.as_ref().ok().cloned()).collect();
+    assert_eq!(made.len(), lead::MAX_OPEN, "{results:?}");
+    let open = lead::open_threads(&home, &project);
+    assert_eq!(open.len(), lead::MAX_OPEN);
+    assert_eq!(open.iter().cloned().collect::<std::collections::BTreeSet<_>>(), made);
+    assert!(lead::start(&home, &project).is_err());
+    let shown = lead::show(&home, Some(&project), None).unwrap();
+    assert_eq!(shown["threads"].as_array().unwrap().iter().filter(|tab| tab["writer"] == true).count(), 1);
+    lead::close(&home, &open[1]).unwrap();
+    let replacement = lead::start(&home, &project).unwrap();
+    assert!(lead::is_open(&home, &project, &replacement));
+    assert_eq!(lead::open_threads(&home, &project).len(), lead::MAX_OPEN);
+}
+
+fn parallel_tabs() {
+    let (home, project) = setup("parallel-tabs");
+    let first = lead::start(&home, &project).unwrap();
+    let second = lead::new_thread(&home, &project).unwrap();
+    let (entered_a, release_a) = (home.join("entered-a"), home.join("release-a"));
+    let (entered_b, release_b) = (home.join("entered-b"), home.join("release-b"));
+    let a = gated(claude_answer("a", "first answer"), entered_a.clone(), release_a.clone());
+    let b = gated(claude_answer("b", "second answer"), entered_b.clone(), release_b.clone());
+    let first_request = SendRequest { thread: Some(&first), ..request(&project, "first") };
+    let second_request = SendRequest { thread: Some(&second), ..request(&project, "second") };
+    let (refused, seen) = fake(claude_answer("unused", "must not run"));
+    std::thread::scope(|scope| {
+        let first_turn = scope.spawn(|| lead::send(&home, &first_request, a.as_ref()));
+        wait_until("the first tab", || entered_a.exists());
+        assert!(lead::set_writer(&home, &second).is_err(), "the active writer cannot be transferred");
+        let second_turn = scope.spawn(|| lead::send(&home, &second_request, b.as_ref()));
+        wait_until("both tabs to enter their spawners", || entered_b.exists());
+        assert_eq!(lead::active_count(&home).unwrap(), 2);
+        for req in [&first_request, &second_request] {
+            assert!(lead::send(&home, req, refused.as_ref()).unwrap_err().contains("답하는 중"));
+            assert!(lead::close(&home, req.thread.unwrap()).is_err());
+        }
+        assert!(seen.lock().unwrap().is_empty());
+        let shown = lead::show(&home, Some(&project), None).unwrap();
+        assert!(shown["threads"].as_array().unwrap().iter().all(|tab| tab["state"] == "working" && !tab["busy"].is_null()));
+        std::fs::write(&release_a, "").unwrap();
+        assert!(first_turn.join().unwrap().unwrap().iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "first answer")));
+        assert!(lead::set_writer(&home, &second).is_err(), "the receiving tab is still active");
+        std::fs::write(&release_b, "").unwrap();
+        assert!(second_turn.join().unwrap().unwrap().iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "second answer")));
+    });
+    assert_eq!(lead::active_count(&home).unwrap(), 0);
+    lead::set_writer(&home, &second).unwrap();
+    assert!(lead::read_thread(&home, &first).iter().all(|e| !matches!(e, LeadEvent::Reply { text, .. } if text == "second answer")));
+    assert!(lead::read_thread(&home, &second).iter().all(|e| !matches!(e, LeadEvent::Reply { text, .. } if text == "first answer")));
+}
+
+fn nonwriter_read_only() {
+    for provider in [ProviderId::Claude, ProviderId::Codex] {
+        let (home, project) = setup(&format!("readonly-{}", provider.as_str()));
+        lead::start(&home, &project).unwrap();
+        let designer = lead::new_thread(&home, &project).unwrap();
+        let lines = if provider == ProviderId::Claude { claude_answer("designer", "읽었습니다") } else { vec![
+            json!({"type":"thread.started","thread_id":"designer"}).to_string(),
+            json!({"type":"item.completed","item":{"type":"agent_message","text":"읽었습니다"}}).to_string(),
+            json!({"type":"turn.completed","usage":{}}).to_string(),
+        ] };
+        let (spawner, seen) = fake(lines);
+        for yolo in [false, true] {
+            let req = SendRequest { provider, thread: Some(&designer), yolo, ..request(&project, "읽어 줘") };
+            let events = lead::send(&home, &req, spawner.as_ref()).unwrap();
+            assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { .. })), "{events:?}");
+        }
+        let specs = seen.lock().unwrap();
+        assert_eq!(specs.len(), 2);
+        for spec in specs.iter() {
+            assert!(!spec.args.iter().any(|arg| arg.contains("dangerously") || arg == "--permission-prompt-tool"), "{:?}", spec.args);
+            if provider == ProviderId::Claude {
+                assert_eq!(arg_after(&spec.args, "--tools"), Some("Read,Grep,Glob"));
+            } else if spec.args.first().is_some_and(|arg| arg == "app-server") {
+                let sent: Value = serde_json::from_slice(&std::fs::read(Path::new(&project).join("fake-codex-input.json")).unwrap()).unwrap();
+                assert_eq!(sent["thread"]["params"]["sandbox"], "read-only");
+                assert_eq!(sent["thread"]["params"]["approvalPolicy"], "never");
+            } else {
+                assert_eq!(arg_after(&spec.args, "-s"), Some("read-only"));
+            }
+        }
+    }
+}
+
+fn tab_states() {
+    let (home, project) = setup("tab-states");
+    let (spawner, _) = fake(claude_answer("title", &plan_answer(good_plan())));
+    let text = "가나다라마바사아자차카타파하😀ABCDEFGHIJKLMNOP\n둘째 줄은 제목이 아닙니다";
+    let events = lead::send(&home, &request(&project, text), spawner.as_ref()).unwrap();
+    let first = lead::current_thread(&home, &project).unwrap();
+    let second = lead::new_thread(&home, &project).unwrap();
+    let shown = lead::show(&home, Some(&project), None).unwrap();
+    assert_eq!(shown["threads"][0]["title"], "가나다라마바사아자차카타파하😀ABCDEFGHI");
+    assert_eq!(shown["threads"][0]["state"], "waiting");
+    assert!(shown["threads"][0]["startedAt"].as_str().is_some_and(|at| !at.is_empty()));
+    assert_eq!(shown["threads"][1]["title"], "");
+    assert_eq!(shown["threads"][1]["state"], "idle");
+    assert_eq!(shown["projects"][0]["state"], "waiting");
+    let plan = plans(&events).remove(0).0;
+    let dispatched = lead::dispatch(&home, &plan, RunMode::of(Profile::Own), &|_| Ok(())).ok().unwrap();
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["threads"][0]["state"], "working");
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["projects"][0]["state"], "working");
+    let (spawner, _) = fake(claude_answer("title", "```o-ask\n{\"questions\":[{\"question\":\"어느 쪽?\",\"options\":[{\"label\":\"A\"},{\"label\":\"B\"}]}]}\n```"));
+    lead::send(&home, &SendRequest { thread: Some(&first), ..request(&project, "다음 단계") }, spawner.as_ref()).unwrap();
+    let shown = lead::show(&home, Some(&project), Some(&second)).unwrap();
+    assert_eq!(shown["threads"][0]["state"], "waiting", "an unanswered question outranks its live run");
+    assert_eq!(shown["projects"][0]["state"], "waiting");
+    let (spawner, _) = fake(claude_answer("title", "알겠습니다"));
+    lead::send(&home, &SendRequest { thread: Some(&first), ..request(&project, "A") }, spawner.as_ref()).unwrap();
+    o_core::run::store::append_event(&home, &dispatched.run_id, &o_core::run::events::OEvent::RunEnd {
+        at: Utc::now().to_rfc3339(), run_id: dispatched.run_id.clone(), status: o_core::run::events::CardStatus::Done,
+    }).unwrap();
+    let shown = lead::show(&home, Some(&project), Some(&second)).unwrap();
+    assert_eq!(shown["threads"][0]["title"], "가나다라마바사아자차카타파하😀ABCDEFGHI");
+    assert_eq!(shown["projects"][0]["state"], "idle");
+    std::fs::write(lead::thread_dir(&home, &first).join("running.json"), "{broken").unwrap();
+    let shown = lead::show(&home, Some(&project), Some(&second)).unwrap();
+    assert_eq!(shown["threads"][0]["busy"], "unknown");
+    assert_eq!(shown["threads"][0]["state"], "waiting");
+    assert_eq!(shown["projects"][0]["state"], "waiting");
 }
 
 fn attachments() {
@@ -1081,26 +1663,29 @@ fn busy() {
     let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
     held.try_lock().unwrap();
     assert_eq!(lead::active_count(&home).unwrap(), 1);
-    assert!(lead::start(&home, &project).is_err());
+    let next = lead::start(&home, &project).unwrap();
+    assert_ne!(next, thread);
+    assert!(lead::close(&home, &thread).is_err());
+    assert!(lead::set_writer(&home, &next).is_err());
     assert_eq!(lead::active_count(&home).unwrap(), 1);
     // Continue the remaining busy checks on the same thread.
     drop(held);
-    let thread = lead::thread_for(&home, &project, false).unwrap();
+    let thread = lead::select_thread(&home, &project, Some(&thread), false).unwrap();
     let dir = lead::thread_dir(&home, &thread);
     let held = std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(dir.join("turn.lock")).unwrap();
     held.try_lock().unwrap();
     let (spawner, seen) = fake(claude_answer("s", "ok"));
     for partial in ["", "{\"provider\":\"cla"] {
         std::fs::write(dir.join("running.json"), partial).unwrap();
-        let refused = lead::send(&home, &request(&project, "또"), spawner.as_ref()).unwrap_err();
+        let refused = lead::send(&home, &SendRequest { thread: Some(&thread), ..request(&project, "또") }, spawner.as_ref()).unwrap_err();
         assert!(refused.contains("답하는 중"), "{partial:?}: {refused}");
-        assert!(!lead::show(&home, Some(&project))["thread"]["busy"].is_null(), "{partial:?}");
+        assert!(!lead::show(&home, Some(&project), Some(&thread)).unwrap()["thread"]["busy"].is_null(), "{partial:?}");
         assert!(dir.join("running.json").exists(), "another sender removed the owner's marker");
     }
     assert!(seen.lock().unwrap().is_empty());
     // A missing owner does not prove that its child process tree has exited.
     drop(held);
-    assert!(lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap_err().contains("확인할 수 없어"));
+    assert!(lead::send(&home, &SendRequest { thread: Some(&thread), ..request(&project, "다시") }, spawner.as_ref()).unwrap_err().contains("확인할 수 없어"));
     assert!(seen.lock().unwrap().is_empty());
     assert!(dir.join("running.json").exists());
 
@@ -1108,31 +1693,33 @@ fn busy() {
     for round in 0..4 {
         let (home, project) = setup(&format!("busy{round}"));
         lead::thread_for(&home, &project, false).unwrap();
-        let (spawner, seen) = fake_slow(claude_answer("s", "ok"), 1_500);
+        let (entered, release) = (home.join("entered"), home.join("release"));
+        let spawner = gated(claude_answer("s", "ok"), entered.clone(), release.clone());
+        let refused_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let gate = Arc::new(std::sync::Barrier::new(SENDERS + 1));
         let handles: Vec<_> = (0..SENDERS)
             .map(|_| {
-                let (home, project, spawner, gate) = (home.clone(), project.clone(), spawner.clone(), gate.clone());
+                let (home, project, spawner, gate, refused_count) = (home.clone(), project.clone(), spawner.clone(), gate.clone(), refused_count.clone());
                 std::thread::spawn(move || {
                     gate.wait();
-                    lead::send(&home, &request(&project, "동시에"), spawner.as_ref())
+                    let result = lead::send(&home, &request(&project, "동시에"), spawner.as_ref());
+                    if result.is_err() { refused_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst); }
+                    result
                 })
             })
             .collect();
         gate.wait();
         // While the one turn answers, the thread is busy.
-        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-        while seen.lock().unwrap().is_empty() && std::time::Instant::now() < deadline {
-            std::thread::sleep(std::time::Duration::from_millis(20));
-        }
-        assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "claude", "round {round}");
+        wait_until("the same-tab contenders to be refused", || entered.exists() && refused_count.load(std::sync::atomic::Ordering::SeqCst) == SENDERS - 1);
+        assert_eq!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"], "claude", "round {round}");
+        std::fs::write(&release, "").unwrap();
         let results: Vec<_> = handles.into_iter().map(|h| h.join().unwrap()).collect();
         let started = results.iter().filter(|r| r.is_ok()).count();
-        assert_eq!((started, seen.lock().unwrap().len()), (1, 1), "round {round}: {results:?}");
+        assert_eq!(started, 1, "round {round}: {results:?}");
         for refused in results.iter().filter_map(|r| r.as_ref().err()) {
             assert!(refused.contains("답하는 중"), "{refused}");
         }
-        assert!(lead::show(&home, Some(&project))["thread"]["busy"].is_null());
+        assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"].is_null());
     }
 }
 
@@ -1148,14 +1735,17 @@ fn stale_marker() {
     let approvals = lead::thread_dir(&home, &thread).join("approvals");
     std::fs::create_dir_all(&approvals).unwrap();
     std::fs::write(approvals.join("old.json"), json!({"id":"old","token":"dead","at":"","expires":"","provider":"claude","kind":"file","tool":"Write","summary":"","detail":"","cwd":null,"reason":null,"files":[]}).to_string()).unwrap();
-    assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
-    assert!(lead::show(&home, Some(&project))["thread"]["approvals"].as_array().unwrap().is_empty());
-    assert!(!lead::stop(&home, Some(&project)));
+    assert_eq!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"], "unknown");
+    assert!(lead::show(&home, Some(&project), None).unwrap()["thread"]["approvals"].as_array().unwrap().is_empty());
+    assert!(!lead::stop(&home, Some(&project), None).unwrap());
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(other.try_wait().unwrap().is_none(), "stop ended a process that only reused the dead turn's pid");
     let (spawner, seen) = fake(claude_answer("s", "ok"));
     assert!(lead::send(&home, &request(&project, "다시"), spawner.as_ref()).unwrap_err().contains("종료를 확인"));
-    assert!(lead::new_thread(&home, &project).is_err());
+    let next = lead::new_thread(&home, &project).unwrap();
+    assert!(lead::is_open(&home, &project, &thread));
+    assert!(lead::close(&home, &thread).is_err());
+    assert!(lead::set_writer(&home, &next).is_err());
     assert!(seen.lock().unwrap().is_empty());
     assert!(marker.exists());
     let _ = other.kill();
@@ -1169,6 +1759,8 @@ fn refused_requests() {
     let cases = [
         SendRequest { provider: ProviderId::Agy, effort: Some("minimal"), ..request(&project, "a") },
         SendRequest { effort: Some("minimal"), ..request(&project, "a") },
+        // Codex's models start at `low`.
+        SendRequest { provider: ProviderId::Codex, effort: Some("minimal"), ..request(&project, "a") },
         // The lead's model takes the shape a card's model does (policy's model rule).
         SendRequest { model: Some("-opus"), ..request(&project, "a") },
         SendRequest { model: Some("opus 5"), ..request(&project, "a") },
@@ -1189,7 +1781,7 @@ fn refused_requests() {
     assert!(lead::start(&home, &project).is_ok());
 }
 
-fn api_keys_removed() {
+fn api_keys_inherited() {
     let (home, project) = setup("keys");
     // Tests here run one after another on this thread, so changing this process's variables is safe.
     let planted = ["anthropic_api_key", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY"];
@@ -1216,10 +1808,11 @@ fn api_keys_removed() {
     for name in planted {
         std::env::remove_var(name);
     }
-    // Each CLI loses its own keys (any spelling) and keeps the other's, which it never reads.
-    assert_eq!(claude.as_deref(), Some("keys:CODEX_API_KEY"));
-    let codex = codex.unwrap();
-    assert!(codex.contains("anthropic_api_key") && codex.contains("ANTHROPIC_AUTH_TOKEN") && !codex.contains("CODEX_API_KEY"), "{codex}");
+    for answer in [claude.unwrap(), codex.unwrap()] {
+        for name in planted {
+            assert!(answer.to_ascii_lowercase().contains(&name.to_ascii_lowercase()), "{answer}");
+        }
+    }
 }
 
 /// A Windows junction (no special rights needed), made with the system's own mklink.
@@ -1372,7 +1965,59 @@ fn wait_until(what: &str, mut done: impl FnMut() -> bool) {
 }
 
 fn is_busy(home: &Path, project: &str) -> bool {
-    !lead::show(home, Some(project))["thread"]["busy"].is_null()
+    !lead::show(home, Some(project), None).unwrap()["thread"]["busy"].is_null()
+}
+
+fn stop_scopes() {
+    let (home, project) = setup("stop-scopes");
+    let other = home.parent().unwrap().join("other");
+    std::fs::create_dir_all(&other).unwrap();
+    let other = other.to_string_lossy().into_owned();
+    let first = lead::start(&home, &project).unwrap();
+    let second = lead::new_thread(&home, &project).unwrap();
+    let third = lead::start(&home, &other).unwrap();
+    let (entered_a, release_a) = (home.join("entered-a"), home.join("release-a"));
+    let (entered_b, release_b) = (home.join("entered-b"), home.join("release-b"));
+    let (entered_c, release_c) = (home.join("entered-c"), home.join("release-c"));
+    let (entered_d, release_d) = (home.join("entered-d"), home.join("release-d"));
+    let (entered_e, release_e) = (home.join("entered-e"), home.join("release-e"));
+    let a = gated(claude_answer("a", "unused"), entered_a.clone(), release_a.clone());
+    let b = gated(claude_answer("b", "unused"), entered_b.clone(), release_b.clone());
+    let c = gated(claude_answer("c", "unused"), entered_c.clone(), release_c.clone());
+    let d = gated(claude_answer("d", "unused"), entered_d.clone(), release_d.clone());
+    let e = gated(claude_answer("e", "unused"), entered_e.clone(), release_e.clone());
+    let req_a = SendRequest { thread: Some(&first), ..request(&project, "first") };
+    let req_b = SendRequest { thread: Some(&second), ..request(&project, "second") };
+    let req_c = SendRequest { thread: Some(&third), ..request(&other, "third") };
+    std::thread::scope(|scope| {
+        let turn_a = scope.spawn(|| lead::send(&home, &req_a, a.as_ref()));
+        let turn_b = scope.spawn(|| lead::send(&home, &req_b, b.as_ref()));
+        let turn_c = scope.spawn(|| lead::send(&home, &req_c, c.as_ref()));
+        wait_until("all three tabs to start", || entered_a.exists() && entered_b.exists() && entered_c.exists());
+        assert!(lead::stop(&home, Some(&other), Some(&first)).is_err());
+        assert!(lead::stop(&home, None, Some(&first)).unwrap());
+        std::fs::write(&release_a, "").unwrap();
+        assert!(turn_a.join().unwrap().unwrap().iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("중지"))));
+        assert_eq!(lead::active_count(&home).unwrap(), 2);
+        let turn_d = scope.spawn(|| lead::send(&home, &req_a, d.as_ref()));
+        wait_until("the restarted first tab", || entered_d.exists());
+        assert!(lead::stop(&home, Some(&project), None).unwrap());
+        std::fs::write(&release_b, "").unwrap();
+        std::fs::write(&release_d, "").unwrap();
+        assert!(turn_b.join().unwrap().unwrap().iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("중지"))));
+        assert!(turn_d.join().unwrap().unwrap().iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("중지"))));
+        assert_eq!(lead::active_count(&home).unwrap(), 1);
+        assert!(!lead::stop(&home, Some(&project), None).unwrap());
+        let turn_e = scope.spawn(|| lead::send(&home, &req_a, e.as_ref()));
+        wait_until("two projects to be active again", || entered_e.exists());
+        assert!(lead::stop(&home, None, None).unwrap());
+        std::fs::write(&release_c, "").unwrap();
+        std::fs::write(&release_e, "").unwrap();
+        assert!(turn_c.join().unwrap().unwrap().iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("중지"))));
+        assert!(turn_e.join().unwrap().unwrap().iter().any(|e| matches!(e, LeadEvent::Error { text, .. } if text.contains("중지"))));
+    });
+    assert_eq!(lead::active_count(&home).unwrap(), 0);
+    assert!(!lead::stop(&home, None, None).unwrap());
 }
 
 /// "중지" pressed while the turn still sets up (before its CLI starts): the CLI never runs,
@@ -1387,7 +2032,7 @@ fn stop_while_starting() {
     let job = json!({ "home": home, "project": project, "ran": ran, "out": out });
     let mut owner = Command::new(std::env::current_exe().unwrap()).env(OWNER, job.to_string()).spawn().unwrap();
     wait_until("the owner to take the turn", || is_busy(&home, &project));
-    assert!(lead::stop(&home, Some(&project)));
+    assert!(lead::stop(&home, Some(&project), None).unwrap());
     let status = owner.wait().unwrap();
     assert!(status.success(), "the stop ended the turn's owner: {status:?}");
     let result: Result<Vec<String>, String> = serde_json::from_str(&std::fs::read_to_string(&out).unwrap()).unwrap();
@@ -1406,7 +2051,7 @@ fn stop_while_starting() {
         std::thread::spawn(move || lead::send(&home, &request(&project, "시작 중 중지"), spawner.as_ref()).map(|e| summary(&e)))
     };
     wait_until("the turn to start", || is_busy(&home, &project));
-    assert!(lead::stop(&home, Some(&project)));
+    assert!(lead::stop(&home, Some(&project), None).unwrap());
     let lines = turn.join().unwrap().unwrap();
     assert!(lines.iter().any(|l| l.contains("중지")) && !lines.iter().any(|l| l.starts_with("reply")), "{lines:?}");
     assert!(!ran.exists(), "the CLI ran after the stop");
@@ -1427,7 +2072,7 @@ fn stop_running_and_orphans() {
     wait_until("the CLI to start", || !seen.lock().unwrap().is_empty());
     std::thread::sleep(std::time::Duration::from_millis(200));
     let at = std::time::Instant::now();
-    assert!(lead::stop(&home, Some(&project)));
+    assert!(lead::stop(&home, Some(&project), None).unwrap());
     let lines = turn.join().unwrap().unwrap();
     assert!(at.elapsed() < std::time::Duration::from_secs(10), "the CLI kept running after the stop");
     assert!(lines.iter().any(|l| l.contains("중지")), "{lines:?}");
@@ -1439,11 +2084,11 @@ fn stop_running_and_orphans() {
     let started = o_core::sys::proc::started_at(pid).expect("start time");
     let mark = |started: u64| json!({ "provider": "claude", "owner": 4_000_000_000u32, "token": "gone", "child": { "pid": pid, "started": started } });
     std::fs::write(&marker, mark(started + 1).to_string()).unwrap();
-    assert!(!lead::stop(&home, Some(&project)));
+    assert!(!lead::stop(&home, Some(&project), None).unwrap());
     std::thread::sleep(std::time::Duration::from_millis(300));
     assert!(orphan.try_wait().unwrap().is_none(), "a process whose start time differs was ended");
     std::fs::write(&marker, mark(started).to_string()).unwrap();
-    assert!(!lead::stop(&home, Some(&project)));
+    assert!(!lead::stop(&home, Some(&project), None).unwrap());
     assert!(orphan.try_wait().unwrap().is_none());
     assert!(marker.exists());
     orphan.kill().unwrap();
@@ -1487,6 +2132,13 @@ fn round_trip() {
     lead::send(&home, &request(&project, "좋아"), claude.as_ref()).unwrap();
     let prompt = seen.lock().unwrap()[2].stdin.clone().unwrap();
     assert!(!prompt.contains("main 브랜치는 절대"), "{prompt}");
+    // A resumed CLI that never started heard nothing: the next turn tells it that message too.
+    let (dead, _) = fake(Vec::new());
+    let events = lead::send(&home, &request(&project, "테스트도 넣어 줘"), dead.as_ref()).unwrap();
+    assert!(!events.iter().any(|e| matches!(e, LeadEvent::Seen { .. })), "{events:?}");
+    lead::send(&home, &request(&project, "다시 보냅니다"), claude.as_ref()).unwrap();
+    let prompt = seen.lock().unwrap()[3].stdin.clone().unwrap();
+    assert!(prompt.contains("테스트도 넣어 줘"), "{prompt}");
 }
 /// `leads/current.json` (project → its thread) is replaced whole. One that cannot be read is
 /// not taken as empty: a new thread is not started over it (which dropped every other
@@ -1500,9 +2152,20 @@ fn current_list() {
         assert!(lead::thread_for(&home, &project, false).is_err(), "{broken:?}");
         assert!(lead::start(&home, &project).is_err(), "{broken:?}");
         assert_eq!(std::fs::read_to_string(&list).unwrap(), broken, "a broken list was overwritten");
-        assert!(lead::show(&home, Some(&project))["thread"].is_null());
+        assert!(lead::show(&home, Some(&project), None).is_err());
     }
     std::fs::remove_file(&list).unwrap();
+    let open = home.join("leads/open.json");
+    let saved = std::fs::read(&open).unwrap();
+    for broken in ["", "{\"project\":{"] {
+        std::fs::write(&open, broken).unwrap();
+        assert!(lead::start(&home, &project).is_err());
+        assert!(lead::close(&home, &first).is_err());
+        assert!(lead::set_writer(&home, &first).is_err());
+        assert_eq!(std::fs::read_to_string(&open).unwrap(), broken);
+    }
+    std::fs::write(&open, saved).unwrap();
+    std::fs::remove_file(&open).unwrap();
     // Many projects at once: every one keeps its thread.
     let base = home.parent().unwrap().to_path_buf();
     let folders: Vec<String> = (0..8)
@@ -1526,6 +2189,7 @@ fn current_list() {
     let made: Vec<String> = handles.into_iter().map(|h| h.join().unwrap()).collect();
     for (folder, thread) in folders.iter().zip(&made) {
         assert_eq!(lead::current_thread(&home, folder).as_ref(), Some(thread), "{folder} lost its thread");
+        assert_eq!(lead::open_threads(&home, folder), std::slice::from_ref(thread));
     }
     assert_ne!(lead::thread_for(&home, &project, false).unwrap(), first, "the list was removed above, so a new thread starts");
 }
@@ -1568,8 +2232,7 @@ fn codex_exec_fallback() {
     let (old, seen) = fake_without_app_server(lines.clone(), "exec-fallback", log.clone());
     let req = SendRequest { provider: ProviderId::Codex, effort: None, ..request(&project, "codex 처음") };
     let events = lead::send(&home, &req, old.as_ref()).unwrap();
-    // The API key of the shell never reaches the lead ("{keys}" stays empty).
-    assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text == "네")), "{events:?}");
+    assert!(events.iter().any(|e| matches!(e, LeadEvent::Reply { text, .. } if text.starts_with("네"))), "{events:?}");
     assert!(events.iter().any(|e| matches!(e, LeadEvent::Session { session_id, .. } if session_id == "th-old")));
     lead::send(&home, &SendRequest { text: "codex 이어서", ..req }, old.as_ref()).unwrap();
     let specs = seen.lock().unwrap().clone();
@@ -1577,9 +2240,6 @@ fn codex_exec_fallback() {
     assert_eq!(specs[0].args, ["exec", "-s", "read-only", "-C", project.as_str(), "--skip-git-repo-check", "--disable", "hooks", "--json", "-"]);
     assert!(specs[0].stdin.as_deref().unwrap().contains("codex 처음"));
     assert_eq!(specs[1].args, ["exec", "-s", "read-only", "-C", project.as_str(), "--skip-git-repo-check", "--disable", "hooks", "resume", "--json", "th-old", "-"]);
-    for spec in &specs {
-        assert_eq!(spec.env_remove, ["CODEX_API_KEY"]);
-    }
     // Probed once for this CLI, not on every turn.
     assert_eq!(std::fs::read_to_string(&log).unwrap().lines().count(), 1);
 

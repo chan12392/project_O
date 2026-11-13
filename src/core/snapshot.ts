@@ -10,7 +10,7 @@ export type CardState = "waiting" | "queued" | "running" | CardStatus;
 export interface CardLogEntry {
   at: string;
   /** "budget": the runner lowered the card's effort for the daily usage budget. */
-  kind: "queued" | "tool" | "message" | "input" | "limit" | "end" | "team" | "budget";
+  kind: "queued" | "tool" | "message" | "input" | "limit" | "end" | "team" | "budget" | "guides";
   text: string;
   /** For tool entries: the act in words and the raw detail the CLI reported. */
   tool?: { word: string; detail: string };
@@ -193,6 +193,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.activity = describeTool(e.name, e.summary);
         card.log.push({ at: e.at, kind: "tool", text: `${e.name} ${e.summary}`.trim(), tool: { word: toolWord(e.name), detail: toolDetail(e.summary) } });
         break;
+      // The call itself is already in the log; this line says it failed and why.
+      case "card.tool.error":
+        card.log.push({ at: e.at, kind: "tool", text: `${e.name} 실패: ${e.error}`.trim(), tool: { word: `${toolWord(e.name)} 실패`, detail: e.error } });
+        break;
       case "card.message":
         card.activity = firstLine(e.text);
         card.log.push({ at: e.at, kind: "message", text: e.text });
@@ -208,6 +212,9 @@ export function snapshot(events: OEvent[]): RunView | undefined {
         card.activity = budgetText(e.effortFrom, e.effortTo, e.spent, e.allowance);
         card.effort = e.effortTo;
         card.log.push({ at: e.at, kind: "budget", text: card.activity });
+        break;
+      case "card.guides":
+        card.log.push({ at: e.at, kind: "guides", text: guidesText(e.skills, e.harness) });
         break;
       case "card.usage":
         card.usage = { input: card.usage.input + e.input, cached: card.usage.cached + e.cached, output: card.usage.output + e.output };
@@ -225,6 +232,12 @@ export function snapshot(events: OEvent[]): RunView | undefined {
 }
 
 /** "사용 예산: effort high → medium (오늘 9.5/13%p)", as `budget_text` in crates/o-core/src/run/snapshot.rs. */
+/** "넣은 지침: 하네스 game · 스킬 ui, test", as `guides_text` in crates/o-core/src/run/snapshot.rs. */
+export function guidesText(skills: string[], harness: string[]): string {
+  const parts = ([["하네스", harness], ["스킬", skills]] as const).filter(([, names]) => names.length > 0).map(([word, names]) => `${word} ${names.join(", ")}`);
+  return `넣은 지침: ${parts.join(" · ")}`;
+}
+
 export function budgetText(from: string | undefined, to: string, spent: number, allowance: number): string {
   return `사용 예산: effort ${from ?? "기본"} → ${to} (오늘 ${spent}/${allowance}%p)`;
 }

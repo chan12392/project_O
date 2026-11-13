@@ -9,18 +9,24 @@ use o_core::run::store::is_run_id;
 
 mod about;
 mod agents;
+mod agy;
+mod billing;
 mod budget;
 mod context;
 mod dispatch;
 mod events;
 mod followup;
 mod guard;
+mod graph;
 mod images;
 mod issues;
+#[cfg(windows)]
+mod job_watch;
 mod lead;
 mod mirror;
 mod msg;
 mod projects;
+mod ram;
 mod review;
 mod resources;
 mod runs;
@@ -28,8 +34,10 @@ mod schedule;
 mod sessions;
 mod status;
 mod stop;
+mod term;
 mod tokens;
 mod usage;
+mod dream;
 mod yolo;
 
 pub struct Command {
@@ -58,19 +66,29 @@ pub const COMMANDS: &[Command] = &[
     tokens::TOKENS,
     usage::USAGE,
     budget::BUDGET,
+    ram::RAM,
+    billing::BILLING,
+    agy::AGY,
     yolo::YOLO,
     runs::RUNS,
     sessions::SESSIONS,
+    term::TERM,
     schedule::SCHEDULE,
     projects::PROJECTS,
+    graph::GRAPH,
+    dream::DREAM,
     guard::HOOK,
     guard::SCAN,
     mirror::SYNC_MIRROR,
     agents::AGENTS,
     about::ABOUT,
     dispatch::RUN,
+    term::HOST,
+    #[cfg(windows)]
+    job_watch::WATCH,
     lead::WATCH,
     lead::APPROVE,
+    lead::FORWARD,
     followup::RUN_FOLLOWUP,
     review::REVIEW_BACKGROUND,
 ];
@@ -91,6 +109,10 @@ static HELP: LazyLock<String> = LazyLock::new(|| {
 pub fn help() -> &'static str {
     &HELP
 }
+
+/// Whether a lead turn or a card runs this `o`. Such a caller may read settings but not
+/// start work or change what the person decides.
+pub use o_core::agents::agy::{inside_agent, inside_card};
 
 fn fail(message: &str) -> i32 {
     eprintln!("{message}");

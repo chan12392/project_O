@@ -1,9 +1,9 @@
 import { useEffect, useState } from "react";
 
-import { backend, type TokenGroup, type TokenReport } from "../../platform/backend/index.ts";
-import { compact } from "../../lib/format.ts";
+import { currentBackend, type TokenGroup, type TokenReport } from "../../platform/backend/index.ts";
+import { compact, errorText } from "../../lib/format.ts";
 
-const api = backend(new URLSearchParams(window.location.search).get("source") === "demo");
+const api = currentBackend();
 
 type Load = { state: "loading" } | { state: "error"; message: string } | { state: "ready"; report: TokenReport };
 
@@ -49,7 +49,7 @@ export function TokenCard({ project }: { project?: string }) {
         },
         (e: unknown) => {
           last = "";
-          if (live) setLoad({ state: "error", message: e instanceof Error ? e.message : String(e) });
+          if (live) setLoad({ state: "error", message: errorText(e) });
         },
       ).finally(() => {
         inflight = false;

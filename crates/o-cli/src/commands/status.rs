@@ -42,7 +42,12 @@ fn status(home: &Path, run_id: Option<&str>) -> i32 {
         println!("실행 기록이 없습니다.");
     }
     for id in ids {
-        let events = store::read_events(home, &id);
+        let mut events = store::read_events(home, &id);
+        // A run whose runner died is closed on record, as `o runs` and the app show it (ADR-0039);
+        // the events read under that close are the current ones, closed by this reader or another.
+        if let Ok(Some(current)) = store::close_if_runner_died(home, &id, &events) {
+            events = current;
+        }
         let Some(run) = snapshot(&events) else { continue };
         println!("{id}  {}  [{}]", run.title, run.status.as_str());
         if let Ok(bytes) = std::fs::read(store::run_dir(home, &id).join("workspace-baseline.json")) {

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 
-import { LEAD_VIEW, leadItems, leadView, type LeadModel, type LeadProvider } from "../../../src/core/lead.ts";
+import { LEAD_VIEW, leadItems, leadTabOf, leadTabsOf, leadView, type LeadModel, type LeadProvider } from "../../../src/core/lead.ts";
 import { createPoll } from "../../../src/core/poll.ts";
+import { errorText } from "../lib/format.ts";
 import type { Backend, LeadDispatched } from "../platform/backend/index.ts";
 
 const POLL_MS = 2_000;
@@ -17,13 +18,14 @@ export interface SendInput {
 }
 
 /**
- * A project's lead thread (ADR-0008): `o lead show` polled while the window is visible,
- * so a turn sent from the CLI or another window shows up too, and the actions on it.
- * Answers that land after the project changed, or after a newer answer, are dropped
- * (`leadView`); the projects with a lead thread are kept apart from the thread, so a
- * switch to one of them does not lose the list it was found in.
+ * One of a project's open lead threads (ADR-0034, ADR-0008): `o lead show` polled while the
+ * window is visible, so a turn sent from the CLI or another window shows up too, and the actions
+ * on it. `thread` is the picked tab; absent, the answer's current thread shows. Answers that land
+ * after the project or tab changed, or after a newer answer, are dropped (`leadView`); the
+ * projects with a lead thread are kept apart from the thread, so a switch to one of them does
+ * not lose the list it was found in.
  */
-export function useLead(api: Backend, project: string | undefined, enabled: boolean) {
+export function useLead(api: Backend, project: string | undefined, thread: string | undefined, enabled: boolean) {
   const [view, dispatchView] = useReducer(leadView, LEAD_VIEW);
   const [sending, setSending] = useState(false);
   const seq = useRef(0);
@@ -33,17 +35,18 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
   const refresh = useCallback(async () => {
     if (!enabled) return;
     const asked = project;
+    const askedThread = thread;
     const mine = ++seq.current;
     try {
-      dispatchView({ type: "answer", project: asked, seq: mine, show: await api.leadShow(asked) });
+      dispatchView({ type: "answer", project: asked, thread: askedThread, seq: mine, show: await api.leadShow(asked, askedThread) });
     } catch (e) {
-      dispatchView({ type: "failed", project: asked, seq: mine, error: e instanceof Error ? e.message : String(e) });
+      dispatchView({ type: "failed", project: asked, thread: askedThread, seq: mine, error: errorText(e) });
     }
-  }, [api, project, enabled]);
+  }, [api, project, thread, enabled]);
 
   useEffect(() => {
     if (!enabled) return;
-    dispatchView({ type: "project", project });
+    dispatchView({ type: "project", project, thread });
     // One loop: a check still out when the window is shown again is not doubled.
     const poll = createPoll({
       run: refresh,
@@ -60,23 +63,32 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
       poll.stop();
       document.removeEventListener("visibilitychange", onVisibility);
     };
-  }, [refresh, enabled, project]);
+  }, [refresh, enabled, project, thread]);
 
-  const show = view.project === project ? view.show : undefined;
-  const failed = view.project === project ? view.failed : undefined;
-  const thread = show?.thread && (!project || show.thread.project === project || sameFolder(show.thread.project, project)) ? show.thread : null;
-  busyPoll.current = sending || Boolean(thread?.busy);
-  const items = useMemo(() => leadItems(thread?.events ?? []), [thread]);
+  const show = view.project === project && view.thread === thread ? view.show : undefined;
+  const failed = view.project === project && view.thread === thread ? view.failed : undefined;
+  const shown = show?.thread && (!project || show.thread.project === project || sameFolder(show.thread.project, project)) ? show.thread : null;
+  busyPoll.current = sending || Boolean(shown?.busy);
+  const items = useMemo(() => leadItems(shown?.events ?? []), [shown]);
+  // The open tabs, and the one this answer is for (the pick while it stays open, else the answer's thread).
+  const tabs = useMemo(() => leadTabsOf(show), [show]);
+  const selected = leadTabOf(show, thread);
+  const selectedRef = useRef(selected);
+  selectedRef.current = selected;
 
   const send = useCallback(
     async (input: SendInput) => {
       if (!project) throw new Error("프로젝트 폴더를 먼저 정하세요");
+      // The tab this message was written in, fixed before any wait: switching tabs while a note
+      // is still being saved must not carry it to the other tab (#87). A tab closed meanwhile
+      // is refused by the core, and the composer gives the draft back.
+      const thread = selectedRef.current;
       setSending(true);
       // The message is on record before the lead starts: show it (and the busy lead) right away.
       const early = window.setTimeout(() => void refresh(), 400);
       try {
         if (noteWrite.current) await noteWrite.current;
-        await api.leadSend({ project, ...input });
+        await api.leadSend({ project, thread, ...input });
       } finally {
         window.clearTimeout(early);
         setSending(false);
@@ -87,7 +99,7 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
   );
 
   const stop = useCallback(async () => {
-    await api.leadStop(project);
+    await api.leadStop(project, selectedRef.current);
     await refresh();
   }, [api, project, refresh]);
 
@@ -106,11 +118,25 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     }
   }, [api, refresh]);
 
-  const startNew = useCallback(async () => {
-    if (!project) return;
-    await api.leadNew(project);
+  /** A new tab for the project ("새 대화", "새 설계"); its threadId so the caller can select it. */
+  const startNew = useCallback(async (): Promise<string | undefined> => {
+    if (!project) return undefined;
+    const { threadId } = await api.leadNew(project);
     await refresh();
+    return threadId;
   }, [api, project, refresh]);
+
+  /** Takes a tab off the project's open list; its history stays. */
+  const close = useCallback(async (threadId: string) => {
+    await api.leadClose(threadId);
+    await refresh();
+  }, [api, refresh]);
+
+  /** Makes a tab the project's writer — the one that may edit files directly (ADR-0034). */
+  const makeWriter = useCallback(async (threadId: string) => {
+    await api.leadWriter(threadId);
+    await refresh();
+  }, [api, refresh]);
 
   const dispatch = useCallback(
     async (planId: string, clean: boolean): Promise<LeadDispatched> => {
@@ -123,14 +149,27 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     [api, refresh],
   );
 
+  /** Sends the overall lead's proposed requests on to the project leads (ADR-0036). */
+  const forward = useCallback(async (proposalId: string) => {
+    try {
+      await api.leadForward(proposalId);
+    } finally {
+      await refresh();
+    }
+  }, [api, refresh]);
+
   return {
     loaded: show !== undefined,
     failed,
-    thread,
+    thread: shown,
     items,
     /** Projects with a lead thread, newest first; they show in the sidebar even before any run. Kept across project switches. */
     projects: view.projects,
-    busy: sending || Boolean(thread?.busy),
+    /** The project's open tabs (older answers without `threads`: the one shown). */
+    tabs,
+    /** The tab this answer is for: the pick while it stays open, else the answer's own thread (ADR-0034). */
+    selected,
+    busy: sending || Boolean(shown?.busy),
     sending,
     /** Read the thread again now ("다시 시도"). */
     refresh,
@@ -139,7 +178,10 @@ export function useLead(api: Backend, project: string | undefined, enabled: bool
     stopAll,
     decide,
     startNew,
+    close,
+    makeWriter,
     dispatch,
+    forward,
     changeNote: async (threadId: string, change: import("../../../src/core/lead.ts").DesignNoteChange) => {
       const write = api.leadNote(threadId, change);
       noteWrite.current = write;
@@ -160,7 +202,7 @@ export function useLeadModels(api: Backend, provider: LeadProvider | undefined) 
     let current = true;
     api.leadModels(provider).then(
       (r) => current && setState({ provider, models: r.models }),
-      (e) => current && setState({ provider, models: [], failed: e instanceof Error ? e.message : String(e) }),
+      (e) => current && setState({ provider, models: [], failed: errorText(e) }),
     );
     return () => {
       current = false;

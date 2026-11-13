@@ -303,7 +303,7 @@ mod tests {
         fs::create_dir_all(&home).unwrap();
         fs::create_dir_all(&project).unwrap();
         let project = project.to_string_lossy();
-        let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+        let request = SendRequest { project: &project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
         let spawn = |_: &crate::providers::LaunchSpec, _: &str| {
             let mut command = crate::sys::launch::Launch::new(std::env::current_exe()?);
             command.args(["--exact", "lead::turn_process::tests::child_fixture", "--nocapture"]).env("O_TEST_TURN_PROCESS", "parent");
@@ -324,7 +324,9 @@ mod tests {
         assert_eq!(lead::read_marker(&home, &thread_id).unwrap().unresolved, Some(true));
         assert!(lead::TurnSlot::take(&home, &thread_id, ProviderId::Claude).is_err());
         assert!(lead::lock_latest(&home, &format!("{thread_id}-p1")).is_err_and(|error| error.contains("종료")));
-        assert!(!lead::stop(&home, Some(&project)));
+        assert!(!lead::stop(&home, Some(&project), None).unwrap());
+        assert!(lead::thread_for(&home, &project, true).is_ok());
+        assert!(lead::set_writer(&home, &lead::current_thread(&home, &project).unwrap()).is_err());
         assert!(lead::running_path(&home, &thread_id).exists());
     }
 
@@ -348,7 +350,7 @@ mod tests {
             Ok(launch)
         };
         let project = project.to_string_lossy();
-        let request = SendRequest { project: &project, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
+        let request = SendRequest { project: &project, thread: None, provider: ProviderId::Claude, model: None, effort: None, text: "test", attach: &[], clean: None, fresh: false, yolo: false };
         super::super::FAIL_CHILD_MARKER.set(true);
         let result = lead::send(&home, &request, &spawn);
         super::super::FAIL_CHILD_MARKER.set(false);
@@ -356,9 +358,10 @@ mod tests {
         assert!(!marker.exists());
         let id = lead::current_thread(&home, &project).unwrap();
         assert_eq!(lead::read_marker(&home, &id).unwrap().unresolved, Some(true));
-        assert_eq!(lead::show(&home, Some(&project))["thread"]["busy"], "unknown");
-        assert!(lead::thread_for(&home, &project, true).is_err());
-        assert!(!lead::stop(&home, Some(&project)));
+        assert_eq!(lead::show(&home, Some(&project), None).unwrap()["thread"]["busy"], "unknown");
+        assert!(lead::send(&home, &SendRequest { thread: Some(&id), ..request }, &spawn).is_err());
+        assert!(lead::thread_for(&home, &project, true).is_ok());
+        assert!(!lead::stop(&home, Some(&project), None).unwrap());
         assert!(lead::running_path(&home, &id).exists());
     }
 }

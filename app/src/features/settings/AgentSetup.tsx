@@ -1,21 +1,26 @@
-import { Check, CircleAlert, CircleDashed, Download, ExternalLink, LogIn, RefreshCw, Terminal } from "lucide-react";
+import { Check, CircleAlert, CircleDashed, Download, ExternalLink, LogIn, RefreshCw, Terminal, Wrench } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { canLead } from "../../../../src/core/lead.ts";
 import { useAgentCheck } from "../../data/agents.ts";
-import type { ActionResult, AgentId, AgentStatus, Backend } from "../../platform/backend/index.ts";
+import { errorText } from "../../lib/format.ts";
+import type { ActionResult, AgentId, AgentStatus, Backend, BillingMode } from "../../platform/backend/index.ts";
 import { BUTTON_PRIMARY, BUTTON_SECONDARY } from "../../ui/controls.tsx";
 
-type Busy = "install" | "login" | "terminal";
+type Busy = "install" | "login" | "terminal" | "setup";
+
+/** What each action says when it could not even start. */
+const START_FAILED: Record<Busy, string> = {
+  install: "설치를 시작하지 못했습니다.",
+  login: "로그인 창을 열지 못했습니다.",
+  terminal: "터미널을 열지 못했습니다.",
+  setup: "점검을 시작하지 못했습니다.",
+};
 
 interface Note {
   ok: boolean;
   message: string;
   log?: string;
-}
-
-function errorText(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }
 
 /** Can lead now (installed, a lead agent, not known to be signed out): the composer's rule too. */
@@ -38,9 +43,9 @@ export function useAgents(api: Backend, clean: boolean) {
     setNotes((n) => ({ ...n, [id]: undefined }));
     let result: ActionResult;
     try {
-      result = kind === "install" ? await api.install(id) : kind === "terminal" ? await api.openTerminal() : await api.login(id, clean);
+      result = kind === "install" ? await api.install(id) : kind === "terminal" ? await api.openTerminal() : kind === "setup" ? await api.setup(id) : await api.login(id, clean);
     } catch (e) {
-      result = { ok: false, message: kind === "install" ? "설치를 시작하지 못했습니다." : kind === "terminal" ? "터미널을 열지 못했습니다." : "로그인 창을 열지 못했습니다.", log: errorText(e) };
+      result = { ok: false, message: START_FAILED[kind], log: errorText(e) };
     }
     setBusy((b) => ({ ...b, [id]: undefined }));
     setNotes((n) => ({ ...n, [id]: result }));
@@ -56,6 +61,8 @@ export function useAgents(api: Backend, clean: boolean) {
     recheck,
     install: (id: AgentId) => act(id, "install"),
     login: (id: AgentId) => act(id, "login"),
+    /** Sets up the project_O profile and checks it with one real command, no window (Codex's Windows sandbox, ADR-0040 개정 1). */
+    setup: (id: AgentId) => act(id, "setup"),
     terminal: () => act("agy", "terminal"),
     openExternal: (url: string) => void api.openExternal(url).catch(() => window.open(url, "_blank", "noopener")),
     /** At least one agent can lead (the composer can send). */
@@ -66,7 +73,8 @@ export function useAgents(api: Backend, clean: boolean) {
 export type AgentsState = ReturnType<typeof useAgents>;
 
 /** Each CLI with its state and the one next step it needs: install, sign in, or nothing. */
-export function AgentList({ state }: { state: AgentsState }) {
+/** `billingMode` is the saved API billing mode (ADR-0035 개정 1); under `subscription` the warning says the CLI's work will not start. */
+export function AgentList({ state, showApiKeyWarning = false, billingMode }: { state: AgentsState; showApiKeyWarning?: boolean; billingMode?: BillingMode }) {
   const { agents, error, checking } = state;
   if (!agents) {
     if (error)
@@ -111,17 +119,19 @@ export function AgentList({ state }: { state: AgentsState }) {
       )}
       <ul className="divide-y rounded-lg border" aria-busy={checking}>
         {agents.map((agent) => (
-          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} />
+          <AgentRow key={agent.id} agent={agent} busy={state.busy[agent.id]} note={state.notes[agent.id]} state={state} showApiKeyWarning={showApiKeyWarning} billingMode={billingMode} />
         ))}
       </ul>
     </div>
   );
 }
 
-function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState }) {
+function AgentRow({ agent, busy, note, state, showApiKeyWarning, billingMode }: { agent: AgentStatus; busy?: Busy; note?: Note; state: AgentsState; showApiKeyWarning: boolean; billingMode?: BillingMode }) {
   const connected = agent.installed && !agent.profileUnsupported && agent.loggedIn === true;
   const unknown = agent.installed && !agent.profileUnsupported && agent.loggedIn === null;
   const needsLogin = agent.installed && !agent.profileUnsupported && agent.loggedIn === false;
+  // Signed in (or cannot tell) but the project_O profile has no passing setup check: its cards are refused until then.
+  const needsSetup = agent.installed && !agent.profileUnsupported && !needsLogin && Boolean(agent.profileNotReady);
   const version = agent.version ? ` · ${agent.version}` : "";
   const status = busy === "install"
     ? "설치하는 중입니다. 몇 분 걸릴 수 있습니다."
@@ -129,10 +139,14 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
       ? "로그인 창을 여는 중입니다."
       : busy === "terminal"
         ? "터미널을 여는 중입니다."
+      : busy === "setup"
+        ? "샌드박스를 설정하고 실제 명령으로 점검하는 중입니다. 몇 분 걸릴 수 있습니다."
       : agent.id === "agy" && agent.installed
         ? `설치됨${version} · 터미널에서 직접 실행`
       : agent.installed && agent.profileUnsupported
         ? agent.profileUnsupported
+      : needsSetup
+        ? `${connected ? "연결됨" : "설치됨"}${version} · 샌드박스 점검이 필요합니다`
       : connected
         ? `연결됨${version}`
         : unknown
@@ -140,8 +154,9 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
           : needsLogin
             ? `설치됨${version} · 로그인이 필요합니다`
             : "설치되어 있지 않습니다";
-  const Icon = connected ? Check : agent.installed ? CircleAlert : CircleDashed;
-  const tone = connected ? "bg-status-success-background text-status-success" : agent.installed ? "bg-status-warning-background text-status-warning" : "bg-muted text-muted-foreground";
+  const ready = connected && !needsSetup;
+  const Icon = ready ? Check : agent.installed ? CircleAlert : CircleDashed;
+  const tone = ready ?"bg-status-success-background text-status-success" : agent.installed ? "bg-status-warning-background text-status-warning" : "bg-muted text-muted-foreground";
 
   let action = null;
   if (busy) action = null;
@@ -166,6 +181,13 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
         터미널 열기
       </button>
     );
+  else if (needsSetup)
+    action = (
+      <button type="button" onClick={() => void state.setup(agent.id)} className={BUTTON_PRIMARY}>
+        <Wrench className="size-3.5" aria-hidden="true" />
+        {agent.id === "codex" ? "Codex 샌드박스 점검" : `${agent.name} 점검`}
+      </button>
+    );
   else if (needsLogin || unknown)
     action = (
       <button type="button" onClick={() => void state.login(agent.id)} className={needsLogin ? BUTTON_PRIMARY : BUTTON_SECONDARY}>
@@ -188,8 +210,17 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
         </div>
         {action}
       </div>
+      {showApiKeyWarning && !!agent.apiKeyEnv?.length && (
+        <p role="note" className="mt-2 ml-10 break-words text-xs leading-relaxed text-status-warning-text">
+          인증 환경변수가 설정되어 있습니다: {agent.apiKeyEnv.join(", ")}. {agent.id === "claude" && agent.apiKeyEnv.includes("ANTHROPIC_API_KEY")
+            ? "Claude의 비대화형 실행(-p)에서 키를 사용하면 구독 대신 API로 과금됩니다."
+            : "CLI의 인증 방식과 과금이 달라질 수 있습니다."} {billingMode === "subscription"
+            ? "구독만 모드라 이 변수가 있는 동안 이 CLI의 작업은 시작하지 않습니다."
+            : "사용 전 인증 설정을 확인해 주세요."}
+        </p>
+      )}
       {busy && (
-        <div className="relative mt-3 ml-10 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${agent.name} ${busy === "install" ? "설치" : busy === "terminal" ? "터미널 열기" : "로그인"} 진행 중`}>
+        <div className="relative mt-3 ml-10 h-1 overflow-hidden rounded-full bg-muted" role="progressbar" aria-label={`${agent.name} ${busy === "install" ? "설치" : busy === "terminal" ? "터미널 열기" : busy === "setup" ? "샌드박스 점검" : "로그인"} 진행 중`}>
           <span className="progress-flow absolute inset-y-0 w-2/5 rounded-full bg-primary/70" />
         </div>
       )}
@@ -200,6 +231,11 @@ function AgentRow({ agent, busy, note, state }: { agent: AgentStatus; busy?: Bus
       )}
       {!busy && agent.id === "agy" && agent.installed && (
         <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">터미널에서 작업 폴더로 이동한 뒤 agy를 직접 입력하세요.</p>
+      )}
+      {!busy && needsSetup && (
+        <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">
+          {agent.profileNotReady} 점검을 누르면 창 없이 {agent.name}의 공식 샌드박스 설정을 마치고, 카드처럼 명령 하나를 실제로 실행해 봅니다(모델 호출 1번, 몇 분 걸릴 수 있음).
+        </p>
       )}
       {!busy && agent.id !== "agy" && needsLogin && (
         <p className="mt-2 ml-10 text-xs leading-relaxed text-muted-foreground">

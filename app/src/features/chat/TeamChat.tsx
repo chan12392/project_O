@@ -1,8 +1,8 @@
 import { useId, useState } from "react";
 import type { RunView } from "../../../../src/core/snapshot.ts";
-import { backend } from "../../platform/backend/index.ts";
+import { currentBackend } from "../../platform/backend/index.ts";
 import { lookOf } from "../office/characters.ts";
-import { names, timeOf } from "../../lib/format.ts";
+import { errorText, names, timeOf } from "../../lib/format.ts";
 import { Avatar, type Speaker } from "../office/Avatar.tsx";
 import { Markdown } from "./Markdown.tsx";
 
@@ -18,9 +18,9 @@ function ApprovalAnswer({ runId, messageId }: { runId: string; messageId: string
     if (busy || !text.trim()) return;
     setBusy(true); setError("");
     try {
-      await backend(new URLSearchParams(window.location.search).get("source") === "demo").leadAnswerApproval(runId, messageId, text);
+      await currentBackend().leadAnswerApproval(runId, messageId, text);
       setSent(true);
-    } catch (e) { setError(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setError(errorText(e)); }
     finally { setBusy(false); }
   };
   if (sent) return <p role="status" className="mt-2 text-xs text-chat-foreground-faint">답변을 보냈습니다.</p>;
@@ -39,17 +39,17 @@ export function TeamChat({ run }: { run: RunView }) {
   const wake = async () => {
     setBusy(true); setNotice("");
     try {
-      const result = await backend(new URLSearchParams(window.location.search).get("source") === "demo").leadWake(run.runId);
+      const result = await currentBackend().leadWake(run.runId);
       setNotice(result.processed ? "대기 메시지를 총괄이 처리했습니다." : "현재 총괄에 전달할 대기 메시지가 없습니다.");
-    } catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setNotice(errorText(e)); }
     finally { setBusy(false); }
   };
   const retry = async (messageId: string) => {
     setBusy(true); setNotice("");
     try {
-      const result = await backend(new URLSearchParams(window.location.search).get("source") === "demo").leadRetry(run.runId, messageId);
+      const result = await currentBackend().leadRetry(run.runId, messageId);
       setNotice(result.state === "queued" ? "다시 전달할 수 있도록 대기 상태로 바꿨습니다." : "기존 답변을 확인해 처리 완료로 바꿨습니다.");
-    } catch (e) { setNotice(e instanceof Error ? e.message : String(e)); }
+    } catch (e) { setNotice(errorText(e)); }
     finally { setBusy(false); }
   };
   const name = names(run);
@@ -92,7 +92,7 @@ export function TeamChat({ run }: { run: RunView }) {
               </div>
               {(m.kind === "question" || m.kind === "approval" || m.replyTo || m.recipients) && <p className="mt-1 break-all px-1 text-xs text-chat-foreground-faint">
                 {m.kind === "question" && `질문${m.id ? ` (${m.id})` : ""}`}
-                {m.kind === "approval" && `대표님 승인 요청${m.id ? ` (${m.id})` : ""} · ${answered ? "답변 완료" : "직접 확인 필요"}`}
+                {m.kind === "approval" && `사용자 승인 요청${m.id ? ` (${m.id})` : ""} · ${answered ? "답변 완료" : "직접 확인 필요"}`}
                 {m.replyTo && `질문 ${m.replyTo}에 대한 답변`}
                 {(m.kind === "question" || m.kind === "approval" || m.replyTo) && m.recipients && " · "}
                 {m.recipients && Object.entries(m.recipients).map(([recipient, state]) => `${name(recipient)}: ${deliveryWords[state] ?? state}`).join(" · ")}

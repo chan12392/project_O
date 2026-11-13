@@ -29,24 +29,44 @@ pub fn read(home: &Path, project: &str, run_id: &str, expected: &str, offset: u6
         return Err("실행 ID, 해시 또는 위치가 올바르지 않습니다".into());
     }
     const MAX_LEAD_RECORD: u64 = 1024 * 1024;
-    let current_file = std::fs::File::open(home.join("leads/current.json")).map_err(|e| e.to_string())?;
-    let mut current = Vec::new();
-    current_file.take(MAX_LEAD_RECORD + 1).read_to_end(&mut current).map_err(|e| e.to_string())?;
-    if current.len() as u64 > MAX_LEAD_RECORD { return Err("총괄 대화 목록이 안전 상한을 초과했습니다".into()); }
-    let current: std::collections::BTreeMap<String, String> = serde_json::from_slice(&current).map_err(|e| e.to_string())?;
-    let thread = current.get(&project_key(project)).filter(|id| is_run_id(id)).ok_or("현재 총괄 대화가 없습니다")?;
-    let file = std::fs::File::open(thread_dir(home, thread).join("events.jsonl")).map_err(|e| e.to_string())?;
-    let mut events = BufReader::new(file);
+    let threads = match super::tabs::read_open(home, &Default::default()).map_err(|e| e.to_string())?.remove(&project_key(project)) {
+        Some(tabs) => tabs.open,
+        None => {
+            let current_file = std::fs::File::open(home.join("leads/current.json")).map_err(|e| e.to_string())?;
+            let mut current = Vec::new();
+            current_file.take(MAX_LEAD_RECORD + 1).read_to_end(&mut current).map_err(|e| e.to_string())?;
+            if current.len() as u64 > MAX_LEAD_RECORD { return Err("총괄 대화 목록이 안전 상한을 초과했습니다".into()); }
+            let mut current: std::collections::BTreeMap<String, String> = serde_json::from_slice(&current).map_err(|e| e.to_string())?;
+            current.remove(&project_key(project)).into_iter().collect()
+        }
+    };
+    if threads.is_empty() { return Err("열린 총괄 대화가 없습니다".into()); }
     let mut allowed = false;
-    loop {
-        let mut line = Vec::new();
-        let n = events.by_ref().take(MAX_LEAD_RECORD + 1).read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
-        if n == 0 { break; }
-        if line.len() as u64 > MAX_LEAD_RECORD || line.last() != Some(&b'\n') { return Err("총괄 대화 기록이 너무 크거나 불완전합니다".into()); }
-        if matches!(serde_json::from_slice::<LeadEvent>(&line), Ok(LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. }) if id == run_id) { allowed = true; break; }
+    for thread in threads.into_iter().filter(|id| is_run_id(id)) {
+        let file = std::fs::File::open(thread_dir(home, &thread).join("events.jsonl")).map_err(|e| e.to_string())?;
+        let mut events = BufReader::new(file);
+        let mut owner = None;
+        let mut dispatched = false;
+        loop {
+            let mut line = Vec::new();
+            let n = events.by_ref().take(MAX_LEAD_RECORD + 1).read_until(b'\n', &mut line).map_err(|e| e.to_string())?;
+            if n == 0 { break; }
+            if line.len() as u64 > MAX_LEAD_RECORD || line.last() != Some(&b'\n') { return Err("총괄 대화 기록이 너무 크거나 불완전합니다".into()); }
+            match serde_json::from_slice::<LeadEvent>(&line) {
+                Ok(LeadEvent::Start { project: source, .. }) if owner.is_none() => owner = Some(project_key(&source) == project_key(project)),
+                Ok(LeadEvent::Dispatch { run_id: id, .. } | LeadEvent::Followup { run_id: id, .. }) if id == run_id => dispatched = true,
+                _ => {}
+            }
+            if owner == Some(false) { break; }
+            if owner == Some(true) && dispatched {
+                allowed = true;
+                break;
+            }
+        }
+        if allowed { break; }
     }
     if !allowed {
-        return Err("이 대화에서 분배한 실행만 읽을 수 있습니다".into());
+        return Err("열린 총괄 대화에서 분배한 실행만 읽을 수 있습니다".into());
     }
     let (mut file, _parents) = super::status_file::open_events(home, run_id).map_err(|e| e.to_string())?.ok_or("실행 기록이 없습니다")?;
     let len = file.metadata().map_err(|e| e.to_string())?.len();

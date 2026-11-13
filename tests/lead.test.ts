@@ -6,6 +6,7 @@ import {
   ATTACH,
   EMPTY_DRAFT,
   LEAD_EFFORTS,
+  LEAD_TAB_WORD,
   LEAD_VIEW,
   MODEL_ID,
   attachProblem,
@@ -16,10 +17,14 @@ import {
   editDraft,
   effortFor,
   fileSize,
+  latestProposal,
   leadItems,
   leadPlans,
   leadProgressSummary,
   leadReadProblem,
+  leadTabOf,
+  leadTabTitle,
+  leadTabsOf,
   leadToolLabel,
   leadView,
   modelLabel,
@@ -27,10 +32,12 @@ import {
   restoreDraft,
   takeDraft,
   taskIsLong,
+  threadState,
   uploadDone,
   type Drafts,
   type LeadEvent,
   type LeadShow,
+  type LeadTab,
 } from "../src/core/lead.ts";
 import { createPoll } from "../src/core/poll.ts";
 
@@ -104,6 +111,52 @@ test("a thread folds into messages, replies, plan cards with their run, and erro
   assert.ok(bare[0].kind === "plan" && bare[0].title === "제목 없는 계획" && bare[0].cards.length === 0);
 });
 
+test("the overall lead's proposal waits for 요청 전달, and a review marks the plan it judged (ADR-0036)", () => {
+  const proposed: LeadEvent[] = [
+    { t: "lead.user", at: "1", text: "둘 다 고쳐", provider: "claude" },
+    { t: "lead.forward-plan", at: "2", proposalId: "ov-f1", items: [{ project: "alpha", text: "a" }, { project: "beta", text: "b" }], provider: "claude" },
+  ];
+  const waiting = latestProposal(leadItems(proposed));
+  assert.equal(waiting.proposal?.items.length, 2);
+  assert.equal(waiting.sendable, true);
+  // Something the person wrote after it makes it stale; O refuses it the same way.
+  const later: LeadEvent[] = [...proposed, { t: "lead.user", at: "3", text: "잠깐", provider: "claude" }];
+  assert.equal(latestProposal(leadItems(later)).sendable, false);
+  const forwarded: LeadEvent[] = [...proposed, { t: "lead.forward", at: "3", project: "alpha", text: "a", proposal: "ov-f1" }];
+  const sent = leadItems(forwarded);
+  assert.ok(latestProposal(sent).proposal?.sent);
+  assert.equal(latestProposal(sent).sendable, false);
+  assert.ok(sent.some((item) => item.kind === "forward" && item.project === "alpha"));
+  assert.equal(latestProposal(leadItems([])).proposal, undefined);
+  // A request whose forward did not start keeps the proposal sendable for it alone, until it is sent again (#96).
+  const both: LeadEvent[] = [...forwarded, { t: "lead.forward", at: "4", project: "beta", text: "b", proposal: "ov-f1" }];
+  const failedStart: LeadEvent = { t: "lead.forward-start", at: "5", index: 1, error: "o CLI 없음" };
+  const startedAgain: LeadEvent = { t: "lead.forward-start", at: "6", index: 1 };
+  const partly = leadItems([...both, failedStart]);
+  assert.deepEqual(latestProposal(partly).proposal?.failed, ["beta"]);
+  assert.equal(latestProposal(partly).sendable, true);
+  assert.ok(partly.some((item) => item.kind === "forward" && item.project === "beta" && item.failed === "o CLI 없음"));
+  assert.ok(partly.some((item) => item.kind === "forward" && item.project === "alpha" && item.failed === undefined));
+  const retried = leadItems([...both, failedStart, startedAgain]);
+  assert.deepEqual(latestProposal(retried).proposal?.failed, []);
+  assert.equal(latestProposal(retried).sendable, false);
+  // A forward this build cannot draw still has its number.
+  const skipped = leadItems([...proposed, { t: "lead.forward", at: "3" } as unknown as LeadEvent, ...both.slice(2), { ...failedStart, index: 2 }]);
+  assert.deepEqual(latestProposal(skipped).proposal?.failed, ["beta"]);
+
+  const review: LeadEvent[] = [
+    { t: "lead.user", at: "1", text: "a", provider: "claude", origin: "overall" },
+    { t: "lead.plan", at: "2", planId: "al-p1", plan: { title: "A", cards: [] }, ok: true, violations: [] },
+    { t: "lead.review", at: "3", planId: "al-p1", project: "alpha", verdict: "revise", notes: "테스트를 더하세요" },
+    // A verdict this build does not know is left out.
+    { t: "lead.review", at: "4", planId: "al-p1", project: "alpha", verdict: "maybe" } as unknown as LeadEvent,
+  ];
+  const reviewed = leadItems(review);
+  assert.ok(reviewed[0].kind === "user" && reviewed[0].origin === "overall");
+  assert.ok(reviewed[1].kind === "plan" && reviewed[1].review?.verdict === "revise" && reviewed[1].review.notes === "테스트를 더하세요");
+  assert.deepEqual(reviewed.map((item) => item.kind), ["user", "plan", "review"]);
+});
+
 test("a card message stays distinct from a user instruction", () => {
   const items = leadItems([{ t: "lead.worker", at: "1", runId: "r1", cardId: "a", messageId: "m1", text: "확인이 필요합니다" } as LeadEvent]);
   assert.deepEqual(items, [{ kind: "worker", at: "1", runId: "r1", cardId: "a", text: "확인이 필요합니다" }]);
@@ -113,6 +166,8 @@ test("switching the lead keeps the effort, or the nearest one the new CLI takes"
   assert.equal(effortFor("codex", "high"), "high");
   assert.equal(effortFor("codex", "max"), "xhigh");
   assert.equal(effortFor("claude", "minimal"), "low");
+  // Codex's models start at low, so a saved `minimal` comes back as low.
+  assert.equal(effortFor("codex", "minimal"), "low");
   assert.equal(effortFor("claude", undefined), "medium");
 });
 
@@ -318,6 +373,31 @@ test("each project keeps its own composer draft; a late upload lands only where 
   assert.deepEqual(draftOf(drafts, b).files, []);
 });
 
+test("an upload's answer follows its chip when the draft moved to the project's first conversation (#88)", () => {
+  const a = draftKey("C:/work/a");
+  const first = draftKey("C:/work/a", "t1");
+  const chip = { key: "f1", name: "a.png", size: 3, image: true };
+  const saved = { name: "01-a.png", path: "C:/lead/t1/01-a.png", size: 3, image: true };
+  const started: Drafts = editDraft({}, a, () => ({ text: "첨부와 함께", files: [chip] }));
+  const gen = draftOf(started, a).gen;
+  // The first conversation was named while the upload ran: the draft, chip included, is under its key now.
+  const moved = restoreDraft(takeDraft(started, a).drafts, first, draftOf(started, a));
+  const done = uploadDone(moved, a, gen, "f1", { saved });
+  assert.deepEqual(draftOf(done, first).files[0].saved, saved);
+  assert.deepEqual(draftOf(done, a).files, []);
+  assert.equal(draftOf(uploadDone(moved, a, gen, "f1", { error: "너무 큽니다" }), first).files[0].error, "너무 큽니다");
+  // A chip the person took out, or a draft already sent, stays as it is.
+  const removed = editDraft(moved, first, () => ({ files: [] }));
+  assert.equal(uploadDone(removed, a, gen, "f1", { saved }), removed);
+  const sent = takeDraft(moved, first).drafts;
+  assert.equal(uploadDone(sent, a, gen, "f1", { saved }), sent);
+  // Never another project's conversation, a folder that only starts the same, or a tab-to-tab answer.
+  const others: Drafts = { ...takeDraft(started, a).drafts, [draftKey("C:/work/ab", "t1")]: { text: "", files: [chip], gen: 0 }, [draftKey("C:/work/b", "t1")]: { text: "", files: [chip], gen: 0 } };
+  assert.equal(uploadDone(others, a, gen, "f1", { saved }), others);
+  const tabs: Drafts = { [first]: { text: "", files: [], gen: 1 }, [draftKey("C:/work/a", "t2")]: { text: "", files: [chip], gen: 0 } };
+  assert.equal(uploadDone(tabs, first, 0, "f1", { saved }), tabs);
+});
+
 test("a send that fails gives back the message and its attachments, not over a new draft", () => {
   const key = draftKey("C:/work/a");
   const files = [{ key: "f1", name: "a.png", size: 3, image: true, saved: { name: "01-a.png", path: "C:/l/01-a.png", size: 3, image: true } }];
@@ -353,4 +433,87 @@ test("a thread that cannot be read says what to check; a long card task can be r
   assert.equal(taskIsLong("README 한 줄"), false);
   assert.equal(taskIsLong("가".repeat(121)), true);
   assert.equal(taskIsLong("한 줄\n두 줄\n세 줄\n네 줄"), true);
+});
+
+const tab = (threadId: string, over: Partial<LeadTab> = {}): LeadTab => ({ threadId, title: "", state: "idle", busy: null, writer: false, startedAt: "2026-11-08T09:00:00.000Z", ...over });
+
+test("the picked tab stays while it is open and falls back to the answer's thread when it is gone (ADR-0034)", () => {
+  const tabs = [tab("t1", { title: "첫째", writer: true }), tab("t2", { title: "둘째", state: "waiting" })];
+  const show: LeadShow = { thread: { threadId: "t1", project: "C:/a", busy: null, events: [] }, threads: tabs, projects: [] };
+  assert.equal(leadTabOf(show, "t2"), "t2", "an open picked tab is the one shown");
+  assert.equal(leadTabOf(show, "gone"), "t1", "a pick whose tab closed falls back to the answer's own thread");
+  assert.equal(leadTabOf(show, undefined), "t1", "no pick follows the answer's current thread");
+  // While its own answer is still out, the pick is kept so the screen does not jump back.
+  assert.equal(leadTabOf(undefined, "t2"), "t2");
+  const one: LeadShow = { thread: { threadId: "t2", project: "C:/a", busy: null, events: [] }, threads: [tabs[1]], projects: [] };
+  assert.equal(leadTabOf(one, "t1"), "t2", "the remaining open tab, not the closed pick");
+  assert.equal(leadTabOf({ thread: null, threads: [], projects: [] }, "t1"), undefined);
+});
+
+test("an answer without `threads` draws one writer tab, so older backends still work (ADR-0034)", () => {
+  const show: LeadShow = {
+    thread: {
+      threadId: "t-a",
+      project: "C:/a",
+      busy: "claude",
+      events: [
+        { t: "lead.start", at: "2026-11-08T09:00:00.000Z", threadId: "t-a", project: "C:/a" },
+        { t: "lead.user", at: "2026-11-08T09:01:00.000Z", text: "처음 줄\n둘째 줄", provider: "claude" },
+      ],
+    },
+    projects: [],
+  };
+  assert.deepEqual(
+    leadTabsOf(show).map((t) => [t.threadId, t.state, t.writer]),
+    [["t-a", "working", true]],
+  );
+  assert.equal(leadTabsOf(show)[0].title, "처음 줄", "the first request's first line, without the rest");
+  assert.equal(leadTabOf(show, "anything"), "t-a", "a pick cannot name a tab the answer does not have");
+  assert.deepEqual(leadTabsOf({ thread: null, projects: [] }), []);
+  // A tab with no request yet is "새 총괄"; a long first line is cut at 24.
+  assert.equal(leadTabTitle([{ t: "lead.user", at: "", text: "아주아주 긴 첫 줄입니다 정말로 길어요 잘라야 해요", provider: "claude" }]).length, 24);
+  assert.equal(leadTabTitle([{ t: "lead.start", at: "", threadId: "t", project: "p" }]), "새 총괄");
+});
+
+test("a thread's state is waiting over working over idle when the answer names none (ADR-0034)", () => {
+  const base = { threadId: "t", project: "C:/a", events: [] };
+  assert.equal(threadState({ ...base, busy: "claude" }), "working");
+  assert.equal(threadState({ ...base, busy: "starting" }), "working");
+  assert.equal(threadState({ ...base, busy: null }), "idle");
+  const approval = { id: "a1", at: "", expires: "", provider: "claude" as const, kind: "command" as const, tool: "Bash", summary: "npm test" };
+  assert.equal(threadState({ ...base, busy: null, approvals: [approval] }), "waiting", "an approval waits on the person");
+  assert.equal(threadState({ ...base, busy: "unknown" }), "waiting", "an unconfirmed exit waits on the person");
+  // The status dot's words, from tab to aria-label.
+  assert.equal(LEAD_TAB_WORD.working, "작업 중");
+  assert.equal(LEAD_TAB_WORD.waiting, "확인 필요");
+  assert.equal(LEAD_TAB_WORD.idle, "대기");
+});
+
+test("the lead view drops an answer for another tab of the same project (ADR-0034)", () => {
+  let view = leadView(LEAD_VIEW, { type: "project", project: "C:/a", thread: "t1" });
+  view = leadView(view, { type: "answer", project: "C:/a", thread: "t1", seq: 2, show: shown("C:/a", ["C:/a"]) });
+  assert.equal(view.show?.thread?.threadId, "t-C:/a");
+  // A late answer for the other tab must not replace t1's.
+  const other = leadView(view, { type: "answer", project: "C:/a", thread: "t2", seq: 3, show: shown("C:/a", []) });
+  assert.equal(other, view, "another tab's answer is dropped");
+  const otherFailed = leadView(view, { type: "failed", project: "C:/a", thread: "t2", seq: 3, error: "다른 탭의 실패" });
+  assert.equal(otherFailed, view, "another tab's failure is dropped too");
+  // Switching tabs clears the shown thread until its own answer lands; discovered projects stay.
+  const moved = leadView(view, { type: "project", project: "C:/a", thread: "t2" });
+  assert.equal(moved.show, undefined);
+  assert.deepEqual(moved.projects, view.projects, "the discovered projects stay");
+});
+
+test("the composer draft is kept per project and tab, not per project alone (ADR-0034)", () => {
+  const a1 = draftKey("C:\\work\\A", "t1");
+  const a2 = draftKey("c:/work/a/", "t2");
+  assert.notEqual(a1, a2, "two tabs of one project keep their own drafts");
+  assert.equal(draftKey("C:\\work\\A\\", "t1"), a1, "the same folder and tab written another way is the same draft");
+  let drafts: Drafts = {};
+  drafts = editDraft(drafts, a1, () => ({ text: "첫째 탭에게" }));
+  assert.deepEqual(draftOf(drafts, a2), EMPTY_DRAFT);
+  drafts = editDraft(drafts, a2, () => ({ text: "둘째 탭에게" }));
+  const { drafts: left, draft } = takeDraft(drafts, a1);
+  assert.equal(draft.text, "첫째 탭에게");
+  assert.equal(draftOf(left, a2).text, "둘째 탭에게", "taking one tab's draft leaves the other's");
 });

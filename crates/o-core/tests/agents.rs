@@ -22,7 +22,7 @@ fn empty_path() -> PathBuf {
 
 #[test]
 fn missing_clis_show_the_official_installers() {
-    let root = empty_path().join("profiles");
+    let root = empty_path().join("status-profiles");
     let list = status(&root, false);
     let value = json!(list);
     let ids: Vec<&str> = value.as_array().unwrap().iter().map(|a| a["id"].as_str().unwrap()).collect();
@@ -50,6 +50,29 @@ fn missing_clis_show_the_official_installers() {
     assert_eq!(&clean.as_array().unwrap()[..4], &value.as_array().unwrap()[..4]);
     assert!(clean[4]["profileUnsupported"].as_str().unwrap().contains("프로필"));
     assert!(!root.exists());
+}
+
+#[test]
+fn status_and_doctor_report_auth_names_without_values() {
+    const MARKER: &str = "O_TEST_AUTH_ENV_CHILD";
+    if std::env::var_os(MARKER).is_some() {
+        let root = empty_path().join("profiles");
+        let status = json!(o_core::agents::status_of(&root, ProviderId::Claude, true));
+        let doctor = json!(o_core::agents::clean::doctor(&root));
+        assert!(status["apiKeyEnv"].as_array().unwrap().contains(&json!("ANTHROPIC_API_KEY")));
+        assert!(doctor[0]["apiKeyEnv"].as_array().unwrap().contains(&json!("ANTHROPIC_API_KEY")));
+        assert!(!status.to_string().contains("test-only-secret"));
+        assert!(!doctor.to_string().contains("test-only-secret"));
+        return;
+    }
+    let mut child = std::process::Command::new(std::env::current_exe().unwrap());
+    child.args(["--exact", "status_and_doctor_report_auth_names_without_values"]).env(MARKER, "1").env("ANTHROPIC_API_KEY", "test-only-secret");
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        child.creation_flags(0x08000000);
+    }
+    assert!(child.status().unwrap().success());
 }
 
 #[test]

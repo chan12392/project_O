@@ -13,7 +13,7 @@ fn antigravity_shell_login_models_and_usage_do_not_start_the_cli() {
     assert!(o_core::agents::clean::command(root, ProviderId::Agy, &["-p", "test"]).unwrap_err().to_string().contains("Antigravity"));
     assert!(o_core::agents::clean::login_state(root, ProviderId::Agy).detail.contains("Antigravity"));
     assert!(o_core::providers::lead_models(ProviderId::Agy).unwrap_err().contains("Antigravity"));
-    assert!(o_core::providers::get(ProviderId::Agy).usage_windows().unwrap().unwrap_err().contains("Antigravity"));
+    assert!(o_core::providers::get(ProviderId::Agy).usage_windows(None).unwrap().unwrap_err().contains("Antigravity"));
 }
 
 fn temp(name: &str) -> PathBuf {
@@ -74,8 +74,34 @@ fn clean_env_keeps_system_variables_and_points_home_at_the_profile() {
     let codex = clean_env_from(parent.clone(), home, ProviderId::Codex);
     assert_eq!(codex["CODEX_HOME"], home.join(".codex").to_string_lossy());
     assert!(!codex.contains_key("CLAUDE_CONFIG_DIR"));
+    // Windows: Codex gets the profile's own temp folder, never the person's (ADR-0040 개정 2).
+    let with_temp = parent.clone().into_iter().chain([("Temp".to_string(), r"C:\Users\someone\AppData\Local\Temp".to_string())]);
+    let codex = clean_env_from(with_temp.clone(), home, ProviderId::Codex);
+    if cfg!(windows) {
+        assert_eq!(codex["TEMP"], r"D:\profiles\claude\tmp");
+        assert_eq!(codex["TMP"], r"D:\profiles\claude\tmp");
+        assert!(!codex.contains_key("Temp"));
+    }
+    assert_eq!(clean_env_from(with_temp, home, ProviderId::Claude)["Temp"], r"C:\Users\someone\AppData\Local\Temp");
     let agy = clean_env_from(parent, home, ProviderId::Agy);
     assert_eq!(agy["AGY_CLI_DISABLE_AUTO_UPDATE"], "true");
+}
+
+#[test]
+fn clean_profiles_pass_only_their_provider_auth_environment() {
+    let parent = ["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "CODEX_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "UNRELATED_SECRET"]
+        .map(|name| (name.to_string(), format!("fixture-{name}")));
+    let home = Path::new("profile");
+    for (provider, expected) in [
+        (ProviderId::Claude, &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN"][..]),
+        (ProviderId::Codex, &["CODEX_API_KEY", "OPENAI_API_KEY"][..]),
+        (ProviderId::OpenCode, &["ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN", "OPENAI_API_KEY", "OPENROUTER_API_KEY"][..]),
+    ] {
+        let env = clean_env_from(parent.clone(), home, provider);
+        for (name, value) in &parent {
+            assert_eq!(env.get(name), expected.contains(&name.as_str()).then_some(value), "{provider:?}: {name}");
+        }
+    }
 }
 
 #[test]
@@ -136,9 +162,30 @@ fn a_new_profile_holds_only_the_claude_settings() {
     for name in ["AGENTS.md", "CLAUDE.md", "CLAUDE.local.md"] {
         assert!(excludes.contains(&format!("{base}/{name}").as_str()), "{name}: {excludes:?}");
     }
-    for provider in ProviderId::ALL {
+    for provider in ProviderId::ALL.into_iter().filter(|p| !(cfg!(windows) && *p == ProviderId::Codex)) {
         assert_eq!(inspect(&root, provider), Vec::<String>::new(), "{provider}");
     }
+    // A new Codex profile has no Windows sandbox selection, so its cards could not write.
+    let codex = inspect(&root, ProviderId::Codex);
+    assert_eq!(codex.len(), usize::from(cfg!(windows)), "{codex:?}");
+    // The doctor's flag and the readiness the policy and the lead use are the same text (ADR-0040).
+    let not_ready = o_core::agents::clean::profile_not_ready(&root, ProviderId::Codex);
+    assert_eq!(not_ready.is_some(), cfg!(windows));
+    assert_eq!(codex, not_ready.into_iter().collect::<Vec<_>>());
+    for provider in [ProviderId::Claude, ProviderId::OpenCode, ProviderId::Devin, ProviderId::Agy] {
+        assert_eq!(o_core::agents::clean::profile_not_ready(&root, provider), None, "{provider}");
+    }
+    // With a sandbox selection the reason moves on to the missing check (ADR-0040 개정 1): the line
+    // alone never makes the profile ready, and the doctor still shows the same reason.
+    let config = profile_home(&root, ProviderId::Codex).join(".codex").join("config.toml");
+    let not_checked: Vec<String> = if cfg!(windows) { vec![o_core::providers::codex_sandbox::NOT_CHECKED.into()] } else { vec![] };
+    for setting in ["[windows]\r\nsandbox = \"unelevated\"\r\n", "model = \"m\"\n[windows]\n# kept\nsandbox = \"elevated\"\n", "windows.sandbox = \"unelevated\"\n"] {
+        write(&config, setting);
+        assert_eq!(inspect(&root, ProviderId::Codex), not_checked, "{setting:?}");
+        assert_eq!(o_core::agents::clean::profile_not_ready(&root, ProviderId::Codex).into_iter().collect::<Vec<_>>(), not_checked, "{setting:?}");
+    }
+    write(&config, "[windows]\n[other]\nsandbox = \"x\"\n");
+    assert_eq!(inspect(&root, ProviderId::Codex), if cfg!(windows) { vec![o_core::providers::codex::SANDBOX_NOT_SET.to_string()] } else { vec![] });
 }
 
 #[test]
@@ -157,13 +204,14 @@ fn doctor_flags_planted_hooks_skills_and_mcp_servers() {
 
     let codex_home = profile_home(&root, ProviderId::Codex);
     let codex = codex_home.join(".codex");
-    write(&codex.join("config.toml"), "model = \"m\"\n[mcp_servers.m]\ncommand = \"m\"\n");
+    write(&codex.join("config.toml"), "model = \"m\"\n[windows]\nsandbox = \"unelevated\"\n[mcp_servers.m]\ncommand = \"m\"\n");
     write(&codex.join("hooks.json"), "{}");
     write(&codex.join("skills").join(".system").join("a").join("SKILL.md"), "a");
     write(&codex.join("skills").join("mine").join("SKILL.md"), "b");
     write(&codex_home.join(".agents").join("skills").join("c").join("SKILL.md"), "c");
+    // On Windows the profile is also not checked yet (ADR-0040 개정 1).
     let issues = inspect(&root, ProviderId::Codex);
-    assert_eq!(issues.len(), 4, "{issues:?}");
+    assert_eq!(issues.len(), 4 + usize::from(cfg!(windows)), "{issues:?}");
 
     let gemini = profile_home(&root, ProviderId::Agy).join(".gemini");
     write(&gemini.join("config").join("hooks.json"), r#"{ "hooks": {} }"#);
@@ -254,12 +302,12 @@ fn every_connected_cli_can_have_a_profile_and_unsupported_ones_are_named() {
     assert!(o_core::agents::clean::login_needed(ProviderId::OpenCode).starts_with("로그인 필요(opencode):"));
 }
 
-/// Devin's config folder cannot be moved: no clean environment is made, and nothing runs it with the person's own.
+/// Devin's config folder cannot be moved: no clean environment is made for profile commands.
 #[test]
 fn devin_gets_no_clean_profile_and_says_why() {
     use o_core::agents::clean::{environment, login_state};
     let root = temp("devin");
-    let why = "Devin은 project_O 프로필을 지원하지 않습니다 — 내 설정으로 실행하려면 프로필 사용을 끄세요";
+    let why = o_core::providers::devin::PROFILE_UNSUPPORTED;
     assert_eq!(environment(&root, ProviderId::Devin).unwrap_err().to_string(), why);
     let state = login_state(&root, ProviderId::Devin);
     assert_eq!((state.logged_in, state.detail.as_str()), (None, why));
@@ -280,4 +328,29 @@ fn new_clean_codex_profile_never_trusts_a_project() {
     std::fs::write(home.join(".codex/config.toml"), "# user configuration\n").unwrap();
     assert!(environment(&root, ProviderId::Codex).is_ok());
     assert_eq!(std::fs::read_to_string(home.join(".codex/config.toml")).unwrap(), "# user configuration\n");
+}
+
+/// ADR-0043: Devin runs on the person's own home in a project_O profile run (it has no
+/// profile), but another tool's token in the person's environment does not reach the card.
+#[test]
+fn a_cli_without_a_profile_keeps_the_persons_home_but_not_their_tokens() {
+    use o_core::agents::clean::own_home_env_from;
+    let parent = [
+        ("Path", r"C:\Windows\system32"),
+        ("USERPROFILE", r"C:\Users\someone"),
+        ("HOMEDRIVE", "C:"),
+        ("HomePath", r"\Users\someone"),
+        ("XDG_CONFIG_HOME", r"C:\Users\someone\.config"),
+        ("WINDSURF_API_KEY", "placeholder"),
+        ("GH_TOKEN", "placeholder"),
+        ("AWS_SECRET_ACCESS_KEY", "placeholder"),
+        ("OPENAI_API_KEY", "placeholder"),
+        ("ORCA_TERMINAL_ID", "x"),
+    ]
+    .map(|(k, v)| (k.to_string(), v.to_string()));
+    let env = own_home_env_from(parent, ProviderId::Devin);
+    let mut names: Vec<&str> = env.keys().map(String::as_str).collect();
+    names.sort_unstable();
+    assert_eq!(names, ["HOMEDRIVE", "HomePath", "Path", "USERPROFILE", "WINDSURF_API_KEY", "XDG_CONFIG_HOME"]);
+    assert_eq!(env["USERPROFILE"], r"C:\Users\someone");
 }
