@@ -6,7 +6,7 @@
 
 - `6679e51` / 통합 `5593dc9`: 사람이 본 계획과 실제 실행 입력을 연결했다. 계획 전체·모델·effort·프로필·권한 모드·후속 참조를 부모가 보관하고 OS가 상대를 확인한 파이프로 전달한다. 저장 파일을 바꿔 실행 내용을 바꾸는 경로를 제거했다. [상세 검증](2026-11-12-execution-integrity.md), [ADR-0049](../decisions/0049-approved-execution-input.md).
 - `b852f24` / 통합 `a7ce853`: 현재 GTK 경로와 호환되는 glib 0.18.5에 공식 수정 두 줄을 적용했다. 버전을 꾸미거나 경보를 무시하지 않고 소스 해시와 Cargo 해석을 검증한다. 잠금 의존성 점검을 필수 CI와 주간 workflow에 연결했다. [상세 검증](2026-11-12-dependency-security.md), [ADR-0050](../decisions/0050-glib-backport-and-dependency-checks.md).
-- Windows 에이전트의 상태 접근 격리는 로컬 `younchan-state-isolation`의 시제품 `f72254d`, 후속 수정 `164e0aa`, 대안 API 진단 `55a64d5`로 보존했다. 후속 수정은 ACL 회수 순서·오류 보고, 로그온 세션 간 잠금, 브로커 종료·대기 취소, 부모가 신뢰한 Git 폴더의 자식 한정 설정을 다룬다. 공식 CLI 호환 실패가 남아 `younchan`에 코드를 통합하지 않았으며 이 부분을 해결로 세지 않는다.
+- Windows 에이전트의 상태 접근 격리는 시제품 `f72254d`, 후속 수정 `164e0aa`, 대안 API 진단 `55a64d5`로 보존했다. 2026-11-13 브랜치 정리에서 로컬 `younchan-state-isolation`을 로컬 보존 태그 `archive/younchan-state-isolation-20261113`으로 바꿨다([정리 결과와 복원 방법](2026-11-13-branch-cleanup-and-build-footprint.md)). 후속 수정은 ACL 회수 순서·오류 보고, 로그온 세션 간 잠금, 브로커 종료·대기 취소, 부모가 신뢰한 Git 폴더의 자식 한정 설정을 다룬다. 공식 CLI 호환 실패가 남아 `younchan`에 코드를 통합하지 않았으며 이 부분을 해결로 세지 않는다.
 
 원본 감사 50개 항목 중 현재 조치표는 `fixed 28 / refuted 6 / documented-limit 12 / deferred 4`다. 보류 4개는 승인 결정·상태 파일·터미널·원시 로그의 OS 접근 경계이며, 현재 구현 중인 항목과 문서화된 신뢰 한계를 혼동하지 않는다.
 
