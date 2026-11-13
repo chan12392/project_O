@@ -1,6 +1,7 @@
 #[cfg(any(windows, target_os = "linux"))]
 mod support;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Barrier};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -9,8 +10,12 @@ use o_core::run::plan::{Card, ProviderId, Resource, ResourceKind, ResourceMode};
 use o_core::run::store::{link_slot, release_slot, reserve_slot, resource_held, Reservation, Reserved};
 
 fn fixture() -> (PathBuf, PathBuf) {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
     let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
-    let base = std::env::temp_dir().join(format!("o-resource-{}-{unique}", std::process::id()));
+    // Parallel tests can observe the same clock tick; give each fixture its own directory.
+    let sequence = NEXT.fetch_add(1, Ordering::Relaxed);
+    let base = std::env::temp_dir().join(format!("o-resource-{}-{unique}-{sequence}", std::process::id()));
+    std::fs::create_dir(&base).unwrap();
     let project = base.join("project");
     std::fs::create_dir_all(&project).unwrap();
     // Tests hold several slots at once; the RAM cap (ADR-0037) would make them depend on this PC's memory.
