@@ -105,6 +105,20 @@ fn verbatim_paths_still_reach_mirrors_and_state_folders() {
 }
 
 #[test]
+#[cfg(unix)]
+fn state_guard_keeps_unix_root_and_symlink_spellings_equivalent() {
+    let base = std::env::temp_dir().join(format!("o-guard-state-alias-{}", std::process::id()));
+    std::fs::create_dir_all(base.join("state")).unwrap();
+    let alias = base.join("alias");
+    std::os::unix::fs::symlink(base.join("state"), &alias).unwrap();
+    let state = base.join("state").to_string_lossy().into_owned();
+    assert!(o_guard::hook::within_state(&format!("/{state}/runs/new"), &state));
+    assert!(o_guard::hook::within_state(&alias.join("runs/new").to_string_lossy(), &state));
+    assert!(!o_guard::hook::within_state(&format!("{state}-other/runs/new"), &state));
+    std::fs::remove_dir_all(base).unwrap();
+}
+
+#[test]
 fn official_remote_requires_github_and_the_owner() {
     for remote in ["https://github.com/chan12392/project_O.git", "git@github.com:chan12392/project_O.git", "ssh://git@github.com/chan12392/project_O.git"] {
         assert!(PROJECT_REMOTE.is_match(remote), "{remote}");

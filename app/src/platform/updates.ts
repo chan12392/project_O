@@ -24,6 +24,8 @@ export interface About {
 
 /** The desktop shell's `update_status`: what Settings → 정보 says before anyone checks. */
 export interface UpdateStatus {
+  /** Reported by the native shell, not inferred from the browser. */
+  platform?: string;
   /** Release builds check by themselves (10 s after start, then every 6 hours). */
   automatic: boolean;
   /** A usable `gh` on PATH; null where the screen cannot tell (dev server, demo). */

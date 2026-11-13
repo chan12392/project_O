@@ -24,6 +24,17 @@ export function UpdateSettings({ api }: { api: Backend }) {
     } catch (e) { setError(true); setNote(errorText(e)); }
     finally { setBusy(false); }
   };
+  if (api.kind !== "tauri" || !status?.platform) return <p className="py-4 text-xs text-muted-foreground">업데이트와 제거 안내는 데스크톱 앱의 운영체제를 확인한 뒤 표시합니다.</p>;
+  if (status.platform !== "windows") return <div className="divide-y">
+    <div className="py-4">
+      <p className="text-[13px] font-medium">앱 업데이트</p>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{status.platform === "macos" ? "macOS 자동 업데이트는 아직 지원하지 않습니다. 앱을 종료한 뒤 새 project_O.app으로 교체해 주세요." : "이 운영체제의 자동 업데이트는 아직 지원하지 않습니다."}</p>
+    </div>
+    <div className="py-4">
+      <p className="text-[13px] font-medium">앱 제거</p>
+      <p className="mt-2 text-xs leading-relaxed text-muted-foreground">{status.platform === "macos" ? "앱을 종료한 뒤 Finder에서 project_O.app을 휴지통으로 옮기세요. 기록·로그인·설정과 프로젝트는 그대로 남습니다." : "설치한 방법에 따라 앱을 제거해 주세요. 기록과 설정은 별도로 남습니다."}</p>
+    </div>
+  </div>;
   return <div className="divide-y">
     <SettingsRow label="앱 업데이트" description={<>
       데스크톱 앱은 시작 후와 6시간마다 새 테스트 릴리스를 확인합니다. 확인과 내려받기에는 GitHub CLI(gh) 설치와 로그인이 필요합니다.

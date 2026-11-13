@@ -260,12 +260,17 @@ fn gh_write_reasons(command: &str) -> Vec<String> {
 /// Lexical spelling plus the nearest existing parent's real path (junctions and short names).
 fn real_path(path: &str) -> String {
     let path = Path::new(path);
-    for ancestor in path.ancestors() {
-        if let Ok(real) = ancestor.canonicalize() {
-            return normalize(&real.join(path.strip_prefix(ancestor).unwrap_or(Path::new(""))).to_string_lossy().replace('\\', "/"));
-        }
+    let real = path.ancestors().find_map(|ancestor| {
+        ancestor.canonicalize().ok().map(|real| real.join(path.strip_prefix(ancestor).unwrap_or(Path::new(""))))
+    }).unwrap_or_else(|| path.to_path_buf());
+    let normalized = normalize(&real.to_string_lossy().replace('\\', "/"));
+    // Unix canonicalization collapses a leading // to /. Apply that same root spelling
+    // to lexical fallbacks, including Windows UNC spellings examined on a Unix host.
+    #[cfg(not(windows))]
+    if normalized.starts_with("//") {
+        return format!("/{}", normalized.trim_start_matches('/'));
     }
-    normalize(&path.to_string_lossy().replace('\\', "/"))
+    normalized
 }
 
 pub fn within_state(path: &str, state: &str) -> bool {

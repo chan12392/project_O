@@ -29,10 +29,11 @@ const APPROVED_BRANCH: &str = "test_1";
 static INSTALLING: Mutex<()> = Mutex::new(());
 static CANCELLED: AtomicBool = AtomicBool::new(false);
 const CANCELLED_MESSAGE: &str = "업데이트를 취소했습니다";
+const WINDOWS_UPDATES_ONLY: &str = "자동 업데이트는 Windows 설치본만 지원합니다. macOS에서는 새 .app을 받아 교체해 주세요.";
 static PENDING: Mutex<Option<Update>> = Mutex::new(None);
 
 pub fn start_checks() {
-    if BUILD_SHA.is_empty() { return; }
+    if !cfg!(windows) || BUILD_SHA.is_empty() { return; }
     std::thread::spawn(|| {
         std::thread::sleep(Duration::from_secs(10));
         loop {
@@ -73,6 +74,7 @@ fn last_check(result: &Result<Option<Update>, String>, at: String) -> LastCheck 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UpdateStatus {
+    platform: &'static str,
     /// Release builds check by themselves; local builds only on the button.
     automatic: bool,
     /// Whether a usable `gh` is on PATH (updates need it, signed in).
@@ -82,7 +84,7 @@ pub struct UpdateStatus {
 
 #[tauri::command]
 pub fn update_status() -> UpdateStatus {
-    UpdateStatus { automatic: !BUILD_SHA.is_empty(), gh: gh_command(&[]).is_ok(), last_check: LAST_CHECK.lock().unwrap().clone() }
+    UpdateStatus { platform: std::env::consts::OS, automatic: cfg!(windows) && !BUILD_SHA.is_empty(), gh: gh_command(&[]).is_ok(), last_check: LAST_CHECK.lock().unwrap().clone() }
 }
 
 #[tauri::command]
@@ -216,6 +218,7 @@ fn begin_install() -> Result<std::sync::MutexGuard<'static, ()>, String> {
 }
 
 fn latest() -> Result<Option<Update>, String> {
+    if !cfg!(windows) { return Err(WINDOWS_UPDATES_ONLY.into()); }
     let endpoint = format!("repos/{REPOSITORY}/releases?per_page=20");
     let body = gh(&["api", "--hostname", "github.com", &endpoint], Duration::from_secs(30))?;
     approved(select_release(&body, BUILD_SHA, BUILD_TIME)?, |target| {
@@ -288,6 +291,7 @@ fn file_sha256(path: &Path) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn update_install(app: tauri::AppHandle, tag: String) -> Result<(), String> {
+    if !cfg!(windows) { return Err(WINDOWS_UPDATES_ONLY.into()); }
     if !valid_tag(&tag) { return Err("잘못된 릴리스 태그입니다".into()); }
     tauri::async_runtime::spawn_blocking(move || {
         let _installing = begin_install()?;
@@ -313,6 +317,15 @@ pub async fn update_install(app: tauri::AppHandle, tag: String) -> Result<(), St
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    #[cfg(not(windows))]
+    fn non_windows_never_queries_windows_releases() {
+        let status = super::update_status();
+        assert_eq!(status.platform, std::env::consts::OS);
+        assert!(!status.automatic);
+        assert_eq!(super::latest().unwrap_err(), super::WINDOWS_UPDATES_ONLY);
+    }
+
     use super::*;
     const FIXTURE: &str = include_str!("../../tests/releases.json");
 
