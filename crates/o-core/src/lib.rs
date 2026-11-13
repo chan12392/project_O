@@ -35,3 +35,6 @@ pub mod term;
 pub mod usage;
 pub mod dream;
 pub mod tuning;
+
+#[cfg(test)]
+mod test_support;

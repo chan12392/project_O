@@ -340,8 +340,7 @@ mod tests {
         let project = root.join("project");
         fs::create_dir_all(&project).unwrap();
         let marker = root.join("child-started");
-        let helper = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("o-handle-owner.exe");
-        assert!(helper.exists());
+        let helper = crate::test_support::handle_owner();
         let output = marker.clone();
         let spawn = move |_: &crate::providers::LaunchSpec, _: &str| {
             let mut launch = crate::sys::launch::Launch::new(std::env::current_exe()?);

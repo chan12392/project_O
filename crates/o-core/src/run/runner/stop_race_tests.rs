@@ -36,10 +36,12 @@ fn stop_completed_before_resume_never_starts_child() {
             let _ = continue_rx.recv_timeout(WAIT);
         }));
         let output = marker.clone();
-        let helper = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("o-handle-owner.exe");
+        #[cfg(windows)]
+        let helper = crate::test_support::handle_owner();
         let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
             let mut launch = Launch::new(std::env::current_exe()?);
-            launch.handle_owner_executable = Some(helper.clone());
+            #[cfg(windows)]
+            { launch.handle_owner_executable = Some(helper.clone()); }
             launch.current_dir(cwd).args(["--exact", "run::runner::stop_race_tests::fake_child", "--nocapture"]).env("O_STOP_RACE_FIXTURE", "1");
             if spec.env["O_CARD_ID"] == "stop-race-test" { launch.env("O_STOP_RACE_MARKER", &output); }
             Ok(launch)
