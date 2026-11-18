@@ -30,6 +30,7 @@ import {
   modelLabel,
   planIsStale,
   restoreDraft,
+  settleDraft,
   takeDraft,
   taskIsLong,
   threadState,
@@ -516,4 +517,49 @@ test("the composer draft is kept per project and tab, not per project alone (ADR
   const { drafts: left, draft } = takeDraft(drafts, a1);
   assert.equal(draft.text, "첫째 탭에게");
   assert.equal(draftOf(left, a2).text, "둘째 탭에게", "taking one tab's draft leaves the other's");
+});
+
+test("a draft moves only to its own project's first conversation, never across projects or over another draft (#86)", () => {
+  const chip = { key: "f1", name: "a.png", size: 3, image: true };
+  const a = draftKey("C:/work/a");
+  const bTab = draftKey("C:/work/b", "tb");
+  // A has no conversation yet and a draft; B's conversation was opened before.
+  const typed: Drafts = editDraft({}, a, () => ({ text: "A에만 쓸 글", files: [chip] }));
+  // Sidebar switch A → B: nothing of A shows in B, and A's draft is there on the way back.
+  const toB = settleDraft(typed, { project: "C:\\work\\A", thread: undefined }, { project: "C:\\work\\B", thread: "tb" });
+  assert.equal(toB, typed);
+  assert.deepEqual(draftOf(toB, bTab), EMPTY_DRAFT);
+  assert.equal(settleDraft(toB, { project: "C:\\work\\B", thread: "tb" }, { project: "C:\\work\\A", thread: undefined }), typed);
+  assert.deepEqual(draftOf(toB, a), { text: "A에만 쓸 글", files: [chip], gen: 0 });
+  // B has a draft of its own: both stay whole.
+  const both = editDraft(typed, bTab, () => ({ text: "B에 쓰던 글" }));
+  assert.equal(settleDraft(both, { project: "C:/work/a", thread: undefined }, { project: "C:/work/b", thread: "tb" }), both);
+  // A folder that only starts the same, or no project at all, is another place.
+  assert.equal(settleDraft(typed, { project: "C:/work/a", thread: undefined }, { project: "C:/work/ab", thread: "t1" }), typed);
+  assert.equal(settleDraft(typed, { project: undefined, thread: undefined }, { project: "C:/work/a", thread: "t1" }), typed);
+  assert.equal(settleDraft(typed, { project: "C:/work/a", thread: undefined }, { project: undefined, thread: "t1" }), typed);
+
+  // The same project's first conversation is named (the folder in another spelling): the draft moves there.
+  const first = draftKey("C:/work/a", "t1");
+  const moved = settleDraft(typed, { project: "C:/work/a", thread: undefined }, { project: "C:\\work\\A\\", thread: "t1" });
+  assert.deepEqual(draftOf(moved, first), { text: "A에만 쓸 글", files: [chip], gen: 0 });
+  assert.deepEqual(draftOf(moved, a), { text: "", files: [], gen: 1 });
+  // That conversation already has a draft: it is kept as it is, and the project's own is not thrown away.
+  const taken = editDraft(typed, first, () => ({ text: "탭에 쓰던 글" }));
+  assert.equal(settleDraft(taken, { project: "C:/work/a", thread: undefined }, { project: "C:/work/a", thread: "t1" }), taken);
+  const withFile = editDraft(typed, first, () => ({ files: [{ ...chip, key: "f2" }] }));
+  assert.equal(settleDraft(withFile, { project: "C:/work/a", thread: undefined }, { project: "C:/work/a", thread: "t1" }), withFile);
+  // Between open tabs, and from a tab back to none, drafts stay where they were typed.
+  const tabs = editDraft({}, first, () => ({ text: "첫째 탭에게" }));
+  assert.equal(settleDraft(tabs, { project: "C:/work/a", thread: "t1" }, { project: "C:/work/a", thread: "t2" }), tabs);
+  assert.equal(settleDraft(tabs, { project: "C:/work/a", thread: "t1" }, { project: "C:/work/a", thread: undefined }), tabs);
+  // Project and conversation are compared apart: a "#" in a folder name is not taken for a conversation.
+  const sharp = editDraft({}, draftKey("C:/work/c#"), () => ({ text: "C# 프로젝트" }));
+  assert.equal(draftOf(settleDraft(sharp, { project: "C:/work/c#", thread: undefined }, { project: "C:/work/c#", thread: "t1" }), draftKey("C:/work/c#", "t1")).text, "C# 프로젝트");
+  assert.equal(settleDraft(sharp, { project: "C:/work/c#", thread: undefined }, { project: "C:/work/b", thread: "tb" }), sharp);
+
+  // The composer moves drafts through this rule alone, not by reading "#" out of draft keys.
+  const composer = readFileSync(new URL("../app/src/features/chat/Composer.tsx", import.meta.url), "utf8");
+  assert.match(composer, /setDrafts\(\(d\) => settleDraft\(d, from, place\)\)/);
+  assert.doesNotMatch(composer, /includes\("#"\)/);
 });
