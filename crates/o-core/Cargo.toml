@@ -16,8 +16,10 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["preserve_order"] }
 sha2 = "0.10"
 
-[target.'cfg(target_os = "macos")'.dependencies]
+[target.'cfg(unix)'.dependencies]
 libc = "0.2"
+
+[target.'cfg(target_os = "macos")'.dependencies]
 core-foundation-sys = "0.8"
 
 [target.'cfg(windows)'.dependencies]
@@ -45,6 +47,11 @@ harness = false
 [[test]]
 name = "runner"
 # Its own main: the test binary doubles as the fake provider CLI (see tests/runner.rs).
+harness = false
+
+[[test]]
+name = "fallback_runner"
+# This binary answers fixture metadata requests without calling real provider CLIs.
 harness = false
 
 [[test]]

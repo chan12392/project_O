@@ -36,7 +36,7 @@ fn stop_completed_before_resume_never_starts_child() {
             let _ = continue_rx.recv_timeout(WAIT);
         }));
         let output = marker.clone();
-        let helper = std::env::current_exe().unwrap().parent().unwrap().parent().unwrap().join("o-handle-owner.exe");
+        let helper = crate::sys::test_support::handle_owner();
         let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
             let mut launch = Launch::new(std::env::current_exe()?);
             launch.handle_owner_executable = Some(helper.clone());

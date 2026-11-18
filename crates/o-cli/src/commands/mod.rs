@@ -11,6 +11,7 @@ mod about;
 mod agents;
 mod agy;
 mod billing;
+mod fallback;
 mod budget;
 mod context;
 mod dispatch;
@@ -68,6 +69,7 @@ pub const COMMANDS: &[Command] = &[
     budget::BUDGET,
     ram::RAM,
     billing::BILLING,
+    fallback::FALLBACK,
     agy::AGY,
     yolo::YOLO,
     runs::RUNS,
@@ -83,6 +85,7 @@ pub const COMMANDS: &[Command] = &[
     agents::AGENTS,
     about::ABOUT,
     dispatch::RUN,
+    dispatch::RUN_APPROVED,
     term::HOST,
     #[cfg(windows)]
     job_watch::WATCH,
@@ -90,7 +93,9 @@ pub const COMMANDS: &[Command] = &[
     lead::APPROVE,
     lead::FORWARD,
     followup::RUN_FOLLOWUP,
+    followup::RUN_FOLLOWUP_APPROVED,
     review::REVIEW_BACKGROUND,
+    review::REVIEW_APPROVED,
 ];
 
 pub fn find(name: &str) -> Option<&'static Command> {

@@ -34,33 +34,15 @@ fn lead_settings() -> String {
 /// `.claude/settings.json`.
 const GUARD_MATCHER: &str = "Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit|Read|Grep|Glob";
 
-/// YOLO mode's own settings (ADR-0014): O's guard hook, which Claude runs before every tool
-/// call in `bypassPermissions` too (PreToolUse runs before the permission check, and exit 2
-/// stops the call). It blocks when `o` is missing or fails (`onFailure`). A clean profile and
-/// `--setting-sources user` would otherwise bring no hook at all.
+/// Use the O sidecar beside this host directly, so a repository/PATH shadow cannot replace
+/// the guard. Claude's exec-form hook takes argv without passing a path through a shell.
 fn guard_settings() -> String {
-    json!({ "hooks": { "PreToolUse": [{ "matcher": GUARD_MATCHER, "hooks": [{ "type": "command", "command": "o hook", "timeout": 10, "onFailure": "block" }] }] } })
+    let program = std::env::current_exe().map(|exe| exe.with_file_name(if cfg!(windows) { "o.exe" } else { "o" }).to_string_lossy().into_owned()).unwrap_or_default();
+    json!({ "hooks": { "PreToolUse": [{ "matcher": GUARD_MATCHER, "hooks": [{ "type": "command", "command": program, "args": ["hook"], "timeout": 10, "onFailure": "block" }] }] } })
         .to_string()
 }
 
-/// A card about to start with a Claude authentication variable among its environment's `names`
-/// does not read the project's settings (ADR-0035 개정 2, #92): `claude -p` asks no trust for a
-/// folder and runs the hooks its settings files name, with the card's environment — the key
-/// included. `--setting-sources user` leaves the project and local settings unread, as the lead
-/// does; O's guard hook, which this repository's own project settings would have brought, comes
-/// with the run's settings instead (a YOLO card has it already). Only names are looked at.
-pub const PROJECT_SETTINGS_NOTICE: &str = "환경에 Claude 인증 변수가 있어 이 카드는 프로젝트의 Claude 설정·훅(.claude/settings.json)을 읽지 않습니다";
-
-pub fn keep_project_settings_from_auth(spec: &mut LaunchSpec, names: &[std::ffi::OsString], yolo: bool) -> bool {
-    if crate::agents::billing::present_in(crate::run::plan::ProviderId::Claude, names).is_empty() {
-        return false;
-    }
-    spec.args.extend(strings(&["--setting-sources", "user"]));
-    if !yolo {
-        spec.args.extend(strings(&["--settings", &guard_settings()]));
-    }
-    true
-}
+pub const PROJECT_SETTINGS_NOTICE: &str = "Claude 카드는 프로젝트 설정·훅을 읽지 않고 O 가드를 적용합니다";
 
 /// Deny rules for the commands no agent may run; they hold in every permission mode.
 fn denied_commands() -> Vec<String> {
@@ -106,18 +88,9 @@ fn yolo_head() -> Vec<String> {
     args
 }
 
-/// The model aliases `claude --model` documents, with the version each stands for now:
-/// (alias, family, version, model id). Claude Code prints no alias→model mapping
-/// (`claude --help` and `claude --version` name the aliases only, there is no models
-/// command), so this table is kept by hand. **Update it when Claude Code's aliases move to
-/// a new model** (code.claude.com/docs/en/model-config). `--model` still gets the alias, so
-/// a stale version here only mislabels the menu; it never picks another model.
-const LEAD_MODELS: [(&str, &str, &str, &str); 4] = [
-    ("fable", "Fable", "5.1", "claude-fable-5-1"),
-    ("opus", "Opus", "5.5", "claude-opus-5-5"),
-    ("sonnet", "Sonnet", "5.5", "claude-sonnet-5-5"),
-    ("haiku", "Haiku", "5.5", "claude-haiku-5-5"),
-];
+/// Fallback aliases when CLI initialization metadata is unavailable. Resolved model
+/// names and versions come from the profile's model catalog.
+const LEAD_MODELS: [&str; 4] = ["fable", "opus", "sonnet", "haiku"];
 
 impl Provider for Claude {
     fn launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> LaunchSpec {
@@ -125,6 +98,9 @@ impl Provider for Claude {
         let mut args = strings(spec.fixed);
         args.push(format!("Bash({TEAM_COMMAND} *)"));
         args.push(format!("Bash({CONTEXT_COMMAND} *)"));
+        // Print mode runs project hooks without a trust prompt, with either sign-in method.
+        args.extend(strings(&["--setting-sources", "user", "--settings", &guard_settings(), "--strict-mcp-config", "--disallowedTools"]));
+        args.extend(denied_shell_commands());
         args.extend(opt(spec.model_flag, card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env }
@@ -145,7 +121,7 @@ impl Provider for Claude {
     }
 
     fn stream_reader(&self) -> ReadLine {
-        let mut reset_given = false;
+        let mut reset_given = None;
         let mut calls = HashMap::new();
         Box::new(move |data| read_stream(&mut reset_given, &mut calls, data))
     }
@@ -192,7 +168,7 @@ impl Provider for Claude {
     /// Deny rules still hold, and O's guard hook comes with the run's settings.
     fn yolo_launch(&self, card: &Card, _plan: &Plan, _team: &TeamChannel, prompt: String, env: BTreeMap<String, String>) -> Option<LaunchSpec> {
         let mut args = yolo_head();
-        args.extend(strings(&["--settings", &guard_settings()]));
+        args.extend(strings(&["--setting-sources", "user", "--settings", &guard_settings(), "--strict-mcp-config"]));
         args.extend(opt("--model", card.model.as_deref()));
         args.extend(opt("--effort", card.effort.as_deref()));
         Some(LaunchSpec { bin: "claude".into(), args, stdin: Some(prompt), env })
@@ -216,7 +192,7 @@ impl Provider for Claude {
     fn lead_models(&self) -> Result<Vec<ModelChoice>, String> {
         Ok(LEAD_MODELS
             .iter()
-            .map(|(alias, family, version, model)| ModelChoice { id: alias.to_string(), label: format!("{family} {version}"), hint: Some(model.to_string()) })
+            .map(|alias| ModelChoice { id: alias.to_string(), label: format!("{alias} (버전 미확인)"), hint: None })
             .collect())
     }
 
@@ -323,7 +299,7 @@ const MAX_OPEN_CALLS: usize = 256;
 ///
 /// `calls`: the tool calls still waiting for their result (id → name, summary), so a result
 /// that reports an error can say which call it was.
-fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, String)>, data: &Map<String, Value>) -> Vec<StreamSignal> {
+fn read_stream(reset_given: &mut Option<String>, calls: &mut HashMap<String, (String, String)>, data: &Map<String, Value>) -> Vec<StreamSignal> {
     let kind = data.get("type").and_then(Value::as_str);
     if kind == Some("system") && data.get("subtype").and_then(Value::as_str) == Some("init") {
         if let Some(id) = data.get("session_id").and_then(Value::as_str) {
@@ -391,9 +367,14 @@ fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, Stri
                 .unwrap_or_default();
             // "allowed_warning" is a heads-up while work still runs; only "rejected" blocks the provider.
             if info.get("status").and_then(Value::as_str) == Some("rejected") {
+                let subscription = info.get("rateLimitType").or_else(|| info.get("rate_limit_type")).and_then(Value::as_str).is_some_and(|kind| kind == "five_hour" || kind.starts_with("seven_day"));
                 if let Some(resets) = info.get("resetsAt").and_then(Value::as_f64) {
                     out.push(StreamSignal::Limit { until: iso_from_secs(resets) });
-                    *reset_given = true;
+                    if subscription { out.push(StreamSignal::SubscriptionLimit { until: iso_from_secs(resets) }); }
+                    *reset_given = Some(iso_from_secs(resets));
+                } else {
+                    out.push(StreamSignal::Limit { until: String::new() });
+                    if subscription { out.push(StreamSignal::SubscriptionLimit { until: String::new() }); }
                 }
             }
             return out;
@@ -414,7 +395,11 @@ fn read_stream(reset_given: &mut bool, calls: &mut HashMap<String, (String, Stri
         // Usually a rejected rate_limit_event comes first; the text still catches a limit without one.
         // After that event its reset time stands: a wait read from the wording ("try again in
         // 1 hour", rounded or repeated late) must not stretch it.
-        if !*reset_given {
+        if let Some(until) = reset_given.as_ref() {
+            if !ok && crate::usage::fallback::is_subscription_limit(&text) {
+                out.push(StreamSignal::SubscriptionLimit { until: until.clone() });
+            }
+        } else {
             out.extend(limit_from_text(&text, ok));
         }
         out.push(StreamSignal::Final { ok, text });

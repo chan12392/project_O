@@ -43,7 +43,7 @@ fn run(home: &Path, id: &str) -> Result<(), String> {
     let provider = match req.provider.as_str() { "claude" => ProviderId::Claude, "codex" => ProviderId::Codex, _ => return Err("예약의 총괄 에이전트가 올바르지 않습니다".into()) };
     let root = req.clean.then(clean::default_root);
     let request = SendRequest { project: &req.project, thread: None, provider, model: None, effort: None, text: &req.text, attach: &[], fresh: false, clean: root.as_deref(), yolo: false };
-    let start = |run_id: &str| -> std::io::Result<()> { o_core::sys::proc::spawn_detached(Process::new(std::env::current_exe()?).args(["_run", run_id])).map(|_| ()) };
+    let start = |run_id: &str, input: &o_core::run::input::RunInput| -> std::io::Result<()> { o_core::run::input::spawn(Process::new(std::env::current_exe()?).args(["_run-approved", run_id]), input) };
     let events = if req.auto_dispatch { lead::send_with_scheduled_autorun(home, &request, &official_command, &start)? } else { lead::send(home, &request, &official_command)? };
     check_result(&events, req.auto_dispatch)
 }

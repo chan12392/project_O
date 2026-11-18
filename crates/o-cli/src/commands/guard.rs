@@ -5,7 +5,7 @@ use super::Command;
 pub const HOOK: Command = Command {
     name: "hook",
     usage: "  o hook                     에이전트 PreToolUse 훅 (도구 호출 JSON을 stdin으로 받음)",
-    run: |_, _| o_guard::hook::hook_main(),
+    run: |_, _| o_guard::hook::hook_main(super::inside_agent()),
 };
 
 pub const SCAN: Command = Command {

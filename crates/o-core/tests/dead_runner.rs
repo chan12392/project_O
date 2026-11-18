@@ -218,7 +218,7 @@ fn a_card_closed_by_a_dead_runner_is_followed_up_in_a_fresh_session() {
     assert_eq!(o_core::run::followup::target(&home, "failed", "a").unwrap().session.as_deref(), Some("s1"));
 
     // A follow-up of that fresh start which reported no session of its own starts fresh too.
-    let next = o_core::run::followup::start(&home, "cut", "a", "다시", &|_| Ok(())).unwrap();
+    let next = o_core::run::followup::start(&home, "cut", "a", "다시", &|_, _| Ok(())).unwrap();
     store::append_event(&home, &next, &OEvent::CardEnd { at: "2026-11-09T12:39:00.000Z".into(), card_id: "a".into(), status: CardStatus::Done, result: Some("ok".into()), exit_code: Some(0) }).unwrap();
     store::append_event(&home, &next, &OEvent::RunEnd { at: "2026-11-09T12:39:00.000Z".into(), run_id: next.clone(), status: CardStatus::Done }).unwrap();
     assert_eq!(o_core::run::followup::target(&home, &next, "a").unwrap().session, None);

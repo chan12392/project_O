@@ -96,7 +96,7 @@ pub const READ_ONLY_BRANCHES: [&str; 5] = ["test_1", "test_1_hotfix", "test_2", 
 pub const OWNER: &str = "chan12392";
 
 /// Mirrors are project_O checkouts only; other repositories on main are ordinary work.
-pub static PROJECT_REMOTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)[/:]project_O(\.git)?/?$").unwrap());
+pub static PROJECT_REMOTE: LazyLock<Regex> = LazyLock::new(|| Regex::new(&format!(r"(?i)^(?:https://github\.com/{OWNER}/project_O|git@github\.com:{OWNER}/project_O|ssh://git@github\.com/{OWNER}/project_O)(\.git)?/?$")).unwrap());
 
 /// Shell commands an agent may run inside a read-only checkout.
 pub static READ_ONLY_COMMANDS: LazyLock<Vec<Regex>> = LazyLock::new(|| {

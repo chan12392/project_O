@@ -1,70 +1,72 @@
-# 기여 안내
+한국어 문서: [CONTRIBUTING.ko.md](CONTRIBUTING.ko.md)
 
-project_O는 작은 팀이 쓰는 개인 프로젝트다. 버그 제보와 PR을 받지만, 병합은 팀의 브랜치 흐름([AGENTS.md](AGENTS.md))을 따른다.
+# Contributing
 
-## 외부 PR (포크)
+project_O is a personal project a small team works on. Bug reports and pull requests are welcome, but merges follow the team's branch flow ([AGENTS.md](AGENTS.md)). This guide covers what you need to build it, run the checks and send a change. The Korean version is [CONTRIBUTING.ko.md](CONTRIBUTING.ko.md).
 
-- 포크 저장소에서 연 PR은 그대로 병합하지 않는다. `.github/workflows/branch-flow.yml`이 포크 브랜치의 PR을 실패시킨다("포크 저장소의 브랜치는 허용하지 않습니다").
-- 받기로 한 변경은 팀원이 자기 작업 브랜치(`<개인>-<주제>`)로 가져와 `test_2`로 다시 올린다. 커밋을 그대로 가져오면 원래 작성자 정보가 남는다. 원래 PR에는 다시 올린 PR의 링크를 남기고 닫는다.
-- 큰 변경은 PR 전에 이슈로 먼저 알려 주면 좋다.
-- 보낸 기여는 프로젝트 라이선스([Apache-2.0](LICENSE))에 따라 받는다.
+## Pull requests from outside (forks)
 
-## 개발 환경
+- A PR opened from a fork is not merged as it is. `.github/workflows/branch-flow.yml` fails any PR whose head branch lives in a fork ("포크 저장소의 브랜치는 허용하지 않습니다").
+- When a change is accepted, a team member brings it into their own work branch (`<personal>-<topic>`) and opens a fresh PR to `test_2`. Taking the commits over as they are keeps the original author's information. The original PR gets a link to the new one and is closed.
+- For a large change, an issue first is appreciated before the PR.
+- Anything you send is taken under the project licence ([Apache-2.0](LICENSE)).
 
-Windows, Rust(stable), Node.js 22.18 이상. macOS(Apple Silicon)는 실험 단계다([README](README.md#쓰기-전에)).
+## Development environment
 
-### `o` 설치 (먼저)
+Windows, Rust (stable), Node.js 22.18 or later. macOS (Apple Silicon) is experimental and built from source; scheduled runs and the installer are Windows-only ([README](README.md#supported-operating-systems)).
 
-git 훅과 에이전트 훅이 PATH의 `o`를 부른다. 저장소를 받은 뒤 가장 먼저 설치한다.
+### Install `o` first
 
-```sh
-cargo install --path crates/o-cli   # ~/.cargo/bin/o — 어디서나 `o`
+The git hooks and the agent hooks call the `o` on your PATH, so install it before anything else in a fresh clone.
+
+```powershell
+cargo install --path crates/o-cli   # %USERPROFILE%\.cargo\bin\o — `o` from anywhere
 o --help
 ```
 
-설치한 데스크톱 앱의 폴더(`%LOCALAPPDATA%\Programs\project_O`)를 사용자 PATH에 더해 함께 설치된 `o.exe`를 써도 된다([docs/INSTALL.md](docs/INSTALL.md)). `o`를 고친 뒤에는 `cargo install --path crates/o-cli`로 다시 설치한다.
+Alternatively, add the installed desktop app's folder (`%LOCALAPPDATA%\Programs\project_O`) to your user PATH and use the `o.exe` that ships with the app ([docs/INSTALL.md](docs/INSTALL.md)). After changing `o`, reinstall it with `cargo install --path crates/o-cli`.
 
-### 에이전트 훅
+### Agent hooks
 
-이 저장소에서 Claude Code나 Codex를 쓰면 프로젝트 훅이 도구 호출마다 `o hook`을 부른다.
+Using Claude Code or Codex inside this repository runs a project hook that calls `o hook` on every tool call.
 
-| 파일 | 명령 | `o`가 없거나 훅이 오류로 끝나면 |
+| File | Command | If `o` is missing or the hook ends in an error |
 |---|---|---|
-| `.claude/settings.json` | `o hook`, `"onFailure": "block"` | Bash·PowerShell·Write·Edit·Read·Grep·Glob 등 도구 호출이 모두 막힌다(Claude Code 2.1.295 이상) |
-| `.codex/hooks.json` | `o hook \|\| exit 2` | Bash·apply_patch·Write·Edit 호출이 막힌다 |
+| `.claude/settings.json` | `o hook`, `"onFailure": "block"` | Every tool call is blocked — Bash, PowerShell, Write, Edit, Read, Grep, Glob and the rest (Claude Code 2.1.295 or later) |
+| `.codex/hooks.json` | `o hook \|\| exit 2` | Bash, apply_patch, Write and Edit calls are blocked |
 
-세션이 시작부터 막히면 `o`가 PATH에 있는지 먼저 확인한다(`o --help`). Codex는 프로젝트 훅을 처음 쓸 때와 훅 명령이 바뀔 때 신뢰 승인을 물을 수 있다.
+If a session is blocked from the start, check that `o` is on your PATH (`o --help`). Codex may ask for trust approval the first time it uses the project hook and whenever the hook command changes.
 
-훅이 막는 것(인증 파일·토큰 접근, 공급자 서버 직접 호출, 권한 확인을 끄는 옵션, 보호 브랜치 커밋·push 등)은 [AGENTS.md](AGENTS.md) "프로바이더 정책 자동 차단"에 있다. 막히면 우회하지 않는다. 규칙이 틀렸다고 생각하면 이슈나 PR로 알려 준다.
+What the hooks block — credential file and token access, direct calls to provider servers, options that disable a CLI's permission checks, commits and pushes on protected branches, and more — is listed in [AGENTS.md](AGENTS.md) under "프로바이더 정책 자동 차단". Do not work around a block. If you think a rule is wrong, say so in an issue or a PR.
 
-### git 훅
-
-```sh
-npm install   # 저장소 루트. git config core.hooksPath .githooks
-```
-
-`pre-commit`은 `o scan --staged`, `pre-push`는 `o scan --pre-push`를 부른다. 같은 정책 검사를 하고, 보호 브랜치(`test_1`·`test_1_hotfix`·`test_2`·`main_hotfix`·`main`)의 커밋·push를 막는다.
-
-## 검사
-
-PR 전에 로컬에서 돌린다. 개발 설정으로 돌리고 `--release`는 쓰지 않는다(다시 빌드가 크게 느려진다).
+### Git hooks
 
 ```sh
-cargo test
-cargo clippy --all-targets -- -D warnings
-cargo run -p o-cli -- scan --all   # 전체 파일 정책 검사
-npm test                           # 화면 로직 테스트 (루트)
-cd app && npm install && npm run check   # 화면 TypeScript
+npm install   # repository root; sets git config core.hooksPath .githooks
 ```
 
-화면을 고쳤다면 `cd app && npm run dev`(브라우저, 기록 재생 데모는 `?source=demo`)나 `npm run preview:app`(데스크톱 미리보기 창)으로 확인한다.
+`pre-commit` runs `o scan --staged` and `pre-push` runs `o scan --pre-push`. They apply the same policy scan and block commits and pushes on the protected branches (`test_1`, `test_1_hotfix`, `test_2`, `main_hotfix`, `main`).
 
-CI(`.github/workflows/guard.yml`)는 PR에서만 돈다. PR 없이 push한 브랜치는 CI가 돌지 않는다.
+## Checks
 
-## 커밋·PR
+Run these locally before a PR. Use the development profile — never `--release`, which makes every rebuild far slower.
 
-- 커밋 메시지: `<type>: <요약>` (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`).
-- PR 본문은 `.github/pull_request_template.md`를 채운다. 무엇을 바꿨는지와 어떻게 확인했는지를 적는다.
-- 구독 계정 인증 정보·토큰·`.env`는 커밋하지 않는다. 테스트·데모 데이터에 실제 계정명·이메일을 넣지 않는다.
-- 공용 경계(기술 스택, 공용 데이터 모델, 프로바이더 연결 방식, 라우팅 단위, 화면 최상위 구조)를 바꾸면 `docs/decisions/`에 ADR을 더한다. 모듈 지도와 새 프로바이더·화면·명령 체크리스트는 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
-- 정책 규칙(`crates/o-guard/src/rules.rs`)과 상한(`crates/o-core/src/policy.rs`의 `LIMITS`)을 완화하는 변경은 ADR과 함께 올린다.
+```sh
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo run -p o-cli -- scan --all   # policy scan over every file
+npm test                           # screen logic tests (root)
+cd app && npm install && npm run check   # screens: TypeScript
+```
+
+If you changed the screens, look at them with `cd app && npm run dev` (a browser; `?source=demo` replays recorded runs) or `npm run preview:app` (a desktop preview window).
+
+CI (`.github/workflows/guard.yml`) runs on pull requests only — a branch pushed without a PR is not checked by CI, so run the checks yourself.
+
+## Commits and PRs
+
+- Commit messages: `<type>: <summary>` (`feat`, `fix`, `docs`, `refactor`, `test`, `chore`).
+- Fill in `.github/pull_request_template.md`: what you changed and how you verified it.
+- Never commit subscription account credentials, tokens or `.env` files, and keep real account names and email addresses out of test and demo data.
+- A change to a shared boundary (tech stack, shared data model, how a provider is connected, the routing unit, the top level of the screens) needs an ADR in `docs/decisions/`. Module map and the checklist for adding a provider, screen or command: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+- A change that loosens a policy rule (`crates/o-guard/src/rules.rs`) or a limit (`LIMITS` in `crates/o-core/src/policy.rs`) is sent together with an ADR.

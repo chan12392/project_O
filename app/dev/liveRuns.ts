@@ -102,7 +102,7 @@ function send(res: ServerResponse, status: number, body: string) {
  * Only this machine's own address may ask. This middleware runs before Vite's host
  * check, so without it a site using DNS rebinding could read the run records.
  */
-function localHost(req: IncomingMessage): boolean {
+export function localHost(req: IncomingMessage): boolean {
   return /^(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i.test(req.headers.host ?? "");
 }
 
@@ -111,12 +111,14 @@ function localHost(req: IncomingMessage): boolean {
  * read the runs nor make this machine run the usage CLIs. Same-origin fetches
  * either send this page's own Origin or none.
  */
-function sameOrigin(req: IncomingMessage): boolean {
+export function sameOrigin(req: IncomingMessage): boolean {
   const origin = req.headers.origin;
   // A browser says where a request comes from even when it sends no Origin (an <img> on another site).
   const site = req.headers["sec-fetch-site"];
   if (site && site !== "same-origin" && site !== "none") return false;
-  return !origin || origin === `http://${req.headers.host}`;
+  if (origin) return origin === `http://${req.headers.host}`;
+  // A state change needs browser origin evidence; headerless local clients are read-only.
+  return req.method === "GET" || req.method === "HEAD" || site === "same-origin";
 }
 
 /** `/agents/<id>/<action>` with a known agent id, the only ones `o agents` takes. */
@@ -145,19 +147,6 @@ const PROPOSAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-f\d{1,4}$/;
 const APPROVAL_ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}-a\d{1,6}$/;
 /** Terminal session ids as `o term` makes them (crates/o-core/src/term `is_session_id`); it checks them again. */
 const TERM_ID = /^t-\d{8}-\d{6}-[A-Za-z0-9]{4}$/;
-/** How long a lead model list is reused before the CLI is asked again (the Tauri `lead_models` keeps it as long). */
-const MODELS_TTL_MS = 10 * 60_000;
-const leadModels = new Map<string, { at: number; out: string }>();
-
-/** `o lead models`, kept a few minutes per agent; a failed listing is not kept. */
-function cachedModels(provider: string): Promise<string> {
-  const hit = leadModels.get(provider);
-  if (hit && Date.now() - hit.at < MODELS_TTL_MS) return Promise.resolve(hit.out);
-  return o(["lead", "models", "--provider", provider]).then((out) => {
-    leadModels.set(provider, { at: Date.now(), out });
-    return out;
-  });
-}
 
 /**
  * `o lead stop` for one project; none without an existing absolute folder. Without
@@ -204,11 +193,13 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
   if (req.method === "GET" && path === "/lead/models") {
     const provider = query.get("provider") ?? "";
-    if (!LEAD_PROVIDER.test(provider)) {
+    if (!/^(claude|codex|opencode|devin|agy)$/.test(provider)) {
       fail(400, "에이전트가 필요합니다");
       return true;
     }
-    run(cachedModels(provider));
+    const project = query.get("project");
+    const clean = query.get("clean") !== "false";
+    run(o(["lead", "models", "--provider", provider, "--profile", clean ? "project-o" : "own", ...(project ? ["--project", project] : []), ...(query.get("refresh") === "true" ? ["--refresh"] : [])]));
     return true;
   }
   if (req.method !== "POST" || !path.startsWith("/lead/")) return false;
@@ -295,16 +286,20 @@ async function lead(req: IncomingMessage, res: ServerResponse, path: string, que
   }
   if (path === "/lead/dispatch") {
     const plan = query.get("plan") ?? "";
-    if (!PLAN_ID.test(plan)) {
-    fail(400, "계획 id 형식이 아닙니다");
-    return true;
-  }
+    const mode = query.get("mode");
+    if (!PLAN_ID.test(plan) || (mode !== "normal" && mode !== "yolo")) {
+      fail(400, "계획 id와 화면에서 확인한 실행 모드가 필요합니다");
+      return true;
+    }
+    let expected: Buffer;
+    try { expected = await body(req, 4 * 1024 * 1024); JSON.parse(expected.toString("utf8")); }
+    catch { fail(400, "화면에서 확인한 계획이 필요합니다"); return true; }
     run(o(["about", "--json"]).then((text) => {
       const caps: unknown = JSON.parse(text).capabilities;
-      if (!Array.isArray(caps) || !caps.includes("work-graph-v1") || !caps.includes("lead-worktrees-v1") || !caps.includes("lead-copy-workspaces-v1")) {
+      if (!Array.isArray(caps) || !caps.includes("work-graph-v1") || !caps.includes("lead-worktrees-v1") || !caps.includes("lead-copy-workspaces-v1") || !caps.includes("approved-run-input-v1")) {
         throw new Error("O CLI가 작업 그래프와 워크트리 격리를 지원하지 않습니다. 앱과 같은 버전의 O CLI를 다시 빌드하세요");
       }
-      return oWithInput(["lead", "dispatch", plan, "--profile", query.get("clean") === "1" ? "project-o" : "own"], Buffer.alloc(0), 60_000);
+      return oWithInput(["lead", "dispatch", plan, "--profile", query.get("clean") === "1" ? "project-o" : "own", "--mode", mode, "--expected-plan"], expected, 60_000);
     }));
     return true;
   }
@@ -654,6 +649,11 @@ export function liveRuns(): Plugin {
           return void o(args).then((out) => send(res, 200, out), error(res));
         }
         if (req.method === "GET" && path === "/billing") return void o(["billing", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "GET" && path === "/fallback") return void o(["fallback", "--json"]).then((out) => send(res, 200, out), error(res));
+        if (req.method === "POST" && path === "/fallback") {
+          void body(req, 4096).then((data) => o(["fallback", "--settings", data.toString("utf8"), "--json"])).then((out) => send(res, 200, out), error(res));
+          return;
+        }
         if (req.method === "POST" && path === "/billing") {
           // API 과금 (ADR-0035 개정 1): `o billing --warn|--subscription`.
           const mode = query.get("mode");

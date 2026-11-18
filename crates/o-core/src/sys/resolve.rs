@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::{LazyLock, OnceLock, RwLock};
 
 use regex::Regex;
+pub use o_guard::hook::installed_program;
 
 /// How to start an official CLI without a shell: the program, and arguments that go before the CLI's own.
 #[derive(Clone, Debug, PartialEq)]

@@ -140,6 +140,16 @@ pub async fn billing_get() -> Result<Value, String> {
     blocking(|| json!(o_core::agents::billing::report(&store::default_home()))).await
 }
 
+#[tauri::command]
+pub async fn fallback_get() -> Result<Value, String> {
+    blocking(|| json!(o_core::usage::fallback::read(&store::default_home()))).await
+}
+
+#[tauri::command]
+pub async fn fallback_set(settings: o_core::usage::fallback::Settings) -> Result<Value, String> {
+    blocking(move || o_core::usage::fallback::write(&store::default_home(), settings).map(|value| json!(value))).await?
+}
+
 /// Settings → 에이전트 → API 과금 경고만·구독만 (`o billing --warn|--subscription`).
 #[tauri::command]
 pub async fn billing_set(mode: String) -> Result<Value, String> {

@@ -47,8 +47,14 @@ pub struct CardInfo {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "t", rename_all_fields = "camelCase")]
 pub enum OEvent {
+    #[serde(rename = "card.fallback")]
+    CardFallback { at: String, card_id: String, from: ProviderId, from_model: Option<String>, target: crate::usage::fallback::Target, reason: String },
+    #[serde(rename = "card.usage.settled")]
+    CardUsageSettled { at: String, card_id: String, #[serde(flatten)] usage: Box<crate::usage::accounting::Settlement> },
     #[serde(rename = "run.start")]
     RunStart { at: String, run_id: String, title: String, project: String, cards: Vec<CardInfo> },
+    #[serde(rename = "run.branch")]
+    RunBranch { at: String, branch: String },
     #[serde(rename = "run.followup")]
     RunFollowup { at: String, source_run_id: String, card_id: String },
     #[serde(rename = "card.queued")]
@@ -171,6 +177,9 @@ pub enum OEvent {
         context: bool,
         #[serde(default)]
         yolo: bool,
+        /// Present only for runs started by a user-created schedule.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        scheduled: Option<bool>,
     },
 }
 
@@ -178,7 +187,10 @@ impl OEvent {
     /// The `t` tag.
     pub fn kind(&self) -> &'static str {
         match self {
+            OEvent::CardFallback { .. } => "card.fallback",
+            OEvent::CardUsageSettled { .. } => "card.usage.settled",
             OEvent::RunStart { .. } => "run.start",
+            OEvent::RunBranch { .. } => "run.branch",
             OEvent::RunFollowup { .. } => "run.followup",
             OEvent::CardQueued { .. } => "card.queued",
             OEvent::CardStart { .. } => "card.start",
@@ -207,6 +219,7 @@ impl OEvent {
 /// What a provider stream line means, before it gets a timestamp and card id.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StreamSignal {
+    SubscriptionLimit { until: String },
     Session { session_id: String },
     Message { text: String },
     Tool { name: String, summary: String },

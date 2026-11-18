@@ -167,7 +167,6 @@ fn ctx() -> PolicyContext {
     PolicyContext {
         now: "2026-11-02T10:00:00Z".parse::<DateTime<Utc>>().unwrap(),
         active_by_provider: empty_counts(),
-        started_today: 0,
         cooldowns: Default::default(),
         over_budget: Default::default(),
         project_exists: Box::new(|_| true),
@@ -451,7 +450,9 @@ fn a_review_run_gets_no_shared_context() {
     let home = temp_home("nocontext");
     let task = review::build_task(&pr(), "diff --git a/a.ts b/a.ts\n+x\n", "n", true);
     let checked = check_plan(&review::build_plan("C:/Users/me/projects/app", 7, &task.text, ProviderId::Codex, None, None), &ctx());
-    review::create_run(&home, "r2", &checked.plan.unwrap(), RunMode::of(Profile::ProjectO)).unwrap();
+    let approved = review::create_run(&home, "r2", &checked.plan.unwrap(), RunMode::of(Profile::ProjectO)).unwrap();
+    assert!(!approved.mode().context);
+    assert!(approved.mode().clean());
     assert!(!o_core::context::enabled(&home, "r2"));
     assert!(run_dir(&home, "r2").join("clean").exists());
 }

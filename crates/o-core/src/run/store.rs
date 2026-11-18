@@ -6,7 +6,7 @@
 //! runs/<runId>/plan.json · events.jsonl · cards/<id>.raw.jsonl · stop · clean (o dispatch --clean)
 //!              · yolo (YOLO 모드, ADR-0014) · runner.json (the runner's pid and start time)
 //! active/<runId>.<cardId>.json   running card markers ({ pid, provider })
-//! o.db                           the run index, card starts (daily cap), held slots, cooldowns and
+//! o.db                           the run index, card starts (daily statistics), held slots, cooldowns and
 //!                                refused plans; dispatch and the runner write it, cards never (see `index`)
 //! ```
 //!
@@ -81,7 +81,7 @@ pub fn create_run(home: &Path, run_id: &str, plan: &Plan) -> io::Result<()> {
     fs::write(dir.join("plan.json"), to_pretty(plan)?)
 }
 
-/// plan.json as written, unchecked: `o _run` checks it again before running anything.
+/// Historical plan.json as written, unchecked; execution receives the approved plan through `RunInput`.
 pub fn read_plan(home: &Path, run_id: &str) -> io::Result<Value> {
     let text = fs::read_to_string(run_dir(home, run_id).join("plan.json"))?;
     serde_json::from_str(&text).map_err(io::Error::other)
@@ -348,10 +348,22 @@ pub fn cooldown_times(home: &Path) -> io::Result<HashMap<ProviderId, String>> {
 /// Records a provider limit, keeping the later of the old and new times, and
 /// returns the time now on record. An empty `until` means the CLI gave no reset time.
 pub fn set_cooldown(home: &Path, provider: ProviderId, until: &str, now: DateTime<Utc>) -> io::Result<String> {
+    set_cooldown_kind(home, provider, until, now, false)
+}
+
+pub(crate) fn set_subscription_cooldown(home: &Path, provider: ProviderId, until: &str, now: DateTime<Utc>) -> io::Result<String> {
+    set_cooldown_kind(home, provider, until, now, true)
+}
+
+fn set_cooldown_kind(home: &Path, provider: ProviderId, until: &str, now: DateTime<Utc>, subscription: bool) -> io::Result<String> {
     let resolved = if until.is_empty() { iso(now + Duration::milliseconds(LIMITS.default_cooldown_ms)) } else { until.to_string() };
     let mut conn = index::open(home)?;
     // Read and write under one lock: two cards hitting the limit at once keep the later time.
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
+    tx.execute_batch(crate::usage::fallback::TABLE).map_err(sql)?;
+    if subscription {
+        tx.execute("INSERT INTO subscription_limits(provider,until,observed_at) VALUES(?1,?2,?3) ON CONFLICT(provider) DO UPDATE SET until=excluded.until,observed_at=excluded.observed_at", params![provider.as_str(), resolved, iso(now)]).map_err(sql)?;
+    } else { tx.execute("DELETE FROM subscription_limits WHERE provider=?1", [provider.as_str()]).map_err(sql)?; }
     let current: String = tx
         .query_row("SELECT until FROM cooldowns WHERE provider = ?1", [provider.as_str()], |row| row.get(0))
         .optional()
@@ -362,6 +374,7 @@ pub fn set_cooldown(home: &Path, provider: ProviderId, until: &str, now: DateTim
         _ => false,
     };
     if !current.is_empty() && !later {
+        tx.commit().map_err(sql)?;
         return Ok(current);
     }
     tx.execute("INSERT OR REPLACE INTO cooldowns (provider, until) VALUES (?1, ?2)", params![provider.as_str(), resolved]).map_err(sql)?;
@@ -378,11 +391,11 @@ pub fn record_blocked(home: &Path, at: DateTime<Utc>, title: Option<&Value>, vio
 }
 
 pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyContext> {
+    let cooldowns = cooldown_times(home)?;
     Ok(PolicyContext {
         now,
         active_by_provider: held_by_provider(home)?,
-        started_today: started_on(home, now)?,
-        cooldowns: cooldown_times(home)?,
+        cooldowns,
         over_budget: crate::usage::budget::over_budget(home, now)?,
         project_exists: Box::new(|path| Path::new(path).exists()),
         is_mirror: Box::new(o_guard::is_mirror),
@@ -452,6 +465,15 @@ pub fn mark_mode(home: &Path, run_id: &str, mode: &RunMode) -> io::Result<()> {
 /// YOLO 모드 (ADR-0014): the run's cards launch with their CLI's YOLO flag (`providers::launch_spec_for`).
 pub fn is_yolo(home: &Path, run_id: &str) -> bool {
     run_dir(home, run_id).join("yolo").exists()
+}
+
+/// Records that a user-created schedule started this run.
+pub(crate) fn mark_scheduled(home: &Path, run_id: &str) -> io::Result<()> {
+    fs::write(run_dir(home, run_id).join("scheduled"), "")
+}
+
+pub fn is_scheduled(home: &Path, run_id: &str) -> bool {
+    run_dir(home, run_id).join("scheduled").exists()
 }
 
 /// The runner (`o _run`) of a run: its pid and start time, written when it starts.

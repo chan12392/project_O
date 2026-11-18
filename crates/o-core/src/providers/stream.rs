@@ -127,12 +127,14 @@ pub(super) fn limit_from_text(text: &str, ok: bool) -> Vec<StreamSignal> {
 }
 
 fn limit_from_text_at(text: &str, ok: bool, now: DateTime<Utc>) -> Vec<StreamSignal> {
-    if ok || !is_limit_text(text) {
+    if ok || (!is_limit_text(text) && !crate::usage::fallback::is_subscription_limit(text)) {
         return Vec::new();
     }
     // No reset time in the wording: empty, and the default cooldown applies.
     let until = reset_from_text(text, now).map(iso).unwrap_or_default();
-    vec![StreamSignal::Limit { until }]
+    let mut signals = vec![StreamSignal::Limit { until: until.clone() }];
+    if crate::usage::fallback::is_subscription_limit(text) { signals.push(StreamSignal::SubscriptionLimit { until }); }
+    signals
 }
 
 pub(super) fn tool_summary(input: Option<&Value>) -> String {
@@ -208,9 +210,9 @@ mod reset_from_text_tests {
     fn a_limit_text_with_a_wait_carries_its_reset_time() {
         assert_eq!(
             limit_from_text_at("Claude AI usage limit reached. Try again in 1 hour.", false, now()),
-            [StreamSignal::Limit { until: "2026-11-01T10:00:00.000Z".into() }]
+            [StreamSignal::Limit { until: "2026-11-01T10:00:00.000Z".into() }, StreamSignal::SubscriptionLimit { until: "2026-11-01T10:00:00.000Z".into() }]
         );
-        assert_eq!(limit_from_text_at("Claude AI usage limit reached", false, now()), [StreamSignal::Limit { until: String::new() }]);
+        assert_eq!(limit_from_text_at("Claude AI usage limit reached", false, now()), [StreamSignal::Limit { until: String::new() }, StreamSignal::SubscriptionLimit { until: String::new() }]);
         assert_eq!(limit_from_text_at("Claude AI usage limit reached. Try again in 1 hour.", true, now()), []);
     }
 

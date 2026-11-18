@@ -25,6 +25,7 @@ use serde_json::Value;
 use crate::usage::budget::{self, Pace};
 use crate::run::events::{CardInfo, CardStatus, OEvent, StreamSignal};
 use crate::run::mode::{Profile, RunMode};
+use super::input::RunInput;
 use crate::usage::UsageWindow;
 use crate::sys::js::{js_string, js_tail, now_iso, parse_time};
 use crate::run::plan::{Card, Plan, ProviderId};
@@ -35,7 +36,7 @@ use crate::providers::{launch_spec_for, LaunchSpec, StreamReader, TeamChannel};
 use crate::sys::launch::Launch;
 use crate::sys::resolve::resolve_cli;
 use crate::run::store::{
-    append_event, clear_active, cooldown_times, is_clean, is_yolo, link_slot, mark_runner, mark_active, policy_context, read_events, read_plan, release_slot,
+    append_event, clear_active, cooldown_times, link_slot, mark_runner, mark_active, policy_context, read_events, release_slot,
     reserve_slot, resolved_path, run_dir, set_cooldown, stop_requested, ActiveMarker, Reservation, Reserved,
 };
 
@@ -131,6 +132,7 @@ impl Workdir {
 
 use crate::projects::same as same_folder;
 
+/// In-process normal mode, context enabled, no workspace isolation. Use `run_input` for captured execution modes.
 /// `clean` is the profile root when the run uses clean agent profiles (`o dispatch --clean`).
 pub fn run_plan(home: &Path, run_id: &str, plan: &Plan, clean: Option<&Path>, spawner: Arc<Spawner>) -> io::Result<CardStatus> {
     run_plan_in(home, run_id, plan, clean, spawner, Workdir::of(&plan.project))
@@ -152,9 +154,21 @@ pub fn run_plan_with(
     workdir: Workdir,
     not_ready: &HashMap<ProviderId, String>,
 ) -> io::Result<CardStatus> {
+    let input = RunInput::new(home, run_id, plan, RunMode::of(Profile::of_clean(clean.is_some())), false, false);
+    run_plan_with_input(&input, clean, spawner, workdir, not_ready, None)
+}
+
+/// In-process callers supply the same captured input as a detached runner.
+pub fn run_input(input: &RunInput, clean: Option<&Path>, spawner: Arc<Spawner>) -> io::Result<CardStatus> {
+    let followup = input.followup.as_ref().map(|source| source.target(&input.home)).transpose().map_err(io::Error::other)?;
+    run_plan_with_input(input, clean, spawner, Workdir::of(&input.plan.project), &HashMap::new(), followup)
+}
+
+fn run_plan_with_input(input: &RunInput, clean: Option<&Path>, spawner: Arc<Spawner>, workdir: Workdir, not_ready: &HashMap<ProviderId, String>, followup: Option<super::followup::Target>) -> io::Result<CardStatus> {
+    let (home, run_id, plan) = (input.home.as_path(), input.id.as_str(), &input.plan);
+    let followup = followup.map(Arc::new);
     let workdir = Arc::new(workdir);
-    // YOLO 모드 (ADR-0014): chosen at dispatch, saved with the run.
-    let yolo = is_yolo(home, run_id);
+    let yolo = input.mode.yolo;
     let emit = |event: OEvent| append_event(home, run_id, &event);
     if !read_events(home, run_id).iter().any(|event| matches!(event, OEvent::RunStart { .. })) {
         emit(OEvent::RunStart {
@@ -179,20 +193,20 @@ pub fn run_plan_with(
         emit(OEvent::RunMode {
             at: now_iso(),
             run_id: run_id.to_string(),
-            profile: Profile::of_clean(clean.is_some()),
-            context: crate::context::enabled(home, run_id),
+            profile: input.mode.profile,
+            context: input.mode.context,
             yolo,
+            scheduled: input.scheduled.then_some(true),
         })?;
-        if run_dir(home, run_id).join("followup.json").exists() {
-            let (source_run_id, card_id): (String, String) = serde_json::from_slice(&fs::read(run_dir(home, run_id).join("followup.json"))?).map_err(io::Error::other)?;
-            emit(OEvent::RunFollowup { at: now_iso(), source_run_id, card_id })?;
+        if let Some(source) = &input.followup {
+            emit(OEvent::RunFollowup { at: now_iso(), source_run_id: source.source.clone(), card_id: source.card.clone() })?;
             for card in &plan.cards {
                 emit(OEvent::CardInput { at: now_iso(), card_id: card.id.clone(), text: card.task.clone() })?;
             }
         }
     }
 
-    let workspaces = if run_dir(home, run_id).join("isolated-worktrees").exists() {
+    let workspaces = if input.isolated {
         let current = (workdir.resolve)(&plan.project);
         let prepared = if same_folder(&current, &workdir.checked) {
             super::workspaces::create(home, run_id, &workdir.checked, plan)
@@ -211,10 +225,15 @@ pub fn run_plan_with(
         }
     } else { None };
 
+    if !read_events(home, run_id).iter().any(|event| matches!(event, OEvent::RunBranch { .. })) {
+        if let Some(branch) = workspaces.as_ref().and_then(|paths| paths.branch.clone()).or_else(|| super::workspaces::current_branch(&workdir.checked)) {
+            emit(OEvent::RunBranch { at: now_iso(), branch })?;
+        }
+    }
     let _lead_monitor = monitor_lead(home, run_id, plan, Arc::clone(&spawner));
 
     // What earlier work of the project each card gets (ADR-0005); empty with `--no-context`.
-    let contexts = Arc::new(crate::context::prepare(home, run_id, plan));
+    let contexts = Arc::new(crate::context::prepare(home, run_id, plan, input.mode.context));
     let shared_plan = Arc::new(plan.clone());
     // Dreaming's tuning (ADR-0041 개정 1): what kept failing in this project's runs, read once
     // for the run — reading it scans a month of events, which every card start need not repeat.
@@ -245,7 +264,23 @@ pub fn run_plan_with(
                 completed.insert(card.id.clone(), CardStatus::Stopped);
             }
         }
-        for card in pending.clone() {
+        for original in pending.clone() {
+            let mut card = original.clone();
+            let mut fallback_target = None;
+            if cooldown_times(home)?.get(&card.provider).and_then(|t| parse_time(t)).is_some_and(|t| t > Utc::now())
+                && crate::usage::fallback::confirmed(home, card.provider)? && crate::usage::fallback::read(home).enabled {
+                match crate::usage::fallback::prepare(home, card.provider, card.effort.as_deref(), false, clean, Path::new(&workdir.checked)) {
+                    Ok(Some(target)) => { card = crate::usage::fallback::card(&card, &target, "원래 에이전트는 실행 전 구독 한도로 차단되었습니다"); fallback_target = Some(target); }
+                    Ok(None) => {}
+                    Err(why) => {
+                        pending.retain(|c| c.id != card.id);
+                        emit(ended(&card, CardStatus::Failed, Some(format!("자동 전환 중단: {why}"))))?;
+                        results.push(CardStatus::Failed);
+                        completed.insert(card.id.clone(), CardStatus::Failed);
+                        continue;
+                    }
+                }
+            }
             let take = |pending: &mut Vec<Card>| pending.retain(|c| c.id != card.id);
             if card.depends_on.iter().any(|id| completed.get(id).is_some_and(|status| *status != CardStatus::Done)) {
                 take(&mut pending);
@@ -313,19 +348,25 @@ pub fn run_plan_with(
                 }
             }
             // Dispatch checked the caps, but runs dispatched together all saw the same counts: the slot
-            // and the day's start are taken here, in o.db, before the CLI starts (see `reserve_slot`).
+            // is taken here, in o.db, before the CLI starts (see `reserve_slot`).
+            if fallback_target.is_some() {
+                let mut check_card = card.clone();
+                check_card.depends_on.clear();
+                let next = Plan { cards: vec![check_card], ..plan.clone() };
+                let validation = check_plan_in(&serde_json::to_value(next).map_err(io::Error::other)?, &policy_context(home, Utc::now())?, RunMode { profile: Profile::of_clean(clean.is_some()), context: true, yolo });
+                if !validation.violations.is_empty() {
+                    take(&mut pending);
+                    emit(ended(&card, CardStatus::Failed, Some(format!("자동 전환 중단: {}", validation.violations.iter().map(|v| v.message.as_str()).collect::<Vec<_>>().join(" / ")))))?;
+                    results.push(CardStatus::Failed);
+                    completed.insert(card.id.clone(), CardStatus::Failed);
+                    continue;
+                }
+            }
             let reservation = match reserve_slot(home, run_id, &card, &workdir.checked, Utc::now()) {
                 Ok(Reserved::Granted(reservation)) => reservation,
                 Err(error) => {
                     take(&mut pending);
                     emit(ended(&card, CardStatus::Failed, Some(format!("자원 예약 실패: {error}"))))?;
-                    results.push(CardStatus::Failed);
-                    completed.insert(card.id.clone(), CardStatus::Failed);
-                    continue;
-                }
-                Ok(Reserved::DayFull) => {
-                    take(&mut pending);
-                    emit(ended(&card, CardStatus::Failed, Some(format!("오늘 실행 상한 {}개에 닿아 시작하지 않음", LIMITS.max_cards_per_day))))?;
                     results.push(CardStatus::Failed);
                     completed.insert(card.id.clone(), CardStatus::Failed);
                     continue;
@@ -374,8 +415,23 @@ pub fn run_plan_with(
             }
             take(&mut pending);
             let mut card = card.clone();
+            let switched = fallback_target.is_some();
+            if let Some(target) = fallback_target {
+                let error = crate::usage::fallback::claim(home, &format!("run:{run_id}:{}", card.id), &target).err();
+                if let Some(error) = error {
+                    release_slot(home, &reservation, false)?;
+                    emit(ended(&card, CardStatus::Failed, Some(format!("자동 전환 중단: {error}"))))?;
+                    results.push(CardStatus::Failed);
+                    completed.insert(card.id.clone(), CardStatus::Failed);
+                    continue;
+                }
+                if let Err(error) = emit(OEvent::CardFallback { at: now_iso(), card_id: card.id.clone(), from: original.provider, from_model: original.model, target, reason: "실행 전 확인된 구독 사용량 한도".into() }) {
+                    release_slot(home, &reservation, false)?;
+                    return Err(error);
+                }
+            }
             // With the daily budget off (`Pace::Off`) nothing is refused above and `steps_down` is 0.
-            if let Some(to) = budget::lower_effort(card.effort.as_deref(), budget.steps_down) {
+            if let Some(to) = budget::lower_effort(card.effort.as_deref(), if switched { 0 } else { budget.steps_down }) {
                 emit(OEvent::CardBudget {
                     at: now_iso(),
                     card_id: card.id.clone(),
@@ -393,13 +449,12 @@ pub fn run_plan_with(
             let workspaces = workspaces.clone();
             let lessons = Arc::clone(&lessons);
             let wiki = Arc::clone(&wiki);
+            let resumed = followup.clone();
+            let followup_source = input.followup.as_ref().map(|source| source.source.clone());
             running.push(card.id.clone());
             thread::spawn(move || {
                 let mut context = contexts.get(&card.id).cloned().unwrap_or_default();
                 let workspace = workspaces.as_ref().and_then(|paths| paths.get(&card.id));
-                let resumed = fs::read(run_dir(&home, &run_id).join("followup.json")).ok()
-                    .and_then(|bytes| serde_json::from_slice::<(String, String)>(&bytes).ok())
-                    .and_then(|(source, id)| super::followup::target(&home, &source, &id).ok());
                 let skills_path = resumed.as_ref().map(|target| target.workspace.as_path()).unwrap_or_else(|| Path::new(workspace.unwrap_or(&workdir.checked)));
                 let skills = crate::skills::select(skills_path, &card.task);
                 if !skills.is_empty() {
@@ -432,7 +487,8 @@ pub fn run_plan_with(
                     context.push_str(&prior);
                 }
                 let slot = Slot { home: &home, reservation, started: false, marked: false, exited: Arc::new(AtomicBool::new(false)), best_effort: BEST_EFFORT_EXIT };
-                let start = Start { slot, workdir: &workdir, workspace: workspace.map(String::as_str), context: (!context.is_empty()).then_some(context.as_str()), clean: clean.as_deref(), spawner: spawner.as_ref(), yolo, dependencies: &dependencies };
+                let resumed_workspace = resumed.as_ref().filter(|_| switched).map(|target| target.workspace.to_string_lossy().into_owned());
+                let start = Start { slot, workdir: &workdir, workspace: resumed_workspace.as_deref().or_else(|| workspace.map(String::as_str)), context: (!context.is_empty()).then_some(context.as_str()), clean: clean.as_deref(), spawner: spawner.as_ref(), yolo, dependencies: &dependencies, followup: followup_source.as_deref().zip(resumed.as_deref()) };
                 let outcome = panic::catch_unwind(AssertUnwindSafe(|| run_card(&home, &run_id, &plan, &card, start)))
                     .unwrap_or_else(|_| Err(io::Error::other(format!("카드 {} 실행 중 내부 오류", card.id))))
                     .or_else(|error| {
@@ -498,33 +554,32 @@ pub fn stop_run(home: &Path, run_id: &str) -> io::Result<bool> {
     Ok(true)
 }
 
-/// The background half of `o dispatch`. It checks the plan again, since anyone
-/// can start it with a hand-written plan.json, and a crash still ends the run
-/// on record so watchers (`o events --follow`, the app) are not left waiting.
-pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
+/// Rechecks the parent's captured input; saved run files are only historical records.
+pub fn run_detached(input: &RunInput) -> Result<(), String> {
+    let (home, run_id) = (input.home.as_path(), input.id.as_str());
     let mut raw: Option<Value> = None;
     let mut blocked: Vec<Violation> = Vec::new();
     let outcome = panic::catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
         // Others tell a live run from one whose runner died by this (`store::run_is_live`).
         let _ = mark_runner(home, run_id);
-        let plan = read_plan(home, run_id).map_err(|e| e.to_string())?;
+        let plan = serde_json::to_value(&input.plan).map_err(|e| e.to_string())?;
         raw = Some(plan.clone());
-        let _queued = wait_for_followup(home, run_id, &plan)?;
+        let queued = wait_for_followup(input)?;
         // Codex reports usage only when asked: refresh a stale reading before the budget check.
         let probed = |c: &Value| c.get("provider").and_then(Value::as_str) == Some("codex");
         if plan.get("cards").and_then(Value::as_array).is_some_and(|cards| cards.iter().any(probed)) {
-            budget::refresh_if_stale(home, Utc::now(), Some(Profile::of_clean(is_clean(home, run_id))));
+            budget::refresh_if_stale(home, Utc::now(), Some(input.mode.profile));
         }
         let ctx = policy_context(home, Utc::now()).map_err(|e| e.to_string())?;
-        let mode = RunMode { profile: Profile::of_clean(is_clean(home, run_id)), context: true, yolo: is_yolo(home, run_id) };
-        let checked = check_plan_in(&plan, &ctx, mode);
+        let mode = input.mode;
+        let checked = crate::usage::fallback::check_plan(home, &plan, &ctx, mode);
         let Some(plan) = checked.plan else {
             let reasons: Vec<&str> = checked.violations.iter().map(|v| v.message.as_str()).collect();
             let message = format!("정책 위반: {}", reasons.join(" / "));
             blocked = checked.violations;
             return Err(message);
         };
-        let clean = is_clean(home, run_id).then(clean::default_root);
+        let clean = mode.clean().then(clean::default_root);
         // The folder the check above passed, links resolved: the cards run there (see `Workdir`).
         let workdir = Workdir { checked: (ctx.resolve)(&plan.project), resolve: Arc::new(resolved_path) };
         // project_O 프로필 사용 (ADR-0015): each CLI's profile is made if missing, and one that cannot
@@ -537,7 +592,7 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
                 not_ready.insert(ProviderId::OpenCode, reason);
             }
         }
-        run_plan_with(home, run_id, &plan, clean.as_deref(), Arc::new(official_command), workdir, &not_ready).map_err(|e| e.to_string())?;
+        run_plan_with_input(input, clean.as_deref(), Arc::new(official_command), workdir, &not_ready, queued.as_ref().map(|(_, target)| target.clone())).map_err(|e| e.to_string())?;
         Ok(())
     }))
     .unwrap_or_else(|panic| {
@@ -563,7 +618,7 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
         let _ = append_event(home, run_id, &OEvent::RunBlocked { at: now_iso(), run_id: run_id.to_string(), violations: blocked });
     }
     let stopped = stop_requested(home, run_id);
-    if started && run_dir(home, run_id).join("followup.json").exists() {
+    if started && input.followup.is_some() {
         if let Some(card) = raw.as_ref().and_then(|p| p.get("cards")).and_then(Value::as_array).and_then(|cards| cards.first()).and_then(|c| c.get("id")).and_then(Value::as_str) {
             if !read_events(home, run_id).iter().any(|event| matches!(event, OEvent::CardEnd { card_id, .. } if card_id == card)) {
                 let _ = append_event(home, run_id, &OEvent::CardEnd { at: now_iso(), card_id: card.into(), status: if stopped { CardStatus::Stopped } else { CardStatus::Failed }, result: Some(message.clone()), exit_code: None });
@@ -577,22 +632,12 @@ pub fn run_detached(home: &Path, run_id: &str) -> Result<(), String> {
 }
 
 /// A queued continuation holds a per-original-card lock without consuming an agent slot.
-fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs::File>, String> {
-    let marker = run_dir(home, run_id).join("followup.json");
-    if !marker.exists() { return Ok(None); }
-    let (source, card): (String, String) = serde_json::from_slice(&fs::read(marker).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
+fn wait_for_followup(input: &RunInput) -> Result<Option<(fs::File, super::followup::Target)>, String> {
+    let Some(followup) = &input.followup else { return Ok(None) };
+    let (home, run_id, plan) = (input.home.as_path(), input.id.as_str(), &input.plan);
+    let (source, card, root) = (followup.source.clone(), followup.card.clone(), &followup.root);
     if !super::store::is_run_id(&source) || !super::store::is_run_id(&card) { return Err("후속 작업 정보가 올바르지 않습니다".into()); }
-    let plan: Plan = serde_json::from_value(raw.clone()).map_err(|e| e.to_string())?;
     if plan.cards.len() != 1 || plan.cards[0].id != card { return Err("후속 작업 정보가 바뀌었습니다".into()); }
-    let mut root = source.clone();
-    for _ in 0..32 {
-        let path = run_dir(home, &root).join("followup.json");
-        if !path.exists() { break; }
-        let (previous, previous_card): (String, String) = serde_json::from_slice(&fs::read(path).map_err(|e| e.to_string())?).map_err(|e| e.to_string())?;
-        if !super::store::is_run_id(&previous) || previous_card != card || previous == root { return Err("후속 작업 연결이 올바르지 않습니다".into()); }
-        root = previous;
-    }
-    if run_dir(home, &root).join("followup.json").exists() { return Err("후속 작업 연결이 너무 깊습니다".into()); }
     let locks = home.join("followup-queue");
     fs::create_dir_all(&locks).map_err(|e| e.to_string())?;
     let lock = OpenOptions::new().create(true).truncate(false).write(true).open(locks.join(format!("{root}-{card}.lock"))).map_err(|e| e.to_string())?;
@@ -601,7 +646,7 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
     if !read_events(home, run_id).iter().any(|e| matches!(e, OEvent::RunStart { .. })) {
         emit(OEvent::RunStart { at: now_iso(), run_id: run_id.into(), title: plan.title.clone(), project: plan.project.clone(), cards: vec![CardInfo { id: c.id.clone(), provider: c.provider, label: Some(c.label()), role: c.role.clone(), model: c.model.clone(), effort: c.effort.clone() }] })?;
         emit(OEvent::RunFollowup { at: now_iso(), source_run_id: source.clone(), card_id: card.clone() })?;
-        emit(OEvent::RunMode { at: now_iso(), run_id: run_id.into(), profile: Profile::of_clean(is_clean(home, run_id)), context: crate::context::enabled(home, run_id), yolo: is_yolo(home, run_id) })?;
+        emit(OEvent::RunMode { at: now_iso(), run_id: run_id.into(), profile: input.mode.profile, context: input.mode.context, yolo: input.mode.yolo, scheduled: input.scheduled.then_some(true) })?;
         emit(OEvent::CardInput { at: now_iso(), card_id: card.clone(), text: c.task.clone() })?;
     }
     emit(OEvent::CardQueued { at: now_iso(), card_id: card.clone(), reason: "이전 작업이 끝나기를 기다립니다".into() })?;
@@ -613,7 +658,7 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
     // Queued behind a card that was still running: stopping that card (or its run) cancels
     // the queued instruction too. One sent after the card already ended is a new request.
     // The mark from acceptance keeps that true when the stop was recorded before this runner got here.
-    let queued_behind = run_dir(home, run_id).join(super::followup::QUEUED_BEHIND).exists() || source_end().is_none();
+    let queued_behind = followup.queued_behind;
     loop {
         if stop_requested(home, run_id) { return Err("후속 작업이 시작 전에 중지되었습니다".into()); }
         let ended = source_end();
@@ -624,7 +669,7 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
         if ended.is_some() || !super::store::run_is_live(home, &source) { break; }
         thread::sleep(Duration::from_millis(500));
     }
-    super::followup::target(home, &source, &card)?;
+    let target = followup.target(home)?;
     let mut capacity_notice = false;
     loop {
         if stop_requested(home, run_id) { return Err("후속 작업이 시작 전에 중지되었습니다".into()); }
@@ -638,7 +683,7 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
         }
         thread::sleep(WAIT_FOR_SLOT);
     }
-    Ok(Some(lock))
+    Ok(Some((lock, target)))
 }
 
 #[cfg(test)]

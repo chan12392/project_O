@@ -154,6 +154,7 @@ pub fn folder(home: &Path, thread_id: &str) -> PathBuf {
 
 /// The requests waiting now, oldest first, as the app shows them (without the turn token).
 pub fn pending(home: &Path, thread_id: &str) -> Vec<Value> {
+    if !is_run_id(thread_id) { return Vec::new(); }
     let mut found: Vec<Pending> = fs::read_dir(dir(home, thread_id)).into_iter().flatten().flatten()
         .filter(|e| e.file_name().to_string_lossy().ends_with(".json"))
         .filter_map(|e| serde_json::from_slice(&fs::read(e.path()).ok()?).ok())
@@ -201,6 +202,7 @@ pub fn decide(home: &Path, id: &str, allow: bool) -> Result<(), String> {
 /// Requests a turn left behind (its CLI or approval server ended mid-wait) are closed as
 /// `stopped`, so none stays on screen or pauses the next turn's time limit.
 pub fn close_left(home: &Path, thread_id: &str) {
+    if !is_run_id(thread_id) { return; }
     for entry in fs::read_dir(dir(home, thread_id)).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().into_owned();
         if let Some(id) = name.strip_suffix(".json") {
@@ -225,6 +227,7 @@ pub fn refusals(home: &Path, project: &str, request: &Request) -> Vec<String> {
     for call in &request.review {
         let mut input = call.clone();
         input["cwd"] = json!(request.cwd.as_deref().unwrap_or(project));
+        input["inside_agent"] = json!(true);
         reasons.extend(o_guard::hook::review(&input, &o_guard::hook::RealGit));
     }
     let state = home.to_string_lossy().replace('\\', "/").trim_end_matches('/').to_lowercase();
@@ -259,7 +262,10 @@ pub fn refusals(home: &Path, project: &str, request: &Request) -> Vec<String> {
         .flat_map(|w| [w.replace('\\', "/").to_lowercase(), o_guard::hook::resolve(w, &base, user_home.as_deref()).unwrap_or_default().to_lowercase()]).any(|w| {
         (!state.is_empty() && w.contains(&state)) || (w.contains("localappdata") && w.contains("/project_o") && !w.contains("/project_o-"))
     });
-    if names_state { reasons.push("O 상태 폴더는 총괄이 바꾸거나 실행할 수 없습니다".to_string()); }
+    let names_real_state = words.iter().flat_map(|word| std::iter::once(word.as_str()).chain(word.split_whitespace()))
+        .filter_map(|word| o_guard::hook::resolve(word.trim_matches(['"', '\'', ';', ',']), &base, user_home.as_deref()))
+        .any(|path| o_guard::hook::within_state(&path, &home.to_string_lossy()));
+    if names_state || names_real_state { reasons.push("O 상태 폴더는 총괄이 바꾸거나 실행할 수 없습니다".to_string()); }
     let mut unique = Vec::new();
     for reason in reasons { if !unique.contains(&reason) { unique.push(reason); } }
     unique
@@ -268,6 +274,11 @@ pub fn refusals(home: &Path, project: &str, request: &Request) -> Vec<String> {
 /// One request through to its outcome: O's own refusals, then the person's decision, a stop of
 /// the turn (`token`'s), or `wait` running out. `tick` runs every few seconds of the wait.
 pub fn ask(home: &Path, thread_id: &str, token: &str, project: &str, request: Request, wait: Duration, tick: &mut dyn FnMut()) -> Outcome {
+    if !is_run_id(thread_id) || token.is_empty() || crate::agents::agy::inside_card()
+        || !live_turn(home, thread_id, token)
+        || super::thread_project(&super::read_thread(home, thread_id)).is_none_or(|found| !crate::projects::same(&found, project)) {
+        return Outcome { allowed: false, decision: "deny", message: "현재 총괄 턴의 승인 요청이 아니어서 거부했습니다".into() };
+    }
     let refused = refusals(home, project, &request);
     let folder = dir(home, thread_id);
     if let Err(error) = fs::create_dir_all(&folder) {
@@ -299,6 +310,9 @@ pub fn ask(home: &Path, thread_id: &str, token: &str, project: &str, request: Re
             files: request.files.iter().map(|f| FileDelta { diff: clip(&f.diff, DETAIL_CHARS), ..f.clone() }).take(50).collect(),
         };
         let file = folder.join(format!("{}.json", pending.id));
+        if fs::symlink_metadata(folder.join(format!("{}.decision", pending.id))).is_ok() {
+            return Outcome { allowed: false, decision: "deny", message: "승인 요청 전에 결정 파일이 있어 거부했습니다".into() };
+        }
         let temp = folder.join(format!("{}.{}.tmp", pending.id, new_run_id(now)));
         // On file first: a person who sees the event can already answer it.
         let filed = refused.is_empty() && serde_json::to_vec(&pending).map_err(io::Error::other).and_then(|bytes| fs::write(&temp, bytes)).and_then(|()| fs::rename(&temp, &file)).is_ok();
@@ -327,8 +341,15 @@ pub fn ask(home: &Path, thread_id: &str, token: &str, project: &str, request: Re
     let (decision, by) = loop {
         // A stop wins over an answer that came with it.
         if fs::read_to_string(stop_path(home, thread_id)).is_ok_and(|t| t.is_empty() || t == token) { break ("stopped", "stop"); }
+        if !live_turn(home, thread_id, token) { break ("stopped", "o"); }
         if started.elapsed() >= wait { break ("timeout", "timeout"); }
-        match fs::read_to_string(&answer).as_deref() {
+        let decision = crate::run::workspaces::open_plain(&answer).and_then(|file| {
+            use std::io::Read;
+            let mut text = String::new();
+            file.take(16).read_to_string(&mut text)?;
+            Ok(text)
+        });
+        match decision.as_deref() {
             Ok("allow") => break ("allow", "user"),
             Ok("deny") => break ("deny", "user"),
             _ => {}
@@ -348,6 +369,10 @@ pub fn ask(home: &Path, thread_id: &str, token: &str, project: &str, request: Re
         _ => "사용자가 총괄을 중지했습니다.".to_string(),
     };
     Outcome { allowed: decision == "allow", decision, message }
+}
+
+fn live_turn(home: &Path, thread_id: &str, token: &str) -> bool {
+    running(home, thread_id).is_some_and(|busy| !busy.unknown) && read_marker(home, thread_id).is_some_and(|m| m.token == token)
 }
 
 /// One line of a file's text count, for a write's `+` side.
@@ -532,6 +557,43 @@ mod tests {
         from_claude("Write", &json!({"file_path": path, "content": "a\nb\n"}), "C:/p")
     }
 
+    #[test]
+    fn only_the_live_turn_and_its_project_can_request_approval() {
+        let (home, thread, project, slot) = setup("binding");
+        for (id, token, folder) in [("../escaped", slot.marker.token.as_str(), project.as_str()), (thread.as_str(), "old", project.as_str()), (thread.as_str(), slot.marker.token.as_str(), "C:/other-project")] {
+            let outcome = ask(&home, id, token, folder, write_request("safe.txt"), Duration::ZERO, &mut || panic!("invalid request waited"));
+            assert!(!outcome.allowed);
+            assert!(outcome.message.contains("현재 총괄 턴"));
+        }
+        assert!(!folder(&home, &thread).exists());
+        drop(slot);
+        assert!(!ask(&home, &thread, "old", &project, write_request("safe.txt"), Duration::ZERO, &mut || {}).allowed);
+    }
+
+    #[test]
+    fn a_linked_decision_cannot_allow_a_waiting_request() {
+        let (home, thread, project, slot) = setup("linked-answer");
+        let source = home.join("outside-decision");
+        fs::write(&source, "allow").unwrap();
+        let helper = {
+            let (home, thread) = (home.clone(), thread.clone());
+            thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_secs(5);
+                while Instant::now() < deadline {
+                    if let Some(request) = pending(&home, &thread).first() {
+                        fs::hard_link(&source, folder(&home, &thread).join(format!("{}.decision", request["id"].as_str().unwrap()))).unwrap();
+                        return;
+                    }
+                    thread::sleep(Duration::from_millis(5));
+                }
+                panic!("approval request did not appear");
+            })
+        };
+        let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request(&in_project(&project)), Duration::from_millis(500), &mut || {});
+        helper.join().unwrap();
+        assert_eq!(outcome.decision, "timeout");
+    }
+
     /// Answers the first request that shows up (or only finds it), from another thread.
     fn answer(home: &Path, thread: &str, allow: Option<bool>) -> thread::JoinHandle<Option<String>> {
         let (home, thread) = (home.to_path_buf(), thread.to_string());
@@ -611,7 +673,8 @@ mod tests {
         fs::create_dir_all(&folder).unwrap();
         fs::write(folder.join(format!("{thread}-a1.decision")), "allow").unwrap();
         let outcome = ask(&home, &thread, &slot.marker.token, &project, write_request(&in_project(&project)), Duration::ZERO, &mut || {});
-        assert_eq!(outcome.decision, "timeout");
+        assert_eq!(outcome.decision, "deny");
+        assert!(outcome.message.contains("요청 전에"));
     }
 
     #[test]

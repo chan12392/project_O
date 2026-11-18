@@ -142,16 +142,18 @@ fn run(home: &Path, args: &[String]) -> i32 {
         }
         "models" => {
             let Some(provider) = provider_arg(rest.first()) else { return 1 };
-            match providers::get(provider).card_models() {
-                None => fail(&format!("{provider}는 모델 목록 명령이 없습니다 (model을 비우면 CLI 기본 모델)")),
-                Some(Err(error)) => fail(&error),
-                Some(Ok(models)) => {
+            let own = rest.iter().any(|a| a == "--own") || rest.windows(2).any(|w| w[0] == "--profile" && w[1] == "own");
+            let cwd = rest.windows(2).find(|w| w[0] == "--project").map(|w| std::path::PathBuf::from(&w[1])).or_else(|| std::env::current_dir().ok()).unwrap_or_default();
+            match providers::models::catalog(home, provider, (!own).then_some(root.as_path()), &cwd, rest.iter().any(|a| a == "--refresh")) {
+                Err(error) => fail(&error),
+                Ok(catalog) => {
                     if rest.iter().any(|a| a == "--json") {
-                        println!("{}", json!(models));
+                        println!("{}", json!(catalog));
                     } else {
-                        for m in &models {
+                        for m in &catalog.models {
                             println!("{}", m.id);
                         }
+                        if let Some(error) = catalog.error { eprintln!("{error}"); }
                     }
                     0
                 }

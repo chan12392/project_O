@@ -1,5 +1,5 @@
-import { BrainCircuit, CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, Globe, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, X } from "lucide-react";
-import { useCallback, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { BrainCircuit, CalendarClock, ChevronRight, Coffee, Folder, FolderPlus, FolderX, GitBranch, Globe, LayoutDashboard, ListTodo, MoreHorizontal, Pencil, Plus, Search, SquarePen, X } from "lucide-react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 import { isSessionRun } from "../../../src/core/attention.ts";
 import type { LeadTab } from "../../../src/core/lead.ts";
@@ -8,17 +8,17 @@ import type { RunView } from "../../../src/core/snapshot.ts";
 import { useDismiss } from "../lib/dismiss.ts";
 import { PROVIDER_SHORT, STATE_WORD, errorText, timeOf } from "../lib/format.ts";
 import { isDirecting, LEAD_WORD, useTestGroupOpen, type LeadState, type Project, type useProjectGroups } from "../data/projects.ts";
+import { byStatus, fullOrder, placeAt, runsByBranch, shownRuns, sortProjects, STATUS_WORD, useSidebarView, withoutScheduled, type SidebarView } from "../data/sidebarView.ts";
 import type { ScreenState } from "../data/useRun.ts";
 import { CardSummary, summaryWords } from "../features/office/CardSummary.tsx";
 import { AddFolderForm, canPickFolder, NewProjectForm, pickAndRegister } from "../features/projects/ProjectForms.tsx";
+import { WorkspaceOptions } from "../features/sidebar/WorkspaceOptions.tsx";
 import { AgentStateDot } from "../ui/AgentStateDot.tsx";
 import { LeadStateDot } from "../ui/LeadStateDot.tsx";
 import { currentBackend } from "../platform/backend/index.ts";
 
 type Groups = ReturnType<typeof useProjectGroups>;
 
-/** Runs shown under a project before the rest fold into "이전 실행 N개". */
-const SHOWN_RUNS = 3;
 /** The hover/focus card list stops here. */
 const TIP_CARDS = 12;
 
@@ -62,12 +62,35 @@ interface Props {
   footer?: ReactNode;
 }
 
+type Side = "before" | "after";
+
+/** A project row's part in the manual order (정렬 기준: 수동): dragging it among its section's rows, and the menu's 위로·아래로. */
+interface RowOrder {
+  /** This row is the one being dragged. */
+  dragging: boolean;
+  /** Where the dragged row would land if dropped on this one. */
+  over?: Side;
+  /** Absent at the section's first and last row. */
+  up?: () => void;
+  down?: () => void;
+  onDragStart: () => void;
+  /** Whether the dragged row may land here: a row of the same section, not itself. */
+  onDragOver: (side: Side) => boolean;
+  onDragLeave: () => void;
+  onDrop: () => void;
+  onDragEnd: () => void;
+}
+
 const HEAD_BUTTON = "flex size-6 items-center justify-center rounded-md text-muted-foreground hover:bg-sidebar-accent hover:text-foreground focus-ring aria-expanded:bg-sidebar-accent aria-expanded:text-foreground disabled:opacity-50";
 
 /** Orca's repo sidebar: the listed projects (root, registered, test group), each with its lead and recent runs (ADR-0009). */
 export function Sidebar(props: Props) {
   const { state, projects, groups, leadState, project, run, card, now, listError, root, leadDot, onOverall, onProject, onWake, onRun, onCard, onNewRequest, onSearch, onDashboard, onAutomation, onDreaming, currentScreen, onListed, onUnregister, nextCount = 0, nextOpen, onNextUp, footer } = props;
-  const shown = state === "full" ? projects : [];
+  const [view, changeView] = useSidebarView();
+  const shown = useMemo(
+    () => (state === "full" ? sortProjects(view.hideScheduled ? withoutScheduled(projects) : projects, view.sortBy, view.order) : []),
+    [state, projects, view.hideScheduled, view.sortBy, view.order],
+  );
   const [naming, setNaming] = useState<{ project?: string } | undefined>();
   const [adding, setAdding] = useState<"new" | "folder" | undefined>();
   const [notice, setNotice] = useState<string>();
@@ -118,11 +141,49 @@ export function Sidebar(props: Props) {
   const isCurrent = (p: Project) => project !== undefined && sameFolder(p.path, project);
   // The overall lead's row is current when the root's own lead is on screen (ADR-0032/0034).
   const overallCurrent = root !== undefined && project !== undefined && sameFolder(project, root);
-  const row = (p: Project) => (
+  const manual = view.sortBy === "manual";
+  // Choosing 수동 keeps the rows where the saved order has them and takes in every project shown, so later activity moves none.
+  const changeOptions = (change: Partial<SidebarView>) =>
+    changeView(change.sortBy === "manual" && !manual ? (v) => ({ ...change, order: fullOrder(v.order, shown.map((p) => p.path)) }) : change);
+  const [drag, setDrag] = useState<{ path: string; section: string; over?: string; side?: Side }>();
+  // What a keyboard move did, for a screen reader.
+  const [moved, setMoved] = useState("");
+  const place = (path: string, target: string, side: Side) => changeView((v) => ({ order: placeAt(v.order, shown.map((p) => p.path), path, target, side) }));
+  /** A row's handles for the manual order; a row moves only among the rows of its own section. */
+  const orderOf = (section: string, peers: Project[], i: number): RowOrder => {
+    const p = peers[i];
+    const step = (to: number, side: Side) => () => {
+      place(p.path, peers[to].path, side);
+      setMoved(`${p.name}: ${peers.length}개 중 ${to + 1}번째로 옮겼습니다.`);
+    };
+    return {
+      dragging: drag?.path === p.path,
+      over: drag?.over === p.path ? drag.side : undefined,
+      up: i > 0 ? step(i - 1, "before") : undefined,
+      down: i < peers.length - 1 ? step(i + 1, "after") : undefined,
+      onDragStart: () => setDrag({ path: p.path, section }),
+      onDragOver: (side) => {
+        if (!drag || drag.section !== section || drag.path === p.path) return false;
+        if (drag.over !== p.path || drag.side !== side) setDrag({ ...drag, over: p.path, side });
+        return true;
+      },
+      onDragLeave: () => setDrag((d) => (d?.over === p.path ? { path: d.path, section: d.section } : d)),
+      onDrop: () => {
+        if (drag?.over === p.path && drag.side) place(drag.path, p.path, drag.side);
+        setDrag(undefined);
+      },
+      onDragEnd: () => setDrag(undefined),
+    };
+  };
+  const rows = (section: string, peers: Project[]) => peers.map((p, i) => row(p, manual ? orderOf(section, peers, i) : undefined));
+  const row = (p: Project, order?: RowOrder) => (
     <ProjectRow
       key={p.path}
       project={p}
       groups={groups}
+      grouped={view.groupBy === "group"}
+      shownRuns={shownRuns(view.runLimit)}
+      order={order}
       lead={leadState(p.path)}
       dot={leadDot?.(p.path)}
       current={isCurrent(p)}
@@ -140,8 +201,9 @@ export function Sidebar(props: Props) {
     />
   );
   const tests = shown.filter((p) => p.kind === "test");
-  const others = shown.filter((p) => p.kind !== "test");
+  const others = useMemo(() => shown.filter((p) => p.kind !== "test"), [shown]);
   const loose = others.filter((p) => !groups.groups.some((g) => g.id === groups.member[p.path]));
+  const statuses = useMemo(() => (view.groupBy === "status" ? byStatus(others, now) : []), [view.groupBy, others, now]);
   const testShown = testOpen || tests.some(isCurrent);
 
   return (
@@ -168,9 +230,10 @@ export function Sidebar(props: Props) {
         <button type="button" onClick={onAutomation} aria-current={currentScreen === "automation" ? "page" : undefined} className="flex h-8 items-center gap-2.5 rounded-md px-2 text-[13px] text-sidebar-foreground/90 hover:bg-sidebar-accent focus-ring aria-[current=page]:bg-sidebar-accent aria-[current=page]:font-medium"><CalendarClock className="size-4 text-muted-foreground" aria-hidden="true" />자동화</button>
       </nav>
 
-      <div className="flex items-center gap-0.5 px-4 pt-2 pb-1">
+      <div className="relative flex items-center gap-0.5 px-4 pt-2 pb-1">
         <span className="text-2xs font-semibold tracking-wider text-muted-foreground uppercase">프로젝트</span>
-        <button type="button" onClick={onNewRequest} aria-label="새 요청" title="새 요청" className={`ml-auto ${HEAD_BUTTON}`}><SquarePen className="size-3.5" aria-hidden="true" /></button>
+        <WorkspaceOptions view={view} onChange={changeOptions} buttonClass={`ml-auto ${HEAD_BUTTON}`} />
+        <button type="button" onClick={onNewRequest} aria-label="새 요청" title="새 요청" className={HEAD_BUTTON}><SquarePen className="size-3.5" aria-hidden="true" /></button>
         <button
           type="button"
           onClick={() => {
@@ -250,22 +313,33 @@ export function Sidebar(props: Props) {
           </p>
         )}
 
-        {groups.groups.map((g) => {
-          const members = others.filter((p) => groups.member[p.path] === g.id);
-          return (
-            <section key={g.id} className="mt-1" aria-label={`${g.name} 그룹`}>
-              <GroupHead group={g} count={members.length} groups={groups} />
-              {!g.collapsed && (
-                <div className="ml-2 border-l pl-1">
-                  {members.length === 0 && <p className="px-2 py-1.5 text-2xs text-muted-foreground">프로젝트의 ⋯ 메뉴에서 이 그룹으로 옮길 수 있습니다.</p>}
-                  {members.map(row)}
-                </div>
-              )}
-            </section>
-          );
-        })}
-        {groups.groups.length > 0 && loose.length > 0 && <h2 className="mt-2 px-2 py-1.5 text-2xs font-semibold text-muted-foreground">그룹 없음</h2>}
-        {loose.map(row)}
+        {view.groupBy === "group" &&
+          groups.groups.map((g) => {
+            const members = others.filter((p) => groups.member[p.path] === g.id);
+            return (
+              <section key={g.id} className="mt-1" aria-label={`${g.name} 그룹`}>
+                <GroupHead group={g} count={members.length} groups={groups} />
+                {!g.collapsed && (
+                  <div className="ml-2 border-l pl-1">
+                    {members.length === 0 && <p className="px-2 py-1.5 text-2xs text-muted-foreground">프로젝트의 ⋯ 메뉴에서 이 그룹으로 옮길 수 있습니다.</p>}
+                    {rows(`group:${g.id}`, members)}
+                  </div>
+                )}
+              </section>
+            );
+          })}
+        {view.groupBy === "group" && groups.groups.length > 0 && loose.length > 0 && <h2 className="mt-2 px-2 py-1.5 text-2xs font-semibold text-muted-foreground">그룹 없음</h2>}
+        {view.groupBy === "group" && rows("loose", loose)}
+        {view.groupBy === "none" && rows("all", others)}
+        {statuses.map(({ status, projects: members }) => (
+          <section key={status} aria-label={`${STATUS_WORD[status]} 프로젝트`}>
+            <h2 className="mt-2 flex items-center gap-1.5 px-2 py-1.5 text-2xs font-semibold text-muted-foreground">
+              {STATUS_WORD[status]}
+              <span className="rounded-full bg-muted px-1.5 text-3xs font-normal">{members.length}</span>
+            </h2>
+            {rows(`status:${status}`, members)}
+          </section>
+        ))}
 
         {tests.length > 0 && (
           <section className="mt-2" aria-label="test 묶음">
@@ -282,9 +356,10 @@ export function Sidebar(props: Props) {
                 <span className="rounded-full bg-muted px-1.5 text-3xs font-normal text-muted-foreground">{tests.length}</span>
               </button>
             </div>
-            {testShown && <div className="ml-2 border-l pl-1">{tests.map(row)}</div>}
+            {testShown && <div className="ml-2 border-l pl-1">{rows("test", tests)}</div>}
           </section>
         )}
+        <p role="status" className="sr-only">{moved}</p>
       </div>
       {footer}
     </aside>
@@ -369,6 +444,12 @@ function GroupNameInput({ label, initial, onDone: done }: { label: string; initi
 interface RowProps {
   project: Project;
   groups: Groups;
+  /** The list is split by the user's groups, so the menu offers moving between them. */
+  grouped: boolean;
+  /** Run rows before the rest fold into "이전 실행 N개". */
+  shownRuns: number;
+  /** Present while the order is manual. */
+  order?: RowOrder;
   lead: LeadState;
   /** The lead's aggregate tab state when the backend reports one (ADR-0034). */
   dot?: LeadTab["state"];
@@ -386,22 +467,62 @@ interface RowProps {
   onUnregister: () => void;
 }
 
-function ProjectRow({ project, groups, lead, dot, current, open, run, card, now, onSelect, onToggle, onWake, onRun, onCard, onNewGroup, onUnregister }: RowProps) {
+function ProjectRow({ project, groups, grouped, shownRuns, order, lead, dot, current, open, run, card, now, onSelect, onToggle, onWake, onRun, onCard, onNewGroup, onUnregister }: RowProps) {
   const [menuOpen, setMenuOpen] = useState(false);
   // Only O's own runs make a project busy: a Claude Code session open here is not one (B7).
   const live = project.runs.filter(isDirecting).length;
-  const recent = project.runs.slice(0, SHOWN_RUNS);
-  const older = project.runs.slice(SHOWN_RUNS);
+  const recent = project.runs.slice(0, shownRuns);
+  const older = project.runs.slice(shownRuns);
   // The older runs open on their own only to show a selected run that is still recent.
   const chosenOlder = older.find((r) => r.runId === run);
   const [olderOpen, setOlderOpen] = useState(false);
   const olderShown = olderOpen || Boolean(chosenOlder && isRecent(chosenOlder, now));
   const olderLive = older.filter(isDirecting).length;
   const runRow = (r: RunView) => <RunRow key={r.runId} run={r} current={r.runId === run} card={card} now={now} onRun={onRun} onCard={onCard} />;
+  const branchRows = (runs: RunView[]) => runsByBranch(runs).map(({ branch, runs: groupedRuns }) => (
+    <section key={branch ?? ""} aria-label={branch ? `${branch} 브랜치 실행` : "브랜치 정보 없음"}>
+      <h3 className="mt-1 flex min-w-0 items-center gap-1.5 px-2 py-1 text-2xs text-muted-foreground" title={branch}>
+        <GitBranch className="size-3 shrink-0" aria-hidden="true" />
+        <span className="truncate">{branch ?? "브랜치 정보 없음"}</span>
+        <span className="shrink-0 tabular-nums">{groupedRuns.length}</span>
+      </h3>
+      {groupedRuns.map(runRow)}
+    </section>
+  ));
 
   return (
-    <div className="mt-0.5">
-      <div data-current={current || undefined} onContextMenu={(e) => { e.preventDefault(); setMenuOpen(true); }} className="group/row flex items-center rounded-md hover:bg-sidebar-accent data-current:bg-sidebar-accent">
+    <div
+      className="relative mt-0.5"
+      onDragOver={
+        order &&
+        ((e) => {
+          const box = e.currentTarget.getBoundingClientRect();
+          if (!order.onDragOver(e.clientY < box.top + box.height / 2 ? "before" : "after")) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+        })
+      }
+      onDragLeave={order && ((e) => { if (!e.currentTarget.contains(e.relatedTarget as Node | null)) order.onDragLeave(); })}
+      onDrop={order && ((e) => { e.preventDefault(); order.onDrop(); })}
+    >
+      {order?.over && <span className={`pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded-full bg-primary ${order.over === "before" ? "-top-px" : "-bottom-px"}`} aria-hidden="true" />}
+      <div
+        data-current={current || undefined}
+        draggable={order ? true : undefined}
+        onDragStart={
+          order &&
+          ((e) => {
+            // The open menu sits inside this row: a press dragged across its items is not a move.
+            if (menuOpen) return e.preventDefault();
+            e.dataTransfer.effectAllowed = "move";
+            e.dataTransfer.setData("text/plain", project.name);
+            order.onDragStart();
+          })
+        }
+        onDragEnd={order?.onDragEnd}
+        onContextMenu={(e) => { e.preventDefault(); setMenuOpen(true); }}
+        className={`group/row flex items-center rounded-md hover:bg-sidebar-accent data-current:bg-sidebar-accent${order?.dragging ? " opacity-50" : ""}`}
+      >
         <button type="button" onClick={onToggle} aria-expanded={open} aria-label={`${project.name} 작업 목록 ${open ? "접기" : "펼치기"}`} className="flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground focus-ring">
           <ChevronRight className={`size-3.5 transition-transform ${open ? "rotate-90" : ""}`} aria-hidden="true" />
         </button>
@@ -411,7 +532,7 @@ function ProjectRow({ project, groups, lead, dot, current, open, run, card, now,
           {project.missing && <span className="sr-only">(폴더 없음)</span>}
           {live > 0 && <span className="shrink-0 rounded-full bg-agent-working/15 px-1.5 text-3xs text-agent-working">{live} 진행</span>}
         </button>
-        <ProjectMenu project={project} groups={groups} onNewGroup={onNewGroup} onUnregister={onUnregister} open={menuOpen} setOpen={setMenuOpen} />
+        <ProjectMenu project={project} groups={groups} grouped={grouped} order={order} onNewGroup={onNewGroup} onUnregister={onUnregister} open={menuOpen} setOpen={setMenuOpen} />
       </div>
       {open && (
         <div className="ml-3.5 border-l pb-1 pl-1.5">
@@ -425,7 +546,7 @@ function ProjectRow({ project, groups, lead, dot, current, open, run, card, now,
             <span className="font-medium">총괄</span>
             <span className="text-muted-foreground">{LEAD_WORD[lead]}</span>
           </button>
-          {recent.map(runRow)}
+          {branchRows(recent)}
           {older.length > 0 && (
             <>
               <button
@@ -440,7 +561,7 @@ function ProjectRow({ project, groups, lead, dot, current, open, run, card, now,
                 {olderLive > 0 && <span className="text-agent-working">· {olderLive} 진행</span>}
                 {chosenOlder && !olderShown && <span className="sr-only">(선택한 실행이 여기 있음)</span>}
               </button>
-              {olderShown && older.map(runRow)}
+              {olderShown && branchRows(older)}
             </>
           )}
         </div>
@@ -450,7 +571,7 @@ function ProjectRow({ project, groups, lead, dot, current, open, run, card, now,
 }
 
 /** A small menu panel under its button. */
-function ProjectMenu({ project, groups, onNewGroup, onUnregister, open, setOpen }: { project: Project; groups: Groups; onNewGroup: () => void; onUnregister: () => void; open: boolean; setOpen: (open: boolean | ((open: boolean) => boolean)) => void }) {
+function ProjectMenu({ project, groups, grouped, order, onNewGroup, onUnregister, open, setOpen }: { project: Project; groups: Groups; grouped: boolean; order?: RowOrder; onNewGroup: () => void; onUnregister: () => void; open: boolean; setOpen: (open: boolean | ((open: boolean) => boolean)) => void }) {
   const [error, setError] = useState("");
   const panel = useRef<HTMLDivElement>(null);
   const button = useRef<HTMLButtonElement>(null);
@@ -458,7 +579,15 @@ function ProjectMenu({ project, groups, onNewGroup, onUnregister, open, setOpen 
   useDismiss(panel, open, close, button);
   const inGroup = groups.member[project.path];
   const item = "flex w-full items-center rounded px-2 py-1.5 text-left text-xs hover:bg-accent focus-ring";
-  const movable = project.kind !== "test";
+  const movable = grouped && project.kind !== "test";
+  // The menu stays open for the next step. A row put back in at its new place loses focus, so the pressed item takes it again.
+  const step = (e: MouseEvent<HTMLButtonElement>, go: (() => void) | undefined) => {
+    if (!go) return;
+    const pressed = e.currentTarget;
+    go();
+    requestAnimationFrame(() => pressed.focus());
+  };
+  const stepItem = `${item} aria-disabled:cursor-not-allowed aria-disabled:opacity-50 aria-disabled:hover:bg-transparent`;
   return (
     <div className="relative shrink-0">
       <button
@@ -476,6 +605,13 @@ function ProjectMenu({ project, groups, onNewGroup, onUnregister, open, setOpen 
           <button type="button" className={item} disabled={project.missing} onClick={() => { void currentBackend().projectOpen(project.path).then(close, (e: unknown) => setError(String(e))); }}>폴더 열기</button>
           <button type="button" className={item} onClick={() => { void navigator.clipboard.writeText(project.path).then(close, (e: unknown) => setError(String(e))); }}>경로 복사</button>
           {error && <p role="alert" className="px-2 py-1 text-2xs text-destructive">{error}</p>}
+          {order && (
+            <>
+              <div className="my-1 border-t" role="separator" />
+              <button type="button" className={stepItem} aria-disabled={!order.up || undefined} onClick={(e) => step(e, order.up)}>위로 옮기기</button>
+              <button type="button" className={stepItem} aria-disabled={!order.down || undefined} onClick={(e) => step(e, order.down)}>아래로 옮기기</button>
+            </>
+          )}
           {movable && (
             <>
               <p className="px-2 pt-1 pb-1.5 text-3xs font-semibold text-muted-foreground">그룹으로 옮기기</p>
@@ -506,7 +642,7 @@ function ProjectMenu({ project, groups, onNewGroup, onUnregister, open, setOpen 
             </>
           ) : (
             project.kind !== "history" && (
-              <p className={`px-2 pb-1 text-3xs text-muted-foreground ${movable ? "mt-1 border-t pt-1.5" : "pt-1"}`}>
+              <p className={`px-2 pb-1 text-3xs text-muted-foreground ${movable || order ? "mt-1 border-t pt-1.5" : "pt-1"}`}>
                 프로젝트 루트{project.kind === "test" ? "의 test 폴더" : ""} 안의 폴더라 목록에서 빼려면 폴더를 루트 밖으로 옮기세요.
               </p>
             )

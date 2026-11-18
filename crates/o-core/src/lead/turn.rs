@@ -4,6 +4,59 @@ use super::*;
 
 #[allow(clippy::too_many_arguments)]
 pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<Origin<'_>>) -> Result<Vec<LeadEvent>, String> {
+    use crate::usage::fallback;
+    check_request(home, req)?;
+    let thread = match worker { Some(w) => w.thread_id.to_string(), None => select_thread(home, req.project, req.thread, req.fresh)? };
+    let req = &SendRequest { thread: Some(&thread), fresh: false, ..*req };
+    let flow = OpenOptions::new().read(true).write(true).create(true).truncate(false).open(thread_dir(home, &thread).join("turn-flow.lock")).map_err(|e| e.to_string())?;
+    flow.try_lock().map_err(|_| BUSY.to_string())?;
+    if !fallback::read(home).enabled { return send_attempt(home, req, spawner, limit, start, worker, ask, origin); }
+    let logical = worker.map_or_else(|| format!("lead:{thread}:{}", read_thread(home, &thread).len()), |w| format!("lead:{thread}:worker:{}:{}", w.speaker.run_id, w.message.id));
+    let blocked = store::cooldown_times(home).map_err(|e| e.to_string())?.get(&req.provider).and_then(|t| crate::sys::js::parse_time(t)).is_some_and(|t| t > Utc::now());
+    let skipped = blocked && fallback::confirmed(home, req.provider).map_err(|e| e.to_string())?;
+    let mut added = if skipped && worker.is_some() { Vec::new() } else if skipped {
+        let event = LeadEvent::User { at: now_iso(), text: req.text.into(), attachments: req.attach.iter().map(|path| files::import(home, &thread, path)).collect::<Result<Vec<_>, _>>()?, provider: req.provider, model: req.model.map(str::to_owned), effort: req.effort.map(str::to_owned), profile: Some(Profile::of_clean(req.clean.is_some())), yolo: req.yolo, origin: origin.map(|o| match o { Origin::Forwarded { .. } => ORIGIN_OVERALL, Origin::Review(_) => ORIGIN_REVIEW }.into()) };
+        append(home, &thread, &event).map_err(|e| e.to_string())?;
+        vec![event]
+    }
+        else { send_attempt(home, req, spawner, limit, start, worker, ask, origin)? };
+    let limited = skipped || added.iter().any(|e| matches!(e, LeadEvent::SubscriptionLimit { .. }));
+    let failed = skipped || matches!(added.last(), Some(LeadEvent::Error { .. }));
+    if !limited || !failed { return Ok(added); }
+    let attempt = (|| -> Result<Option<(fallback::Target, String)>, String> {
+        if !fallback::confirmed(home, req.provider).map_err(|e| e.to_string())? { return Ok(None); }
+        if !skipped && !added.iter().any(|e| matches!(e, LeadEvent::SubscriptionLimit { safe_handoff: true, .. })) { return Err("외부 실행 또는 프로세스 종료 상태가 불명확해 자동으로 이어갈 수 없습니다".into()); }
+        if running_path(home, &thread).exists() { return Err("원래 총괄 프로세스의 종료를 확인하지 못했습니다".into()); }
+        let Some(target) = fallback::prepare(home, req.provider, req.effort, true, req.clean, Path::new(req.project))? else { return Ok(None) };
+        let last = added.iter().rev().find_map(|e| match e { LeadEvent::Error { text, .. } | LeadEvent::Reply { text, .. } => Some(text.as_str()), _ => None }).unwrap_or_default();
+        let text = fallback::handoff(req.text, last);
+        let next = SendRequest { provider: target.provider, model: Some(&target.model), text: &text, ..*req };
+        check_request(home, &next)?;
+        fallback::claim(home, &logical, &target)?;
+        Ok(Some((target, text)))
+    })();
+    match attempt {
+        Ok(Some((target, text))) => {
+            let event = LeadEvent::Fallback { at: now_iso(), from: req.provider, from_model: req.model.map(str::to_owned), target: target.clone(), reason: "확인된 구독 사용량 한도".into() };
+            append(home, &thread, &event).map_err(|e| e.to_string())?;
+            added.push(event);
+            let next_req = SendRequest { provider: target.provider, model: Some(&target.model), text: &text, ..*req };
+            let next_origin = if !skipped && matches!(origin, Some(Origin::Forwarded { .. })) { None } else { origin };
+            let next_worker = worker.map(|w| WorkerTurn { claimed: !skipped, ..w });
+            added.extend(send_attempt(home, &next_req, spawner, limit, start, next_worker, ask, next_origin)?);
+        }
+        Ok(None) => {}
+        Err(why) => {
+            let event = LeadEvent::Warning { at: now_iso(), text: format!("자동 전환 중단: {why}") };
+            append(home, &thread, &event).map_err(|e| e.to_string())?;
+            added.push(event);
+        }
+    }
+    Ok(added)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn send_attempt(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Duration, start: Option<&StartRun<'_>>, worker: Option<WorkerTurn<'_>>, ask: bool, origin: Option<Origin<'_>>) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
     let overall = worker.is_none() && overall::is_overall(home, req.project);
     let review = match origin { Some(Origin::Review(target)) => Some(target), _ => None };
@@ -48,8 +101,10 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
             return Err("실행과 열린 총괄 대화가 일치하지 않습니다".into());
         }
         read_complete_thread(home, &thread_id)?;
-        let claimed = team::claim(home, w.speaker).map_err(|e| e.to_string())?;
-        if claimed.as_ref().is_none_or(|m| m.id != w.message.id) { return Err("다른 메시지가 먼저 접수되어 상태 확인이 필요합니다".into()); }
+        if !w.claimed {
+            let claimed = team::claim(home, w.speaker).map_err(|e| e.to_string())?;
+            if claimed.as_ref().is_none_or(|m| m.id != w.message.id) { return Err("다른 메시지가 먼저 접수되어 상태 확인이 필요합니다".into()); }
+        }
     }
     let pending: Vec<_> = if worker.is_some() { Vec::new() } else { notes::read(home, &thread_id).map_err(|e| format!("설계 주석을 읽지 못했습니다: {e}"))?.into_iter().filter(|note| !note.sent).collect() };
     let mut user_text = req.text.trim().to_string();
@@ -61,6 +116,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     let progress_path = thread_dir(home, &thread_id).join("progress.json");
     let _ = fs::write(&progress_path, "[]");
     let before = if worker.is_some() { read_complete_thread(home, &thread_id)? } else { read_thread(home, &thread_id) };
+    let fallback_turn = matches!(before.last(), Some(LeadEvent::Fallback { target, .. }) if target.provider == req.provider);
     let attachments = req.attach.iter().map(|path| files::import(home, &thread_id, path)).collect::<Result<Vec<_>, _>>()?;
 
     let mut added = Vec::new();
@@ -71,7 +127,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     };
     if let Some(w) = &worker {
         emit(LeadEvent::Worker { at: now_iso(), run_id: w.speaker.run_id.clone(), card_id: w.message.from.clone(), message_id: w.message.id.clone(), text: user_text.clone() })?;
-    } else { emit(LeadEvent::User {
+    } else if !fallback_turn { emit(LeadEvent::User {
         at: now_iso(),
         text: user_text.clone(),
         attachments: attachments.clone(),
@@ -102,7 +158,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
             Err(notice) => { worker_notice = Some(notice.to_string()); None }
         }
     } else { None };
-    let previous_session = if worker.is_some() { worker_previous.as_ref().map(|(id, tools, _)| (id.clone(), Some(*tools))) } else { before.iter().rev().find_map(|e| match e {
+    let previous_session = if fallback_turn { None } else if worker.is_some() { worker_previous.as_ref().map(|(id, tools, _)| (id.clone(), Some(*tools))) } else { before.iter().rev().find_map(|e| match e {
         LeadEvent::Session { provider, session_id, clean, result_tools, .. } if *provider == req.provider && clean.is_none_or(|c| c == req.clean.is_some()) => {
             Some((session_id.clone(), *result_tools))
         }
@@ -191,7 +247,8 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
         forwarded: matches!(origin, Some(Origin::Forwarded { .. })),
         review: review.map(|target| target.data.as_str()),
     };
-    let text = if worker.is_some() { prompt::build_worker(&input) } else { prompt::build(&input) };
+    let mut text = if worker.is_some() { prompt::build_worker(&input) } else { prompt::build(&input) };
+    if worker.is_none() { text.push_str(&format!("\n\n{}", providers::models::worker_prompt(home, req.clean, Path::new(req.project)))); }
     let files_dir = status_file.as_ref().and_then(|f| f.path.parent()).map(Path::to_path_buf).unwrap_or_else(|| files::thread_files(home, &thread_id));
     let files_dir = files_dir.exists().then(|| files_dir.to_string_lossy().into_owned());
     let images: Vec<String> = attachments.iter().filter(|a| a.image).map(|a| a.path.clone()).collect();
@@ -233,6 +290,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
         return Ok(added);
     }
     let spawned = command.and_then(|command| {
+        if fallback_turn { crate::usage::fallback::check_enabled(home, &crate::usage::fallback::Target { provider: req.provider, model: req.model.unwrap_or_default().into() }).map_err(io::Error::other)?; }
         #[cfg(all(test, any(windows, target_os = "macos")))]
         if turn_process::NO_JOB.get() {
             let mut command = command.command();
@@ -357,6 +415,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     let mut reader = StreamReader::new(req.provider);
     // The session this turn ran in: the resumed one, or the one the stream names.
     let mut used_session = if app_server { None } else { session.clone() };
+    let mut accounting = crate::usage::accounting::Collector::new(req.provider, session.clone(), app_server, crate::sys::js::iso(turn_started));
     // Whether the stream named its session: a resumed CLI that never started names none.
     let mut session_named = false;
     let (mut input, mut cached, mut output) = (0.0, 0.0, 0.0);
@@ -365,6 +424,8 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     let mut last_message = String::new();
     let mut last: Option<(bool, String)> = None;
     let mut limited = false;
+    let mut subscription_limit = None;
+    let mut safe_handoff = true;
     let mut progress = Vec::<Value>::new();
     let mut counts = [0u64; 4];
     let mut partial = String::new();
@@ -381,7 +442,10 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
             Ok(file) => Some(file),
             Err(error) => { raw_issue = Some(error.to_string()); None }
         };
+        accounting.source_start = raw.as_ref().and_then(|f| f.metadata().ok()).map_or(0, |m| m.len());
+        accounting.source_end = accounting.source_start;
         let mut process_line = |line: &str| -> Result<(), String> {
+            accounting.observe(line);
             if let Ok(value) = serde_json::from_str::<Value>(line) {
                 if value["type"] == "o.delta" {
                     if let Some(delta) = value["delta"].as_str() {
@@ -422,10 +486,14 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
                 if let Err(error) = file.write_all(format!("{line}\n").as_bytes()) {
                     raw_issue = Some(error.to_string());
                     raw = None;
-                }
+                } else { accounting.source_end += line.len() as u64 + 1; }
             }
             for signal in reader.read(line) {
                 match signal {
+                    StreamSignal::SubscriptionLimit { until } => {
+                        crate::usage::fallback::record_limit(home, req.provider, &until).map_err(|e| e.to_string())?;
+                        subscription_limit = Some(until);
+                    }
                     StreamSignal::Session { session_id } => {
                         if worker.is_none() && session.as_deref() != Some(session_id.as_str()) {
                             emit(LeadEvent::Session { at: now_iso(), provider: req.provider, session_id: session_id.clone(), clean: Some(req.clean.is_some()), result_tools: result_tools.then_some(true) })?;
@@ -437,13 +505,10 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
                     }
                     StreamSignal::Message { text } => last_message = text,
                     StreamSignal::Usage { input: i, cached: c, output: o, complete } => {
-                        // `codex exec` reports its thread's total (app-server reports each turn by itself).
-                        let [i, c, o] = match used_session.as_deref().filter(|_| !app_server && req.provider == ProviderId::Codex && complete) {
-                            Some(session) => crate::usage::thread_total::turn(home, session, [i, c, o], chrono::Utc::now()),
-                            None => [i, c, o],
-                        };
-                        (input, cached, output, used) = (input + i, cached + c, output + o, true);
-                        usage_complete &= complete;
+                        if !matches!(req.provider, ProviderId::Claude | ProviderId::Codex) {
+                            (input, cached, output, used) = (input + i, cached + c, output + o, true);
+                            usage_complete &= complete;
+                        }
                     }
                     StreamSignal::Limit { until } => {
                         limited = true;
@@ -457,6 +522,7 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
                     // Dreaming collects cards' failed calls (ADR-0041); a lead turn keeps none.
                     StreamSignal::ToolError { .. } => {}
                     StreamSignal::Tool { name, summary } => {
+                        safe_handoff &= crate::usage::fallback::safe_tool(&name);
                         match name.to_ascii_lowercase().as_str() {
                             "read" | "read_file" => counts[0] += 1,
                             "glob" | "grep" | "search" | "web_search" => counts[1] += 1,
@@ -603,7 +669,11 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     } else if unresolved && !unknown_saved {
         thread::spawn(move || { let _slot = slot; loop { thread::park(); } });
     }
-    if used {
+    if matches!(req.provider, ProviderId::Claude | ProviderId::Codex) {
+        let at = now_iso();
+        let usage = accounting.settle(home, &crate::usage::accounting::profile(req.provider, req.clean), &format!("lead:{thread_id}:{}:{}", before.len(), req.provider), &format!("leads/{thread_id}/turn.raw.jsonl"), &at, !unresolved && raw_issue.is_none() && (!app_server || provider_finished), Vec::new()).map_err(|e| e.to_string())?;
+        if let Some(usage) = usage { emit(LeadEvent::UsageSettled { at, usage })?; }
+    } else if used {
         emit(LeadEvent::Usage { at: now_iso(), provider: req.provider, input, cached, output, complete: Some(usage_complete && (!app_server || provider_finished) && !incomplete) })?;
     }
     if let Some(error) = raw_issue {
@@ -656,6 +726,9 @@ pub(super) fn send_turn(home: &Path, req: &SendRequest, spawner: &Spawner, limit
     }
     let answer = last.map(|(_, text)| text).filter(|t| !t.trim().is_empty()).unwrap_or(last_message);
     if !ok {
+        if let Some(until) = subscription_limit {
+            emit(LeadEvent::SubscriptionLimit { at: now_iso(), provider: req.provider, until, safe_handoff: safe_handoff && !unresolved })?;
+        }
         let why = if limited {
             format!("{} 사용량 한도에 걸렸습니다. 다른 에이전트를 고르거나 한도가 풀린 뒤 다시 보내세요", req.provider)
         } else {

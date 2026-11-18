@@ -1,0 +1,21 @@
+Upstream: https://github.com/gtk-rs/gtk-rs-core/commit/b5a4071e439bef2b5eea76c3aa25e5ae84839e34
+Advisory: RUSTSEC-2024-0429 / GHSA-wrw7-89jp-8q8g
+Applied to the original glib 0.18.5 crate, without a version change.
+
+--- a/src/variant_iter.rs
++++ b/src/variant_iter.rs
+@@ -118,12 +118,12 @@
+     fn impl_get(&self, i: usize) -> &'a str {
+         unsafe {
+-            let p: *mut libc::c_char = std::ptr::null_mut();
++            let mut p: *mut libc::c_char = std::ptr::null_mut();
+             let s = b"&s\0";
+             ffi::g_variant_get_child(
+                 self.variant.to_glib_none().0,
+                 i,
+                 s as *const u8 as *const _,
+-                &p,
++                &mut p,
+                 std::ptr::null::<i8>(),
+             );
+             let p = std::ffi::CStr::from_ptr(p);

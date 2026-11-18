@@ -12,7 +12,7 @@
 ## 결정
 
 - `o review <PR 번호|주소>`를 더한다. 프로젝트 폴더(지금 폴더)에서 공식 `gh`로만 PR을 읽는다(`gh pr view --json …`, `gh pr diff`). 우리 코드는 GitHub API를 직접 부르지 않는다.
-- 검토는 카드 하나짜리 일반 계획("PR #n 검토", 카드 `review`, 역할 `PR 검토`)이다. `o dispatch`와 같은 정책 검사·동시 실행·하루 상한·쿨다운·`--clean`을 그대로 받는다. 상한(`LIMITS`)은 바꾸지 않았다.
+- 검토는 카드 하나짜리 일반 계획("PR #n 검토", 카드 `review`, 역할 `PR 검토`)이다. `o dispatch`와 같은 정책 검사·동시 실행·하루 사용 예산·쿨다운·`--clean`을 그대로 받는다. 날짜별 카드 수 제한은 ADR-0045에서 제거했다.
 - 검토 에이전트는 따로 지정하지 않으면 PR을 쓴 에이전트가 아닌 쪽: O 실행 기록에서 그 PR을 보고한 카드, 없으면 PR 본문의 "Generated with …"·co-author 표시로 판단한다. 쓴 쪽이 claude면 codex, 그 밖(사람·codex·agy·모름)은 claude.
 - `--post`가 있으면 끝난 검토문을 O 폴더의 `reviews/<runId>.md`(카드가 쓸 수 없는 곳, 이미 있으면 링크든 파일이든 열지 않고 실패)에 새로 만들고 `gh pr comment <PR> --body-file <그 파일>`로 게시한 뒤 `review.posted { pr, url, head }` 이벤트를 남긴다. **승인(`gh pr review --approve`)·병합은 하지 않는다.** 없으면 그 파일 위치만 알려 준다. `--dry-run`은 가져오기·계획·정책 검사까지만 하고 아무것도 실행하지 않는다.
 - 검토 대상 커밋을 고정한다: `gh pr view`의 `headRefOid`·`baseRefOid`를 프롬프트·출력에 적고, diff를 읽은 뒤 head를 다시 확인해 그사이 바뀌었으면 거부한다. 게시 직전에도 head를 다시 읽어 검토한 커밋과 다르면 게시하지 않는다. 지금 폴더의 `HEAD`가 PR head가 아니면 카드에게 로컬 파일로 diff를 보충하지 말라고 적는다.

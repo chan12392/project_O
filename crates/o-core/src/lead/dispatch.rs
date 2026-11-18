@@ -10,10 +10,46 @@ pub fn check_lead_plan(home: &Path, project: &str, mut plan: Value, mode: RunMod
         object.insert("project".into(), Value::String(project.to_string()));
     }
     let (violations, notices) = match policy_context(home, Utc::now()) {
-        Ok(ctx) => { let checked = check_plan_in(&plan, &ctx, mode); (checked.violations, checked.notices) },
+        Ok(ctx) => { let checked = crate::usage::fallback::check_plan(home, &plan, &ctx, mode); (checked.violations, checked.notices) },
         Err(error) => (vec![Violation { rule: "policy-context".into(), message: error.to_string(), card_id: None }], Vec::new()),
     };
     (plan, violations, notices)
+}
+
+pub(super) fn check_generated_plan(home: &Path, project: &str, plan: Value, mode: RunMode) -> (Value, Vec<Violation>, Vec<String>) {
+    let (plan, mut violations, notices) = check_lead_plan(home, project, plan, mode);
+    for card in plan["cards"].as_array().into_iter().flatten() {
+        let Some(provider) = card["provider"].as_str().and_then(ProviderId::parse) else { continue };
+        if providers::get(provider).terminal_card() { continue; }
+        let model = card["model"].as_str().filter(|s| !s.is_empty());
+        let effort = card["effort"].as_str().filter(|s| !s.is_empty());
+        let error = if model.is_none() || effort.is_none() { Some("새 총괄 계획의 헤드리스 카드는 model과 effort를 명시해야 합니다".into()) }
+            else {
+                let root = clean::default_root();
+                providers::models::cached(home, provider, mode.profile.is_clean().then_some(root.as_path()), Path::new(project)).and_then(|c| providers::models::validate(&c, model.unwrap(), effort).err())
+            };
+        if let Some(message) = error { violations.push(Violation { rule: "model-selection".into(), message, card_id: card["id"].as_str().map(str::to_owned) }); }
+    }
+    (plan, violations, notices)
+}
+
+#[cfg(test)]
+#[test]
+fn generated_headless_plans_require_explicit_choices_but_legacy_and_terminal_plans_do_not() {
+    let dir = std::env::temp_dir().join(format!("o-generated-model-{}", store::new_run_id(Utc::now())));
+    let project = dir.join("project");
+    fs::create_dir_all(&project).unwrap();
+    let home = dir.join("state");
+    let project = project.to_string_lossy();
+    let mode = RunMode::of(Profile::Own);
+    let mut plan = serde_json::json!({"title":"fixture","cards":[{"id":"a","provider":"claude","task":"inspect"}]});
+    assert!(check_generated_plan(&home, &project, plan.clone(), mode).1.iter().any(|v| v.rule == "model-selection"));
+    assert!(!check_lead_plan(&home, &project, plan.clone(), mode).1.iter().any(|v| v.rule == "model-selection"));
+    plan["cards"][0]["model"] = serde_json::json!("explicit-model");
+    plan["cards"][0]["effort"] = serde_json::json!("medium");
+    assert!(!check_generated_plan(&home, &project, plan, mode).1.iter().any(|v| v.rule == "model-selection"));
+    let terminal = serde_json::json!({"title":"fixture","cards":[{"id":"a","provider":"agy","task":"inspect"}]});
+    assert!(!check_generated_plan(&home, &project, terminal, mode).1.iter().any(|v| v.rule == "model-selection"));
 }
 
 /// `<threadId>-p<n>` → the thread id.
@@ -49,9 +85,9 @@ pub struct Dispatched {
 /// Dispatches a stored plan, or explicitly retries a failed run: checks it again like `o dispatch`, makes the run and
 /// hands its id to `start` (which launches `o _run <runId>` in the background).
 /// `mode` is the profile and context choice (ADR-0013), saved with the run like `o dispatch` does.
-pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Dispatched, DispatchError> {
+pub fn dispatch(home: &Path, plan_id: &str, mode: RunMode, expected: Option<&Value>, start: &StartRun<'_>) -> Result<Dispatched, DispatchError> {
     let _locks = lock_latest(home, plan_id)?;
-    dispatch_locked(home, plan_id, mode, start, true)
+    dispatch_locked(home, plan_id, mode, expected, start, true, false)
 }
 
 /// The locks every dispatch (by hand or automatic) holds while it checks and starts a plan.
@@ -94,7 +130,7 @@ pub(super) fn lock_latest(home: &Path, plan_id: &str) -> Result<DispatchLocks, S
     Ok(DispatchLocks { _current: current, _turn: turn, _dispatch: lock })
 }
 
-fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&str) -> io::Result<()>, retry: bool) -> Result<Dispatched, DispatchError> {
+fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, expected: Option<&Value>, start: &StartRun<'_>, retry: bool, scheduled: bool) -> Result<Dispatched, DispatchError> {
     let thread_id = plan_thread(plan_id).ok_or_else(|| format!("계획 id 형식이 아닙니다: {plan_id}"))?;
     let events = read_thread(home, thread_id);
     let project = thread_project(&events).ok_or_else(|| format!("총괄 대화가 없습니다: {thread_id}"))?;
@@ -105,6 +141,9 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
             _ => None,
         })
         .ok_or_else(|| format!("이 대화에 그런 계획이 없습니다: {plan_id}"))?;
+    if expected.is_some_and(|expected| *expected != plan) {
+        return Err("화면에서 확인한 계획과 현재 계획이 다릅니다. 갱신한 계획을 확인한 뒤 실행하세요".to_string().into());
+    }
     let previous_run = events.iter().rev().find_map(|e| match e {
         LeadEvent::Dispatch { plan_id: id, run_id, .. } if id == plan_id => Some(run_id.clone()),
         _ => None,
@@ -117,12 +156,12 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
     }
 
     let now = Utc::now();
-    let mut plan = plan;
-    if let Some(object) = plan.as_object_mut() {
-        object.insert("project".into(), Value::String(project.clone()));
+    // The proposal already bound its project; mutable thread metadata cannot replace it.
+    if !plan.get("project").and_then(Value::as_str).is_some_and(|saved| crate::projects::same(saved, &project)) {
+        return Err("계획의 프로젝트와 대화의 프로젝트가 다릅니다. 최신 설계를 다시 확인하세요".to_string().into());
     }
     let ctx = policy_context(home, now).map_err(|e| e.to_string())?;
-    let checked = check_plan_in(&plan, &ctx, mode);
+    let checked = crate::usage::fallback::check_plan(home, &plan, &ctx, mode);
     let Some(plan) = checked.plan else {
         let _ = record_blocked(home, now, plan.get("title"), &checked.violations);
         return Err(DispatchError::Blocked(checked.violations));
@@ -154,10 +193,12 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
         let mut marker = OpenOptions::new().write(true).create_new(true).open(&retry_mark).map_err(|e| e.to_string())?;
         marker.write_all(run_id.as_bytes()).and_then(|()| marker.sync_all()).map_err(|e| e.to_string())?;
     }
+    let input = RunInput::new(home, &run_id, &plan, mode, true, scheduled);
     let started = store::create_run(home, &run_id, &plan)
         .and_then(|()| store::mark_mode(home, &run_id, &mode))
+        .and_then(|()| if scheduled { store::mark_scheduled(home, &run_id) } else { Ok(()) })
         .and_then(|()| fs::write(run_dir(home, &run_id).join("isolated-worktrees"), ""))
-        .and_then(|()| start(&run_id));
+        .and_then(|()| start(&run_id, &input));
     if let Err(error) = started {
         // Nothing runs: the plan may be dispatched again.
         if previous_run.is_none() { let _ = fs::remove_file(&mark); } else { let _ = fs::remove_file(&retry_mark); }
@@ -178,22 +219,22 @@ fn dispatch_locked(home: &Path, plan_id: &str, mode: RunMode, start: &dyn Fn(&st
 }
 
 /// Run a lead turn and, when allowed, hand its plan to the same checked dispatch path.
-pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+pub fn send_with_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &StartRun<'_>) -> Result<Vec<LeadEvent>, String> {
     send_with_auto(home, req, spawner, start, None, false)
 }
 
-pub fn send_with_autorun_and_followups(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>, resume: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+pub fn send_with_autorun_and_followups(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &StartRun<'_>, resume: &StartRun<'_>) -> Result<Vec<LeadEvent>, String> {
     send_with_auto(home, req, spawner, start, Some(resume), false)
 }
 
 /// A user-created schedule authorizes dispatch, but keeps the lead and cards in normal mode.
-pub fn send_with_scheduled_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+pub fn send_with_scheduled_autorun(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &StartRun<'_>) -> Result<Vec<LeadEvent>, String> {
     if req.yolo { return Err("예약 요청은 일반 권한으로 실행해야 합니다".into()); }
     if req.provider == ProviderId::Agy { return Err("예약에서는 Antigravity를 실행할 수 없습니다".into()); }
     send_with_auto(home, req, spawner, start, None, true)
 }
 
-fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>, resume: Option<&StartRun<'_>>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
+fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: &StartRun<'_>, resume: Option<&StartRun<'_>>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
     let turn_started = Utc::now();
     let mut added = send_within_followups(home, req, spawner, TURN_LIMIT, resume, !scheduled)?;
     let Some((plan_id, plan, ok)) = added.iter().find_map(|e| match e {
@@ -213,7 +254,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
     let wait = if scheduled_agy { Some("예약에서는 Antigravity를 실행할 수 없습니다".to_string()) }
         else { (!req.yolo && !scheduled).then(|| "YOLO 모드가 꺼져 있어 실행을 기다립니다".to_string()) };
     let mode = RunMode { yolo: req.yolo, ..RunMode::of(Profile::of_clean(req.clean.is_some())) };
-    added.extend(auto_dispatch(home, &plan_id, &plan, ok, mode, turn_started, wait, start)?);
+    added.extend(auto_dispatch(home, &plan_id, &plan, ok, mode, turn_started, wait, start, scheduled)?);
     Ok(added)
 }
 
@@ -221,7 +262,7 @@ fn send_with_auto(home: &Path, req: &SendRequest<'_>, spawner: &Spawner, start: 
 /// thread under the dispatch locks (so only while the plan is still that thread's latest word).
 /// `approve` then runs it there and then, like 실행, within the auto-run limits; a stop of the
 /// thread since `since` cancels it.
-pub(super) fn apply_review(home: &Path, review: &LeadEvent, profile: Profile, since: DateTime<Utc>, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+pub(super) fn apply_review(home: &Path, review: &LeadEvent, profile: Profile, since: DateTime<Utc>, start: &StartRun<'_>) -> Result<Vec<LeadEvent>, String> {
     let LeadEvent::Review { plan_id, verdict, .. } = review else { return Err("검토 결과가 아닙니다".into()) };
     let thread = plan_thread(plan_id).ok_or("계획 id 형식이 아닙니다")?;
     let _locks = lock_latest(home, plan_id)?;
@@ -233,7 +274,7 @@ pub(super) fn apply_review(home: &Path, review: &LeadEvent, profile: Profile, si
         _ => None,
     }).ok_or("이 대화에 그런 계획이 없습니다")?;
     let mode = RunMode { yolo: yolo::read_enabled(home), ..RunMode::of(profile) };
-    added.extend(auto_dispatch(home, plan_id, &plan, ok, mode, since, None, start)?);
+    added.extend(auto_dispatch(home, plan_id, &plan, ok, mode, since, None, start, false)?);
     Ok(added)
 }
 
@@ -241,13 +282,13 @@ pub(super) fn apply_review(home: &Path, review: &LeadEvent, profile: Profile, si
 /// of its thread since `since`, `wait` (why it may not run by itself), the policy, or the
 /// auto-run limits (ADR-0014). Every outcome is a `lead.autorun` in the plan's thread.
 #[allow(clippy::too_many_arguments)]
-fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMode, since: DateTime<Utc>, wait: Option<String>, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMode, since: DateTime<Utc>, wait: Option<String>, start: &StartRun<'_>, scheduled: bool) -> Result<Vec<LeadEvent>, String> {
     let thread = plan_thread(plan_id).ok_or("계획 id 형식이 아닙니다")?;
     let plan_id = plan_id.to_string();
     let mut added = Vec::new();
     let events = read_thread(home, thread);
     let now = Utc::now();
-    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| check_plan_in(plan, &ctx, mode));
+    let checked = policy_context(home, now).map_err(|e| e.to_string()).map(|ctx| crate::usage::fallback::check_plan(home, plan, &ctx, mode));
     let valid = checked.as_ref().ok().and_then(|result| result.plan.clone());
     let running: Vec<String> = events.iter().filter_map(|e| match e {
         LeadEvent::Dispatch { run_id, .. } | LeadEvent::Followup { run_id, .. } if store::run_is_live(home, run_id) => Some(run_id.clone()),
@@ -282,7 +323,7 @@ fn auto_dispatch(home: &Path, plan_id: &str, plan: &Value, ok: bool, mode: RunMo
     append(home, thread, &event).map_err(|e| e.to_string())?;
     added.push(event);
     if run {
-        match dispatch_locked(home, &plan_id, mode, start, false) {
+        match dispatch_locked(home, &plan_id, mode, Some(plan), start, false, scheduled) {
             Ok(_) => added.extend(read_thread(home, thread).into_iter().rev().find(|e| matches!(e, LeadEvent::Dispatch { plan_id: id, .. } if id == &plan_id))),
             Err(e) => {
                 let why = match e {

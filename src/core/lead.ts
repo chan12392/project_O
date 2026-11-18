@@ -122,7 +122,10 @@ export type LeadEvent =
   | { t: "lead.dispatch"; at: string; planId: string; runId: string; clean: boolean }
   | { t: "lead.followup"; at: string; sourceRunId: string; cardId: string; runId: string }
   | { t: "lead.autorun"; at: string; planId: string; reason?: string | null }
-  | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number }
+  | ({ t: "lead.usage.settled"; at: string } & import("./usageAccounting.ts").UsageSettlement)
+  | { t: "lead.subscription_limit"; at: string; provider: ProviderId; until: string; safeHandoff: boolean }
+  | { t: "lead.fallback"; at: string; from: ProviderId; fromModel?: string | null; target: { provider: ProviderId; model: string }; reason: string }
+  | { t: "lead.usage"; at: string; provider: ProviderId; input: number; cached: number; output: number; complete?: boolean }
   | { t: "lead.warning" | "lead.error"; at: string; text: string }
   /** A CLI session got the turn whose lead.user is event `through`; the chat draws nothing for it. */
   | { t: "lead.seen"; at: string; provider: ProviderId; sessionId: string; through: number }
@@ -258,6 +261,7 @@ export type LeadItem =
       kind: "plan";
       at: string;
       planId: string;
+      approvedPlan: unknown;
       title: string;
       cards: PlanCard[];
       ok: boolean;
@@ -368,6 +372,9 @@ export function leadItems(events: readonly { t: string }[]): LeadItem[] {
       case "lead.warning":
         items.push({ kind: "warning", at: e.at, text: e.text });
         break;
+      case "lead.fallback":
+        items.push({ kind: "warning", at: e.at, text: `${e.reason}: ${e.from} ${e.fromModel ?? "기본 모델"} → ${e.target.provider} ${e.target.model}. 같은 승인 방식으로 한 번 이어갑니다.` });
+        break;
       default:
         // lead.start, lead.session, lead.usage, lead.seen and kinds this build does not know draw nothing.
         break;
@@ -466,6 +473,7 @@ function planItem(e: Record<string, unknown>, index: number): Extract<LeadItem, 
     kind: "plan",
     at: text(e.at) ?? "",
     planId: text(e.planId) ?? `plan-${index}`,
+    approvedPlan: e.plan,
     title: title || "제목 없는 계획",
     cards,
     ok: e.ok === true && problems.length === 0,
@@ -505,7 +513,8 @@ export interface LeadModel {
   id: string;
   label: string;
   /** For an alias (`id`), the model it stands for now (Claude: `opus` → `claude-opus-5-5`). */
-  hint?: string;
+  hint?: string | null;
+  efforts?: string[];
 }
 
 /** The model id shape a card's `model` takes and `o lead send --model` checks (crates/o-core/src/policy.rs `MODEL`). */
@@ -629,6 +638,31 @@ export function takeDraft(drafts: Drafts, key: string): { drafts: Drafts; draft:
 /** A send that failed (nothing recorded): its text and files come back, unless a new draft was started meanwhile. */
 export function restoreDraft(drafts: Drafts, key: string, taken: Draft): Drafts {
   return editDraft(drafts, key, (now) => ({ text: now.text || taken.text, files: now.files.length ? now.files : taken.files }));
+}
+
+/** Where the composer is: a project folder (in any spelling) and, once named, its conversation. */
+export interface DraftPlace {
+  project: string | undefined;
+  thread: string | undefined;
+}
+
+/**
+ * The composer went from one place to another. A draft typed before the answer named the
+ * project's conversation moves to that conversation's key — only within the same project, and
+ * only into an empty draft: another project's draft is never carried along, and a conversation
+ * that already has a draft keeps it while the project's own stays where it was typed (#86).
+ * Drafts between open tabs stay where they were typed.
+ */
+export function settleDraft(drafts: Drafts, from: DraftPlace, to: DraftPlace): Drafts {
+  if (!from.project || !to.project || from.thread || !to.thread) return drafts;
+  const source = draftKey(from.project);
+  if (draftKey(to.project) !== source) return drafts;
+  const typed = draftOf(drafts, source);
+  if (!typed.text && !typed.files.length) return drafts;
+  const target = draftKey(to.project, to.thread);
+  const there = draftOf(drafts, target);
+  if (there.text || there.files.length) return drafts;
+  return restoreDraft(takeDraft(drafts, source).drafts, target, typed);
 }
 
 /**

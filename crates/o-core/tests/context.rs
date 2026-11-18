@@ -220,7 +220,7 @@ fn dispatch_injects_a_capped_section_per_card_and_records_it() {
         ],
     );
     append(&home, "now", &[start("now", "2026-11-02T10:00:00.000Z", "C:/work/game", &[("c", "claude"), ("g", "agy"), ("x", "codex")])]);
-    let sections = context::prepare(&home, "now", &p);
+    let sections = context::prepare(&home, "now", &p, true);
     assert_eq!(sections.len(), 2, "x matched nothing");
     let claude = &sections["c"];
     let lines: Vec<&str> = claude.lines().collect();
@@ -249,7 +249,7 @@ fn dispatch_injects_a_capped_section_per_card_and_records_it() {
     // `o dispatch --no-context`: nothing, and nothing recorded.
     append(&home, "off", &[start("off", "2026-11-02T10:00:00.000Z", "C:/work/game", &[("c", "claude")])]);
     context::mark_off(&home, "off").unwrap();
-    assert!(context::prepare(&home, "off", &p).is_empty());
+    assert!(context::prepare(&home, "off", &p, false).is_empty());
     assert!(!read_event_values(&home, "off").iter().any(|e| e["t"] == "run.context"));
 }
 

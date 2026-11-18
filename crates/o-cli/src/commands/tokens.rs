@@ -13,12 +13,15 @@ pub const TOKENS: Command = Command {
     name: "tokens",
     usage: "  o tokens [--project <폴더>] [--since 날짜] [--compare] [--json]
                              카드별 토큰(새 입력·캐시·출력)과 모드별 평균
-                             --compare: 기본 하네스 vs 깨끗한 에이전트+세션 공유",
+                             --compare: 기본 하네스 vs 깨끗한 에이전트+세션 공유
+  o tokens reconcile --run 실행ID|--project 폴더 [--apply] [--json]
+                             과거 사용량 보정 미리보기; --apply는 사용자가 직접 실행",
     run: tokens_main,
 };
 
 /// `o tokens [--project P] [--since DATE] [--json] [--compare]`.
 fn tokens_main(home: &Path, args: &[String]) -> i32 {
+    if args.first().is_some_and(|arg| arg == "reconcile") { return reconcile(home, &args[1..]); }
     let (mut project, mut since, mut as_json, mut compare) = (None, None, false, false);
     let mut items = args.iter();
     while let Some(arg) = items.next() {
@@ -48,6 +51,25 @@ fn tokens_main(home: &Path, args: &[String]) -> i32 {
         print_report(&report);
     }
     0
+}
+
+fn reconcile(home: &Path, args: &[String]) -> i32 {
+    let (mut run, mut project, mut apply) = (None, None, false);
+    let mut items = args.iter();
+    while let Some(arg) = items.next() {
+        match arg.as_str() {
+            "--run" => { run = items.next().map(String::as_str); if run.is_none() { return fail("실행 ID가 필요합니다"); } }
+            "--project" => { project = items.next().map(String::as_str); if project.is_none() { return fail("프로젝트 경로가 필요합니다"); } }
+            "--apply" => apply = true,
+            "--json" => {}
+            _ => return fail("o tokens reconcile --run <ID>|--project <폴더> [--apply] [--json]"),
+        }
+    }
+    if apply && super::inside_agent() { return fail("과거 기록 적용은 사용자가 직접 실행해야 합니다"); }
+    match o_core::usage::reconcile::run(home, run, project, apply) {
+        Ok(changes) => { println!("{}", json!({"applied":apply,"changes":changes})); 0 }
+        Err(error) => fail(&error),
+    }
 }
 
 /// A date is the start of that day (UTC, as run times are stored); a time is taken as given.

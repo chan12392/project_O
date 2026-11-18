@@ -49,6 +49,7 @@ pub struct CardTokens {
     pub provider: String,
     pub context: bool,
     pub tokens: Tokens,
+    pub by_provider: BTreeMap<String, Tokens>,
 }
 
 #[derive(Clone, Debug, PartialEq, Serialize)]
@@ -157,7 +158,6 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
               WHERE r.started_at <> ''
                 AND (?1 IS NULL OR replace(rtrim(r.project, '/\'), '\', '/') = ?1 {collate})
                 AND (?2 IS NULL OR r.started_at >= ?2)
-                AND json_extract(e.json, '$.t') IN ('run.start', 'card.start', 'card.usage', 'run.context')
               ORDER BY r.started_at DESC, r.run_id DESC, e.seq"
         ))
         .map_err(sql)?;
@@ -166,12 +166,24 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
             Ok((r.get::<_, String>(0)?, r.get::<_, Option<String>>(1)?, r.get::<_, Option<String>>(2)?, r.get::<_, String>(3)?, r.get::<_, String>(4)?))
         })
         .map_err(sql)?;
+    let mut grouped = Vec::<Vec<(String, Option<String>, Option<String>, String, String)>>::new();
+    for row in rows {
+        let row = row.map_err(sql)?;
+        if grouped.last().is_none_or(|group| group[0].0 != row.0) { grouped.push(Vec::new()); }
+        grouped.last_mut().unwrap().push(row);
+    }
+    let rows = grouped.into_iter().flat_map(|group| {
+        let values: Vec<Value> = group.iter().filter_map(|r| serde_json::from_str(&r.4).ok()).collect();
+        let first = &group[0];
+        crate::usage::accounting::project(&values).into_iter().map(|value| (first.0.clone(), first.1.clone(), first.2.clone(), first.3.clone(), value.to_string())).collect::<Vec<_>>()
+    });
     let mut runs: Vec<RunTokens> = Vec::new();
     struct CardUsage {
         card_id: String,
         provider: String,
         context: bool,
         tokens: Tokens,
+        by_provider: BTreeMap<String, Tokens>,
         reported: bool,
         complete: bool,
         started: bool,
@@ -179,7 +191,7 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
     }
     let mut cards: Vec<CardUsage> = Vec::new();
     let finish = |run: &mut RunTokens, cards: &mut Vec<CardUsage>| {
-        for CardUsage { card_id, provider, context, tokens, reported, complete, started, attempt_reported } in cards.drain(..) {
+        for CardUsage { card_id, provider, context, tokens, by_provider, reported, complete, started, attempt_reported } in cards.drain(..) {
             run.context |= context;
             if !reported {
                 run.unreported_cards.push(card_id);
@@ -189,11 +201,11 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
                 run.incomplete_cards.push(card_id.clone());
             }
             run.tokens.add(&tokens);
-            run.cards.push(CardTokens { card_id, provider, context, tokens });
+            run.cards.push(CardTokens { card_id, provider, context, tokens, by_provider });
         }
     };
     for row in rows {
-        let (run_id, title, project, started_at, json) = row.map_err(sql)?;
+        let (run_id, title, project, started_at, json) = row;
         let Ok(event) = serde_json::from_str::<Value>(&json) else { continue };
         if runs.last().is_none_or(|r| r.run_id != run_id) {
             if let Some(last) = runs.last_mut() {
@@ -228,7 +240,7 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
                             card.complete = false;
                         }
                     } else {
-                        cards.push(CardUsage { card_id, provider, context: false, tokens: Tokens::default(), reported: false, complete: true, started: false, attempt_reported: false });
+                        cards.push(CardUsage { card_id, provider, context: false, tokens: Tokens::default(), by_provider: BTreeMap::new(), reported: false, complete: true, started: false, attempt_reported: false });
                     }
                 }
             }
@@ -252,6 +264,8 @@ pub fn report(home: &Path, query: &TokenQuery) -> io::Result<Report> {
                 if let Some(card) = cards.iter_mut().find(|c| c.card_id == id) {
                     let (input, cached, output) = (number(event.get("input")), number(event.get("cached")), number(event.get("output")));
                     card.tokens.add(&Tokens { input, cached, output, total: input + cached + output });
+                    let provider = event["provider"].as_str().unwrap_or(&card.provider).to_string();
+                    card.by_provider.entry(provider).or_default().add(&Tokens { input, cached, output, total: input + cached + output });
                     card.reported = true;
                     card.attempt_reported = true;
                     card.complete &= event.get("complete").and_then(Value::as_bool) == Some(true)
@@ -300,9 +314,11 @@ fn group(runs: &[RunTokens], clean: bool, context: bool, key: &str, label: &str)
         for card in mine {
             cards += 1;
             tokens.add(&card.tokens);
-            let entry = providers.entry(card.provider.clone()).or_default();
-            entry.0 += 1;
-            entry.1.add(&card.tokens);
+            for (provider, tokens) in &card.by_provider {
+                let entry = providers.entry(provider.clone()).or_default();
+                entry.0 += 1;
+                entry.1.add(tokens);
+            }
         }
     }
     (cards > 0).then(|| Group {

@@ -104,14 +104,14 @@ ADR-0003의 CI 경보는 사후 감지이며 GitHub 웹 병합을 사전에 강�
 
 ## 4. 사용량 최적화
 
-> 하루 최대 사용량을 주간의 12~14%로, 남은 시간을 계산해 effort 자동 조절.
+> 하루 사용 예산을 주간의 12~14%로, 남은 시간을 계산해 effort 자동 조절.
 
 현재 있는 것:
 
 - `crates/o-core/src/usage/mod.rs`, `probe.rs`: 공식 CLI를 통해 Codex·Antigravity의 구독 창 사용 비율과 초기화 시각을 조회한다.
 - `crates/o-core/src/providers/`: Claude 실행 스트림의 구독 창을 `quota`로, 세 프로바이더의 토큰을 `card.usage`로 정규화한다.
 - `app/src/features/usage/UsagePanel.tsx`: 읽어 온 실행의 토큰 합계와 5시간·주간 구독 창을 표시한다.
-- `crates/o-core/src/policy.rs`: 계획당 8장, 하루 60장, 전체 동시 6개, Claude/Codex 각 3개·Antigravity 2개 상한이 있다.
+- `crates/o-core/src/policy.rs`: 계획당 8장, 전체 동시 6개, Claude/Codex 각 3개·Antigravity 2개 상한이 있다. 날짜별 카드 수 제한은 없다(ADR-0045).
 - `crates/o-core/src/run/runner.rs`: 시작 전 상한·쿨다운을 확인하고, 실행 중 한도 감지 시 같은 프로바이더의 대기 카드도 실패 처리한다.
 - `crates/o-core/src/run/plan.rs`, `providers/`: 카드에 지정된 `effort`를 검증·전달한다. `skills/o/SKILL.md`는 총괄에게 사용량 확인과 선택을 안내한다.
 

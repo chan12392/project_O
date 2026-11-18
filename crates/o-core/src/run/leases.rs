@@ -1,5 +1,5 @@
-//! Resource leases (ADR-0039): a card's hold on a provider slot and on one of the day's
-//! starts, and how a lease left by a dead owner is shown and recovered. Callers reach
+//! Resource leases (ADR-0039): a card's hold on a provider slot and its start record,
+//! and how a lease left by a dead owner is shown and recovered. Callers reach
 //! these through `store::…`, which re-exports this module.
 
 use std::collections::{HashMap, HashSet};
@@ -11,14 +11,14 @@ use rusqlite::{params, OptionalExtension, TransactionBehavior};
 use serde::Serialize;
 use serde_json::Value;
 
-use super::store::{active_markers, started_in};
+use super::store::active_markers;
 use crate::policy::{empty_counts, LIMITS};
 use crate::run::index::{self, sql};
 use crate::run::plan::ProviderId;
 use crate::sys::js::iso;
 use crate::sys::proc;
 
-/// A card's hold on a slot and on one of the day's starts, taken before its CLI starts
+/// A card's hold on a slot and its start record, taken before its CLI starts
 /// (see `reserve_slot`). Given back with `release_slot`.
 #[derive(Debug)]
 pub struct Reservation {
@@ -33,8 +33,6 @@ pub enum Reserved {
     Granted(Reservation),
     /// The slots are full; the reason says which cap.
     Busy(String),
-    /// Today's starts are all used.
-    DayFull,
 }
 
 /// Count durable leases until release or recovery, plus legacy slots and live markers.
@@ -80,18 +78,15 @@ pub fn held_by_provider(home: &Path) -> io::Result<HashMap<ProviderId, usize>> {
     Ok(counts)
 }
 
-/// Takes a slot and one of today's starts for a card in one write lock, so runners of
-/// separate dispatches never both see the last free slot or the day's last start.
-/// The start counts from here; `release_slot` gives it back if the CLI never starts.
+/// Takes a slot and records a card's start in one write lock, so runners of
+/// separate dispatches never both see the last free slot.
+/// The start counts from here; `release_slot` removes it if the CLI never starts.
 pub fn reserve_slot(home: &Path, run_id: &str, card: &crate::run::plan::Card, project: &str, now: DateTime<Utc>) -> io::Result<Reserved> {
     let card_id = &card.id;
     let provider = card.provider;
     let resources = super::resources::normalize(project, &card.resources)?;
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;
-    if started_in(&tx, now)? >= LIMITS.max_cards_per_day {
-        return Ok(Reserved::DayFull);
-    }
     let held = held_slots(home, &tx)?;
     {
         let mut stmt = tx.prepare("SELECT resources FROM resource_leases").map_err(sql)?;
@@ -168,7 +163,7 @@ pub fn mark_resource_exited(home: &Path, reservation: &Reservation) -> io::Resul
     Ok(())
 }
 
-/// Frees the slot. `started: false` (the CLI never ran) also gives back the day's start.
+/// Frees the slot. `started: false` (the CLI never ran) also removes the start record.
 pub fn release_slot(home: &Path, reservation: &Reservation, started: bool) -> io::Result<()> {
     let mut conn = index::open(home)?;
     let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sql)?;

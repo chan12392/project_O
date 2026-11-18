@@ -144,7 +144,6 @@ fn refusal(home: &Path, user_home: &Path, path: &str, must_exist: bool) -> Optio
     let ctx = PolicyContext {
         now: Utc::now(),
         active_by_provider: empty_counts(),
-        started_today: 0,
         cooldowns: HashMap::new(),
         over_budget: HashMap::new(),
         project_exists: if must_exist { Box::new(|p| Path::new(p).is_dir()) } else { Box::new(|_| true) },

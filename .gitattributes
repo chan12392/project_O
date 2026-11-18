@@ -1,1 +1,5 @@
 * text=auto eol=lf
+# The reviewed third-party archive and patch are checked byte for byte on every platform.
+/vendor/glib-0.18.5/** -text
+# Preserve the upstream MIT license byte for byte, including its final blank line.
+/vendor/glib-0.18.5/LICENSE whitespace=-blank-at-eof

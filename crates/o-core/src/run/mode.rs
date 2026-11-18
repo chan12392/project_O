@@ -56,9 +56,9 @@ impl Profile {
     }
 }
 
-/// What a run's cards get. Saved in the run folder as the `clean` and `no-context`
-/// markers (`store::mark_mode`) and recorded as `run.mode`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// What a run's cards get, captured in `RunInput`; the folder markers and `run.mode` record it for readers.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct RunMode {
     pub profile: Profile,
     /// Earlier work of the project injected into each card's prompt (ADR-0005).

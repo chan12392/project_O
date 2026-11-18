@@ -245,7 +245,7 @@ pub fn send_on(home: &Path, proposal_id: &str, start: &dyn Fn(&str, usize) -> io
 /// How `o _lead-forward` starts what follows a request: the runs an approved plan makes
 /// (`o _run <runId>`), and a revision request passed on again (`o _lead-forward <threadId> <n>`).
 pub struct Starts<'a> {
-    pub run: &'a dyn Fn(&str) -> io::Result<()>,
+    pub run: &'a crate::run::input::StartRun<'a>,
     pub forward: &'a dyn Fn(&str, usize) -> io::Result<()>,
 }
 

@@ -6,7 +6,21 @@ import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import { test } from "node:test";
 
-import { body, failureText, leadStopArgs, oBinary } from "../app/dev/liveRuns.ts";
+import { body, failureText, leadStopArgs, oBinary, localHost, sameOrigin } from "../app/dev/liveRuns.ts";
+
+test("dev API rejects foreign browser origins and headerless mutations", () => {
+  const request = (method: string, headers: IncomingMessage["headers"]) => ({ method, headers }) as IncomingMessage;
+  const host = "localhost:1430";
+  assert.equal(localHost(request("GET", { host })), true);
+  assert.equal(localHost(request("GET", { host: "attacker.invalid:1430" })), false);
+  assert.equal(sameOrigin(request("POST", { host })), false);
+  assert.equal(sameOrigin(request("POST", { host, origin: "null" })), false);
+  assert.equal(sameOrigin(request("POST", { host, origin: "http://localhost:9000" })), false);
+  assert.equal(sameOrigin(request("POST", { host, origin: `http://${host}`, "sec-fetch-site": "cross-site" })), false);
+  assert.equal(sameOrigin(request("POST", { host, origin: `http://${host}` })), true);
+  assert.equal(sameOrigin(request("POST", { host, "sec-fetch-site": "same-origin" })), true);
+  assert.equal(sameOrigin(request("GET", { host })), true);
+});
 
 test("the dev server selects the CLI for its Tauri target and profile", () => {
   const names = ["CARGO_TARGET_DIR", "CARGO_BUILD_TARGET", "TAURI_ENV_TARGET_TRIPLE", "TAURI_ENV_DEBUG"] as const;

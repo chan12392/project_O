@@ -25,7 +25,7 @@ ADR-0010은 깨끗한 프로필, 이전 작업 컨텍스트 주입, 예산에 �
 
 - 켜짐(기본): ADR-0004 그대로. 하루 예산은 주간 한도의 12·13·14%, 하루가 지나는 속도보다 빨리 쓰면 카드 effort를 한두 단계 낮추고, 다 쓰면 그 에이전트의 새 카드를 `daily-budget`으로 막는다.
 - 꺼짐: 예산으로 막지도 effort를 낮추지도 않는다. 모든 프로바이더가 `state: "off"`가 되고, 오늘 쓴 양 숫자와 사용량 패널의 "오늘" 고리는 "예산 꺼짐"으로 표시된 채 남는다. 상태 표시줄과 계획 카드는 예산 소진 경고를 띄우지 않는다.
-- 바뀌지 않는 것: 구독 자체의 한도(CLI가 알려 주는 한도·쿨다운), `LIMITS`(동시 실행·하루 실행 상한), 가드 규칙.
+- 바뀌지 않는 것: 구독 자체의 한도(CLI가 알려 주는 한도·쿨다운), `LIMITS`의 동시 실행 상한, 가드 규칙. 날짜별 카드 수 제한은 ADR-0045에서 제거했다.
 - 저장: `<O 상태 폴더>/settings.json`의 `dailyBudgetEnabled`. `false`일 때만 꺼짐이고 없거나 잘못된 값은 켜짐이다. 비율(`dailyBudgetPercent`)은 꺼도 지우지 않는다. 설정 화면에서는 비율 선택이 스위치 옆에 있고, 꺼져 있으면 비활성으로 보인다.
 - 읽는 곳: `budget::assess_now`가 스위치를 읽어 꺼져 있으면 `Pace::Off`를 돌려준다. 정책 문맥(`policy_context` → `over_budget`), 러너의 카드 시작 직전 확인과 effort 낮춤, `o budget`, 앱·개발 서버의 `/budget`이 모두 이 한 곳을 거치므로 앱·개발 API·CLI가 같은 답을 낸다.
 - CLI: `o budget --on|--off`. 앱: Tauri `budget_set_enabled`, 개발 서버 `POST /api/budget/enabled?value=on|off`.

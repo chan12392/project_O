@@ -69,6 +69,8 @@ export const devBackend: Backend = {
   },
   billing: () => fetch("/api/billing").then((r) => json<Awaited<ReturnType<Backend["billing"]>>>(r)),
   setBilling: (mode) => fetch(`/api/billing?${new URLSearchParams({ mode })}`, { method: "POST" }).then((r) => json<Awaited<ReturnType<Backend["setBilling"]>>>(r)),
+  fallback: () => fetch("/api/fallback").then((r) => json<Awaited<ReturnType<Backend["fallback"]>>>(r)),
+  setFallback: (settings) => fetch("/api/fallback", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(settings) }).then((r) => json<Awaited<ReturnType<Backend["setFallback"]>>>(r)),
   yolo: () => fetch("/api/yolo").then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   setYolo: (change) => fetch("/api/yolo", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(change) }).then((r) => json<Awaited<ReturnType<Backend["yolo"]>>>(r)),
   tokens: (project) => fetch(`/api/tokens${project ? `?project=${encodeURIComponent(project)}` : ""}`).then((r) => json<TokenReport>(r)),
@@ -84,8 +86,8 @@ export const devBackend: Backend = {
     fetch(`/api/lead/send?${new URLSearchParams({ project: request.project })}`, { method: "POST", body: JSON.stringify(request) }).then((r) =>
       json<{ threadId: string | null; events: LeadEvent[] }>(r),
     ),
-  leadDispatch: (planId, clean) =>
-    fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0" })}`, { method: "POST" }).then((r) => json<LeadDispatched>(r)),
+  leadDispatch: (planId, clean, yolo, expectedPlan) =>
+    fetch(`/api/lead/dispatch?${new URLSearchParams({ plan: planId, clean: clean ? "1" : "0", mode: yolo ? "yolo" : "normal" })}`, { method: "POST", body: JSON.stringify(expectedPlan) }).then((r) => json<LeadDispatched>(r)),
   leadForward: (proposalId) =>
     fetch(`/api/lead/forward?${new URLSearchParams({ proposal: proposalId })}`, { method: "POST" }).then((r) => json<{ events: LeadEvent[] }>(r)),
   leadDecide: (id, allow) => fetch(`/api/lead/decide?${new URLSearchParams({ id, decision: allow ? "allow" : "deny" })}`, { method: "POST" }).then((r) => json<{ id: string; decision: "allow" | "deny" }>(r)),
@@ -97,7 +99,7 @@ export const devBackend: Backend = {
   leadWake: (runId) => fetch(`/api/lead/wake?run=${encodeURIComponent(runId)}`, { method: "POST" }).then((r) => json<{ processed: boolean }>(r)),
   leadRetry: (runId, messageId) => fetch(`/api/lead/retry?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST" }).then((r) => json<{ state: "queued" | "acknowledged" }>(r)),
   leadAnswerApproval: (runId, messageId, text) => fetch(`/api/lead/answer-approval?${new URLSearchParams({ run: runId, message: messageId })}`, { method: "POST", body: text }).then((r) => json<{ id: string }>(r)),
-  leadModels: (provider) => fetch(`/api/lead/models?${new URLSearchParams({ provider })}`).then((r) => json<{ provider: LeadProvider; models: LeadModel[] }>(r)),
+  leadModels: (provider, options) => fetch(`/api/lead/models?${new URLSearchParams({ provider, clean: String(options?.clean ?? true), ...(options?.project ? { project: options.project } : {}), ...(options?.refresh ? { refresh: "true" } : {}) })}`).then((r) => json<Awaited<ReturnType<Backend["leadModels"]>>>(r)),
   agyGet: () => fetch("/api/agy").then((r) => json<AgyReport>(r)),
   // Human-only operations are not offered by the dev server (ADR-0042 구현 메모):
   // a local process can forge Origin, so it cannot tell a person from an agent.

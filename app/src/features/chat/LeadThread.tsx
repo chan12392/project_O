@@ -211,6 +211,7 @@ function ReplyText({ text, animate }: { text: string; animate: boolean }) {
 /** A proposed plan, its policy result, and explicit dispatch or retry. */
 export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadItem, { kind: "plan" }>; lead: LeadState; run?: RunView; onOpenCard: (runId: string, cardId: string) => void }) {
   const { clean } = useSettings();
+  const yolo = lead.yolo;
   const budget = useBudget();
   const over = budget?.providers.filter((entry) => entry.state === "over" && plan.cards.some((card) => card.provider === entry.provider)) ?? [];
   const [state, setState] = useState<{ busy?: boolean; error?: string }>({});
@@ -226,9 +227,10 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
   const budgetResolved = budget && (budget.enabled === false || (budgetProviders.length > 0 && budgetProviders.every((provider) => budget.providers.some((entry) => entry.provider === provider && ["ok", "behind", "farBehind", "off"].includes(entry.state)))));
   const isolated = run?.cards.some((card) => card.log.some((entry) => entry.kind === "tool" && entry.text.startsWith("O 작업 폴더 ")));
   const dispatch = async () => {
+    if (yolo === undefined) return;
     setState({ busy: true });
     try {
-      await lead.dispatch(plan.planId, clean);
+      await lead.dispatch(plan.planId, clean, yolo, plan.approvedPlan);
       setState({});
     } catch (e) {
       setState({ error: errorText(e) });
@@ -276,6 +278,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
       </div>}
       {!plan.runId && budgetBlocked && !budgetResolved && <p role="note" className="border-t px-4 py-3 text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
       <footer className="flex flex-wrap items-center gap-3 border-t px-4 py-3">
+        {(!plan.runId || retryable) && <p role="status" className="w-full text-xs text-muted-foreground">{yolo === undefined ? "실행 모드를 확인하지 못했습니다. 자동으로 다시 확인하는 중…" : `${clean ? "project_O 프로필" : "내 설정"} · ${yolo ? "YOLO 모드: 승인 없이 실행" : "일반 모드: 필요한 권한은 확인 후 실행"}`}</p>}
         {!plan.runId && plan.autoRunReason && <p role="status" className="w-full text-xs text-muted-foreground">{plan.autoRunReason}</p>}
         {plan.runId ? (
           run && failedBeforeCards(run) ? (
@@ -292,7 +295,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
         ) : plan.problems.length === 0 ? (
           <>
             <p role="note" className="w-full text-xs text-status-warning-text">Git 프로젝트는 미커밋 변경을 정리한 뒤 분배하세요. 결과는 작업별 폴더에 남으며 자동으로 합쳐지지 않습니다.</p>
-            <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
+            <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale || yolo === undefined} aria-describedby={`${titleId}-how`} className={BUTTON_PRIMARY}>
               <Play className="size-3.5" aria-hidden="true" />
               {state.busy ? "분배하는 중…" : plan.ok ? "작업 분배" : "다시 확인하고 분배"}
             </button>
@@ -310,7 +313,7 @@ export function PlanCard({ plan, lead, run, onOpenCard }: { plan: Extract<LeadIt
           {budgetBlocked && !budgetResolved && <p role="note" className="w-full text-xs text-status-warning-text">하루 예산이 초기화된 뒤 다시 시도하거나, 총괄에게 예산이 남은 다른 에이전트로 설계를 변경해 달라고 요청하세요.</p>}
           {(!budgetBlocked || run?.blocked?.some((violation) => violation.rule !== "daily-budget")) && <p role="note" className="w-full text-xs text-status-warning-text">아래 실행 기록에서 실패 원인을 확인하고 해결한 뒤 다시 실행하세요.</p>}
           {!failedBeforeCards(run) && <p className="w-full text-xs text-status-warning-text">다시 실행하면 완료된 작업도 새 작업 폴더에서 다시 시작합니다.</p>}
-          <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale} className={BUTTON_PRIMARY}><Play className="size-3.5" aria-hidden="true" />{state.busy ? "재실행 준비 중…" : "다시 실행"}</button>
+          <button type="button" onClick={dispatch} disabled={state.busy || lead.busy || Boolean(lead.failed) || stale || yolo === undefined} className={BUTTON_PRIMARY}><Play className="size-3.5" aria-hidden="true" />{state.busy ? "재실행 준비 중…" : "다시 실행"}</button>
           {stale && <p className="text-xs text-muted-foreground">대화가 변경되어 최신 설계가 필요합니다.</p>}
         </>}
         {state.error && (

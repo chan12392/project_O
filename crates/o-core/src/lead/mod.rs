@@ -58,7 +58,7 @@ use serde_json::{json, Value};
 
 use crate::agents::clean;
 use crate::context::normalize_project;
-use crate::policy::{check_plan_in, check_project, is_model_id, Violation, LIMITS};
+use crate::policy::{check_project, is_model_id, Violation, LIMITS};
 use crate::providers::{self, LeadTurn, StreamReader};
 use crate::run::events::StreamSignal;
 use crate::run::mode::{Profile, RunMode};
@@ -84,7 +84,7 @@ pub use approvals::decide;
 pub use files::Attachment;
 pub use tabs::{attachment_thread, close, is_open, open_threads, run_thread, select_thread, set_writer, MAX_OPEN};
 pub(crate) use terminal_plan::pickup;
-type StartRun<'a> = dyn Fn(&str) -> io::Result<()> + 'a;
+use crate::run::input::{RunInput, StartRun};
 
 fn leads_dir(home: &Path) -> PathBuf {
     home.join("leads")
@@ -145,7 +145,7 @@ pub fn thread_for(home: &Path, project: &str, fresh: bool) -> io::Result<String>
     select_thread(home, project, None, fresh).map_err(io::Error::other)
 }
 
-fn append(home: &Path, thread_id: &str, event: &LeadEvent) -> io::Result<()> {
+pub(crate) fn append(home: &Path, thread_id: &str, event: &LeadEvent) -> io::Result<()> {
     let line = serde_json::to_string(event).map_err(io::Error::other)?;
     let mut file = OpenOptions::new().create(true).append(true).open(thread_dir(home, thread_id).join("events.jsonl"))?;
     file.write_all(format!("{line}\n").as_bytes())
@@ -376,6 +376,9 @@ pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
         if !is_model_id(model) {
             return Err("model 이름 형식이 올바르지 않습니다".into());
         }
+        if let Some(catalog) = providers::models::cached(home, req.provider, req.clean, Path::new(req.project)).filter(|c| !c.stale) {
+            providers::models::validate(&catalog, model, req.effort)?;
+        }
     }
     if req.text.trim().is_empty() {
         return Err("총괄에게 보낼 내용이 비어 있습니다".into());
@@ -391,6 +394,11 @@ pub fn check_request(home: &Path, req: &SendRequest) -> Result<(), String> {
     let agy_hooks = Path::new(req.project).join(".agents").join("hooks.json");
     if req.provider == ProviderId::Agy && agy_hooks.exists() {
         return Err(format!("이 프로젝트에 {}이 있어 Antigravity를 총괄로 쓰지 않습니다 (계획 승인 전에 프로젝트 훅이 실행될 수 있음). Claude Code나 Codex를 고르세요", agy_hooks.to_string_lossy()));
+    }
+    if req.provider == ProviderId::Codex && !req.yolo {
+        if let Some(found) = providers::codex::project_config(Path::new(req.project)) {
+            return Err(format!("{}이 있어 Codex 총괄을 시작하지 않았습니다. 프로젝트 설정·MCP가 승인 전에 실행될 수 있습니다", found.display()));
+        }
     }
     check_folder(home, req.project)
 }
@@ -527,7 +535,7 @@ pub fn send_within(home: &Path, req: &SendRequest, spawner: &Spawner, limit: Dur
     send_within_followups(home, req, spawner, limit, None, true)
 }
 
-pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, start: &dyn Fn(&str) -> io::Result<()>) -> Result<Vec<LeadEvent>, String> {
+pub fn send_with_followups(home: &Path, req: &SendRequest, spawner: &Spawner, start: &StartRun<'_>) -> Result<Vec<LeadEvent>, String> {
     send_within_followups(home, req, spawner, TURN_LIMIT, Some(start), true)
 }
 
@@ -551,10 +559,12 @@ fn progress_state(progress: &[Value], counts: &[u64; 4], partial: &str, steps: &
     json!({ "steps": progress, "counts": { "reads": counts[0], "searches": counts[1], "edits": counts[2], "commands": counts[3] }, "partial": partial, "live": steps })
 }
 
+#[derive(Clone, Copy)]
 struct WorkerTurn<'a> {
     thread_id: &'a str,
     speaker: &'a team::Speaker,
     message: &'a team::Received,
+    claimed: bool,
 }
 
 /// Handle one queued card message for the open thread that dispatched this run.
@@ -595,7 +605,7 @@ pub fn wake_card(home: &Path, project: &str, run_id: &str, cards: &[String], spa
     let effort = effort.filter(|e| providers::get(provider).lead_efforts().contains(e));
     let root = clean::default_root();
     let req = SendRequest { project, thread: Some(&thread_id), provider, model, effort, text: &message.text, attach: &[], fresh: false, clean: profile.is_clean().then_some(root.as_path()), yolo: false };
-    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message }), false, None)?;
+    send_turn(home, &req, spawner, TURN_LIMIT, None, Some(WorkerTurn { thread_id: &thread_id, speaker: &speaker, message: &message, claimed: false }), false, None)?;
     if !team::read(home, &speaker, true).map_err(|e| e.to_string())?.iter().any(|m| m.id == message.id && m.state == "acknowledged") {
         return Err("총괄 처리 결과가 불명입니다. 대화와 메시지 상태를 확인하세요".into());
     }

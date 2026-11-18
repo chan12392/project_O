@@ -80,6 +80,11 @@ pub fn resume_worker(_pid: u32) -> io::Result<()> { Ok(()) }
 /// Starts a process that outlives this one, with no console and no stdio.
 pub fn spawn_detached(command: &mut Command) -> std::io::Result<Child> {
     command.stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null());
+    spawn_detached_with_stdio(command)
+}
+
+/// Internal runner transport supplies private pipes while retaining detached-launch handling.
+pub(crate) fn spawn_detached_with_stdio(command: &mut Command) -> std::io::Result<Child> {
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;

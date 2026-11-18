@@ -10,7 +10,9 @@ param(
 
 $branch = (git -C $Mirror branch --show-current).Trim()
 # Same list as MIRROR_BRANCHES in crates/o-core/src/sys/mirror.rs (o sync-mirror refuses others).
-if ($branch -notin @('test_1', 'test_2', 'main')) { throw "거울 브랜치(test_1, test_2, main)가 아닙니다: $branch" }
+if ($branch -notin @('test_1', 'test_1_hotfix', 'test_2', 'main_hotfix', 'main')) { throw "보호 브랜치 거울이 아닙니다: $branch" }
+$origin = (git -C $Mirror remote get-url origin).Trim()
+if ($LASTEXITCODE -ne 0 -or $origin -notmatch '^(https://github\.com/chan12392/project_O|git@github\.com:chan12392/project_O|ssh://git@github\.com/chan12392/project_O)(\.git)?/?$') { throw "origin이 공식 project_O 저장소가 아닙니다: $origin" }
 
 # The installed o.exe lives outside the repo, so a mirror that is behind still syncs.
 $o = (Get-Command o.exe -CommandType Application -ErrorAction Stop | Select-Object -First 1).Source
