@@ -578,7 +578,7 @@ function MainWindow() {
           </>
         )}
       </main>
-      <StatusBar state={state} runs={oRuns} live={data.live} replaying={Boolean(replayingId)} onReplay={() => current && restart(current.view.runId)} />
+      <StatusBar state={state} runs={oRuns} usageWindows={data.usageWindows} now={now} live={data.live} replaying={Boolean(replayingId)} onReplay={() => current && restart(current.view.runId)} />
       <p className="sr-only" aria-live="polite">
         {announced}
       </p>
