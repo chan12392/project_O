@@ -167,7 +167,7 @@ export function useFollowBottom(deps: unknown[]) {
     const el = ref.current;
     if (!el) return;
     const onScroll = () => {
-      follow.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+      follow.current = el.scrollHeight - el.scrollTop - el.clientHeight <= 2;
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     const content = el.firstElementChild;
