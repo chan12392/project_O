@@ -70,6 +70,8 @@ export interface RunView {
   endedAt?: string;
   status: "running" | "done" | "failed" | "stopped";
   followup?: { sourceRunId: string; cardId: string };
+  /** True when automation started the run; absent in older and ordinary runs. */
+  scheduled?: boolean;
   cards: CardView[];
   /** The run's team channel, in order. */
   messages: TeamMessage[];
@@ -176,7 +178,10 @@ export function snapshot(events: OEvent[]): RunView | undefined {
     }
     if (e.t === "review.posted") continue;
     if (e.t === "run.context") continue;
-    if (e.t === "run.mode") continue;
+    if (e.t === "run.mode") {
+      if (e.scheduled !== undefined) run.scheduled = e.scheduled;
+      continue;
+    }
     const card = byId.get(e.cardId);
     if (!card) continue;
     switch (e.t) {

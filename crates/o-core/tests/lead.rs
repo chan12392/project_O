@@ -77,7 +77,7 @@ Usage: codex [OPTIONS] [PROMPT]
     // Normal-mode turns find `o` beside the running program for their approvals; whether a
     // built `o` happens to sit beside this test binary differs by OS, so name one for every test.
     lead::approvals::set_program(Some(std::env::current_exe().unwrap()));
-    let tests: [(&str, fn()); 40] = [
+    let tests: [(&str, fn()); 41] = [
         ("follow-ups only target cards dispatched by this thread", followup_routing),
         ("a plan for a non-Git project can be dispatched", dispatch_non_git),
         ("tool progress is visible during the turn and cleared afterwards", live_tool_progress),
@@ -85,6 +85,7 @@ Usage: codex [OPTIONS] [PROMPT]
         ("design notes persist, reach the lead and preserve concurrent edits", design_notes),
         ("only the latest plan in an open thread can dispatch", stale_plan_refused),
         ("automatic dispatch respects mode, running work and the daily budget", autorun),
+        ("only scheduled dispatch records scheduled in the runner's mode event", scheduled_run_mode_recorded),
         ("an automatic dispatch that fails to start uses up no auto-run limit", autorun_failures_not_counted),
         ("opening another tab preserves the live tab's automatic dispatch", autorun_new_thread_cancels),
         ("an automatic dispatch never starts a plan a newer request replaced", autorun_newer_request_wins),
@@ -1010,6 +1011,36 @@ fn autorun() {
     let blocked = lead::send_with_autorun(&home, &yolo, spawner.as_ref(), &start).unwrap();
     assert!(blocked.iter().any(|e| matches!(e, LeadEvent::AutoRun { reason: Some(reason), .. } if reason.contains("예산"))));
     assert_eq!(starts.load(Ordering::SeqCst), 1);
+}
+
+fn scheduled_run_mode_recorded() {
+    use o_core::run::{events::CardStatus, runner, store};
+    for scheduled in [false, true] {
+        let (home, project) = setup(if scheduled { "scheduled-mode" } else { "ordinary-mode" });
+        init_git(&project);
+        let (lead_cli, _) = fake(claude_answer("lead", &plan_answer(good_plan())));
+        let (worker_cli, _) = fake(claude_answer("worker", "완료"));
+        let start = |run_id: &str| {
+            assert_eq!(store::is_scheduled(&home, run_id), scheduled);
+            let plan = serde_json::from_value(store::read_plan(&home, run_id)?).unwrap();
+            assert_eq!(runner::run_plan(&home, run_id, &plan, None, Arc::clone(&worker_cli))?, CardStatus::Done);
+            Ok(())
+        };
+        let req = SendRequest { yolo: !scheduled, ..request(&project, "실행") };
+        let events = if scheduled {
+            lead::send_with_scheduled_autorun(&home, &req, lead_cli.as_ref(), &start)
+        } else {
+            lead::send_with_autorun(&home, &req, lead_cli.as_ref(), &start)
+        }.unwrap();
+        let run_id = events.iter().find_map(|event| match event {
+            LeadEvent::Dispatch { run_id, .. } => Some(run_id),
+            _ => None,
+        }).expect("the plan started");
+        let recorded = store::read_event_values(&home, run_id);
+        let mode = recorded.iter().find(|event| event["t"] == "run.mode").expect("the runner recorded its mode");
+        assert_eq!(mode.get("scheduled"), scheduled.then_some(&json!(true)));
+        assert_eq!(mode["yolo"], !scheduled);
+    }
 }
 
 fn auto_reason(events: &[LeadEvent], part: &str) -> bool {

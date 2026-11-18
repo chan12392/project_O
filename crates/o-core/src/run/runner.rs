@@ -182,6 +182,7 @@ pub fn run_plan_with(
             profile: Profile::of_clean(clean.is_some()),
             context: crate::context::enabled(home, run_id),
             yolo,
+            scheduled: crate::run::store::is_scheduled(home, run_id).then_some(true),
         })?;
         if run_dir(home, run_id).join("followup.json").exists() {
             let (source_run_id, card_id): (String, String) = serde_json::from_slice(&fs::read(run_dir(home, run_id).join("followup.json"))?).map_err(io::Error::other)?;
@@ -601,7 +602,7 @@ fn wait_for_followup(home: &Path, run_id: &str, raw: &Value) -> Result<Option<fs
     if !read_events(home, run_id).iter().any(|e| matches!(e, OEvent::RunStart { .. })) {
         emit(OEvent::RunStart { at: now_iso(), run_id: run_id.into(), title: plan.title.clone(), project: plan.project.clone(), cards: vec![CardInfo { id: c.id.clone(), provider: c.provider, label: Some(c.label()), role: c.role.clone(), model: c.model.clone(), effort: c.effort.clone() }] })?;
         emit(OEvent::RunFollowup { at: now_iso(), source_run_id: source.clone(), card_id: card.clone() })?;
-        emit(OEvent::RunMode { at: now_iso(), run_id: run_id.into(), profile: Profile::of_clean(is_clean(home, run_id)), context: crate::context::enabled(home, run_id), yolo: is_yolo(home, run_id) })?;
+        emit(OEvent::RunMode { at: now_iso(), run_id: run_id.into(), profile: Profile::of_clean(is_clean(home, run_id)), context: crate::context::enabled(home, run_id), yolo: is_yolo(home, run_id), scheduled: crate::run::store::is_scheduled(home, run_id).then_some(true) })?;
         emit(OEvent::CardInput { at: now_iso(), card_id: card.clone(), text: c.task.clone() })?;
     }
     emit(OEvent::CardQueued { at: now_iso(), card_id: card.clone(), reason: "이전 작업이 끝나기를 기다립니다".into() })?;

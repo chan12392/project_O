@@ -454,6 +454,15 @@ pub fn is_yolo(home: &Path, run_id: &str) -> bool {
     run_dir(home, run_id).join("yolo").exists()
 }
 
+/// Records that a user-created schedule started this run.
+pub(crate) fn mark_scheduled(home: &Path, run_id: &str) -> io::Result<()> {
+    fs::write(run_dir(home, run_id).join("scheduled"), "")
+}
+
+pub fn is_scheduled(home: &Path, run_id: &str) -> bool {
+    run_dir(home, run_id).join("scheduled").exists()
+}
+
 /// The runner (`o _run`) of a run: its pid and start time, written when it starts.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct RunnerMark {

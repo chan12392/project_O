@@ -138,7 +138,7 @@ pub fn start(home: &Path, run: &str, card: &str, text: &str, spawn: &dyn Fn(&str
     for event in [
         OEvent::RunStart { at: at.clone(), run_id: id.clone(), title: plan.title.clone(), project: plan.project.clone(), cards: vec![CardInfo { id: item.id.clone(), provider: item.provider, label: Some(item.label()), role: item.role.clone(), model: item.model.clone(), effort: item.effort.clone() }] },
         OEvent::RunFollowup { at: at.clone(), source_run_id: run.into(), card_id: card.into() },
-        OEvent::RunMode { at: at.clone(), run_id: id.clone(), profile, context: true, yolo: false },
+        OEvent::RunMode { at: at.clone(), run_id: id.clone(), profile, context: true, yolo: false, scheduled: None },
         OEvent::CardInput { at, card_id: card.into(), text: item.task.clone() },
     ] { store::append_event(home, &id, &event).map_err(|e| e.to_string())?; }
     if let Err(error) = spawn(&id) {
