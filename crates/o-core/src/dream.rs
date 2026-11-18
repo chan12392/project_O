@@ -1278,7 +1278,7 @@ mod tests {
         assert_eq!(of("작업 성공/blog/20260101-000000-aaaa-build.md"), ["서명", "tauri", "배포"]);
         assert_eq!(paths(tagged(&["#TAURI", "배포"])), [material.path.as_str(), "배운 것/blog/20260101-000000-aaaa-build-1.md", "작업 성공/blog/20260101-000000-aaaa-build.md"]);
         assert_eq!(paths(DreamQuery { kind: Some("note".into()), ..tagged(&["서명"]) }), ["배운 것/shop/20260102-000000-bbbb-x-1.md", "배운 것/blog/20260101-000000-aaaa-build-1.md"]);
-        assert_eq!(paths(DreamQuery { project: Some("d:\\other\\shop\\".into()), kind: Some("note".into()), ..DreamQuery::default() }), ["배운 것/shop/20260102-000000-bbbb-x-1.md"]);
+        assert_eq!(paths(DreamQuery { project: Some("D:\\other\\shop\\".into()), kind: Some("note".into()), ..DreamQuery::default() }), ["배운 것/shop/20260102-000000-bbbb-x-1.md"]);
         assert_eq!(paths(DreamQuery { limit: Some(1), ..tagged(&["서명"]) }).len(), 1);
         assert!(find(&home, Scope::Person, &tagged(&["a b"])).is_err());
         assert!(find(&home, Scope::Person, &DreamQuery { kind: Some("everything".into()), ..DreamQuery::default() }).is_err());
@@ -1286,6 +1286,20 @@ mod tests {
         assert_eq!(counts[0], TagCount { tag: "서명".into(), count: 4 });
         assert_eq!(tags(&home, Scope::Person, Some("D:/other/shop")).unwrap(), [TagCount { tag: "서명".into(), count: 2 }]);
         assert_eq!(read(&home, &material.path).unwrap().tags, ["배포", "tauri", "점검"]);
+        fs::remove_dir_all(home).unwrap();
+    }
+
+    #[test]
+    fn document_project_queries_ignore_letter_case_only_on_windows() {
+        let home = home("query-case");
+        run(&home, "20260102-000000-bbbb", "D:/other/shop", "x", (CardStatus::Done, Some("ok")), "b.rs", 2);
+        note(&home, "20260102-000000-bbbb", "x", "결제 모듈 메모 #서명");
+        let paths = |project: &str| find(&home, Scope::Person, &DreamQuery { project: Some(project.into()), kind: Some("note".into()), ..DreamQuery::default() }).unwrap().docs.into_iter().map(|d| d.path).collect::<Vec<_>>();
+        assert_eq!(paths("D:/other/shop"), ["배운 것/shop/20260102-000000-bbbb-x-1.md"]);
+        #[cfg(windows)]
+        assert_eq!(paths("d:\\other\\shop\\"), ["배운 것/shop/20260102-000000-bbbb-x-1.md"]);
+        #[cfg(not(windows))]
+        assert!(paths("d:\\other\\shop\\").is_empty());
         fs::remove_dir_all(home).unwrap();
     }
 
