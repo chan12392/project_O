@@ -127,18 +127,24 @@ def classify(finding, request=request_json):
     return "VULNERABLE"
 
 
-# A development-only advisory that has no published fix is printed and does not fail the check.
+# A development-only advisory that has no compatible fix is printed and does not fail the check.
 # The app's build tooling pulls in picomatch 4.0.7 (GHSA-fc5q-39xc-vjpf, ReDoS through
-# single-branch repeated extglobs) through vite, tinyglobby and fdir, and the newest picomatch
-# release is still 4.0.7, so failing on it would keep every PR red until upstream ships a fix
-# (ADR-0050, decision 4). Anything reachable from production code, or fixable by a version
-# bump, still fails.
+# single-branch repeated extglobs) through vite, tinyglobby and fdir. Every published picomatch
+# release is affected and npm's only suggestion is a semver-major downgrade of vite, so failing
+# on it would keep every PR red (ADR-0050, decision 4). Anything reachable from production code,
+# or fixable within the declared ranges, still fails.
 def dev_only_entry(locked, item):
     """True when npm reports this entry only through packages that are dev-only in the lockfile."""
     nodes = item.get("nodes")
     if not isinstance(nodes, list) or not nodes:
         return False
     return all(isinstance(locked.get(node), dict) and locked[node].get("dev") is True for node in nodes)
+
+
+def no_compatible_fix(item):
+    """True when npm offers no fix, or only a semver-major one (a downgrade of its parents)."""
+    fix = item.get("fixAvailable")
+    return fix is False or (isinstance(fix, dict) and fix.get("isSemVerMajor") is True)
 
 
 def npm_audit(folder, run=subprocess.run):
@@ -162,7 +168,7 @@ def npm_audit(folder, run=subprocess.run):
     for name, item in sorted(vulnerabilities.items()):
         if not isinstance(item, dict):
             raise ValueError(f"npm audit failed in {folder.name}: malformed entry for {name}")
-        if item.get("fixAvailable") is False and dev_only_entry(locked, item):
+        if no_compatible_fix(item) and dev_only_entry(locked, item):
             advisories = [via["url"] for via in item.get("via") or [] if isinstance(via, dict) and via.get("url")]
             warnings.append(name)
             print(f"DEV-ONLY, NO FIX: {name} ({item.get('severity')})" + (f" {' '.join(advisories)}" if advisories else ""))
@@ -180,7 +186,7 @@ def main(root):
     for folder in (root, root / "app"):
         try:
             warnings = npm_audit(folder)
-            note = f"; {len(warnings)} dev-only advisory with no fix, see above" if warnings else ""
+            note = f"; {len(warnings)} dev-only advisories with no fix, see above" if warnings else ""
             print(f"PASS npm audit: {folder.name} (production + development{note})")
         except Exception as error:
             errors.append(str(error))

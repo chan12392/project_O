@@ -106,7 +106,8 @@ class DependencyCheck(unittest.TestCase):
                      "effects": ["vite"], "range": "<=4.0.7", "nodes": ["node_modules/picomatch"],
                      "fixAvailable": False}
         vite = {"name": "vite", "severity": "high", "isDirect": False, "via": ["picomatch"],
-                "effects": [], "range": "8.3.5", "nodes": ["node_modules/vite"], "fixAvailable": False}
+                "effects": [], "range": "8.3.5", "nodes": ["node_modules/vite"],
+                "fixAvailable": {"name": "vite", "version": "6.2.7", "isSemVerMajor": True}}
         metadata = {"metadata": {"vulnerabilities": {"total": 2, "high": 2}}}
         lock = {"packages": {"node_modules/picomatch": {"version": "4.0.7", "dev": True},
                              "node_modules/vite": {"version": "8.3.5", "dev": True}}}
@@ -123,7 +124,7 @@ class DependencyCheck(unittest.TestCase):
                                  ["picomatch", "vite"])
             self.assertIn("DEV-ONLY, NO FIX: picomatch (high) https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
                           output.getvalue())
-            # A published fix or a package outside the lockfile (production) still fails.
+            # A fix inside the declared ranges, or a package outside the lockfile, still fails.
             for payload in ({"vulnerabilities": {"picomatch": {**picomatch, "fixAvailable": {"name": "picomatch", "version": "4.0.8"}}}, **metadata},
                             {"vulnerabilities": {"picomatch": {**picomatch, "nodes": ["node_modules/vite/node_modules/picomatch"]}}, **metadata}):
                 with self.subTest(payload=payload), self.assertRaises(ValueError):
