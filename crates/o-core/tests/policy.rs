@@ -12,7 +12,6 @@ fn ctx() -> PolicyContext {
     PolicyContext {
         now: "2026-11-01T10:00:00Z".parse::<DateTime<Utc>>().unwrap(),
         active_by_provider: empty_counts(),
-        started_today: 0,
         cooldowns: Default::default(),
         over_budget: Default::default(),
         project_exists: Box::new(|_| true),
@@ -228,7 +227,7 @@ fn a_provider_over_its_daily_budget_takes_no_cards_others_still_do() {
 }
 
 #[test]
-fn caps_plan_size_active_slots_and_the_daily_ceiling() {
+fn caps_plan_size_and_active_slots() {
     let many: Vec<Value> = (0..=LIMITS.max_cards_per_plan).map(|i| with(code_card(), "id", json!(format!("c{i}")))).collect();
     assert!(has(&check_plan(&plan(many), &ctx()), "plan-size"));
 
@@ -237,9 +236,25 @@ fn caps_plan_size_active_slots_and_the_daily_ceiling() {
     assert!(has(&check_plan(&plan(vec![code_card()]), &full), "active-cap"));
     assert!(check_plan(&plan(vec![design_card()]), &full).violations.is_empty());
 
-    let mut late = ctx();
-    late.started_today = LIMITS.max_cards_per_day;
-    assert!(has(&check_plan(&plan(vec![code_card()]), &late), "daily-cap"));
+    // The total ceiling still applies when this plan's provider has a free slot.
+    full.active_by_provider.insert(ProviderId::Claude, LIMITS.max_active_total - LIMITS.max_active_per_provider(ProviderId::Codex));
+    assert!(has(&check_plan(&plan(vec![design_card()]), &full), "active-cap"));
+}
+
+#[test]
+fn completed_cards_today_do_not_prevent_a_new_plan() {
+    use o_core::run::store::{policy_context, record_start, started_on};
+    let home = std::env::temp_dir().join(format!("o-policy-history-{}-{}", std::process::id(), Utc::now().timestamp_nanos_opt().unwrap()));
+    let now = Utc::now();
+    for i in 0..75 {
+        record_start(&home, "finished", &format!("c{i}"), ProviderId::Codex, now).unwrap();
+    }
+    assert_eq!(started_on(&home, now).unwrap(), 75);
+    let mut context = policy_context(&home, now).unwrap();
+    context.project_exists = Box::new(|_| true);
+    let checked = check_plan(&plan(vec![code_card()]), &context);
+    assert!(checked.plan.is_some(), "{:?}", checked.violations);
+    std::fs::remove_dir_all(home).unwrap();
 }
 
 #[test]
@@ -283,10 +298,6 @@ fn shape_errors_are_reported_not_thrown() {
 fn messages_keep_the_ts_wording() {
     let checked = check_plan(&json!([]), &ctx());
     assert_eq!(checked.violations[0].message, "계획은 JSON 객체여야 합니다");
-    let mut late = ctx();
-    late.started_today = LIMITS.max_cards_per_day;
-    let checked = check_plan(&plan(vec![code_card()]), &late);
-    assert_eq!(checked.violations[0].message, "오늘 실행한 카드 60개 — 하루 최대 60개를 넘습니다");
 }
 
 #[test]

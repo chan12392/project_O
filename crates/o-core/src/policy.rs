@@ -22,7 +22,6 @@ pub struct Limits {
     pub max_task_chars: usize,
     pub max_message_chars: usize,
     pub max_active_total: usize,
-    pub max_cards_per_day: usize,
     /// When a provider reports a limit without a reset time.
     pub default_cooldown_ms: i64,
 }
@@ -46,7 +45,6 @@ pub const LIMITS: Limits = Limits {
     max_task_chars: 20_000,
     max_message_chars: 4_000,
     max_active_total: 6,
-    max_cards_per_day: 60,
     default_cooldown_ms: 60 * 60 * 1000,
 };
 
@@ -81,7 +79,6 @@ pub struct Violation {
 pub struct PolicyContext {
     pub now: DateTime<Utc>,
     pub active_by_provider: HashMap<ProviderId, usize>,
-    pub started_today: usize,
     /// Provider → ISO time until which it may not be used.
     pub cooldowns: HashMap<ProviderId, String>,
     /// Provider → why it spent today's usage budget (ADR-0004, see `budget`).
@@ -270,14 +267,6 @@ pub fn check_plan(input: &Value, ctx: &PolicyContext) -> Checked {
             found.add("active-cap", format!("{provider} 작업이 이미 최대치({max})로 실행 중입니다"), None);
         }
     }
-    if ctx.started_today + valid.len() > LIMITS.max_cards_per_day {
-        found.add(
-            "daily-cap",
-            format!("오늘 실행한 카드 {}개 — 하루 최대 {}개를 넘습니다", ctx.started_today, LIMITS.max_cards_per_day),
-            None,
-        );
-    }
-
     if !found.0.is_empty() {
         return Checked { plan: None, violations: found.0, notices: Vec::new() };
     }

@@ -313,19 +313,12 @@ pub fn run_plan_with(
                 }
             }
             // Dispatch checked the caps, but runs dispatched together all saw the same counts: the slot
-            // and the day's start are taken here, in o.db, before the CLI starts (see `reserve_slot`).
+            // is taken here, in o.db, before the CLI starts (see `reserve_slot`).
             let reservation = match reserve_slot(home, run_id, &card, &workdir.checked, Utc::now()) {
                 Ok(Reserved::Granted(reservation)) => reservation,
                 Err(error) => {
                     take(&mut pending);
                     emit(ended(&card, CardStatus::Failed, Some(format!("자원 예약 실패: {error}"))))?;
-                    results.push(CardStatus::Failed);
-                    completed.insert(card.id.clone(), CardStatus::Failed);
-                    continue;
-                }
-                Ok(Reserved::DayFull) => {
-                    take(&mut pending);
-                    emit(ended(&card, CardStatus::Failed, Some(format!("오늘 실행 상한 {}개에 닿아 시작하지 않음", LIMITS.max_cards_per_day))))?;
                     results.push(CardStatus::Failed);
                     completed.insert(card.id.clone(), CardStatus::Failed);
                     continue;

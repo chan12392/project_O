@@ -387,7 +387,7 @@ function BudgetRows({ api }: { api: Backend }) {
             {enabled === false
               ? "꺼져 있습니다. 예산으로 새 작업을 막거나 작업카드의 effort를 낮추지 않습니다. 오늘 쓴 양은 사용량의 오늘 고리에 그대로 보입니다."
               : "에이전트마다 하루에 쓸 양을 아래 비율로 잡습니다. 하루가 지나는 속도보다 빨리 쓰면 작업카드의 effort를 한두 단계 낮추고(올리지는 않음), 다 쓰면 다음 날(또는 주간 초기화)까지 그 에이전트로 새 작업을 보내지 않습니다."}{" "}
-            구독 자체의 사용 한도·쿨다운과 동시 실행·하루 실행 상한은 이 선택과 관계없이 그대로입니다.
+            구독 자체의 사용 한도·쿨다운과 동시 실행 상한은 이 선택과 관계없이 그대로입니다.
             {note && (
               <span role="status" className="mt-1 flex flex-wrap items-center gap-2 text-destructive">
                 {note}

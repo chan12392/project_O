@@ -167,7 +167,6 @@ fn ctx() -> PolicyContext {
     PolicyContext {
         now: "2026-11-02T10:00:00Z".parse::<DateTime<Utc>>().unwrap(),
         active_by_provider: empty_counts(),
-        started_today: 0,
         cooldowns: Default::default(),
         over_budget: Default::default(),
         project_exists: Box::new(|_| true),

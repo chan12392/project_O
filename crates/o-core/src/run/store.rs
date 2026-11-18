@@ -6,7 +6,7 @@
 //! runs/<runId>/plan.json · events.jsonl · cards/<id>.raw.jsonl · stop · clean (o dispatch --clean)
 //!              · yolo (YOLO 모드, ADR-0014) · runner.json (the runner's pid and start time)
 //! active/<runId>.<cardId>.json   running card markers ({ pid, provider })
-//! o.db                           the run index, card starts (daily cap), held slots, cooldowns and
+//! o.db                           the run index, card starts (daily statistics), held slots, cooldowns and
 //!                                refused plans; dispatch and the runner write it, cards never (see `index`)
 //! ```
 //!
@@ -381,7 +381,6 @@ pub fn policy_context(home: &Path, now: DateTime<Utc>) -> io::Result<PolicyConte
     Ok(PolicyContext {
         now,
         active_by_provider: held_by_provider(home)?,
-        started_today: started_on(home, now)?,
         cooldowns: cooldown_times(home)?,
         over_budget: crate::usage::budget::over_budget(home, now)?,
         project_exists: Box::new(|path| Path::new(path).exists()),

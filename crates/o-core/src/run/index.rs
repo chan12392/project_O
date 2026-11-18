@@ -11,7 +11,7 @@
 //! ```text
 //! runs      run_id PK · title · project · started_at · ended_at · status · cards · done · failed · tokens · ingested_bytes · events · prefix_hash · modified
 //! events    run_id · seq · json            every complete, parseable events.jsonl line, in file order
-//! starts    run_id · card_id · provider · at   one row per started card (the daily cap)
+//! starts    run_id · card_id · provider · at   one row per started card (daily statistics)
 //! slots     run_id · card_id · provider · owner · pid   cards holding a slot: reserved by the runner
 //!                                  (`owner`) before the CLI starts, the CLI's `pid` once it runs
 //! cooldowns provider PK · until            when a provider may be used again
