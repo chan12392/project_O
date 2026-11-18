@@ -531,6 +531,12 @@ fn run_plan_with_input(input: &RunInput, clean: Option<&Path>, spawner: Arc<Spaw
     } else {
         CardStatus::Failed
     };
+    // The run is over: its checkouts keep the edits and Git state but not the build output they
+    // made (docs/reports/2026-11-13-branch-cleanup-and-build-footprint.md). A follow-up works in the
+    // checkout of the run it continues, so that one is cleaned when the follow-up ends too.
+    let mut checkouts: Vec<(String, PathBuf)> = workspaces.as_ref().map(|paths| paths.checkouts().to_vec()).unwrap_or_default();
+    if let Some(target) = &followup { checkouts.push((target.card.id.clone(), target.workspace.clone())); }
+    super::workspaces::clean_finished_run(home, run_id, &checkouts);
     emit(OEvent::RunEnd { at: now_iso(), run_id: run_id.to_string(), status })?;
     Ok(status)
 }

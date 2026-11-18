@@ -148,13 +148,14 @@ fn reaches_protected(project: &str, ctx: &PolicyContext) -> bool {
 }
 
 /// The folders O keeps beside its state folder, as off-limits as the state folder itself: the
-/// agent profiles (each CLI's sign-in), lead attachments and plans, terminal card tasks and
-/// card worktrees. A card whose project is one of them would be handed a copy of it.
+/// agent profiles (each CLI's sign-in), lead attachments and plans, terminal card tasks, card
+/// worktrees and the shared build cache. A card whose project is one of them would be handed a
+/// copy of it.
 fn o_siblings(o_home: &str) -> Vec<String> {
     let home = o_home.replace('\\', "/");
     let Some((parent, name)) = home.trim_end_matches('/').rsplit_once('/') else { return Vec::new() };
     let mut names = vec!["project_O-agents".to_string()];
-    names.extend(["agents", "lead", "term", "worktrees"].map(|kind| format!("{name}-{kind}")));
+    names.extend(["agents", "lead", "term", "worktrees", "cache"].map(|kind| format!("{name}-{kind}")));
     names.dedup();
     names.into_iter().map(|name| format!("{parent}/{name}")).collect()
 }

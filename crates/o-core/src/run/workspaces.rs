@@ -200,6 +200,7 @@ pub(crate) fn preflight(project: &str) -> io::Result<()> {
 
 pub(super) struct Workspaces {
     paths: HashMap<String, String>,
+    checkouts: Vec<(String, PathBuf)>,
     project: String,
     git_base: Option<(PathBuf, PathBuf, String)>,
     copy_base: Option<Snapshot>,
@@ -240,6 +241,9 @@ fn task_branch(root: &Path, source: &str, title: &str, run_id: &str) -> io::Resu
 
 impl Workspaces {
     pub(super) fn get(&self, id: &str) -> Option<&String> { self.paths.get(id) }
+
+    /// Each card's checkout root, in plan order: what a finished run may clean the build output of.
+    pub(super) fn checkouts(&self) -> &[(String, PathBuf)] { &self.checkouts }
 
     /// Applies each predecessor's complete project-scoped Git change to a fresh checkout.
     pub(super) fn handoff(&self, home: &Path, run_id: &str, plan: &Plan, card: &crate::run::plan::Card) -> io::Result<()> {
@@ -597,6 +601,7 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
         Some((source, entries))
     } else { None };
     let mut result = HashMap::new();
+    let mut checkouts = Vec::new();
     let mut copy_git = HashMap::new();
     for (i, card) in plan.cards.iter().enumerate() {
         // Numeric folder names are independent of model-generated card IDs.
@@ -624,6 +629,7 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
             return Err(io::Error::other(format!("작업 폴더가 워크트리 밖을 가리킵니다. 만든 폴더는 {}에 보존했습니다", run.display())));
         }
         result.insert(card.id.clone(), cwd.to_string_lossy().into_owned());
+        checkouts.push((card.id.clone(), checkout));
     }
     let current_base = base(project)
         .map_err(|e| io::Error::other(format!("워크트리 준비 중 프로젝트가 바뀌었습니다: {e}. 만든 폴더는 {}에 보존했습니다", run.display())))?;
@@ -643,7 +649,7 @@ pub(super) fn create(home: &Path, run_id: &str, project: &str, plan: &Plan) -> i
     serde_json::to_writer(&mut baseline_file, &baseline).map_err(io::Error::other)?;
     baseline_file.sync_all()?;
     drop(branch_lock);
-    Ok(Workspaces { paths: result, project: project.to_string(), git_base, copy_base, copy_git, branch: branch.map(|(name, _)| name) })
+    Ok(Workspaces { paths: result, checkouts, project: project.to_string(), git_base, copy_base, copy_git, branch: branch.map(|(name, _)| name) })
 }
 
 fn snapshot_copy_base(root: &Path, source: &Path) -> io::Result<Snapshot> {
@@ -652,6 +658,170 @@ fn snapshot_copy_base(root: &Path, source: &Path) -> io::Result<Snapshot> {
         return Err(io::Error::other("복사본 기준이 변경되었습니다"));
     }
     Ok(original)
+}
+
+/// The folders a build leaves in a checkout that can always be made again: nothing in them is the
+/// card's work.
+const BUILD_OUTPUT: [&str; 2] = ["target", "node_modules"];
+
+/// How deep below the checkout root build output is looked for. This project keeps `target`,
+/// `node_modules` and `app/node_modules` within three levels.
+const BUILD_OUTPUT_DEPTH: usize = 3;
+
+/// Creates `path` when missing and insists it is a plain folder. A link where a folder belongs
+/// would take a card's build output somewhere O does not expect, so it refuses instead.
+fn plain_folder(path: &Path, what: &str) -> io::Result<PathBuf> {
+    fs::create_dir_all(path)?;
+    let metadata = fs::symlink_metadata(path)?;
+    if !metadata.is_dir() || metadata.file_type().is_symlink() {
+        return Err(io::Error::other(format!("{what}가 일반 폴더가 아닙니다")));
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        if metadata.file_attributes() & 0x400 != 0 { return Err(io::Error::other(format!("{what}가 연결 지점입니다"))); }
+    }
+    Ok(PathBuf::from(resolved_path(&path.to_string_lossy())))
+}
+
+/// The folder O keeps beside its state folder (`<state>-cache`) for regenerable build output, as
+/// `<state>-worktrees` holds its checkouts.
+fn cache_root(home: &Path) -> io::Result<PathBuf> {
+    let name = home.file_name().ok_or_else(|| io::Error::other("O 상태 폴더가 올바르지 않습니다"))?.to_string_lossy();
+    plain_folder(&home.with_file_name(format!("{name}-cache")), "빌드 캐시 보관 폴더")
+}
+
+/// Whether `path` lies inside one of O's isolated checkouts (`<state>-worktrees/<run>/<number>`),
+/// Git worktrees and non-Git copies alike.
+pub(crate) fn in_isolated_checkout(home: &Path, path: &Path) -> bool {
+    let Some(name) = home.file_name() else { return false };
+    let parent = home.with_file_name(format!("{}-worktrees", name.to_string_lossy()));
+    let parent = PathBuf::from(resolved_path(&parent.to_string_lossy()));
+    let path = PathBuf::from(resolved_path(&path.to_string_lossy()));
+    path.starts_with(&parent)
+}
+
+/// The one `CARGO_TARGET_DIR` every isolated checkout builds into, so a run does not leave a
+/// `target` of its own behind (docs/reports/2026-11-13-branch-cleanup-and-build-footprint.md).
+/// Whoever calls this decides whether the card may use it: a `CARGO_TARGET_DIR` the person set and
+/// a CLI that cannot write outside its workspace are their call, not this folder's.
+pub(crate) fn shared_cargo_target(home: &Path, project: &Path) -> io::Result<PathBuf> {
+    let root = cache_root(home)?;
+    let state = PathBuf::from(resolved_path(&home.to_string_lossy()));
+    let project = PathBuf::from(resolved_path(&project.to_string_lossy()));
+    if root.starts_with(&state) || root.starts_with(&project) || project.starts_with(&root) {
+        return Err(io::Error::other("빌드 캐시 폴더가 O 상태 폴더나 프로젝트와 겹칩니다"));
+    }
+    plain_folder(&root.join("cargo-target"), "빌드 캐시 폴더")
+}
+
+/// Whether `checkout` is a Git worktree O made: git keeps a `.git` *file* there that points into
+/// the main repository, and the folder sits at `<state>-worktrees/<run>/<number>`. The original
+/// project and a non-Git copy (`git init`, whose `.git` is a folder) are not one.
+fn is_linked_worktree(home: &Path, checkout: &Path) -> bool {
+    let Some(name) = home.file_name() else { return false };
+    let parent = home.with_file_name(format!("{}-worktrees", name.to_string_lossy()));
+    let parent = PathBuf::from(resolved_path(&parent.to_string_lossy()));
+    let Some(run) = checkout.parent() else { return false };
+    if run.parent() != Some(parent.as_path()) { return false; }
+    if !run.file_name().and_then(|name| name.to_str()).is_some_and(crate::run::store::is_run_id) { return false; }
+    if !checkout.file_name().and_then(|name| name.to_str()).is_some_and(|folder| folder.parse::<usize>().is_ok_and(|n| n >= 1)) { return false; }
+    if !fs::symlink_metadata(checkout.join(".git")).is_ok_and(|meta| meta.is_file() && !meta.file_type().is_symlink()) { return false; }
+    let Ok(top) = git(checkout, &["rev-parse", "--show-toplevel"]) else { return false };
+    PathBuf::from(resolved_path(&top)) == checkout
+}
+
+/// Whether Git tracks the folder: a tracked one is source, not build output.
+fn tracked(root: &Path, path: &Path) -> io::Result<bool> {
+    let name = match path.strip_prefix(root) {
+        Ok(name) => name.to_string_lossy().replace('\\', "/"),
+        Err(_) => return Ok(true),
+    };
+    let name = format!(":(literal){name}");
+    Ok(!git_output(root, &["ls-files", "-z", "--", name.as_str()])?.is_empty())
+}
+
+/// Removes `target` and `node_modules` folders Git does not track, without following links and
+/// without descending into what it removes.
+fn remove_build_output(root: &Path, dir: &Path, depth: usize, removed: &mut Vec<String>) -> io::Result<()> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if depth == 1 && name.eq_ignore_ascii_case(".git") { continue; }
+        let path = entry.path();
+        let metadata = fs::symlink_metadata(&path)?;
+        if !metadata.is_dir() || metadata.file_type().is_symlink() { continue; }
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::MetadataExt;
+            if metadata.file_attributes() & 0x400 != 0 { continue; }
+        }
+        if BUILD_OUTPUT.iter().copied().any(|output| name.eq_ignore_ascii_case(output)) {
+            if tracked(root, &path)? { continue; }
+            fs::remove_dir_all(&path)?;
+            removed.push(path.strip_prefix(root).unwrap_or(&path).to_string_lossy().replace('\\', "/"));
+            continue;
+        }
+        if depth < BUILD_OUTPUT_DEPTH { remove_build_output(root, &path, depth + 1, removed)?; }
+    }
+    Ok(())
+}
+
+/// Removes the build output a finished run left in one of its isolated checkouts. Only a Git
+/// worktree O made is touched: the original project, a non-Git copy (whose `target` may have come
+/// from the project) and any other folder are refused, so nothing that cannot be rebuilt goes.
+fn clean_checkout(home: &Path, checkout: &Path) -> io::Result<Vec<String>> {
+    let checkout = PathBuf::from(resolved_path(&checkout.to_string_lossy()));
+    if !is_linked_worktree(home, &checkout) {
+        return Err(io::Error::other(format!("{}는 O가 만든 Git 워크트리가 아니어서 빌드 산출물을 지우지 않았습니다", checkout.display())));
+    }
+    let mut removed = Vec::new();
+    remove_build_output(&checkout, &checkout, 1, &mut removed)?;
+    removed.sort();
+    Ok(removed)
+}
+
+/// Whether a follow-up of this run was accepted and has not ended: its agent works in the card's
+/// folder, so that folder stays as it is.
+fn followup_pending(home: &Path, run_id: &str, card_id: &str) -> bool {
+    crate::run::store::list_runs(home).into_iter().any(|other| {
+        if other == run_id { return false; }
+        let file = crate::run::store::run_dir(home, &other).join("followup.json");
+        let Ok(bytes) = fs::read(file) else { return false };
+        serde_json::from_slice::<(String, String)>(&bytes).is_ok_and(|(source, card)| source == run_id && card == card_id)
+            && crate::run::store::run_is_live(home, &other)
+    })
+}
+
+/// A finished run keeps its edits and Git state but not the build output each isolated checkout
+/// left behind — gigabytes per run. A card that is still running, or whose follow-up is accepted
+/// or running, keeps its folder. What happened is recorded in `<run>/build-cache.json` so the
+/// person can see what was removed, kept and why.
+pub(crate) fn clean_finished_run(home: &Path, run_id: &str, checkouts: &[(String, PathBuf)]) {
+    if checkouts.is_empty() { return; }
+    let active: HashSet<String> = crate::run::store::active_markers(home).into_iter().map(|marker| marker.card_id).collect();
+    let mut cleaned = Vec::new();
+    let mut kept = Vec::new();
+    let mut failed = Vec::new();
+    for (card_id, checkout) in checkouts {
+        let kept_because = if active.contains(card_id) { Some("카드가 아직 실행 중입니다") }
+            else if followup_pending(home, run_id, card_id) { Some("후속 작업이 이 폴더를 쓰고 있습니다") }
+            else { None };
+        if let Some(reason) = kept_because {
+            kept.push(serde_json::json!({ "cardId": card_id, "path": checkout.to_string_lossy(), "reason": reason }));
+            continue;
+        }
+        match clean_checkout(home, checkout) {
+            Ok(removed) if removed.is_empty() => {}
+            Ok(removed) => cleaned.push(serde_json::json!({ "cardId": card_id, "path": checkout.to_string_lossy(), "removed": removed })),
+            Err(error) => failed.push(serde_json::json!({ "cardId": card_id, "path": checkout.to_string_lossy(), "reason": error.to_string() })),
+        }
+    }
+    if cleaned.is_empty() && kept.is_empty() && failed.is_empty() { return; }
+    let record = serde_json::json!({ "at": crate::sys::js::now_iso(), "cleaned": cleaned, "kept": kept, "failed": failed });
+    if let Ok(bytes) = serde_json::to_vec_pretty(&record) {
+        let _ = fs::write(crate::run::store::run_dir(home, run_id).join("build-cache.json"), bytes);
+    }
 }
 
 /// A read-only inventory for review; it does not establish that applying changes is safe.
@@ -862,5 +1032,112 @@ mod git_file_tests {
         assert!(fs::write(root.join("tracked.txt"), "changed").is_err());
         drop(files);
         fs::write(root.join("tracked.txt"), "changed").unwrap();
+    }
+}
+
+#[cfg(test)]
+mod build_cache_tests {
+    use super::*;
+
+    fn fixture() -> (PathBuf, PathBuf, PathBuf) {
+        let folder = std::env::temp_dir().join(format!("o-cache-{}-{}", std::process::id(), std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()));
+        let home = folder.join("state");
+        let project = folder.join("project");
+        fs::create_dir_all(&home).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        git(&project, &["init", "--quiet"]).unwrap();
+        fs::write(project.join(".gitignore"), "target/\nnode_modules/\n").unwrap();
+        fs::write(project.join("input.txt"), "original").unwrap();
+        git(&project, &["add", "."]).unwrap();
+        git(&project, &["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"]).unwrap();
+        (folder, home, project)
+    }
+
+    fn worktree(home: &Path, project: &Path, run: &str, index: usize) -> PathBuf {
+        let name = home.file_name().unwrap().to_string_lossy();
+        let path = home.with_file_name(format!("{name}-worktrees")).join(run).join(index.to_string());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        let text = path.to_string_lossy();
+        git(project, &["worktree", "add", "--detach", "--", &text, "HEAD"]).unwrap();
+        path
+    }
+
+    #[test]
+    fn the_shared_cache_lives_beside_the_state_folder() {
+        let (_folder, home, project) = fixture();
+        let checkout = worktree(&home, &project, "run-1", 1);
+        assert!(in_isolated_checkout(&home, &checkout));
+        assert!(!in_isolated_checkout(&home, &project));
+        let target = shared_cargo_target(&home, &project).unwrap();
+        assert!(target.is_dir() && target.ends_with("cargo-target"));
+        let name = home.file_name().unwrap().to_string_lossy().into_owned();
+        assert_eq!(target.parent().unwrap().file_name().unwrap().to_string_lossy().into_owned(), format!("{name}-cache"));
+        assert!(!target.starts_with(&project));
+    }
+
+    #[test]
+    fn a_finished_worktree_loses_only_untracked_build_output() {
+        let (_folder, home, project) = fixture();
+        let checkout = worktree(&home, &project, "run-1", 1);
+        fs::create_dir_all(checkout.join("target/debug")).unwrap();
+        fs::write(checkout.join("target/debug/artifact"), "built").unwrap();
+        fs::create_dir_all(checkout.join("node_modules/pkg")).unwrap();
+        fs::write(checkout.join("node_modules/pkg/index.js"), "x").unwrap();
+        fs::create_dir_all(checkout.join("app/node_modules/dep")).unwrap();
+        fs::write(checkout.join("app/node_modules/dep/index.js"), "x").unwrap();
+        fs::create_dir_all(checkout.join("app/src")).unwrap();
+        fs::write(checkout.join("app/src/main.ts"), "source").unwrap();
+        fs::write(checkout.join("input.txt"), "worker edit").unwrap();
+        fs::create_dir_all(project.join("target")).unwrap();
+        fs::write(project.join("target/keep"), "project").unwrap();
+        let removed = clean_checkout(&home, &checkout).unwrap();
+        assert_eq!(removed, ["app/node_modules", "node_modules", "target"]);
+        assert!(!checkout.join("target").exists());
+        assert!(!checkout.join("node_modules").exists());
+        assert!(!checkout.join("app/node_modules").exists());
+        assert_eq!(fs::read_to_string(checkout.join("app/src/main.ts")).unwrap(), "source");
+        assert_eq!(fs::read_to_string(checkout.join("input.txt")).unwrap(), "worker edit");
+        assert_eq!(fs::read_to_string(project.join("target/keep")).unwrap(), "project");
+        assert!(checkout.join(".git").is_file());
+    }
+
+    #[test]
+    fn a_build_folder_git_tracks_is_kept() {
+        let (_folder, home, project) = fixture();
+        fs::create_dir_all(project.join("target")).unwrap();
+        fs::write(project.join("target/tracked.txt"), "source").unwrap();
+        git(&project, &["add", "-f", "target/tracked.txt"]).unwrap();
+        git(&project, &["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "tracked"]).unwrap();
+        let checkout = worktree(&home, &project, "run-2", 1);
+        assert!(checkout.join("target/tracked.txt").is_file());
+        assert!(clean_checkout(&home, &checkout).unwrap().is_empty());
+        assert!(checkout.join("target/tracked.txt").is_file());
+    }
+
+    #[test]
+    fn the_project_and_a_non_git_copy_are_never_cleaned() {
+        let (_folder, home, project) = fixture();
+        fs::create_dir_all(project.join("target")).unwrap();
+        assert!(clean_checkout(&home, &project).is_err());
+        assert!(project.join("target").is_dir());
+        let name = home.file_name().unwrap().to_string_lossy();
+        let copy = home.with_file_name(format!("{name}-worktrees")).join("run-3").join("1");
+        fs::create_dir_all(&copy).unwrap();
+        git(&copy, &["init", "--quiet"]).unwrap();
+        fs::create_dir_all(copy.join("target")).unwrap();
+        assert!(clean_checkout(&home, &copy).is_err());
+        assert!(copy.join("target").is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_link_where_the_cache_belongs_is_refused() {
+        let (folder, home, project) = fixture();
+        let elsewhere = folder.join("elsewhere");
+        fs::create_dir_all(&elsewhere).unwrap();
+        let name = home.file_name().unwrap().to_string_lossy().into_owned();
+        std::os::unix::fs::symlink(&elsewhere, home.with_file_name(format!("{name}-cache"))).unwrap();
+        assert!(shared_cargo_target(&home, &project).is_err());
+        assert!(fs::read_dir(&elsewhere).unwrap().next().is_none());
     }
 }
