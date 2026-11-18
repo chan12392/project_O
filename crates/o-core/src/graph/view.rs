@@ -422,6 +422,84 @@ mod tests {
         assert!(!view.nodes.iter().any(|n| n.id == "a:/p|other"));
     }
 
+    /// Keep this fixture and expected IDs in sync with graphLoad.test.ts: the frontend
+    /// caps a merged raw graph using the same order and glow exceptions as this path.
+    #[test]
+    fn cap_overall_matches_frontend_contract() {
+        let nodes = [
+            ("o:root", "root", None, None),
+            ("a:orphan", "area", Some("/missing"), None),
+            ("p:/cold", "project", Some("/cold"), None),
+            ("a:/cold|plain", "area", Some("/cold"), None),
+            ("a:/hot|active", "area", Some("/hot"), Some("active")),
+            ("a:/hot|path", "area", Some("/hot"), Some("path")),
+            ("p:/hot", "project", Some("/hot"), None),
+            ("a:/hot|plain", "area", Some("/hot"), None),
+            ("p:/last", "project", Some("/last"), None),
+        ];
+        let edges = [
+            ("o:root", "p:/cold", "contains"),
+            ("o:root", "p:/hot", "contains"),
+            ("o:root", "p:/last", "contains"),
+            ("p:/cold", "a:/cold|plain", "contains"),
+            ("p:/hot", "a:/hot|active", "contains"),
+            ("p:/hot", "a:/hot|path", "contains"),
+            ("p:/hot", "a:/hot|plain", "contains"),
+            ("p:/missing", "a:orphan", "contains"),
+            ("a:/cold|plain", "a:/hot|active", "calls"),
+        ];
+        let original = GraphView {
+            scope: "overall".into(), project: None,
+            grafly: grafly::Status { installed: true, version: None }, indexed: true,
+            nodes: nodes.iter().map(|(id, kind, project, glow)| node((*id).into(), (*id).into(), kind, *project, None, 1, *glow)).collect(),
+            links: edges.iter().map(|(source, target, kind)| link(source, target, kind, 1, false)).collect(),
+            truncated: false, deep: None,
+        };
+        let cases: &[(usize, &[&str])] = &[
+            (2, &["o:root", "a:/hot|active", "a:/hot|path", "p:/hot"]),
+            (5, &["o:root", "p:/cold", "a:/hot|active", "a:/hot|path", "p:/hot"]),
+            (6, &["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot"]),
+            (7, &["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot", "a:/hot|plain"]),
+            (8, &["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot", "a:/hot|plain", "p:/last"]),
+            (100, &["o:root", "p:/cold", "a:/cold|plain", "a:/hot|active", "a:/hot|path", "p:/hot", "a:/hot|plain", "p:/last"]),
+        ];
+        for (max, expected) in cases {
+            let mut capped = original.clone();
+            cap_overall(&mut capped, *max);
+            assert_eq!(capped.nodes.iter().map(|n| n.id.as_str()).collect::<Vec<_>>(), *expected, "max={max}");
+            assert!(capped.truncated, "max={max}");
+            let expected_links: Vec<_> = edges.iter().filter(|(source, target, _)| expected.contains(source) && expected.contains(target)).copied().collect();
+            assert_eq!(capped.links.iter().map(|l| (l.source.as_str(), l.target.as_str(), l.kind.as_str())).collect::<Vec<_>>(), expected_links, "max={max}");
+        }
+        let mut already_truncated = original;
+        already_truncated.nodes.truncate(1);
+        already_truncated.links.clear();
+        already_truncated.truncated = true;
+        cap_overall(&mut already_truncated, 100);
+        assert!(already_truncated.truncated);
+        assert_eq!(already_truncated.nodes.len(), 1);
+    }
+
+    #[test]
+    fn cap_overall_limits_eight_thirteen_node_parts_to_one_hundred() {
+        let mut view = GraphView { scope: "overall".into(), project: None, grafly: grafly::Status { installed: true, version: None }, indexed: true, nodes: vec![node("o:root".into(), "root".into(), "root", None, None, 1, None)], links: vec![], truncated: false, deep: None };
+        for project in 0..8 {
+            let project = format!("/p/{project}");
+            let data = Data {
+                files: (0..12).map(|area| (format!("area{area:02}/file.rs"), 1)).collect(),
+                edges: BTreeMap::new(), glow: HashMap::new(),
+            };
+            overall_project(&mut view, &project, &project, &data, true);
+        }
+        assert_eq!(view.nodes.len(), 105);
+        let expected: Vec<_> = view.nodes.iter().take(100).map(|n| n.id.clone()).collect();
+        cap_overall(&mut view, 100);
+        assert_eq!(view.nodes.iter().map(|n| n.id.clone()).collect::<Vec<_>>(), expected);
+        assert!(view.truncated);
+        let ids: HashSet<_> = view.nodes.iter().map(|n| n.id.as_str()).collect();
+        assert!(view.links.iter().all(|l| ids.contains(l.source.as_str()) && ids.contains(l.target.as_str())));
+    }
+
     #[test]
     fn deep_metadata_keeps_json_shape_and_rejects_oversized_file() {
         let home = std::env::temp_dir().join(format!("o-graph-view-{}", crate::run::store::new_run_id(chrono::Utc::now())));

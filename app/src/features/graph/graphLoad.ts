@@ -6,7 +6,7 @@
  * only applies while its scope key is still on screen (#81).
  */
 import { errorText } from "../../lib/format.ts";
-import type { Backend, GraphLink, GraphNode, GraphView } from "../../platform/backend/types.ts";
+import type { Backend, GraphLink, GraphNode, GraphSettings, GraphView } from "../../platform/backend/types.ts";
 
 /** Which graph is on screen: every project ("overall") or one folder. */
 export type GraphScope = { scope: "overall" } | { scope: "project"; project: string };
@@ -24,6 +24,10 @@ export interface ListedProject {
 export interface LoaderState {
   /** The scope this answer belongs to; a stale one never shows. */
   key?: string;
+  /** All received parts, before the display cap; only state updaters own this graph. */
+  raw?: GraphView;
+  /** The saved cap used for this overall load. */
+  maxNodes?: number;
   view?: GraphView;
   error?: string;
   loading: boolean;
@@ -100,6 +104,30 @@ export function markProjectError(view: GraphView, project: string, message: stri
   return { ...view, nodes: view.nodes.map((n) => (n.id === `p:${project}` ? { ...n, error: message } : n)) };
 }
 
+/** Match o-core's cap_overall: roots, glowing nodes and their projects survive the cap. */
+export function capOverall(view: GraphView, maxNodes: number): GraphView {
+  const keep = new Set(view.nodes.filter((n) => n.kind === "root" || n.glow != null).map((n) => n.id));
+  const activeProjects = new Set(view.nodes.filter((n) => n.glow != null && n.project !== undefined).map((n) => n.project));
+  for (const n of view.nodes) {
+    if (n.kind === "project" && n.project !== undefined && activeProjects.has(n.project)) keep.add(n.id);
+  }
+  for (const n of view.nodes) {
+    if (keep.size >= maxNodes) break;
+    if (n.kind !== "area" || (n.project !== undefined && keep.has(`p:${n.project}`))) keep.add(n.id);
+  }
+  return {
+    ...view,
+    nodes: view.nodes.filter((n) => keep.has(n.id)),
+    links: view.links.filter((l) => keep.has(endOf(l.source)) && keep.has(endOf(l.target))),
+    truncated: view.truncated || keep.size < view.nodes.length,
+  };
+}
+
+/** Merge the original and derive its display together, without mutating an external snapshot. */
+function withRaw(state: LoaderState, raw: GraphView): LoaderState {
+  return { ...state, raw, view: capOverall(raw, state.maxNodes!) };
+}
+
 /** Each node's contains parent (the first one when a node is listed twice). */
 export function parentsOf(view: Pick<GraphView, "links">): Map<string, string> {
   const parent = new Map<string, string>();
@@ -130,8 +158,8 @@ export function levelsOf(view: Pick<GraphView, "nodes" | "links">, parent: Reado
 }
 
 export interface LoaderDeps {
-  /** The two calls the loader needs; a test can fake just these. */
-  api: Pick<Backend, "graphView" | "graphOverallPart">;
+  /** The graph calls and saved display cap; tests need only the maxNodes setting. */
+  api: Pick<Backend, "graphView" | "graphOverallPart"> & { graphSettings(): Promise<Pick<GraphSettings, "maxNodes">> };
   /** The scope on screen now — read at call time, so a captured refresh can't aim at a stale scope (#81). */
   scope(): GraphScope;
   /** The listed projects, for the overall skeleton and its part requests. */
@@ -150,9 +178,9 @@ export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: stri
   async function loadWhole(mine: number, key: string, project?: string) {
     try {
       const view = await deps.api.graphView(project);
-      if (seq === mine) deps.emit(() => ({ key, view, loading: false }));
+      if (seq === mine) deps.emit(() => ({ key, raw: view, view, loading: false }));
     } catch (e) {
-      if (seq === mine) deps.emit((s) => ({ key, view: s.key === key ? s.view : undefined, error: errorText(e), loading: false }));
+      if (seq === mine) deps.emit((s) => ({ ...(s.key === key ? s : {}), key, error: errorText(e), loading: false }));
     }
   }
 
@@ -160,7 +188,20 @@ export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: stri
   async function loadParts(mine: number, key: string, projects: ListedProject[]) {
     const part = deps.api.graphOverallPart;
     if (!part) return loadWhole(mine, key);
-    deps.emit((s) => ({ key, view: s.key === key && s.view?.scope === "overall" ? withSkeleton(s.view, projects) : skeletonView(projects), loading: true, error: undefined }));
+    deps.emit((s) => ({ ...s, loading: true, error: undefined }));
+    let maxNodes: number;
+    try {
+      ({ maxNodes } = await deps.api.graphSettings());
+    } catch {
+      // The whole-view endpoint applies the backend's own settings/defaults.
+      if (seq === mine) return loadWhole(mine, key);
+      return;
+    }
+    if (seq !== mine) return;
+    deps.emit((s) => withRaw(
+      { key, maxNodes, loading: true },
+      s.key === key && s.raw?.scope === "overall" ? withSkeleton(s.raw, projects) : skeletonView(projects),
+    ));
     const targets = projects.filter((p) => !p.missing);
     let failed = 0;
     let next = 0;
@@ -170,12 +211,12 @@ export function createViewLoader(deps: LoaderDeps): { refresh(expectedKey?: stri
         try {
           const slice = await part.call(deps.api, p.path);
           if (seq !== mine) return;
-          deps.emit((s) => (s.key === key && s.view ? { ...s, view: mergePart(s.view, slice, p.path) } : s));
+          deps.emit((s) => (s.key === key && s.raw ? withRaw(s, mergePart(s.raw, slice, p.path)) : s));
         } catch (e) {
           if (seq !== mine) return;
           failed++;
           const message = errorText(e);
-          deps.emit((s) => (s.key === key && s.view ? { ...s, view: markProjectError(s.view, p.path, message) } : s));
+          deps.emit((s) => (s.key === key && s.raw ? withRaw(s, markProjectError(s.raw, p.path, message)) : s));
         }
       }
     };
