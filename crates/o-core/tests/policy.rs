@@ -63,6 +63,7 @@ fn a_project_may_not_be_a_folder_o_keeps_beside_its_state() {
         "C:/Users/me/AppData/Local/project_O-lead/th-1/plans",
         "C:/Users/me/AppData/Local/project_O-term/run/card",
         "C:/Users/me/AppData/Local/PROJECT_O-worktrees/run/1",
+        "C:/Users/me/AppData/Local/project_O-cache/cargo-target",
         "C:/Users/me/AppData/Local/x/../project_O-agents/claude",
     ] {
         let checked = check_plan(&with(plan(vec![code_card()]), "project", json!(bad)), &ctx());

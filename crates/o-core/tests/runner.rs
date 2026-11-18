@@ -5,7 +5,7 @@
 mod support;
 use std::collections::BTreeMap;
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -118,6 +118,9 @@ fn main() {
         ("fresh follow-up locks cannot collide with sessions or other run-card pairs", fresh_followup_locks_do_not_collide),
         ("non-Git projects run in independent copies without changing the source", isolated_copies),
         ("lead graph keeps each worker in its own worktree and refuses a dirty base", isolated_worktrees),
+        ("isolated worktrees build into one shared cache and lose their build output", isolated_worktrees_share_one_build_cache),
+        ("a follow-up waiting on a card keeps that worktree's build output", a_followup_keeps_its_worktrees_build_output),
+        ("a sandboxed Codex card keeps its own build output", a_sandboxed_codex_card_keeps_its_own_build_output),
         ("a repository with a submodule entry is refused before any worker starts", isolated_worktrees_refuse_submodules),
         ("dependencies wait for success and never start after failure", dependency_order),
         ("devin transcript and answer become card events", devin_transcript),
@@ -1647,4 +1650,135 @@ fn budget_off_keeps_effort_and_refuses_nothing() {
     create_run(&spent_home, "spent", &p).unwrap();
     let inner = fake_cli(|_| vec![r#"{"type":"turn.completed"}"#]);
     assert_eq!(run_plan(&spent_home, "spent", &p, None, inner).unwrap(), CardStatus::Done, "{:?}", read_events(&spent_home, "spent"));
+}
+
+/// A git project whose own build output must survive the run, with `target` and `node_modules`
+/// ignored so the base stays clean.
+fn build_fixture() -> (PathBuf, PathBuf, PathBuf) {
+    let fixture = temp_home();
+    let home = fixture.join("state");
+    let project = fixture.join("project");
+    std::fs::create_dir_all(&project).unwrap();
+    let git = |args: &[&str]| {
+        let mut command = Command::new("git");
+        command.current_dir(&project).args(args);
+        let out = o_core::sys::proc::hide_window(&mut command).output().unwrap();
+        assert!(out.status.success(), "{}", String::from_utf8_lossy(&out.stderr));
+    };
+    git(&["init", "--quiet"]);
+    std::fs::write(project.join(".gitignore"), "target/\nnode_modules/\n").unwrap();
+    std::fs::write(project.join("shared.txt"), "base\n").unwrap();
+    git(&["add", "."]);
+    git(&["-c", "user.name=Test", "-c", "user.email=test@example.invalid", "commit", "--quiet", "-m", "fixture"]);
+    (fixture, home, project)
+}
+
+/// Every isolated worktree builds into one cache beside the state folder
+/// (docs/reports/2026-11-13-branch-cleanup-and-build-footprint.md), and a finished run keeps its
+/// edits and Git state but not the build output it made.
+fn isolated_worktrees_share_one_build_cache() {
+    let (_fixture, home, project) = build_fixture();
+    // The project's own build output is never the run's to remove.
+    std::fs::create_dir_all(project.join("target")).unwrap();
+    std::fs::write(project.join("target/keep"), "project\n").unwrap();
+    std::fs::create_dir_all(project.join("node_modules")).unwrap();
+    std::fs::write(project.join("node_modules/keep"), "project\n").unwrap();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "first"), card("b", ProviderId::Claude, "second")]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "cache", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "cache").join("isolated-worktrees"), "").unwrap();
+    let cache = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
+    let spaces = Arc::new(Mutex::new(BTreeMap::<String, String>::new()));
+    let (observed, seen) = (Arc::clone(&cache), Arc::clone(&spaces));
+    let inner = quiet();
+    let spawner: Arc<Spawner> = Arc::new(move |spec, cwd| {
+        let id = spec.env["O_CARD_ID"].clone();
+        let dir = PathBuf::from(cwd);
+        observed.lock().unwrap().insert(id.clone(), spec.env.get("CARGO_TARGET_DIR").cloned().unwrap_or_default());
+        seen.lock().unwrap().insert(id.clone(), cwd.into());
+        std::fs::create_dir_all(dir.join("target/debug")).unwrap();
+        std::fs::write(dir.join("target/debug/artifact"), "built").unwrap();
+        std::fs::create_dir_all(dir.join("node_modules/pkg")).unwrap();
+        std::fs::write(dir.join("shared.txt"), format!("{id}\n")).unwrap();
+        inner(spec, cwd)
+    });
+    assert_eq!(run_isolated(&home, "cache", &p, None, spawner).unwrap(), CardStatus::Done);
+    let (cache, spaces) = (cache.lock().unwrap(), spaces.lock().unwrap());
+    let target = cache.get("a").cloned().unwrap_or_default();
+    assert_eq!(target, cache.get("b").cloned().unwrap_or_default(), "분리한 카드는 하나의 캐시에 빌드해야 합니다");
+    assert!(Path::new(&target).is_dir() && target.ends_with("cargo-target"), "{target}");
+    assert!(Path::new(&target).parent().unwrap().to_string_lossy().ends_with("-cache"));
+    for id in ["a", "b"] {
+        let checkout = Path::new(spaces.get(id).unwrap());
+        assert!(!checkout.join("target").exists(), "{id}의 target이 남았습니다");
+        assert!(!checkout.join("node_modules").exists(), "{id}의 node_modules가 남았습니다");
+        assert_eq!(std::fs::read_to_string(checkout.join("shared.txt")).unwrap(), format!("{id}\n"));
+    }
+    assert_eq!(std::fs::read_to_string(project.join("target/keep")).unwrap(), "project\n");
+    assert_eq!(std::fs::read_to_string(project.join("node_modules/keep")).unwrap(), "project\n");
+    assert_eq!(std::fs::read_to_string(project.join("shared.txt")).unwrap(), "base\n");
+    let review = o_core::run::review_changes(&home, "cache", "a").unwrap();
+    assert_eq!(review["changes"]["changed"], serde_json::json!(["shared.txt"]));
+    let record = o_core::run::store::run_dir(&home, "cache").join("build-cache.json");
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
+    assert_eq!(record["cleaned"].as_array().unwrap().len(), 2);
+}
+
+/// A follow-up accepted while its card runs still works in that worktree, so the folder keeps its
+/// build output until the follow-up is over.
+fn a_followup_keeps_its_worktrees_build_output() {
+    let (_fixture, home, project) = build_fixture();
+    let mut p = plan(vec![card("a", ProviderId::Claude, "first")]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "kept", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "kept").join("isolated-worktrees"), "").unwrap();
+    let workspace = Arc::new(Mutex::new(String::new()));
+    let seen = Arc::clone(&workspace);
+    let spawner: Arc<Spawner> = Arc::new(move |_spec: &LaunchSpec, cwd: &str| {
+        *seen.lock().unwrap() = cwd.into();
+        std::fs::create_dir_all(PathBuf::from(cwd).join("target")).unwrap();
+        let lines = vec![r#"{"type":"system","subtype":"init","session_id":"s1"}"#, r#"{"type":"result","subtype":"success","is_error":false,"result":"ok"}"#];
+        let mut command = support::fake_worker_launch()?;
+        command.current_dir(cwd).env(FAKE_SLEEP, "1500").env(FAKE, serde_json::to_string(&lines).unwrap());
+        Ok(command)
+    });
+    let worker_home = home.clone();
+    let worker_plan = p.clone();
+    let worker = std::thread::spawn(move || run_isolated(&worker_home, "kept", &worker_plan, None, spawner));
+    let deadline = std::time::Instant::now() + Duration::from_secs(20);
+    while !read_events(&home, "kept").iter().any(|event| matches!(event, OEvent::CardStart { .. })) {
+        assert!(std::time::Instant::now() < deadline, "카드가 시작되지 않았습니다");
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let (_follow, _input) = followup(&home, "kept", "a", "이어서 해 주세요");
+    assert_eq!(worker.join().unwrap().unwrap(), CardStatus::Done);
+    let workspace = workspace.lock().unwrap().clone();
+    assert!(Path::new(&workspace).join("target").is_dir(), "후속 작업이 쓰는 폴더는 그대로여야 합니다");
+    let record = o_core::run::store::run_dir(&home, "kept").join("build-cache.json");
+    let record: serde_json::Value = serde_json::from_slice(&std::fs::read(record).unwrap()).unwrap();
+    assert!(record["cleaned"].as_array().unwrap().is_empty(), "{record}");
+    assert!(record["kept"].as_array().unwrap().iter().any(|row| row["cardId"] == "a"), "{record}");
+}
+
+/// A Codex card's sandbox writes only its workspace, so it keeps its own build output instead of
+/// being handed a cache it could not write (ADR-0043 grants it the mailbox, not build folders).
+fn a_sandboxed_codex_card_keeps_its_own_build_output() {
+    let (_fixture, home, project) = build_fixture();
+    let mut p = plan(vec![card("a", ProviderId::Codex, "first")]);
+    p.project = project.to_string_lossy().into_owned();
+    create_run(&home, "codex-cache", &p).unwrap();
+    std::fs::write(o_core::run::store::run_dir(&home, "codex-cache").join("isolated-worktrees"), "").unwrap();
+    let seen: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+    let recorded = Arc::clone(&seen);
+    let spawner: Arc<Spawner> = Arc::new(move |spec: &LaunchSpec, cwd: &str| {
+        let target = spec.env.get("CARGO_TARGET_DIR").cloned().unwrap_or_default();
+        recorded.lock().unwrap().push(format!("{cwd}|{target}"));
+        Err(std::io::Error::other("fake failure"))
+    });
+    assert_eq!(run_isolated(&home, "codex-cache", &p, None, spawner).unwrap(), CardStatus::Failed);
+    let seen = seen.lock().unwrap();
+    let launched = seen.first().expect("샌드박스 Codex 카드도 시작은 합니다");
+    let (cwd, target) = launched.split_once('|').expect("기록 형식");
+    assert!(cwd.contains("state-worktrees"), "{cwd}");
+    assert!(target.is_empty(), "샌드박스 안에서는 공용 빌드 캐시를 쓸 수 없습니다: {target}");
 }

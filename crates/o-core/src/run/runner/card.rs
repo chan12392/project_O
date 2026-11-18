@@ -177,6 +177,29 @@ pub(super) fn run_card(home: &Path, run_id: &str, plan: &Plan, card: &Card, star
     }
     let checked_plan = Plan { project: cwd.to_string(), ..plan.clone() };
     let mut spec = launch_spec_for(card, &checked_plan, &TeamChannel { run_id, run_dir: &dir_text }, context, yolo);
+    // Every isolated checkout builds into one cache beside O's state folder: each card's own
+    // `target` kept gigabytes per run (docs/reports/2026-11-13-branch-cleanup-and-build-footprint.md).
+    // A `CARGO_TARGET_DIR` the person set wins, and a Codex card keeps its own output: its sandbox
+    // writes only the workspace, where the run's end removes it (ADR-0043 grants it the mailbox,
+    // not build folders).
+    if std::env::var_os("CARGO_TARGET_DIR").is_none() && !spec.env.contains_key("CARGO_TARGET_DIR")
+        && crate::run::workspaces::in_isolated_checkout(home, Path::new(cwd))
+    {
+        let sandboxed = card.provider == ProviderId::Codex && !yolo;
+        if !sandboxed {
+            match crate::run::workspaces::shared_cargo_target(home, Path::new(&workdir.checked)) {
+                Ok(dir) => {
+                    let text = dir.to_string_lossy().into_owned();
+                    emit(OEvent::CardTool { at: now_iso(), card_id: card.id.clone(), name: "O 빌드 캐시".into(), summary: text.clone() })?;
+                    spec.env.insert("CARGO_TARGET_DIR".into(), text);
+                }
+                Err(error) => emit(OEvent::CardTool {
+                    at: now_iso(), card_id: card.id.clone(), name: "O 빌드 캐시".into(),
+                    summary: format!("공용 빌드 캐시를 쓰지 못해 작업 폴더에 빌드합니다: {error}"),
+                })?,
+            }
+        }
+    }
     if let Some(target) = &followup {
         if card.provider == ProviderId::Agy { return Err(io::Error::other(crate::policy::AGY_UNAVAILABLE)); }
         // No session: the card's last session was cut off by a dead runner, so this follow-up
