@@ -13,7 +13,7 @@ glib 0.18.5의 `VariantStrIter`가 C out-pointer를 불변 참조로 전달한�
 1. 공식 glib 0.18.5 crate를 출처·해시·MIT 라이선스와 함께 보관하고 [공식 커밋](https://github.com/gtk-rs/gtk-rs-core/commit/b5a4071e439bef2b5eea76c3aa25e5ae84839e34)의 두 줄 수정만 적용한다. Cargo `[patch.crates-io]`로 사용하며 버전 숫자는 바꾸지 않는다. [소스와 유지 절차](../../vendor/README.md)를 둔다.
 2. `npm run check:dependencies`는 루트·앱의 npm audit(개발 의존성 포함)와 [OSV 공식 API](https://google.github.io/osv.dev/post-v1-querybatch/)의 RustSec/GHSA 자료를 사용한다. Python 3.11+ 표준 라이브러리만 사용하며 추가 감사 도구 설치는 필요 없다. 두 Cargo.lock의 모든 플랫폼 의존성을 확인한다.
 3. glib 전체 소스 해시, 실제 Cargo patch 선택, 두 lock의 버전·로컬 출처를 확인해야 해당 glib 0.18.5의 두 경보 ID만 `BACKPORTED`로 보고한다. glib 자체도 0.18.5로 계속 조회한다. 새 경보·다른 버전·다른 출처·소스 변경은 통과시키지 않는다. 포괄 ignore 목록은 두지 않는다.
-4. HTTP 실패·시간 초과·잘못된 응답·누락된 배치·반복 페이지·npm 실패는 종료 코드 1이다. RustSec의 `unmaintained`는 별도 출력하고, 실제 취약점과 `unsound`는 실패한다. 유지보수 중단 경고를 취약점 수정으로 집계하지 않는다.
+4. HTTP 실패·시간 초과·잘못된 응답·누락된 배치·반복 페이지·npm 실패는 종료 코드 1이다. RustSec의 `unmaintained`는 별도 출력하고, 실제 취약점과 `unsound`는 실패한다. 유지보수 중단 경고를 취약점 수정으로 집계하지 않는다. 예외로 잠금 파일에서 개발 의존성으로만 잡히고 `fixAvailable`이 없는 npm 경보는 `DEV-ONLY, NO FIX`로 출력하고 실패로 세지 않는다 — 앱 빌드 도구(vite·tinyglobby·fdir)가 끌어오는 picomatch 4.0.7(GHSA-fc5q-39xc-vjpf)처럼 패치판이 아직 나오지 않은 경보로 모든 PR이 빨간색이 되는 것을 막기 위해서다. 운영 코드에 닿는 경보와 버전을 올려 고칠 수 있는 경보는 그대로 실패한다.
 5. PR의 필수 `policy` job에서 검사한다. 기존 기준 브랜치 검사기 보존 방식을 따른다. 최초 도입 시 기준에 파일이 없을 때만 PR 파일로 시작하고, 이후에는 기준의 검사기를 실행한다. `.github/` PR 작성자·보호 브랜치 규칙은 바꾸지 않는다.
 6. 별도 read-only workflow가 매주 월요일 02:23 UTC에 검사한다. 기본 브랜치에 반영된 뒤 일정이 활성화된다. 자동 PR·경보 닫기·릴리스·상태 수정은 하지 않는다. Dependabot 기본 PR 브랜치 이름은 현재 팀 브랜치 규칙과 맞지 않으므로 자동 버전 PR 설정은 추가하지 않는다. 기존 보안 경보는 유지하고 수정은 개인 작업 브랜치에서 검토한다.
 7. Linux GLib 라이브러리를 사용하는 별도 fixture를 일반·opt-level 2 test 프로필로 PR·정기 CI에서 실행한다. 실제 Iterator의 정상·경계 동작을 검사하며 제품 코드를 복제하지 않는다.

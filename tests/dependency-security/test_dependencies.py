@@ -99,6 +99,36 @@ class DependencyCheck(unittest.TestCase):
             with self.subTest(code=code, report=report), self.assertRaises(ValueError):
                 CHECK.npm_audit(ROOT, lambda *args, **kwargs: CompletedProcess([], code, json.dumps(report), ""))
 
+    def test_dev_only_advisory_without_a_fix_is_reported_but_does_not_fail(self):
+        picomatch = {"name": "picomatch", "severity": "high", "isDirect": False,
+                     "via": [{"source": 1, "name": "picomatch",
+                              "url": "https://github.com/advisories/GHSA-fc5q-39xc-vjpf"}],
+                     "effects": ["vite"], "range": "<=4.0.7", "nodes": ["node_modules/picomatch"],
+                     "fixAvailable": False}
+        vite = {"name": "vite", "severity": "high", "isDirect": False, "via": ["picomatch"],
+                "effects": [], "range": "8.3.5", "nodes": ["node_modules/vite"], "fixAvailable": False}
+        metadata = {"metadata": {"vulnerabilities": {"total": 2, "high": 2}}}
+        lock = {"packages": {"node_modules/picomatch": {"version": "4.0.7", "dev": True},
+                             "node_modules/vite": {"version": "8.3.5", "dev": True}}}
+        with tempfile.TemporaryDirectory(prefix="project-o-dependencies-") as directory:
+            folder = Path(directory)
+            (folder / "package-lock.json").write_text(json.dumps(lock))
+
+            def audit(payload):
+                return lambda *args, **kwargs: CompletedProcess([], 1, json.dumps(payload), "")
+
+            output = StringIO()
+            with redirect_stdout(output):
+                self.assertEqual(CHECK.npm_audit(folder, audit({"vulnerabilities": {"picomatch": picomatch, "vite": vite}, **metadata})),
+                                 ["picomatch", "vite"])
+            self.assertIn("DEV-ONLY, NO FIX: picomatch (high) https://github.com/advisories/GHSA-fc5q-39xc-vjpf",
+                          output.getvalue())
+            # A published fix or a package outside the lockfile (production) still fails.
+            for payload in ({"vulnerabilities": {"picomatch": {**picomatch, "fixAvailable": {"name": "picomatch", "version": "4.0.8"}}}, **metadata},
+                            {"vulnerabilities": {"picomatch": {**picomatch, "nodes": ["node_modules/vite/node_modules/picomatch"]}}, **metadata}):
+                with self.subTest(payload=payload), self.assertRaises(ValueError):
+                    CHECK.npm_audit(folder, audit(payload))
+
     def test_transport_failure_and_new_vulnerability_fail_the_command(self):
         output = StringIO()
         with redirect_stdout(output), redirect_stderr(output), patch.object(CHECK, "npm_audit"), patch.object(CHECK, "verify_resolution"), \

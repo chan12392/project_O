@@ -127,6 +127,20 @@ def classify(finding, request=request_json):
     return "VULNERABLE"
 
 
+# A development-only advisory that has no published fix is printed and does not fail the check.
+# The app's build tooling pulls in picomatch 4.0.7 (GHSA-fc5q-39xc-vjpf, ReDoS through
+# single-branch repeated extglobs) through vite, tinyglobby and fdir, and the newest picomatch
+# release is still 4.0.7, so failing on it would keep every PR red until upstream ships a fix
+# (ADR-0050, decision 4). Anything reachable from production code, or fixable by a version
+# bump, still fails.
+def dev_only_entry(locked, item):
+    """True when npm reports this entry only through packages that are dev-only in the lockfile."""
+    nodes = item.get("nodes")
+    if not isinstance(nodes, list) or not nodes:
+        return False
+    return all(isinstance(locked.get(node), dict) and locked[node].get("dev") is True for node in nodes)
+
+
 def npm_audit(folder, run=subprocess.run):
     command = ["cmd.exe", "/d", "/c", "npm.cmd"] if os.name == "nt" else ["npm"]
     result = run(command + ["audit", "--json", "--ignore-scripts", "--audit-level=low",
@@ -134,17 +148,40 @@ def npm_audit(folder, run=subprocess.run):
                  capture_output=True, text=True, timeout=120,
                  creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0)
     report = json.loads(result.stdout)
-    count = report.get("metadata", {}).get("vulnerabilities", {}).get("total")
-    if result.returncode != 0 or type(count) is not int or count != 0 or "error" in report:
+    if not isinstance(report, dict) or "error" in report:
+        raise ValueError(f"npm audit failed in {folder.name}: exit={result.returncode}, error in report")
+    count = (report.get("metadata") or {}).get("vulnerabilities", {}).get("total")
+    vulnerabilities = report.get("vulnerabilities") or {}
+    if type(count) is not int or not isinstance(vulnerabilities, dict):
         raise ValueError(f"npm audit failed in {folder.name}: exit={result.returncode}, vulnerabilities={count}")
+    if count and not vulnerabilities:
+        raise ValueError(f"npm audit failed in {folder.name}: {count} vulnerabilities without details")
+    lock = folder / "package-lock.json"
+    locked = (json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}) if lock.is_file() else {}
+    warnings, blocking = [], []
+    for name, item in sorted(vulnerabilities.items()):
+        if not isinstance(item, dict):
+            raise ValueError(f"npm audit failed in {folder.name}: malformed entry for {name}")
+        if item.get("fixAvailable") is False and dev_only_entry(locked, item):
+            advisories = [via["url"] for via in item.get("via") or [] if isinstance(via, dict) and via.get("url")]
+            warnings.append(name)
+            print(f"DEV-ONLY, NO FIX: {name} ({item.get('severity')})" + (f" {' '.join(advisories)}" if advisories else ""))
+        else:
+            blocking.append(f"{name} ({item.get('severity')})")
+    if blocking:
+        raise ValueError(f"npm audit failed in {folder.name}: vulnerabilities={count}: {', '.join(blocking)}")
+    if result.returncode != 0 and not warnings:
+        raise ValueError(f"npm audit failed in {folder.name}: exit={result.returncode}, vulnerabilities={count}")
+    return warnings
 
 
 def main(root):
     errors = []
     for folder in (root, root / "app"):
         try:
-            npm_audit(folder)
-            print(f"PASS npm audit: {folder.name} (production + development)")
+            warnings = npm_audit(folder)
+            note = f"; {len(warnings)} dev-only advisory with no fix, see above" if warnings else ""
+            print(f"PASS npm audit: {folder.name} (production + development{note})")
         except Exception as error:
             errors.append(str(error))
     try:
