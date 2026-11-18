@@ -15,6 +15,8 @@ pub mod resolve;
 pub mod worker;
 #[cfg(windows)]
 pub mod win_launch;
+#[cfg(all(test, windows))]
+pub(crate) mod test_support;
 
 #[cfg(target_os = "macos")]
 pub mod macos_worker;
