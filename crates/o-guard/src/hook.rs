@@ -259,13 +259,17 @@ fn gh_write_reasons(command: &str) -> Vec<String> {
 
 /// Lexical spelling plus the nearest existing parent's real path (junctions and short names).
 fn real_path(path: &str) -> String {
+    let spelled = normalize(&path.replace('\\', "/"));
     let path = Path::new(path);
     for ancestor in path.ancestors() {
-        if let Ok(real) = ancestor.canonicalize() {
-            return normalize(&real.join(path.strip_prefix(ancestor).unwrap_or(Path::new(""))).to_string_lossy().replace('\\', "/"));
-        }
+        let Ok(real) = ancestor.canonicalize() else { continue };
+        let resolved = normalize(&real.join(path.strip_prefix(ancestor).unwrap_or(Path::new(""))).to_string_lossy().replace('\\', "/"));
+        // POSIX canonicalizes the `//server/share` root to `/server/share`, a different folder:
+        // such a path keeps its spelling instead of being moved somewhere it never was.
+        if spelled.starts_with("//") && !resolved.starts_with("//") { continue; }
+        return resolved;
     }
-    normalize(&path.to_string_lossy().replace('\\', "/"))
+    spelled
 }
 
 pub fn within_state(path: &str, state: &str) -> bool {
